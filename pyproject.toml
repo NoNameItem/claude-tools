@@ -1,0 +1,56 @@
+[project]
+name = "claude-tools"
+version = "0.1.0"
+description = "Custom tools for Claude Code"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+statuskit = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.9",
+    "ty",
+    "statuskit",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",
+    "I",
+    "UP",
+    "S",
+    "A",
+    "ARG",
+    "B",
+    "C4",
+    "EM",
+    "FURB",
+    "ISC",
+    "INP",
+    "N",
+    "PERF",
+    "PIE",
+    "PL",
+    "PT",
+    "PTH",
+    "Q",
+    "RET",
+    "RUF",
+    "SIM",
+    "SLF",
+    "TCH",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["packages/*/tests"]
