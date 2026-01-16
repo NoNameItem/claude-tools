@@ -12,6 +12,7 @@ statuskit = { workspace = true }
 
 [dependency-groups]
 dev = [
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.9",
     "ty",
@@ -56,7 +57,7 @@ select = [
 quote-style = "double"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]  # Allow assert in tests
+"**/tests/**/*.py" = ["S101", "PLR2004"]  # Allow assert and magic numbers in tests
 
 [tool.pytest.ini_options]
 testpaths = ["packages/*/tests"]
