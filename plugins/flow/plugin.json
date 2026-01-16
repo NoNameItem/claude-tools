@@ -5,7 +5,7 @@
   "skills": [
     {
       "name": "start",
-      "path": "skills/start.md",
+      "path": "skills/start/SKILL.md",
       "user_invocable": true
     }
   ]
