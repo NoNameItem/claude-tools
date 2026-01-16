@@ -1,0 +1,27 @@
+{
+  "name": "flow",
+  "version": "1.0.0",
+  "description": "Automated beads workflow commands for Claude Code",
+  "skills": [
+    {
+      "name": "start",
+      "path": "skills/start.md",
+      "user_invocable": true
+    },
+    {
+      "name": "after-design",
+      "path": "skills/after-design.md",
+      "user_invocable": true
+    },
+    {
+      "name": "after-plan",
+      "path": "skills/after-plan.md",
+      "user_invocable": true
+    },
+    {
+      "name": "done",
+      "path": "skills/done.md",
+      "user_invocable": true
+    }
+  ]
+}
