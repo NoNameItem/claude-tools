@@ -7,21 +7,6 @@
       "name": "start",
       "path": "skills/start.md",
       "user_invocable": true
-    },
-    {
-      "name": "after-design",
-      "path": "skills/after-design.md",
-      "user_invocable": true
-    },
-    {
-      "name": "after-plan",
-      "path": "skills/after-plan.md",
-      "user_invocable": true
-    },
-    {
-      "name": "done",
-      "path": "skills/done.md",
-      "user_invocable": true
     }
   ]
 }
