@@ -12,6 +12,11 @@
       "name": "after-design",
       "path": "skills/after-design/SKILL.md",
       "user_invocable": true
+    },
+    {
+      "name": "after-plan",
+      "path": "skills/after-plan/SKILL.md",
+      "user_invocable": true
     }
   ]
 }
