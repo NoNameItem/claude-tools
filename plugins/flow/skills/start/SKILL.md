@@ -15,12 +15,13 @@ This skill guides starting work on beads tasks through explicit consultation ste
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. Find | `bd ready` or search | Let user choose |
-| 2. Show | Display description | Context BEFORE commitment |
-| 3. Branch | Check branch type | Generic vs Feature |
-| 4. Ask | RECOMMEND or NEUTRAL | Tone matters |
-| 5. Update | `bd update` | Only after confirmation |
-| 6. Create | `git checkout -b` | If requested |
+| 1. Tree | `bd graph --all --json` | Build hierarchical display |
+| 2. Select | Let user choose by number/ID | User agency |
+| 3. Show | Display in box format | Context BEFORE commitment |
+| 4. Branch | Check branch type | Generic vs Feature |
+| 5. Ask | RECOMMEND or NEUTRAL | Tone matters |
+| 6. Update | `bd update` | Only after confirmation |
+| 7. Create | `git checkout -b` | If requested |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -30,32 +31,120 @@ This skill guides starting work on beads tasks through explicit consultation ste
 
 Follow these steps **in order**. Do not skip steps.
 
-### 1. Find Available Tasks
+### 1. Build and Display Task Tree
 
-**Without argument:**
+**Get all task data:**
 ```bash
-bd ready
+bd graph --all --json
 ```
-Show in_progress leaf tasks + ready children. Let user choose.
 
-**With argument (task ID or search text):**
-```bash
-bd list --status=open | grep <argument>
+**Build hierarchical tree:**
+1. Parse JSON to get Issues and Dependencies
+2. Build parent-child relationships from dependencies where `type == "parent-child"`
+3. Filter tasks (show open/in_progress, hide closed/blocked)
+4. Sort each level by: status (in_progress → open → deferred) then priority (P0 → P4)
+5. Number hierarchically: `1.`, `1.1`, `1.2`, `1.1.1`, etc.
+
+**Display format:**
 ```
-Search by ID or text. If multiple matches, show all and let user choose.
+[Type] Title (ID) | Priority · Status | #labels
+```
 
-### 2. Show Task Description FIRST
+**Type letters:**
+- `[E]` = epic
+- `[F]` = feature
+- `[T]` = task
+- `[B]` = bug
+- `[C]` = chore
 
-**Before any actions**, display:
-- Task title and ID
-- Full description
-- Design link if present (look for `Design: docs/plans/...`)
-- Plan link if present (look for `Plan: docs/plans/...`)
-- Dependencies (blocks/blocked-by)
+**Tree structure:**
+```
+1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
+   ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
+   ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
+   └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
+
+2. [F] External feature (claude-tools-xyz) | P2 · open
+```
+
+**Filtering rules:**
+- **Show:** status = `open` or `in_progress`
+- **Hide:** status = `closed` or `blocked` (unless has unblocked descendants)
+- **Show deferred:** only if they have unblocked children
+
+**With search argument:**
+Filter tree to show only matching tasks and their ancestors/descendants.
+
+**If no tasks available:**
+```
+Нет доступных задач для работы.
+
+Причины:
+- Все задачи закрыты
+- Все открытые задачи заблокированы
+- Все задачи отложены (deferred)
+
+Что вы хотите сделать?
+1. bd blocked - посмотреть заблокированные задачи
+2. bd list --status=deferred - посмотреть отложенные
+3. new - создать новую задачу
+```
+
+### 2. Get User's Task Selection
+
+User can select by:
+- **Hierarchical number:** `1`, `1.2`, `1.1.2`
+- **Task ID:** `claude-tools-c7b`
+- **Create new:** `new` or `create`
+
+Map selection to task ID and proceed.
+
+### 3. Show Task Description FIRST
+
+**Before any actions**, display task in detailed box format:
+
+```
+┌─ [Type] Title ────────────────────────────────────────────┐
+│ ID: <task-id>                                             │
+│ Priority: <priority>  Status: <status>  Type: <type>      │
+│ Labels: #label1 #label2                                   │
+├───────────────────────────────────────────────────────────┤
+│ DESCRIPTION                                               │
+│ <full task description>                                   │
+│                                                            │
+├───────────────────────────────────────────────────────────┤
+│ LINKS                                                      │
+│ Design: docs/plans/...                                    │
+│ Plan: docs/plans/...                                      │
+│                                                            │
+├───────────────────────────────────────────────────────────┤
+│ DEPENDENCIES                                              │
+│ Depends on:                                               │
+│   → claude-tools-xxx: Some task (closed)                  │
+│                                                            │
+│ Blocks:                                                   │
+│   → claude-tools-yyy: Another task (open)                 │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Include sections only if present:**
+- Metadata (always)
+- Description (if present)
+- Links (if description contains `Design:` or `Plan:` lines)
+- Dependencies (if present)
+
+**If task is already in_progress:**
+```
+┌─ [F] Git module ──────────────────────────────────────────┐
+│ ⚠️  Задача уже в работе (in_progress)                     │
+│                                                            │
+│ ID: claude-tools-c7b                                      │
+...
+```
 
 **User needs context BEFORE committing to task.**
 
-### 3. Check Git Branch
+### 4. Check Git Branch
 
 ```bash
 git branch --show-current
@@ -65,7 +154,7 @@ Identify branch type:
 - **Generic:** main, master, develop, trunk
 - **Feature:** anything else
 
-### 4. Ask About Branch (with appropriate tone)
+### 5. Ask About Branch (with appropriate tone)
 
 #### Generic Branch → RECOMMEND
 
@@ -87,7 +176,7 @@ Use neutral, informational tone:
 
 **Why neutral:** User might be working on related features, or might want isolation - don't assume.
 
-### 5. Update Task Status
+### 6. Update Task Status
 
 **Only after user confirms everything:**
 ```bash
@@ -99,7 +188,7 @@ Or if user is claiming:
 bd update <task-id> --claim
 ```
 
-### 6. Create Branch (if requested)
+### 7. Create Branch (if requested)
 
 ```bash
 git checkout -b <branch-name>
@@ -151,14 +240,35 @@ Agent: I've created branch claude-tools-c7b and marked the task in_progress.
 
 ```
 User: "start the git module task"
-Agent: Found task claude-tools-c7b (Git module):
+Agent: Доступные задачи:
 
-       **Git module** (P2 feature)
-       Create module that displays:
-       - Current directory (project name)
-       - Branch and its status
-       - Number of changes (staged/unstaged)
-       - Hash and age of last commit
+       1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
+          ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
+          ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
+          └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
+
+       2. [F] External feature (claude-tools-xyz) | P2 · open
+
+       Выберите задачу (по номеру или ID), или введите 'new' для создания новой:
+
+User: 1.2
+
+Agent: ┌─ [F] Git module ──────────────────────────────────────────┐
+       │ ID: claude-tools-c7b                                      │
+       │ Priority: P2  Status: open  Type: feature                 │
+       │ Labels: #statuskit #python                                │
+       ├───────────────────────────────────────────────────────────┤
+       │ DESCRIPTION                                               │
+       │ Create module that displays:                             │
+       │ - Current directory (project name)                        │
+       │ - Branch and its status                                   │
+       │ - Number of changes (staged/unstaged)                     │
+       │ - Hash and age of last commit                             │
+       ├───────────────────────────────────────────────────────────┤
+       │ DEPENDENCIES                                              │
+       │ Depends on:                                               │
+       │   → claude-tools-5dl: StatusKit (in_progress)             │
+       └───────────────────────────────────────────────────────────┘
 
        You're currently on `master` (main development branch).
        I recommend creating a feature branch for this work to keep
@@ -168,7 +278,9 @@ Agent: Found task claude-tools-c7b (Git module):
 ```
 
 **Correct because:**
-- Shows full context first
+- Shows hierarchical tree first
+- Lets user select by number
+- Shows full context in box format
 - Recommends (not creates) for generic branch
 - Gives user choice
 - Uses appropriate tone
@@ -199,22 +311,53 @@ Agent: [shows task description]
 - Still consults
 - Follows workflow
 
-## When Task Already in_progress
+## Edge Cases
+
+### When Task Already in_progress
 
 If task status is already `in_progress`:
-1. Mention it: "Task is already in progress, continuing..."
-2. Still show description (user might not remember)
+1. Show warning in task display box: `⚠️  Задача уже в работе (in_progress)`
+2. Still show full description (user might not remember)
 3. Still check branch and ask
 4. Don't update status (already correct)
 
-## When No Tasks Available
+### When No Tasks Available
 
-If `bd ready` shows nothing:
-1. Explain situation
-2. Suggest alternatives:
-   - `bd list --status=open` (see all open)
-   - `bd blocked` (see what's blocked and why)
-   - `bd create` (create new task)
+If filtering leaves no tasks to show:
+```
+Нет доступных задач для работы.
+
+Причины:
+- Все задачи закрыты
+- Все открытые задачи заблокированы
+- Все задачи отложены (deferred)
+
+Что вы хотите сделать?
+1. bd blocked - посмотреть заблокированные задачи
+2. bd list --status=deferred - посмотреть отложенные
+3. new - создать новую задачу
+
+Ваш выбор:
+```
+
+### When Search Found Nothing
+
+If search argument provided but no matches found:
+```
+Поиск "<search-term>" не нашел задач.
+
+Доступные задачи:
+[show full tree without filter]
+
+Выберите задачу (по номеру или ID), или введите 'new' для создания новой:
+```
+
+### When Multiple Graphs Exist
+
+If `bd graph --all --json` returns multiple graphs:
+- Merge all graphs into one tree
+- Use sequential root numbering across all graphs
+- Example: Graph 1 roots = `1.`, `2.`, Graph 2 roots = `3.`, `4.`
 
 ## The Bottom Line
 
