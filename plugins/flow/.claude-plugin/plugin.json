@@ -4,5 +4,10 @@
   "description": "Automated beads workflow commands for Claude Code",
   "repository": "https://github.com/NoNameItem/claude-tools",
   "keywords": ["beads", "workflow", "task-management"],
-  "skills": "./skills/"
+  "skills": [
+    "./skills/start",
+    "./skills/after-design",
+    "./skills/after-plan",
+    "./skills/done"
+  ]
 }
