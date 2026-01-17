@@ -7,6 +7,11 @@
       "name": "start",
       "path": "skills/start/SKILL.md",
       "user_invocable": true
+    },
+    {
+      "name": "after-design",
+      "path": "skills/after-design/SKILL.md",
+      "user_invocable": true
     }
   ]
 }
