@@ -1,40 +1,154 @@
 # CLAUDE.md
 
-Custom tools for Claude Code. Monorepo with uv workspaces.
+Custom tools and plugins for Claude Code. Monorepo with uv workspaces.
+
+## Overview
+
+This repository contains two types of tools for Claude Code:
+
+**Statuskit** - Python package for customizable statusline display. Modular architecture with plugins for model info, git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statusline hook and renders formatted output.
+
+**Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`, `/flow:after-design`, `/flow:after-plan`, `/flow:done`) that guide you through task selection, branch management, design linking, and completion workflow.
 
 ## Project Structure
 
 ```
 claude-tools/
-├── pyproject.toml              # Workspace root, shared dev deps
+├── .claude-plugin/
+│   └── marketplace.json        # Plugin marketplace definition
+├── plugins/
+│   └── flow/                   # Beads workflow plugin
+│       ├── .claude-plugin/
+│       │   └── plugin.json
+│       └── skills/             # /flow:* commands
 ├── packages/
-│   └── statuskit/
-│       ├── pyproject.toml      # statuskit package
-│       ├── src/statuskit/      # Source code
-│       └── tests/              # Tests
+│   └── statuskit/              # Python statusline package
+│       ├── pyproject.toml
+│       ├── src/statuskit/
+│       │   ├── core/           # Config, loading, models
+│       │   └── modules/        # Statusline modules
+│       └── tests/
 └── docs/plans/                 # Design documents
-```
-
-## Development
-
-```bash
-uv sync              # Install all dependencies
-uv run pytest        # Run tests
-uv run ruff check .  # Lint
-uv run ruff format . # Format
-uv run ty check .    # Type check
-uv run statuskit     # Run statuskit
 ```
 
 ## Statuskit
 
 Modular statusline kit for Claude Code with plugin architecture.
 
-**Testing locally:**
+### Installation
+
+```bash
+uv sync              # Install all dependencies
+```
+
+### Configuration
+
+Create `~/.claude/statuskit.toml`:
+
+```toml
+debug = false
+modules = ["model", "git", "beads", "quota"]  # Default modules
+
+# Module-specific configuration
+[quota]
+# Add quota module config here if needed
+```
+
+**Available modules:**
+- `model` - Display current Claude model name
+- `git` - Show git branch and status
+- `beads` - Display active beads tasks
+- `quota` - Track token usage and limits
+
+**Key files:**
+- `~/.claude/statuskit.toml` - User configuration
+- `~/.cache/statuskit/` - Quota cache, session state
+
+### Testing Locally
+
 ```bash
 echo '{"model":{"display_name":"Test"},"workspace":{"current_dir":"/tmp","project_dir":"/tmp"},"context_window":{"context_window_size":200000,"current_usage":{"input_tokens":1000}}}' | uv run statuskit
 ```
 
-**Key files:**
-- `~/.claude/statuskit.toml` - user config
-- `~/.cache/statuskit/` - quota cache, session state
+### Development
+
+```bash
+uv run pytest        # Run tests
+uv run ruff check .  # Lint
+uv run ruff format . # Format
+```
+
+## Claude Code Plugins
+
+This repository is also a Claude Code plugin marketplace containing workflow automation tools.
+
+### Installation
+
+**Local development:**
+```bash
+/plugin marketplace add /Users/artem.vasin/Coding/claude-tools
+/plugin install flow@nonameitem-toolkit
+```
+
+**From GitHub:**
+```bash
+/plugin marketplace add NoNameItem/claude-tools
+/plugin install flow@nonameitem-toolkit
+```
+
+### Flow Plugin
+
+Automated beads workflow commands for task management.
+
+**Available commands:**
+- `/flow:start` - Start working on a beads task (task selection, branch management, context display)
+- `/flow:after-design` - After brainstorming/design phase (links design doc, parses subtasks, previews before creating)
+- `/flow:after-plan` - After planning phase (links implementation plan document to task)
+- `/flow:done` - Complete and verify task (checks git branch, closes task, handles parent tasks, syncs)
+
+**Usage example:**
+```bash
+/flow:start              # Begin work session
+# ... do your work ...
+/flow:after-design       # After design is complete
+/flow:after-plan         # After creating implementation plan
+/flow:done               # Mark task complete
+```
+
+### Development
+
+**Adding a new skill to existing plugin:**
+
+Use the `superpowers:writing-skills` skill for creating or editing skills:
+```bash
+/superpowers:writing-skills
+```
+
+This skill guides you through proper skill creation, testing, and validation.
+
+**Adding a new plugin to marketplace:**
+
+1. Create plugin directory: `plugins/your-plugin/`
+2. Create `.claude-plugin/plugin.json`:
+   ```json
+   {
+     "name": "your-plugin",
+     "version": "1.0.0",
+     "description": "Your plugin description",
+     "repository": "https://github.com/NoNameItem/claude-tools",
+     "keywords": ["keyword1", "keyword2"],
+     "category": "productivity",
+     "skills": []
+   }
+   ```
+3. Add skills using `superpowers:writing-skills`
+4. Register in `.claude-plugin/marketplace.json`:
+   ```json
+   {
+     "name": "your-plugin",
+     "source": "./plugins/your-plugin",
+     "description": "Your plugin description",
+     "version": "1.0.0"
+   }
+   ```
+5. Test locally: `/plugin install your-plugin@nonameitem-toolkit`

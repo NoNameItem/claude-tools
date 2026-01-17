@@ -1,0 +1,19 @@
+{
+  "name": "nonameitem-toolkit",
+  "owner": {
+    "name": "NoNameItem"
+  },
+  "metadata": {
+    "description": "Personal collection of handy plugins and skills for Claude Code. Homegrown, may be rough around the edges",
+    "version": "1.0.0",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "flow",
+      "source": "./plugins/flow",
+      "description": "Automated beads workflow commands for Claude Code",
+      "version": "1.0.0"
+    }
+  ]
+}
