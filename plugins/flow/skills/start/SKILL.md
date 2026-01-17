@@ -53,9 +53,10 @@ STOP. Start over from Step 1.
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
-| 5. Ask | RECOMMEND or NEUTRAL | Tone matters |
-| 6. Update | `bd update` | Only after confirmation |
-| 7. Create | `git checkout -b` | If requested |
+| 5. Search | Find existing branches | Reuse before create |
+| 6. Ask | RECOMMEND or NEUTRAL | Tone matters |
+| 7. Update | `bd update` | Only after confirmation |
+| 8. Create | `git checkout -b` | If requested |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -198,29 +199,102 @@ Identify branch type:
 - **Generic:** main, master, develop, trunk
 - **Feature:** anything else
 
-### 5. Ask About Branch (with appropriate tone)
+### 5. Search for Existing Branches
 
-#### Generic Branch → RECOMMEND
+**Search for branches containing the task ID:**
+```bash
+git branch -a | grep -E "(fix|chore|feature)/{task-id}"
+```
+
+This searches both local and remote (origin) branches, filtering for branches that match our naming convention (prefix + full task-id).
+
+**Filter results:**
+- Remove `remotes/origin/HEAD` entries
+- Extract branch names (strip `remotes/origin/` prefix)
+- Deduplicate (if same branch exists locally and remotely, prefer local)
+
+**If matching branches found:**
+- Present options to checkout existing branch OR create new one
+- If multiple branches found, show all options
+- Include branch names and location (local/remote) in the suggestion
+
+**If no matching branches found:**
+- Proceed to create new branch with appropriate prefix
+
+**Determine branch prefix from task type:**
+- bug → `fix/`
+- chore → `chore/`
+- feature → `feature/`
+- task → `feature/`
+- epic → `feature/` (epics use feature prefix)
+- **Unknown type:** default to `feature/` and warn user
+
+**Generate brief name:**
+- Take 2-3 key words from task title
+- Convert to lowercase
+- Replace spaces with hyphens
+- Example: "Fix authentication timeout" → "authentication-timeout"
+
+**Final format:** `{prefix}{task-id}-{brief-name}`
+
+Examples:
+- bug task `claude-tools-abc` "Fix login error" → `fix/claude-tools-abc-login-error`
+- feature task `claude-tools-xyz` "Add dark mode" → `feature/claude-tools-xyz-dark-mode`
+- chore task `claude-tools-123` "Update dependencies" → `chore/claude-tools-123-update-dependencies`
+
+### 6. Ask About Branch (with appropriate tone)
+
+**Three scenarios to handle:**
+
+#### Scenario A: Existing Branches Found
+
+**If one branch found:**
+
+> "Found existing branch for this task: `{branch-name}` (local/remote)
+>
+> Would you like to:
+> 1. Checkout existing branch: `{branch-name}`
+> 2. Create new branch: `{prefix}{task-id}-{brief-name}`"
+
+**If multiple branches found:**
+
+> "Found multiple branches for this task:
+> - `{branch-1}` (local)
+> - `{branch-2}` (remote)
+>
+> Would you like to:
+> 1. Checkout: `{branch-1}` (most recent/local preferred)
+> 2. Checkout: `{branch-2}`
+> 3. Create new branch: `{prefix}{task-id}-{brief-name}`"
+
+**Why prioritize existing:** Avoid duplicate branches, continue existing work.
+
+**Priority for multiple branches:**
+- Prefer local over remote (faster checkout)
+- Prefer branches matching current task type prefix
+- Show most recent first (by commit date)
+
+#### Scenario B: No Existing Branches + Generic Branch → RECOMMEND
 
 Use strong, specific recommendation:
 
-> "You're currently on `{branch}` (main development branch). **I recommend creating a feature branch** for this work to keep main clean and make it easier to create PRs later.
+> "You're currently on `{branch}` (main development branch). **I recommend creating a separate branch** for this work to keep main clean and make it easier to create PRs later.
 >
-> Would you like me to create a new branch `{task-id}` or `{task-id}-{brief-name}`?"
+> Would you like me to create branch `{prefix}{task-id}-{brief-name}`?"
 
 **Why recommend:** Generic branches should stay stable.
 
-#### Feature Branch → NEUTRAL
+#### Scenario C: No Existing Branches + Feature Branch → NEUTRAL
 
 Use neutral, informational tone:
 
 > "You're currently on feature branch `{branch}`.
 >
-> Would you like to continue work on this branch, or create a new branch for this task?"
+> Would you like to continue work on this branch, or create a new branch `{prefix}{task-id}-{brief-name}`?"
 
 **Why neutral:** User might be working on related features, or might want isolation - don't assume.
 
-### 6. Update Task Status
+### 7. Update Task Status
 
 **Only after user confirms everything:**
 ```bash
@@ -232,13 +306,24 @@ Or if user is claiming:
 bd update <task-id> --claim
 ```
 
-### 7. Create Branch (if requested)
+### 8. Create or Checkout Branch (if requested)
 
+**If user chose existing branch:**
 ```bash
-git checkout -b <branch-name>
+git checkout <existing-branch-name>
 ```
 
-Follow user's preference from step 4.
+Or if remote branch:
+```bash
+git checkout -b <local-branch-name> origin/<remote-branch-name>
+```
+
+**If user chose to create new branch:**
+```bash
+git checkout -b <prefix><task-id>-<brief-name>
+```
+
+Follow user's preference from step 6.
 
 ## Red Flags - STOP
 
@@ -267,6 +352,14 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Description can go in summary at the end"
 - "This is being helpful"
 
+**Branch naming violations:**
+- "No need to search existing branches"
+- "Searching branches is too slow"
+- "I'll skip the prefix for simple tasks"
+- "feature/ works for all task types"
+- "Brief name is optional"
+- "Task ID alone is clear enough"
+
 **All of these mean: Go back to CRITICAL section. Follow exact process.**
 
 ## Common Rationalizations
@@ -286,6 +379,17 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Description in summary is enough" | User needs context BEFORE starting, not after. |
 | "Asking slows things down" | Making assumptions and backtracking is slower. |
 | "This is just being efficient" | Assuming isn't efficient - it's risky. |
+| "No existing branches to search" | Always search. Prevents duplicate branches. |
+| "Searching branches is slow" | Takes 1 second. Creating duplicate branch wastes hours. |
+| "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
+| "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
+| "Brief name is optional" | Required. Format: prefix + task-id + brief-name. |
+| "Task ID alone is clear enough" | Brief name helps identify branch at a glance. |
+| "Simple grep -i is fine" | Wrong. Use grep -E with prefix pattern to avoid partial matches. |
+| "No need to deduplicate branches" | Wrong. Same branch on local and remote should show once. |
+| "Unknown task type should fail" | Wrong. Default to feature/ and warn user. |
+| "Remote branch is same as local" | Wrong. Prefer local (faster), show both with location. |
+| "Show all matching branches equally" | Wrong. Prioritize: local > remote, matching prefix > other. |
 
 ## Examples
 
@@ -341,16 +445,43 @@ Agent: ┌─ [F] Git module ─────────────────
        I recommend creating a feature branch for this work to keep
        master clean and make it easier to create PRs later.
 
-       Would you like me to create a new branch `claude-tools-c7b`?
+       Would you like me to create branch `feature/claude-tools-c7b-git-module`?
 ```
 
 **Correct because:**
 - Shows hierarchical tree first
 - Lets user select by number
 - Shows full context in box format
+- Searches for existing branches first
+- Uses correct prefix (feature/ for feature type)
+- Uses full format: prefix + task-id + brief-name
 - Recommends (not creates) for generic branch
 - Gives user choice
 - Uses appropriate tone
+
+### ✅ GOOD: Existing branch found
+
+```
+User: "start bug task claude-tools-abc"
+Agent: [shows task description box for bug task]
+
+       Found multiple branches for this task:
+       - `fix/claude-tools-abc-login-error` (local)
+       - `fix/claude-tools-abc-auth-fix` (remote)
+
+       Would you like to:
+       1. Checkout: `fix/claude-tools-abc-login-error` (local preferred)
+       2. Checkout: `fix/claude-tools-abc-auth-fix`
+       3. Create new branch: `fix/claude-tools-abc-authentication-timeout`
+```
+
+**Correct because:**
+- Searched with proper grep pattern (only matching our convention)
+- Presents existing branches with location (local/remote)
+- Shows local branch first (priority)
+- Still offers option to create new
+- Uses correct prefix (fix/ for bug type)
+- Deduplicated branches (no duplicates if same branch exists locally and remotely)
 
 ### ❌ BAD: Time pressure bypass
 
