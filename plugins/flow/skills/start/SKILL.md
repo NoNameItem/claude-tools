@@ -11,6 +11,40 @@ description: Use when starting a work session or when user asks to begin working
 
 This skill guides starting work on beads tasks through explicit consultation steps. Users choose tasks, see context first, and decide on branch strategy - even when choices seem "obvious."
 
+## 🚨 CRITICAL: Follow This Exact Process
+
+**Step 1 - Run this EXACT command:**
+```bash
+bd graph --all --json
+```
+
+**FORBIDDEN - These commands are WRONG:**
+- ❌ `bd ready` - doesn't provide parent-child relationships
+- ❌ `bd list` - doesn't show dependencies
+- ❌ `bd show` - only shows single task, not graph
+
+**Required output format (MUST match exactly):**
+```
+1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
+   ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
+   ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
+   └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
+```
+
+**FORBIDDEN - These formats are WRONG:**
+- ❌ `[● P1] [epic] claude-tools-xxx: Title` (old bd ready format)
+- ❌ `1. [E] StatusKit [P1] (IN_PROGRESS)` (wrong metadata order)
+- ❌ `claude-tools-5dl [EPIC] StatusKit (in_progress) ⭐1` (CanonicalTaskTree - not our format)
+- ❌ `● StatusKit` (bullet points without numbers)
+- ❌ Any format that doesn't match the example above EXACTLY
+
+**For task selection:**
+- ✅ Use plain text output (allows user to type `1.2` or `1.1.1`)
+- ❌ DO NOT use `AskUserQuestion` tool (cannot handle hierarchical numbers)
+
+**If you used any FORBIDDEN command or wrong format:**
+STOP. Start over from Step 1.
+
 ## Quick Reference
 
 | Step | Action | Key Point |
@@ -89,6 +123,16 @@ Filter tree to show only matching tasks and their ancestors/descendants.
 2. bd list --status=deferred - посмотреть отложенные
 3. new - создать новую задачу
 ```
+
+**✓ Validation Checkpoint - Verify Before Proceeding:**
+- [ ] I ran `bd graph --all --json` (exact command, not bd ready/list/show)
+- [ ] I parsed "Issues" and "Dependencies" from JSON
+- [ ] I built hierarchical numbering: `1.`, `1.1`, `1.2` (not bullet points)
+- [ ] I used format: `[E] Title (ID) | P1 · status | #labels` (exact format)
+- [ ] I displayed tree with `├─` and `└─` connectors
+- [ ] I'm asking for selection with PLAIN TEXT (not AskUserQuestion tool)
+
+If any checkbox is unchecked: STOP. Go back to Step 1.
 
 ### 2. Get User's Task Selection
 
@@ -200,19 +244,42 @@ Follow user's preference from step 4.
 
 If you're thinking any of these, STOP and follow the workflow:
 
+**Command violations:**
+- "bd ready is good enough"
+- "bd list gives me the same information"
+- "I'll use bd show to get task details"
+- "These commands are basically equivalent"
+
+**Display violations:**
+- "Tree structure is close enough" (needs numbering too!)
+- "This format is more readable"
+- "User will understand what I mean"
+
+**Tool violations:**
+- "AskUserQuestion is more user-friendly"
+- "Structured UI is better than plain text"
+- "This makes selection easier"
+
+**Workflow violations:**
 - "Creating a feature branch is obviously right"
 - "User said they're in a hurry"
 - "I'll choose a good task for them"
-- "I'll handle the obvious parts"
 - "Description can go in summary at the end"
 - "This is being helpful"
 
-**All of these mean: Follow the consultation workflow above.**
+**All of these mean: Go back to CRITICAL section. Follow exact process.**
 
 ## Common Rationalizations
 
 | Excuse | Reality |
 |--------|---------|
+| "bd ready shows the same tasks" | It doesn't show parent-child relationships. Use bd graph --all --json. |
+| "bd list is simpler" | Simpler isn't correct. Need full dependency graph. |
+| "AskUserQuestion is more user-friendly" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text. |
+| "Tree structure without numbering is fine" | Numbering enables selection by position. Required. |
+| "This format is more readable" | Format must match spec exactly. Users expect consistency. |
+| "CanonicalTaskTree is a good format" | Not our format. Use: `1. [E] Title (ID) \| P1 · status` |
+| "I'll use a format I know works" | Skill specifies exact format. Don't improvise. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
 | "User said they're in a hurry" | Consultation is part of the service, not overhead. |
 | "I'll choose a good task for them" | User agency matters. Show options, let them choose. |
