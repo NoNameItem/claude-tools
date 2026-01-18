@@ -5,6 +5,28 @@ description: Use when starting a work session or when user asks to begin working
 
 # Flow: Start Task
 
+<STOP-AND-READ>
+
+## ⛔ BEFORE DOING ANYTHING
+
+**READ this ENTIRE skill FIRST. Do NOT run any commands yet.**
+
+**Violation check — if ANY of these are true, STOP and apologize:**
+- [ ] I already ran `bd ready` → VIOLATION. Apologize, start over.
+- [ ] I already ran `bd list` → VIOLATION. Apologize, start over.
+- [ ] I already ran `bd show` → VIOLATION. Apologize, start over.
+- [ ] I said "Let me wait for content to load" → About to violate. STOP.
+- [ ] I'm "preparing" or "getting ready" → About to violate. STOP.
+
+**If you checked any box: Tell the user you violated the skill, apologize, and start over from Step 1 below.**
+
+**Required action NOW:**
+1. Read this entire skill (don't skim)
+2. Create TodoWrite checklist from the steps
+3. ONLY THEN execute Step 1
+
+</STOP-AND-READ>
+
 ## Overview
 
 **Core principle:** Consultation over assumption.
@@ -329,6 +351,12 @@ Follow user's preference from step 6.
 
 If you're thinking any of these, STOP and follow the workflow:
 
+**Skill loading violations (MOST CRITICAL):**
+- "Let me wait for content to load" → Content IS loaded. Read it NOW.
+- "I'll prepare while reading" → NO. Read FIRST, act SECOND.
+- "Let me get the task list" → STOP. Did you read the skill? What command does it say?
+- "I'll start gathering context" → Gathering context IS the skill. Follow it.
+
 **Command violations:**
 - "bd ready is good enough"
 - "bd list gives me the same information"
@@ -366,6 +394,11 @@ If you're thinking any of these, STOP and follow the workflow:
 
 | Excuse | Reality |
 |--------|---------|
+| "Let me wait for content to load" | Content IS loaded. You're stalling before violating. Read the skill NOW. |
+| "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER understanding. |
+| "I'm just preparing" | Preparing = running commands = violation. Read skill first. |
+| "bd ready is a quick way to see tasks" | It's the WRONG way. Skill says bd graph --all --json. Read it. |
+| "I'll start gathering context" | Context gathering IS the skill's job. Don't freelance. Follow steps. |
 | "bd ready shows the same tasks" | It doesn't show parent-child relationships. Use bd graph --all --json. |
 | "bd list is simpler" | Simpler isn't correct. Need full dependency graph. |
 | "AskUserQuestion is more user-friendly" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text. |
