@@ -35,17 +35,12 @@ This skill guides starting work on beads tasks through explicit consultation ste
 
 ## 🚨 CRITICAL: Follow This Exact Process
 
-**Step 1 - Run this EXACT command:**
+**Step 1 - Run the tree builder script:**
 ```bash
-bd graph --all --json
+bd graph --all --json | python3 scripts/bd-tree.py
 ```
 
-**FORBIDDEN - These commands are WRONG:**
-- ❌ `bd ready` - doesn't provide parent-child relationships
-- ❌ `bd list` - doesn't show dependencies
-- ❌ `bd show` - only shows single task, not graph
-
-**Required output format (MUST match exactly):**
+The script outputs a properly formatted hierarchical tree. Example output:
 ```
 1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
    ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
@@ -53,25 +48,20 @@ bd graph --all --json
    └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
 ```
 
-**FORBIDDEN - These formats are WRONG:**
-- ❌ `[● P1] [epic] claude-tools-xxx: Title` (old bd ready format)
-- ❌ `1. [E] StatusKit [P1] (IN_PROGRESS)` (wrong metadata order)
-- ❌ `claude-tools-5dl [EPIC] StatusKit (in_progress) ⭐1` (CanonicalTaskTree - not our format)
-- ❌ `● StatusKit` (bullet points without numbers)
-- ❌ Any format that doesn't match the example above EXACTLY
+**Script options:**
+- `-s "term"` — filter by search term
+- `-n 10` — limit to first N root tasks
+- `--collapse` — show only roots with child count `[+N]`
 
 **For task selection:**
 - ✅ Use plain text output (allows user to type `1.2` or `1.1.1`)
 - ❌ DO NOT use `AskUserQuestion` tool (cannot handle hierarchical numbers)
 
-**If you used any FORBIDDEN command or wrong format:**
-STOP. Start over from Step 1.
-
 ## Quick Reference
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. Tree | `bd graph --all --json` | Build hierarchical display |
+| 1. Tree | `bd graph --all --json \| python3 scripts/bd-tree.py` | Script builds tree |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
@@ -90,49 +80,23 @@ Follow these steps **in order**. Do not skip steps.
 
 ### 1. Build and Display Task Tree
 
-**Get all task data:**
+**Run the tree builder script:**
 ```bash
-bd graph --all --json
+bd graph --all --json | python3 scripts/bd-tree.py
 ```
 
-**Build hierarchical tree:**
-1. Parse JSON to get Issues and Dependencies
-2. Build parent-child relationships from dependencies where `type == "parent-child"`
-3. Filter tasks (show open/in_progress, hide closed/blocked)
-4. Sort each level by: status (in_progress → open → deferred) then priority (P0 → P4)
-5. Number hierarchically: `1.`, `1.1`, `1.2`, `1.1.1`, etc.
+The script handles:
+- Parsing JSON and building parent-child relationships
+- Filtering (shows open/in_progress, hides closed/blocked)
+- Sorting (in_progress → open → deferred, then by priority)
+- Hierarchical numbering (`1.`, `1.1`, `1.2`)
+- Tree connectors (`├─`, `└─`)
 
-**Display format:**
-```
-[Type] Title (ID) | Priority · Status | #labels
-```
+**Script options:**
+- `bd graph --all --json | python3 scripts/bd-tree.py -s "search"` — filter by term
+- `bd graph --all --json | python3 scripts/bd-tree.py --collapse` — show roots only with `[+N]`
 
-**Type letters:**
-- `[E]` = epic
-- `[F]` = feature
-- `[T]` = task
-- `[B]` = bug
-- `[C]` = chore
-
-**Tree structure:**
-```
-1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
-   ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
-   ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
-   └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
-
-2. [F] External feature (claude-tools-xyz) | P2 · open
-```
-
-**Filtering rules:**
-- **Show:** status = `open` or `in_progress`
-- **Hide:** status = `closed` or `blocked` (unless has unblocked descendants)
-- **Show deferred:** only if they have unblocked children
-
-**With search argument:**
-Filter tree to show only matching tasks and their ancestors/descendants.
-
-**If no tasks available:**
+**If script shows no tasks:**
 ```
 Нет доступных задач для работы.
 
@@ -147,15 +111,9 @@ Filter tree to show only matching tasks and their ancestors/descendants.
 3. new - создать новую задачу
 ```
 
-**✓ Validation Checkpoint - Verify Before Proceeding:**
-- [ ] I ran `bd graph --all --json` (exact command, not bd ready/list/show)
-- [ ] I parsed "Issues" and "Dependencies" from JSON
-- [ ] I built hierarchical numbering: `1.`, `1.1`, `1.2` (not bullet points)
-- [ ] I used format: `[E] Title (ID) | P1 · status | #labels` (exact format)
-- [ ] I displayed tree with `├─` and `└─` connectors
+**✓ Validation Checkpoint:**
+- [ ] I ran the script (not bd ready/list/show directly)
 - [ ] I'm asking for selection with PLAIN TEXT (not AskUserQuestion tool)
-
-If any checkbox is unchecked: STOP. Go back to Step 1.
 
 ### 2. Get User's Task Selection
 
@@ -354,39 +312,27 @@ If you're thinking any of these, STOP and follow the workflow:
 **Skill loading violations (MOST CRITICAL):**
 - "Let me wait for content to load" → Content IS loaded. Read it NOW.
 - "I'll prepare while reading" → NO. Read FIRST, act SECOND.
-- "Let me get the task list" → STOP. Did you read the skill? What command does it say?
-- "I'll start gathering context" → Gathering context IS the skill. Follow it.
+- "Let me get the task list" → STOP. Did you read the skill? Run the script.
 
 **Command violations:**
-- "bd ready is good enough"
-- "bd list gives me the same information"
-- "I'll use bd show to get task details"
-- "These commands are basically equivalent"
-
-**Display violations:**
-- "Tree structure is close enough" (needs numbering too!)
-- "This format is more readable"
-- "User will understand what I mean"
+- "bd ready is good enough" → Use the script
+- "I'll build the tree myself" → Script does this. Don't reinvent.
+- "I'll format differently" → Script output is the correct format
 
 **Tool violations:**
 - "AskUserQuestion is more user-friendly"
 - "Structured UI is better than plain text"
-- "This makes selection easier"
 
 **Workflow violations:**
 - "Creating a feature branch is obviously right"
 - "User said they're in a hurry"
 - "I'll choose a good task for them"
 - "Description can go in summary at the end"
-- "This is being helpful"
 
 **Branch naming violations:**
 - "No need to search existing branches"
-- "Searching branches is too slow"
 - "I'll skip the prefix for simple tasks"
 - "feature/ works for all task types"
-- "Brief name is optional"
-- "Task ID alone is clear enough"
 
 **All of these mean: Go back to CRITICAL section. Follow exact process.**
 
@@ -394,35 +340,17 @@ If you're thinking any of these, STOP and follow the workflow:
 
 | Excuse | Reality |
 |--------|---------|
-| "Let me wait for content to load" | Content IS loaded. You're stalling before violating. Read the skill NOW. |
-| "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER understanding. |
-| "I'm just preparing" | Preparing = running commands = violation. Read skill first. |
-| "bd ready is a quick way to see tasks" | It's the WRONG way. Skill says bd graph --all --json. Read it. |
-| "I'll start gathering context" | Context gathering IS the skill's job. Don't freelance. Follow steps. |
-| "bd ready shows the same tasks" | It doesn't show parent-child relationships. Use bd graph --all --json. |
-| "bd list is simpler" | Simpler isn't correct. Need full dependency graph. |
+| "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
+| "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
+| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 scripts/bd-tree.py` |
+| "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "AskUserQuestion is more user-friendly" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text. |
-| "Tree structure without numbering is fine" | Numbering enables selection by position. Required. |
-| "This format is more readable" | Format must match spec exactly. Users expect consistency. |
-| "CanonicalTaskTree is a good format" | Not our format. Use: `1. [E] Title (ID) \| P1 · status` |
-| "I'll use a format I know works" | Skill specifies exact format. Don't improvise. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
 | "User said they're in a hurry" | Consultation is part of the service, not overhead. |
 | "I'll choose a good task for them" | User agency matters. Show options, let them choose. |
-| "Description in summary is enough" | User needs context BEFORE starting, not after. |
-| "Asking slows things down" | Making assumptions and backtracking is slower. |
-| "This is just being efficient" | Assuming isn't efficient - it's risky. |
 | "No existing branches to search" | Always search. Prevents duplicate branches. |
-| "Searching branches is slow" | Takes 1 second. Creating duplicate branch wastes hours. |
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
-| "Brief name is optional" | Required. Format: prefix + task-id + brief-name. |
-| "Task ID alone is clear enough" | Brief name helps identify branch at a glance. |
-| "Simple grep -i is fine" | Wrong. Use grep -E with prefix pattern to avoid partial matches. |
-| "No need to deduplicate branches" | Wrong. Same branch on local and remote should show once. |
-| "Unknown task type should fail" | Wrong. Default to feature/ and warn user. |
-| "Remote branch is same as local" | Wrong. Prefer local (faster), show both with location. |
-| "Show all matching branches equally" | Wrong. Prioritize: local > remote, matching prefix > other. |
 
 ## Examples
 
