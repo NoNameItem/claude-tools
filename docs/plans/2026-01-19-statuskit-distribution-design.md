@@ -51,12 +51,44 @@ statuskit --version                # Версия
 
 | Ситуация | Поведение |
 |----------|-----------|
-| Хук уже есть (наш) | Спросить → backup → перезаписать |
+| Хук уже есть (наш) | "Already installed", ничего не делаем |
 | Хук уже есть (чужой) | Предупредить → спросить → backup → перезаписать |
 | Установлен на уровне выше | Предложить: только конфиг или хук тоже |
 | Установлен на уровне ниже | Предупредить, продолжить |
 | Нет директории/файла | Создать автоматически |
 | `--force` | Пропустить вопросы, делать backup |
+
+**Примечание:** Создание statuskit.toml — независимая операция. Конфиг создаётся если не существует, независимо от состояния хука. Если хук уже установлен (наш), но конфига нет — конфиг будет создан.
+
+**Детекция "нашего" хука:**
+
+```python
+import shlex
+from pathlib import Path
+
+def is_our_hook(hook: dict) -> bool:
+    """Check if the hook points to statuskit."""
+    cmd = hook.get("command", "")
+    if not cmd:
+        return False
+    try:
+        first_word = shlex.split(cmd)[0]
+        return Path(first_word).name == "statuskit"
+    except ValueError:
+        return False
+```
+
+Это позволяет распознать:
+- `statuskit`
+- `/usr/local/bin/statuskit`
+- `~/.local/bin/statuskit --debug`
+
+**Стратегия бэкапов:**
+
+- Бэкап создаётся как `.bak` файл рядом с оригиналом
+- Пример: `settings.json` → `settings.json.bak`
+- Предыдущий `.bak` перезаписывается
+- Бэкап создаётся только при перезаписи чужого хука или с `--force`
 
 ## Команда setup: вывод
 
