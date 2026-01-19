@@ -1,5 +1,6 @@
 """Hook detection for setup command."""
 
+import json
 import shlex
 from pathlib import Path
 
@@ -20,3 +21,28 @@ def is_our_hook(hook: dict) -> bool:
         return Path(first_word).name == "statuskit"
     except ValueError:
         return False
+
+
+def read_settings(path: Path) -> dict:
+    """Read settings.json file.
+
+    Returns empty dict if file doesn't exist.
+    Raises ValueError if file contains invalid JSON.
+    """
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        msg = f"Invalid JSON in {path}: {e}"
+        raise ValueError(msg) from e
+
+
+def write_settings(path: Path, data: dict) -> None:
+    """Write settings.json file.
+
+    Creates parent directories if needed.
+    Uses 2-space indent for readability.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n")
