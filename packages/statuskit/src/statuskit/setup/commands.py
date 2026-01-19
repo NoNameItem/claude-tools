@@ -35,6 +35,29 @@ class InstallResult:
     message: str = ""
 
 
+def _get_higher_scopes(scope: Scope) -> list[Scope]:
+    """Get scopes higher than the given scope.
+
+    Scope hierarchy (lower to higher): LOCAL -> PROJECT -> USER
+    """
+    order = [Scope.LOCAL, Scope.PROJECT, Scope.USER]
+    idx = order.index(scope)
+    return order[idx + 1 :]
+
+
+def _check_higher_scope_installation(scope: Scope) -> Scope | None:
+    """Check if statuskit is installed at a higher scope.
+
+    Returns the higher scope if installed, None otherwise.
+    """
+    for higher_scope in _get_higher_scopes(scope):
+        settings_path = get_settings_path(higher_scope)
+        settings = read_settings(settings_path)
+        if is_our_hook(settings.get("statusLine", {})):
+            return higher_scope
+    return None
+
+
 def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
     """Install statuskit hook to settings.json.
 
@@ -48,6 +71,19 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
     """
     settings_path = get_settings_path(scope)
     config_path = get_config_path(scope)
+
+    # Check for higher scope installation (don't duplicate hook)
+    higher_scope = _check_higher_scope_installation(scope)
+    if higher_scope and not force:
+        # Just create config, don't install hook
+        config_created = create_config(config_path)
+        return InstallResult(
+            success=True,
+            higher_scope_installed=True,
+            higher_scope=higher_scope,
+            config_created=config_created,
+            message=f"Already installed at {higher_scope.value} scope",
+        )
 
     # Read current settings
     try:

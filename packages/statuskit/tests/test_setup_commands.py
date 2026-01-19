@@ -227,3 +227,94 @@ class TestRemoveHook:
 
         assert result.success is False
         assert "other-script" in result.message
+
+
+class TestInstallHookHigherScope:
+    """Tests for install_hook with higher-scope detection."""
+
+    def test_detects_user_when_installing_project(self, tmp_path, monkeypatch):
+        """Detects user scope installation when installing to project."""
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+
+        # User already installed
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": "statuskit"}}))
+
+        project.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.PROJECT, force=False, ui=None)
+
+        assert result.higher_scope_installed is True
+        assert result.higher_scope == Scope.USER
+
+    def test_detects_user_when_installing_local(self, tmp_path, monkeypatch):
+        """Detects user scope when installing to local."""
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+
+        # User already installed
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": "statuskit"}}))
+
+        project.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.LOCAL, force=False, ui=None)
+
+        assert result.higher_scope_installed is True
+        assert result.higher_scope == Scope.USER
+
+    def test_detects_project_when_installing_local(self, tmp_path, monkeypatch):
+        """Detects project scope when installing to local."""
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+
+        # Project already installed (not user)
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": "statuskit"}}))
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.LOCAL, force=False, ui=None)
+
+        assert result.higher_scope_installed is True
+        assert result.higher_scope == Scope.PROJECT
+
+    def test_still_creates_config_when_higher_scope_installed(self, tmp_path, monkeypatch):
+        """Creates config file even when higher scope is installed."""
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+
+        # User already installed
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": "statuskit"}}))
+
+        project.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.PROJECT, force=False, ui=None)
+
+        assert result.higher_scope_installed is True
+        assert result.config_created is True
+        assert (project / ".claude" / "statuskit.toml").exists()
