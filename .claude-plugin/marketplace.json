@@ -12,7 +12,7 @@
     {
       "name": "flow",
       "source": "./plugins/flow",
-      "description": "Automated beads workflow commands for Claude Code",
+      "description": "Automated beads workflow commands for Claude Code"
     }
   ]
 }
