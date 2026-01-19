@@ -1,5 +1,5 @@
 ---
-name: after-design
+name: linking-design
 description: Use after completing brainstorming/design phase. Links design document to task, parses subtasks, shows preview for approval, implements smart merge with existing subtasks. Handles post-design workflow for beads tasks.
 ---
 

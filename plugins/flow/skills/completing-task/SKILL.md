@@ -1,5 +1,5 @@
 ---
-name: done
+name: completing-task
 description: Use after completing and verifying a task. Checks git branch (feature → suggests finishing-a-development-branch), closes task, recursively checks parents with confirmation, runs bd sync. Handles task completion workflow for beads.
 ---
 

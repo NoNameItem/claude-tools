@@ -1,5 +1,5 @@
 ---
-name: start
+name: starting-task
 description: Use when starting a work session or when user asks to begin working on a beads task. Handles task selection, branch management, and context display. Use after /clear, at session start, or when switching tasks.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: after-plan
+name: linking-plan
 description: Use after completing planning phase (superpowers:writing-plans). Links implementation plan document to task. Simple task - just save the link, nothing else. Handles post-planning workflow for beads tasks.
 ---
 
