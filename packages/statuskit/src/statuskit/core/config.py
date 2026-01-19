@@ -6,7 +6,17 @@ from pathlib import Path
 
 from termcolor import colored
 
+# Kept for backward compatibility in tests
 CONFIG_PATH = Path.home() / ".claude" / "statuskit.toml"
+
+
+def _get_config_paths() -> list[Path]:
+    """Get config paths in priority order (highest first)."""
+    return [
+        Path(".claude") / "statuskit.local.toml",  # Local (highest)
+        Path(".claude") / "statuskit.toml",  # Project
+        Path.home() / ".claude" / "statuskit.toml",  # User (lowest)
+    ]
 
 
 @dataclass
@@ -23,27 +33,32 @@ class Config:
 
 
 def load_config() -> Config:
-    """Load configuration from TOML file.
+    """Load configuration from TOML files.
 
-    Returns defaults if file doesn't exist.
+    Searches in priority order:
+    1. .claude/statuskit.local.toml (Local)
+    2. .claude/statuskit.toml (Project)
+    3. ~/.claude/statuskit.toml (User)
+
+    Returns defaults if no config file exists.
     Shows error and returns defaults if file is invalid.
     """
-    if not CONFIG_PATH.exists():
-        return Config()
+    for config_path in _get_config_paths():
+        if config_path.exists():
+            try:
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            except (tomllib.TOMLDecodeError, OSError) as e:
+                print(colored(f"[!] Config error in {config_path}: {e}", "red"))
+                return Config()
 
-    try:
-        with CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError) as e:
-        # Always show config errors
-        print(colored(f"[!] Config error: {e}", "red"))
-        return Config()
+            # Extract module configs
+            module_configs = {k: v for k, v in data.items() if isinstance(v, dict) and k not in ("debug", "modules")}
 
-    # Extract module configs (any dict that's not a top-level setting)
-    module_configs = {k: v for k, v in data.items() if isinstance(v, dict) and k not in ("debug", "modules")}
+            return Config(
+                debug=data.get("debug", False),
+                modules=data.get("modules", Config().modules),
+                module_configs=module_configs,
+            )
 
-    return Config(
-        debug=data.get("debug", False),
-        modules=data.get("modules", Config().modules),
-        module_configs=module_configs,
-    )
+    return Config()
