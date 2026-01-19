@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from .config import create_config
+from .gitignore import ensure_local_files_ignored
 from .hooks import create_backup, is_our_hook, read_settings, write_settings
 from .paths import Scope, get_config_path, get_settings_path
 
@@ -89,6 +90,11 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
     settings["statusLine"] = {"type": "command", "command": "statuskit"}
     write_settings(settings_path, settings)
 
+    # Handle gitignore for local scope
+    gitignore_updated = False
+    if scope == Scope.LOCAL:
+        gitignore_updated = ensure_local_files_ignored()
+
     # Create config
     config_created = create_config(config_path)
 
@@ -96,6 +102,7 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
         success=True,
         backup_created=backup_created,
         config_created=config_created,
+        gitignore_updated=gitignore_updated,
         message="Installed successfully",
     )
 

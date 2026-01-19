@@ -1,5 +1,6 @@
 """Tests for setup commands."""
 
+# ruff: noqa: S603, S607
 import json
 from pathlib import Path
 
@@ -127,3 +128,48 @@ class TestInstallHook:
         assert result.success is True
         assert result.backup_created is True
         assert (home / ".claude" / "settings.json.bak").exists()
+
+
+class TestInstallHookGitignore:
+    """Tests for install_hook gitignore handling."""
+
+    def test_adds_gitignore_for_local_scope(self, tmp_path, monkeypatch):
+        """Adds gitignore pattern when installing to local scope."""
+        import subprocess
+
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        project = tmp_path / "project"
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, capture_output=True, check=False)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.LOCAL, force=False, ui=None)
+
+        assert result.success is True
+        assert result.gitignore_updated is True
+        assert ".claude/*.local.*" in (project / ".gitignore").read_text()
+
+    def test_no_gitignore_for_user_scope(self, tmp_path, monkeypatch):
+        """Does not modify gitignore for user scope."""
+        import subprocess
+
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        project = tmp_path / "project"
+        (home / ".claude").mkdir(parents=True)
+        project.mkdir()
+        subprocess.run(["git", "init"], cwd=project, capture_output=True, check=False)
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.chdir(project)
+
+        result = install_hook(Scope.USER, force=False, ui=None)
+
+        assert result.success is True
+        assert result.gitignore_updated is False
