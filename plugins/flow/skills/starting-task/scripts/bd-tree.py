@@ -49,7 +49,7 @@ def parse_graphs(data: list[dict]) -> dict[str, Task]:
 
     for graph in data:
         # Parse issues
-        for issue in graph.get("Issues", []):
+        for issue in graph.get("Issues") or []:
             task = Task(
                 id=issue["id"],
                 title=issue["title"],
@@ -62,7 +62,7 @@ def parse_graphs(data: list[dict]) -> dict[str, Task]:
             tasks[task.id] = task
 
         # Parse dependencies
-        for dep in graph.get("Dependencies", []):
+        for dep in graph.get("Dependencies") or []:
             if dep["type"] == "parent-child":
                 child_id = dep["issue_id"]
                 parent_id = dep["depends_on_id"]
@@ -163,6 +163,7 @@ def format_task_line(task: Task, prefix: str, number: str, is_root: bool = False
 def print_tree(  # noqa: PLR0913
     task: Task,
     prefix: str = "",
+    connector: str = "",
     number: str = "1",
     is_last: bool = True,
     is_root: bool = False,
@@ -180,8 +181,9 @@ def print_tree(  # noqa: PLR0913
     if not should_show(task) and (task.status != "deferred" or not has_visible_descendants(task)):
         return lines
 
-    # Format current task
-    lines.append(format_task_line(task, prefix, number, is_root=is_root))
+    # Format current task - display prefix includes connector for this line only
+    display_prefix = prefix + connector
+    lines.append(format_task_line(task, display_prefix, number, is_root=is_root))
 
     # Handle collapse mode
     visible_children = [c for c in task.children if should_show(c) or has_visible_descendants(c)]
@@ -194,24 +196,25 @@ def print_tree(  # noqa: PLR0913
     if search_ids:
         visible_children = [c for c in visible_children if c.id in search_ids]
 
+    # Continuation prefix for children: add vertical bar or spaces based on is_last
+    child_base_prefix = prefix + ("   " if is_last else "│  ") if not is_root else ""
+
     # Print children
     for i, child in enumerate(visible_children):
         is_child_last = i == len(visible_children) - 1
-        connector = "└─ " if is_child_last else "├─ "
-        child_prefix = prefix + ("   " if is_last else "│  ")
+        child_connector = "└─ " if is_child_last else "├─ "
         child_number = f"{number}.{i + 1}"
 
         child_lines = print_tree(
             child,
-            prefix=child_prefix + connector,
+            prefix=child_base_prefix,
+            connector=child_connector,
             number=child_number,
             is_last=is_child_last,
             search_ids=search_ids,
             collapse=collapse,
         )
-        # Fix: remove connector from recursive call prefix
         if child_lines:
-            # First line already has connector, fix prefix for children of children
             lines.extend(child_lines)
 
     return lines
