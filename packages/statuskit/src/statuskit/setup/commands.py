@@ -107,6 +107,65 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
     )
 
 
+@dataclass
+class RemoveResult:
+    """Result of remove_hook operation."""
+
+    success: bool = False
+    not_installed: bool = False
+    message: str = ""
+
+
+def remove_hook(scope: Scope, force: bool, ui: UI | None) -> RemoveResult:
+    """Remove statuskit hook from settings.json.
+
+    Args:
+        scope: Installation scope to remove from
+        force: Skip confirmation for foreign hooks
+        ui: User interaction handler
+
+    Returns:
+        RemoveResult with operation details
+    """
+    settings_path = get_settings_path(scope)
+
+    # Read current settings
+    try:
+        settings = read_settings(settings_path)
+    except ValueError as e:
+        return RemoveResult(success=False, message=str(e))
+
+    current_hook = settings.get("statusLine", {})
+
+    # Check if anything to remove
+    if not current_hook.get("command"):
+        return RemoveResult(
+            success=True,
+            not_installed=True,
+            message="Not installed",
+        )
+
+    # Check if it's our hook
+    if not is_our_hook(current_hook):
+        foreign_cmd = current_hook.get("command", "")
+        if force:
+            pass  # proceed with removal
+        elif ui:
+            if not ui.confirm(f"statusLine points to: {foreign_cmd}\nRemove anyway?"):
+                return RemoveResult(success=False, message="Cancelled by user")
+        else:
+            return RemoveResult(
+                success=False,
+                message=f"Foreign hook: {foreign_cmd}. Use --force to remove.",
+            )
+
+    # Remove hook
+    del settings["statusLine"]
+    write_settings(settings_path, settings)
+
+    return RemoveResult(success=True, message="Removed successfully")
+
+
 def check_installation() -> str:
     """Check installation status for all scopes.
 

@@ -173,3 +173,57 @@ class TestInstallHookGitignore:
 
         assert result.success is True
         assert result.gitignore_updated is False
+
+
+class TestRemoveHook:
+    """Tests for remove_hook function."""
+
+    def test_removes_our_hook(self, tmp_path, monkeypatch):
+        """Removes statuskit hook from settings."""
+        from statuskit.setup.commands import remove_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(
+            json.dumps({"statusLine": {"command": "statuskit"}, "other": "setting"})
+        )
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        result = remove_hook(Scope.USER, force=False, ui=None)
+
+        assert result.success is True
+        settings = json.loads((home / ".claude" / "settings.json").read_text())
+        assert "statusLine" not in settings
+        assert settings["other"] == "setting"
+
+    def test_not_installed_returns_early(self, tmp_path, monkeypatch):
+        """Returns early if not installed."""
+        from statuskit.setup.commands import remove_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        result = remove_hook(Scope.USER, force=False, ui=None)
+
+        assert result.not_installed is True
+
+    def test_foreign_hook_requires_confirmation(self, tmp_path, monkeypatch):
+        """Foreign hook requires confirmation or --force."""
+        from statuskit.setup.commands import remove_hook
+        from statuskit.setup.paths import Scope
+
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": "other-script"}}))
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+        result = remove_hook(Scope.USER, force=False, ui=None)
+
+        assert result.success is False
+        assert "other-script" in result.message
