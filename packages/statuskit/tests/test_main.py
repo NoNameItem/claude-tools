@@ -83,3 +83,21 @@ def test_main_with_version_flag(capsys, monkeypatch):
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
     assert "statuskit" in captured.out.lower() or "0.1.0" in captured.out
+
+
+def test_main_setup_check(capsys, monkeypatch, tmp_path):
+    """main() handles 'setup --check' command."""
+    from pathlib import Path
+
+    # Mock home to tmp_path
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    (tmp_path / "home" / ".claude").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(sys, "argv", ["statuskit", "setup", "--check"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "User:" in captured.out
+    assert "Not installed" in captured.out
