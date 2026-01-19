@@ -37,7 +37,7 @@ This skill guides starting work on beads tasks through explicit consultation ste
 
 **Step 1 - Run the tree builder script:**
 ```bash
-bd graph --all --json | python3 scripts/bd-tree.py
+bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
 ```
 
 The script outputs a properly formatted hierarchical tree. Example output:
@@ -61,7 +61,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. Tree | `bd graph --all --json \| python3 scripts/bd-tree.py` | Script builds tree |
+| 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` | Script builds tree |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
@@ -82,7 +82,7 @@ Follow these steps **in order**. Do not skip steps.
 
 **Run the tree builder script:**
 ```bash
-bd graph --all --json | python3 scripts/bd-tree.py
+bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
 ```
 
 The script handles:
@@ -93,8 +93,8 @@ The script handles:
 - Tree connectors (`├─`, `└─`)
 
 **Script options:**
-- `bd graph --all --json | python3 scripts/bd-tree.py -s "search"` — filter by term
-- `bd graph --all --json | python3 scripts/bd-tree.py --collapse` — show roots only with `[+N]`
+- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py -s "search"` — filter by term
+- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --collapse` — show roots only with `[+N]`
 
 **If script shows no tasks:**
 ```
@@ -342,7 +342,7 @@ If you're thinking any of these, STOP and follow the workflow:
 |--------|---------|
 | "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
 | "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
-| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 scripts/bd-tree.py` |
+| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "AskUserQuestion is more user-friendly" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
