@@ -107,3 +107,45 @@ class TestWriteSettings:
 
         content = settings_path.read_text()
         assert "\n" in content  # has newlines (indented)
+
+
+class TestCreateBackup:
+    """Tests for create_backup function."""
+
+    def test_creates_bak_file(self, tmp_path):
+        """Creates .bak file next to original."""
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text('{"original": true}')
+
+        create_backup(original)
+
+        backup = tmp_path / "settings.json.bak"
+        assert backup.exists()
+        assert backup.read_text() == '{"original": true}'
+
+    def test_overwrites_existing_backup(self, tmp_path):
+        """Overwrites existing .bak file."""
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text('{"new": true}')
+
+        backup = tmp_path / "settings.json.bak"
+        backup.write_text('{"old": true}')
+
+        create_backup(original)
+
+        assert backup.read_text() == '{"new": true}'
+
+    def test_returns_backup_path(self, tmp_path):
+        """Returns path to backup file."""
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text('{"data": true}')
+
+        result = create_backup(original)
+
+        assert result == tmp_path / "settings.json.bak"

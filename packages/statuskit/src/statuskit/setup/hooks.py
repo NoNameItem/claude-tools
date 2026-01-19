@@ -2,6 +2,7 @@
 
 import json
 import shlex
+import shutil
 from pathlib import Path
 
 
@@ -46,3 +47,14 @@ def write_settings(path: Path, data: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def create_backup(path: Path) -> Path:
+    """Create backup of file as .bak.
+
+    Overwrites existing .bak file.
+    Returns path to backup file.
+    """
+    backup_path = path.with_suffix(path.suffix + ".bak")
+    shutil.copy2(path, backup_path)
+    return backup_path
