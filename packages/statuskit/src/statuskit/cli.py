@@ -3,6 +3,14 @@
 import argparse
 from importlib.metadata import version
 
+MODULES_HELP = """
+Built-in modules:
+  model                  Display current Claude model name
+  git                    Show git branch and status
+  beads                  Display active beads tasks
+  quota                  Track token usage
+"""
+
 
 def get_version() -> str:
     """Get statuskit version from package metadata."""
@@ -17,6 +25,8 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="statuskit",
         description="Modular statusline for Claude Code",
+        epilog=MODULES_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "-V",
