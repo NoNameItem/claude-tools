@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Detect changed packages for CI matrix generation.
+
+Usage:
+    git diff --name-only origin/main..HEAD | python detect_changes.py
+    python detect_changes.py --ref origin/main..HEAD
+
+Output:
+    JSON with packages, matrix, and flags for CI workflow.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+@dataclass
+class DetectionResult:
+    """Result of change detection."""
+
+    packages: list[str] = field(default_factory=list)
+    has_packages: bool = False
+    has_repo_level: bool = False
+    tooling_changed: bool = False
+    matrix: dict = field(default_factory=lambda: {"include": []})
+    all_packages_matrix: dict = field(default_factory=lambda: {"include": []})
+
+    def to_json(self) -> str:
+        """Convert to JSON string."""
+        return json.dumps(
+            {
+                "packages": self.packages,
+                "has_packages": self.has_packages,
+                "has_repo_level": self.has_repo_level,
+                "tooling_changed": self.tooling_changed,
+                "matrix": self.matrix,
+                "all_packages_matrix": self.all_packages_matrix,
+            }
+        )
+
+
+def detect_changes(
+    changed_files: list[str],
+    repo_root: Path,
+) -> DetectionResult:
+    """Detect changed packages and generate CI matrix."""
+    from .packages import (  # type: ignore[unresolved-import]
+        discover_packages,
+        get_package_from_path,
+        is_repo_level_path,
+    )
+
+    result = DetectionResult()
+    all_packages = discover_packages(repo_root)
+
+    changed_packages: set[str] = set()
+    tooling_files = {"pyproject.toml", "uv.lock"}
+    has_tooling_files = False
+
+    for f in changed_files:
+        pkg = get_package_from_path(f)
+        if pkg:
+            changed_packages.add(pkg)
+        elif is_repo_level_path(f):
+            result.has_repo_level = True
+            if f in tooling_files:
+                has_tooling_files = True
+
+    result.tooling_changed = has_tooling_files and not changed_packages
+    result.packages = sorted(changed_packages)
+    result.has_packages = bool(changed_packages)
+
+    # Build matrix for changed packages
+    for pkg_name in result.packages:
+        pkg_info = all_packages.get(pkg_name)
+        if pkg_info and pkg_info.python_versions:
+            for py_version in pkg_info.python_versions:
+                result.matrix["include"].append(
+                    {
+                        "package": pkg_name,
+                        "path": pkg_info.path,
+                        "python": py_version,
+                    }
+                )
+
+    # Build all_packages_matrix (for tooling check)
+    for pkg_name, pkg_info in sorted(all_packages.items()):
+        if pkg_info.kind == "package" and pkg_info.python_versions:
+            for py_version in pkg_info.python_versions:
+                result.all_packages_matrix["include"].append(
+                    {
+                        "package": pkg_name,
+                        "path": pkg_info.path,
+                        "python": py_version,
+                    }
+                )
+
+    return result
+
+
+def _get_changed_files_from_ref(ref: str, repo_root: Path) -> list[str]:
+    """Get changed files from git ref range."""
+    output = subprocess.check_output(  # noqa: S603
+        ["git", "diff", "--name-only", ref],  # noqa: S607
+        cwd=repo_root,
+        text=True,
+    )
+    return [f for f in output.strip().split("\n") if f]
+
+
+def main() -> int:
+    """Main entry point."""
+    from pathlib import Path
+
+    repo_root = Path.cwd()
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--ref":
+        if len(sys.argv) < 3:  # noqa: PLR2004
+            print("Usage: detect_changes.py --ref <git-ref>", file=sys.stderr)
+            return 1
+        changed_files = _get_changed_files_from_ref(sys.argv[2], repo_root)
+    else:
+        changed_files = [f for f in sys.stdin.read().strip().split("\n") if f]
+
+    try:
+        result = detect_changes(changed_files, repo_root)
+        print(result.to_json())
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
