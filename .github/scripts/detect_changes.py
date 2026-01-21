@@ -107,7 +107,7 @@ def detect_changes(
 
 def _get_changed_files_from_ref(ref: str, repo_root: Path) -> list[str]:
     """Get changed files from git ref range."""
-    output = subprocess.check_output(  # noqa: S603
+    output = subprocess.check_output(
         ["git", "diff", "--name-only", ref],  # noqa: S607
         cwd=repo_root,
         text=True,

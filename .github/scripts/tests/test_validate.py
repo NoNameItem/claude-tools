@@ -107,17 +107,17 @@ class TestValidateCommit:
         """Should pass for valid commit with matching scope."""
         test_file = temp_repo / "packages" / "statuskit" / "src" / "new.py"
         test_file.write_text("# new file\n")
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             ["git", "add", str(test_file)],  # noqa: S607
             cwd=temp_repo,
             check=True,
         )
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             ["git", "commit", "-m", "feat(statuskit): add new file"],  # noqa: S607
             cwd=temp_repo,
             check=True,
         )
-        sha = subprocess.check_output(  # noqa: S603
+        sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],  # noqa: S607
             cwd=temp_repo,
             text=True,
@@ -129,17 +129,17 @@ class TestValidateCommit:
         """Should fail for invalid commit message format."""
         test_file = temp_repo / "packages" / "statuskit" / "src" / "bad.py"
         test_file.write_text("# bad commit\n")
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             ["git", "add", str(test_file)],  # noqa: S607
             cwd=temp_repo,
             check=True,
         )
-        subprocess.run(  # noqa: S603
+        subprocess.run(
             ["git", "commit", "-m", "added new file"],  # noqa: S607
             cwd=temp_repo,
             check=True,
         )
-        sha = subprocess.check_output(  # noqa: S603
+        sha = subprocess.check_output(
             ["git", "rev-parse", "HEAD"],  # noqa: S607
             cwd=temp_repo,
             text=True,

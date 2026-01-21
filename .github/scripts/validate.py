@@ -136,13 +136,13 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
     """Validate a single commit."""
     from .commits import parse_commit_message  # type: ignore[unresolved-import]
 
-    msg = subprocess.check_output(  # noqa: S603
+    msg = subprocess.check_output(
         ["git", "log", "-1", "--format=%s", sha],  # noqa: S607
         cwd=repo_root,
         text=True,
     ).strip()
 
-    files_output = subprocess.check_output(  # noqa: S603
+    files_output = subprocess.check_output(
         ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha],  # noqa: S607
         cwd=repo_root,
         text=True,
@@ -211,7 +211,7 @@ def validate_staged_files(
 
 def _get_staged_files(repo_root: Path) -> list[str]:
     """Get list of staged files from git."""
-    output = subprocess.check_output(  # noqa: S603
+    output = subprocess.check_output(
         ["git", "diff", "--cached", "--name-only"],  # noqa: S607
         cwd=repo_root,
         text=True,
@@ -221,7 +221,7 @@ def _get_staged_files(repo_root: Path) -> list[str]:
 
 def _get_changed_files_pr(base_ref: str, repo_root: Path) -> list[str]:
     """Get list of changed files in PR compared to base branch."""
-    output = subprocess.check_output(  # noqa: S603
+    output = subprocess.check_output(
         ["git", "diff", "--name-only", f"origin/{base_ref}...HEAD"],  # noqa: S607
         cwd=repo_root,
         text=True,
@@ -231,7 +231,7 @@ def _get_changed_files_pr(base_ref: str, repo_root: Path) -> list[str]:
 
 def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]:
     """Get list of commit SHAs in range."""
-    output = subprocess.check_output(  # noqa: S603
+    output = subprocess.check_output(
         ["git", "rev-list", f"{before}..{after}"],  # noqa: S607
         cwd=repo_root,
         text=True,
