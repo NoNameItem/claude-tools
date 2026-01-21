@@ -78,6 +78,28 @@ uv run ruff check .  # Lint
 uv run ruff format . # Format
 ```
 
+## Pre-commit Workflow
+
+**Before every commit**, run linter, formatter, and type checker:
+
+```bash
+uv run ruff check --fix . && uv run ruff format . && uv run ty check .
+```
+
+This is required because:
+- Pre-commit hooks only **check** code, they don't auto-fix
+- `ruff --fix` can sometimes break code (e.g., moving imports to TYPE_CHECKING block, adding return to generators)
+- Running checks manually allows reviewing and fixing issues before commit
+
+The pre-commit hooks will then verify:
+1. `ruff-format` — auto-formats code (safe)
+2. `ruff` — checks for remaining lint errors
+3. `ty` — type checking
+4. `single-package-commit` — validates commit scope
+5. `beads` — syncs beads state
+
+**If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
+
 ## Claude Code Plugins
 
 This repository is also a Claude Code plugin marketplace containing workflow automation tools.
