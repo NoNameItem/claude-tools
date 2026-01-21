@@ -25,19 +25,19 @@ def temp_repo(tmp_path: Path) -> Path:
     repo.mkdir()
 
     # Init git
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "init"],  # noqa: S607
         cwd=repo,
         check=True,
         capture_output=True,
     )
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "config", "user.email", "test@test.com"],  # noqa: S607
         cwd=repo,
         check=True,
         capture_output=True,
     )
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "config", "user.name", "Test"],  # noqa: S607
         cwd=repo,
         check=True,
@@ -70,13 +70,13 @@ classifiers = [
     (repo / "README.md").write_text("# Test Repo\n")
 
     # Initial commit
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "add", "."],  # noqa: S607
         cwd=repo,
         check=True,
         capture_output=True,
     )
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "commit", "-m", "chore: initial commit"],  # noqa: S607
         cwd=repo,
         check=True,
@@ -103,13 +103,13 @@ classifiers = [
 """)
     (another_src / "__init__.py").write_text('__version__ = "0.1.0"\n')
 
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "add", "."],  # noqa: S607
         cwd=temp_repo,
         check=True,
         capture_output=True,
     )
-    subprocess.run(  # noqa: S603
+    subprocess.run(
         ["git", "commit", "-m", "chore: add another package"],  # noqa: S607
         cwd=temp_repo,
         check=True,
