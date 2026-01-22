@@ -50,7 +50,7 @@ def _handle_install(scope, force: bool, ui) -> None:
     from .setup.commands import install_hook
 
     result = install_hook(scope, force=force, ui=ui)
-    if result.higher_scope_installed:
+    if result.higher_scope_installed and result.higher_scope:
         print(f"statuskit is already installed at {result.higher_scope.value} scope.")
         print("The hook will work for this project too.")
         if result.config_created:

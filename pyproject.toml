@@ -27,37 +27,77 @@ target-version = "py311"
 select = [
     "E",      # pycodestyle errors
     "W",      # pycodestyle warnings
-    "F",
-    "I",
-    "UP",
-    "S",
-    "A",
-    "ARG",
-    "B",
-    "C4",
-    "EM",
-    "FURB",
-    "ISC",
-    "INP",
-    "N",
-    "PERF",
-    "PIE",
-    "PL",
-    "PT",
-    "PTH",
-    "Q",
-    "RET",
-    "RUF",
-    "SIM",
-    "SLF",
-    "TCH",
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "S",      # bandit (security)
+    "A",      # flake8-builtins
+    "ARG",    # flake8-unused-arguments
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "EM",     # flake8-errmsg
+    "ISC",    # flake8-implicit-str-concat
+    "INP",    # flake8-no-pep420
+    "N",      # pep8-naming
+    "PERF",   # perflint
+    "PIE",    # flake8-pie
+    "PL",     # pylint
+    "PT",     # flake8-pytest-style
+    "PTH",    # flake8-use-pathlib
+    "RET",    # flake8-return
+    "RUF",    # ruff-specific
+    "SLF",    # flake8-self
+    "TC",     # flake8-type-checking
+]
+# FURB removed: overlaps with UP/PERF, too aggressive
+# Q removed: conflicts with ruff-format
+# SIM removed: duplicates PL rules
+
+ignore = [
+    "PLR0913",  # too-many-arguments - often 5 is not enough for complex functions
+    # Formatter handles these (ruff format makes them redundant):
+    "E1",       # indentation - formatter controls
+    "E2",       # whitespace - formatter controls
+    "E3",       # blank lines - formatter controls
+    "E401",     # multiple-imports-on-one-line - formatter splits
+    "E502",     # redundant-backslash - formatter removes
+    "E701",     # multiple-statements-on-one-line - formatter splits
+    "W191",     # tab-indentation - formatter uses spaces
+    "W291",     # trailing-whitespace - formatter removes
+    "W292",     # missing-newline-at-end-of-file - formatter adds
+    "W293",     # blank-line-with-whitespace - formatter removes
+    "W391",     # too-many-newlines-at-end-of-file - formatter fixes
+    # Duplicates within enabled rule sets:
+    "B015",     # useless-comparison - duplicate of PLR0124
+    "RET501",   # unnecessary-return-none - duplicate of PLR1711
+    # Conflicts with formatter:
+    "ISC001",   # single-line-implicit-string-concatenation - conflicts with ruff format
+]
+
+unfixable = [
+    "TC",      # type-checking imports - can break runtime
+    "RET503",  # implicit-return - can break generators
 ]
 
 [tool.ruff.format]
 quote-style = "double"
 
 [tool.ruff.lint.per-file-ignores]
-"**/tests/**/*.py" = ["S101", "PLR2004"]  # Allow assert and magic numbers in tests
+"**/tests/**/*.py" = [
+    "S101",     # assert statements
+    "S603",     # subprocess without shell
+    "S607",     # partial executable path
+    "PLR2004",  # magic numbers
+    "ARG",      # unused arguments (fixtures)
+    "SLF001",   # private member access
+    "PLC0415",  # late imports - common test isolation pattern
+]
+".github/scripts/*.py" = ["PLC0415", "S603"]  # Late imports and subprocess security warnings
 
 [tool.pytest.ini_options]
 testpaths = ["packages/*/tests"]
+
+[tool.ty.src]
+# .github/scripts uses relative imports that ty doesn't resolve correctly
+# Tests work fine with pytest, just ty's module resolution doesn't handle it
+exclude = [".github/scripts/tests"]

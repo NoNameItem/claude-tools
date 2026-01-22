@@ -57,7 +57,7 @@ def make_context_window_data(
     }
 
 
-def make_input_data(  # noqa: PLR0913
+def make_input_data(
     model: dict | None = None,
     cost: dict | None = None,
     context_window: dict | None = None,
