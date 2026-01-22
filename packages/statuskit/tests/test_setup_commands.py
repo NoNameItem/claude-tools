@@ -1,6 +1,5 @@
 """Tests for setup commands."""
 
-# ruff: noqa: S603, S607
 import json
 from pathlib import Path
 
