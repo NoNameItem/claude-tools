@@ -61,14 +61,16 @@ The script outputs a properly formatted hierarchical tree. Example output:
 
 | Step | Action | Key Point |
 |------|--------|-----------|
+| 0. Detect | Check agent-deck, worktree context | Environment awareness |
 | 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` | Script builds tree |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 6. Ask | RECOMMEND or NEUTRAL | Tone matters |
+| 6.5. Worktree | Ask: here OR worktree | Parallel work option |
 | 7. Update | `bd update` | Only after confirmation |
-| 8. Create | `git checkout -b` | If requested |
+| 8. Create | `git checkout -b` | If requested (skip if worktree) |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -77,6 +79,20 @@ The script outputs a properly formatted hierarchical tree. Example output:
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
+
+### 0. Environment Detection
+
+**Run at skill start to detect available tools and context:**
+
+```bash
+# Check if agent-deck is available
+command -v agent-deck >/dev/null 2>&1 && echo "HAS_AGENT_DECK=true" || echo "HAS_AGENT_DECK=false"
+
+# Check if already in a worktree
+pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
+```
+
+Store these values for use in Step 6.5.
 
 ### 1. Build and Display Task Tree
 
@@ -274,6 +290,77 @@ Use neutral, informational tone:
 
 **Why neutral:** User might be working on related features, or might want isolation - don't assume.
 
+### 6.5. Ask About Worktree (Parallel Work Option)
+
+**After user confirms branch choice, ask how to open it:**
+
+**Skip this step if:**
+- `IN_WORKTREE=true` (already in worktree, don't nest)
+- User explicitly said "checkout here" or similar
+
+**Check if worktree already exists:**
+```bash
+git worktree list | grep "{branch-name}"
+```
+
+#### If Worktree Already Exists
+
+**With agent-deck:**
+```bash
+agent-deck session list | grep "{branch-name}"
+```
+- Session exists → "Сессия уже существует. Переключитесь в agent-deck TUI (Ctrl+j/k)."
+- No session → "Worktree есть. Создать сессию agent-deck?" → `agent-deck add "$(pwd)" -t "{task-title}"` (without --worktree)
+
+**Without agent-deck:**
+> "Worktree уже существует: `.worktrees/{branch-name-sanitized}/`
+> Откройте в новом терминале:
+> ```
+> cd .worktrees/{branch-name-sanitized} && claude
+> ```"
+
+Skip to Step 7.
+
+#### If No Existing Worktree
+
+**With agent-deck (`HAS_AGENT_DECK=true`):**
+
+> "Как открыть ветку `{branch-name}`?
+>
+> 1. Здесь (обычный checkout)
+> 2. В новой сессии agent-deck с worktree"
+
+**Without agent-deck (`HAS_AGENT_DECK=false`):**
+
+> "Как открыть ветку `{branch-name}`?
+>
+> 1. Здесь (обычный checkout)
+> 2. В worktree (для параллельной работы)"
+
+#### Execution Based on Choice
+
+**Option 1 (checkout here):**
+- Proceed to Step 7, then Step 8 (normal checkout)
+
+**Option 2 with agent-deck:**
+```bash
+agent-deck add "$(pwd)" -t "{task-title}" --worktree {branch-name}
+```
+- Proceed to Step 7 (update beads status)
+- **Skip Step 8** (branch created by agent-deck)
+- Tell user: "Создана сессия `{task-title}` с worktree. Переключитесь в agent-deck TUI."
+
+**Option 2 without agent-deck:**
+- Invoke `superpowers:using-git-worktrees` skill with branch name
+- Proceed to Step 7 (update beads status)
+- **Skip Step 8** (branch created by worktree skill)
+- Tell user the worktree path and how to open it
+
+**If agent-deck command fails:**
+> "agent-deck недоступен или вернул ошибку. Создаю worktree через git..."
+
+Then invoke `superpowers:using-git-worktrees` as fallback.
+
 ### 7. Update Task Status
 
 **Only after user confirms everything:**
@@ -334,6 +421,12 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll skip the prefix for simple tasks"
 - "feature/ works for all task types"
 
+**Worktree violations:**
+- "Step 6.5 is optional, I'll skip it"
+- "User didn't mention worktree so skip Step 6.5"
+- "User said yes to branch, going straight to checkout"
+- "Already in worktree, I'll create nested worktree"
+
 **All of these mean: Go back to CRITICAL section. Follow exact process.**
 
 ## Common Rationalizations
@@ -351,6 +444,10 @@ If you're thinking any of these, STOP and follow the workflow:
 | "No existing branches to search" | Always search. Prevents duplicate branches. |
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
+| "Step 6.5 is optional" | "Optional" means conditional on context, not skippable. Always evaluate. |
+| "User didn't ask for worktree" | Step 6.5 OFFERS the option. User doesn't need to ask first. |
+| "User said yes to branch, proceed to checkout" | Stop at 6.5. Offer worktree option BEFORE checkout. |
+| "I'll create worktree inside worktree" | Never nest worktrees. Check IN_WORKTREE first. |
 
 ## Examples
 
@@ -517,6 +614,35 @@ If `bd graph --all --json` returns multiple graphs:
 - Merge all graphs into one tree
 - Use sequential root numbering across all graphs
 - Example: Graph 1 roots = `1.`, `2.`, Graph 2 roots = `3.`, `4.`
+
+### When User Already in Worktree
+
+If `IN_WORKTREE=true` (detected in Step 0):
+- **Do NOT offer to create another worktree** (avoid nesting)
+- At Step 6.5, show only:
+  ```
+  Вы уже в worktree. Продолжить работу здесь или переключиться на другую ветку?
+
+  1. Продолжить здесь (checkout в текущем worktree)
+  2. Переключиться на другую ветку
+  ```
+- If user wants different worktree, suggest: "Вернитесь в основной проект и запустите /flow:start оттуда"
+
+### When Worktree Already Exists for Branch
+
+If `git worktree list | grep "{branch-name}"` returns result:
+- **Do NOT create duplicate worktree**
+- Show existing worktree path
+- With agent-deck: check for existing session, offer to create session if none
+- Without agent-deck: tell user to open existing worktree manually
+
+### When agent-deck Command Fails
+
+If `agent-deck add` returns non-zero exit code:
+1. Log the error (don't hide it)
+2. Inform user: "agent-deck недоступен или вернул ошибку"
+3. **Fallback:** invoke `superpowers:using-git-worktrees` instead
+4. Continue workflow normally
 
 ## The Bottom Line
 
