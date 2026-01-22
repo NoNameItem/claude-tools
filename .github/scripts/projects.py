@@ -1,4 +1,4 @@
-"""Package discovery for monorepo validation."""
+"""Project discovery for monorepo validation."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class PackageInfo:
+class ProjectInfo:
     """Information about a package or plugin."""
 
     name: str
@@ -32,7 +32,7 @@ REPO_LEVEL_PATTERNS = [
 ]
 
 
-def get_package_from_path(path: str) -> str | None:
+def get_project_from_path(path: str) -> str | None:
     """Extract package/plugin name from file path.
 
     Args:
@@ -63,7 +63,7 @@ def is_repo_level_path(path: str) -> bool:
         if re.match(pattern, path):
             return True
     # Also true if not in packages/ or plugins/
-    return get_package_from_path(path) is None
+    return get_project_from_path(path) is None
 
 
 def _parse_python_versions(pyproject_path: Path) -> list[str]:
@@ -107,19 +107,19 @@ def _parse_python_versions(pyproject_path: Path) -> list[str]:
     return versions
 
 
-def discover_packages(repo_root: Path) -> dict[str, PackageInfo]:
+def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
     """Discover all packages and plugins in the repository.
 
     Args:
         repo_root: Path to repository root.
 
     Returns:
-        Dict mapping package/plugin name to PackageInfo.
+        Dict mapping package/plugin name to ProjectInfo.
 
     Raises:
         ValueError: If scope collision detected or missing classifiers.
     """
-    packages: dict[str, PackageInfo] = {}
+    projects: dict[str, ProjectInfo] = {}
 
     # Discover packages
     packages_dir = repo_root / "packages"
@@ -136,7 +136,7 @@ def discover_packages(repo_root: Path) -> dict[str, PackageInfo]:
 
             python_versions = _parse_python_versions(pyproject)
 
-            packages[name] = PackageInfo(
+            projects[name] = ProjectInfo(
                 name=name,
                 path=f"packages/{name}",
                 kind="package",
@@ -153,7 +153,7 @@ def discover_packages(repo_root: Path) -> dict[str, PackageInfo]:
             name = plugin_dir.name
 
             # Check for collision
-            if name in packages:
+            if name in projects:
                 msg = (
                     f"Scope collision detected\n\n"
                     f"  Name '{name}' exists in both:\n"
@@ -163,11 +163,11 @@ def discover_packages(repo_root: Path) -> dict[str, PackageInfo]:
                 )
                 raise ValueError(msg)
 
-            packages[name] = PackageInfo(
+            projects[name] = ProjectInfo(
                 name=name,
                 path=f"plugins/{name}",
                 kind="plugin",
                 python_versions=[],  # Plugins don't have Python versions
             )
 
-    return packages
+    return projects
