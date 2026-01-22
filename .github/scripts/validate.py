@@ -48,23 +48,23 @@ class ValidationResult:
     message: str = ""
 
 
-def _get_packages_from_files(
+def _get_projects_from_files(
     files: list[str],
 ) -> tuple[set[str], list[str]]:
-    """Extract packages and repo-level files from file list."""
-    from .packages import get_package_from_path, is_repo_level_path  # type: ignore[unresolved-import]
+    """Extract projects and repo-level files from file list."""
+    from .projects import get_project_from_path, is_repo_level_path  # type: ignore[unresolved-import]
 
-    packages: set[str] = set()
+    projects: set[str] = set()
     repo_level_files: list[str] = []
 
     for f in files:
-        pkg = get_package_from_path(f)
+        pkg = get_project_from_path(f)
         if pkg:
-            packages.add(pkg)
+            projects.add(pkg)
         elif is_repo_level_path(f):
             repo_level_files.append(f)
 
-    return packages, repo_level_files
+    return projects, repo_level_files
 
 
 def validate_pr(
@@ -74,11 +74,11 @@ def validate_pr(
 ) -> ValidationResult:
     """Validate PR title and changed files."""
     from .commits import parse_commit_message  # type: ignore[unresolved-import]
-    from .packages import discover_packages  # type: ignore[unresolved-import]
+    from .projects import discover_projects  # type: ignore[unresolved-import]
 
     # Check for scope collision first
     try:
-        discover_packages(repo_root)
+        discover_projects(repo_root)
     except ValueError as e:
         if "collision" in str(e).lower():
             return ValidationResult(
@@ -100,7 +100,7 @@ def validate_pr(
         )
 
     # Extract packages from changed files
-    packages, _ = _get_packages_from_files(changed_files)
+    packages, _ = _get_projects_from_files(changed_files)
 
     # Check multiple packages
     if len(packages) > 1:
@@ -163,7 +163,7 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
             message=f"Invalid format: {msg}",
         )
 
-    packages, _ = _get_packages_from_files(changed_files)
+    packages, _ = _get_projects_from_files(changed_files)
 
     if len(packages) > 1:
         return ValidationResult(
@@ -194,7 +194,7 @@ def validate_staged_files(
     staged_files: list[str],
 ) -> ValidationResult:
     """Validate staged files for single-package rule."""
-    packages, _ = _get_packages_from_files(staged_files)
+    packages, _ = _get_projects_from_files(staged_files)
 
     if len(packages) > 1:
         return ValidationResult(

@@ -51,21 +51,21 @@ def detect_changes(
     repo_root: Path,
 ) -> DetectionResult:
     """Detect changed packages and generate CI matrix."""
-    from .packages import (  # type: ignore[unresolved-import]
-        discover_packages,
-        get_package_from_path,
+    from .projects import (  # type: ignore[unresolved-import]
+        discover_projects,
+        get_project_from_path,
         is_repo_level_path,
     )
 
     result = DetectionResult()
-    all_packages = discover_packages(repo_root)
+    all_projects = discover_projects(repo_root)
 
     changed_packages: set[str] = set()
     tooling_files = {"pyproject.toml", "uv.lock"}
     has_tooling_files = False
 
     for f in changed_files:
-        pkg = get_package_from_path(f)
+        pkg = get_project_from_path(f)
         if pkg:
             changed_packages.add(pkg)
         elif is_repo_level_path(f):
@@ -79,7 +79,7 @@ def detect_changes(
 
     # Build matrix for changed packages
     for pkg_name in result.packages:
-        pkg_info = all_packages.get(pkg_name)
+        pkg_info = all_projects.get(pkg_name)
         if pkg_info and pkg_info.python_versions:
             for py_version in pkg_info.python_versions:
                 result.matrix["include"].append(
@@ -91,7 +91,7 @@ def detect_changes(
                 )
 
     # Build all_packages_matrix (for tooling check)
-    for pkg_name, pkg_info in sorted(all_packages.items()):
+    for pkg_name, pkg_info in sorted(all_projects.items()):
         if pkg_info.kind == "package" and pkg_info.python_versions:
             for py_version in pkg_info.python_versions:
                 result.all_packages_matrix["include"].append(
