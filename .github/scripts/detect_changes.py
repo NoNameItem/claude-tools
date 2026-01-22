@@ -25,8 +25,11 @@ if TYPE_CHECKING:
 class DetectionResult:
     """Result of change detection."""
 
+    projects: list[str] = field(default_factory=list)
     packages: list[str] = field(default_factory=list)
+    plugins: list[str] = field(default_factory=list)
     has_packages: bool = False
+    has_plugins: bool = False
     has_repo_level: bool = False
     tooling_changed: bool = False
     matrix: dict = field(default_factory=lambda: {"include": []})
@@ -36,8 +39,11 @@ class DetectionResult:
         """Convert to JSON string."""
         return json.dumps(
             {
+                "projects": self.projects,
                 "packages": self.packages,
+                "plugins": self.plugins,
                 "has_packages": self.has_packages,
+                "has_plugins": self.has_plugins,
                 "has_repo_level": self.has_repo_level,
                 "tooling_changed": self.tooling_changed,
                 "matrix": self.matrix,
@@ -60,22 +66,32 @@ def detect_changes(
     result = DetectionResult()
     all_projects = discover_projects(repo_root)
 
+    changed_projects: set[str] = set()
     changed_packages: set[str] = set()
+    changed_plugins: set[str] = set()
     tooling_files = {"pyproject.toml", "uv.lock"}
     has_tooling_files = False
 
     for f in changed_files:
-        pkg = get_project_from_path(f)
-        if pkg:
-            changed_packages.add(pkg)
+        project_name = get_project_from_path(f)
+        if project_name:
+            changed_projects.add(project_name)
+            # Determine if package or plugin by path prefix
+            if f.startswith("packages/"):
+                changed_packages.add(project_name)
+            elif f.startswith("plugins/"):
+                changed_plugins.add(project_name)
         elif is_repo_level_path(f):
             result.has_repo_level = True
             if f in tooling_files:
                 has_tooling_files = True
 
     result.tooling_changed = has_tooling_files and not changed_packages
+    result.projects = sorted(changed_projects)
     result.packages = sorted(changed_packages)
+    result.plugins = sorted(changed_plugins)
     result.has_packages = bool(changed_packages)
+    result.has_plugins = bool(changed_plugins)
 
     # Build matrix for changed packages
     for pkg_name in result.packages:
