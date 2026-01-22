@@ -10,6 +10,20 @@ This repository contains two types of tools for Claude Code:
 
 **Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`, `/flow:after-design`, `/flow:after-plan`, `/flow:done`) that guide you through task selection, branch management, design linking, and completion workflow.
 
+## Terminology
+
+| Term | Meaning | Location | Example |
+|------|---------|----------|---------|
+| **Project** | Generic term for any releasable unit in the monorepo | `packages/` or `plugins/` | statuskit, flow |
+| **Package** | Python package with pyproject.toml, published to PyPI | `packages/` | statuskit |
+| **Plugin** | Claude Code plugin with plugin.json | `plugins/` | flow |
+
+**In code and CI:**
+- "project" = package OR plugin (generic)
+- "package" = only Python packages
+- "plugin" = only Claude Code plugins
+- Scope in conventional commits = project name (e.g., `feat(statuskit):`, `fix(flow):`)
+
 ## Project Structure
 
 ```
