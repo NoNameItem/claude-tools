@@ -72,6 +72,32 @@ class TestDetectChanges:
         assert "statuskit" in packages_in_matrix
 
 
+class TestDetectChangesPlugins:
+    """Tests for plugin detection in detect_changes."""
+
+    def test_detects_plugin_changes(self, temp_repo: Path) -> None:
+        """Should detect changes in plugin."""
+        changed_files = ["plugins/flow/skills/start.md"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+        assert result.plugins == ["flow"]
+        assert result.has_plugins is True
+        assert result.packages == []
+        assert result.has_packages is False
+
+    def test_separates_packages_and_plugins(self, temp_repo: Path) -> None:
+        """Should separate packages and plugins in output."""
+        changed_files = [
+            "packages/statuskit/src/module.py",
+            "plugins/flow/skills/start.md",
+        ]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+        assert result.projects == ["flow", "statuskit"]
+        assert result.packages == ["statuskit"]
+        assert result.plugins == ["flow"]
+        assert result.has_packages is True
+        assert result.has_plugins is True
+
+
 class TestDetectionResultJson:
     """Tests for JSON output format."""
 
@@ -88,3 +114,19 @@ class TestDetectionResultJson:
         assert "matrix" in data
         assert "all_packages_matrix" in data
         assert "include" in data["matrix"]
+
+
+class TestDetectionResultJsonPlugins:
+    """Tests for JSON output with plugin fields."""
+
+    def test_json_has_plugin_fields(self, temp_repo: Path) -> None:
+        """Should include plugin fields in JSON output."""
+        changed_files = ["plugins/flow/skills/start.md"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+        output = result.to_json()
+        data = json.loads(output)
+        assert "projects" in data
+        assert "packages" in data
+        assert "plugins" in data
+        assert "has_packages" in data
+        assert "has_plugins" in data
