@@ -326,3 +326,53 @@ uv run ruff format .
 ```bash
 uv run ty check packages/statuskit
 ```
+
+## Adding a New Python Package
+
+When adding a new Python package to `packages/`, you need to configure SonarCloud.
+
+### 1. Create Package Structure
+
+```
+packages/
+└── new-package/
+    ├── pyproject.toml      # With Python classifiers
+    ├── CHANGELOG.md
+    ├── src/new_package/
+    │   └── __init__.py
+    └── tests/
+```
+
+**pyproject.toml must include classifiers:**
+```toml
+[project]
+name = "claude-new-package"
+version = "0.1.0"
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+```
+
+### 2. Create SonarCloud Project
+
+**Without this step, CI will fail with "Project not found".**
+
+1. Go to [SonarCloud](https://sonarcloud.io) → nonameitem org
+2. Click ✚ → "Analyze new project" → "Setup a monorepo"
+3. Select `NoNameItem/claude-tools`
+4. Set project key: `NoNameItem_<package-name>` (e.g., `NoNameItem_statuskit`)
+5. Administration → New Code: Previous Version
+6. Administration → Quality Gate: Sonar way
+7. Administration → General → Main branch: master
+
+### 3. Verify CI
+
+1. Create a PR with changes in your package
+2. Check that all jobs pass:
+   - ✅ lint
+   - ✅ test (all Python versions)
+   - ✅ sonarcloud
+3. Check PR for SonarCloud status check and summary comment
