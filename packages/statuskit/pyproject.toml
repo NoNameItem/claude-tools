@@ -1,5 +1,5 @@
 [project]
-name = "claude-statuskit"
+name = "statuskit"
 version = "0.1.0"
 description = "Modular statusline for Claude Code"
 readme = "README.md"
