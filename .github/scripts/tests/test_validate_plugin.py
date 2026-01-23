@@ -239,3 +239,69 @@ class TestValidateComponents:
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
         assert any("SKILL.md" in e for e in result.errors)
+
+
+class TestValidateNameUniqueness:
+    """Tests for name uniqueness validation."""
+
+    def test_name_collision_skill_command(self, tmp_path: Path) -> None:
+        """Should fail when same name in skills and commands."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "name-collision"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "name-collision"}')
+
+        # Create skill named "review"
+        skills_dir = plugin_dir / "skills" / "review"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# Review skill")
+
+        # Create command named "review"
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "review.md").write_text("# Review command")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "name-collision", "source": "./plugins/name-collision"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("collision" in e.lower() for e in result.errors)
+        assert any("review" in e.lower() for e in result.errors)
+
+    def test_no_collision_different_names(self, tmp_path: Path) -> None:
+        """Should pass when all component names are unique."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "unique-names"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "unique-names"}')
+
+        # Create skill named "analyze"
+        skills_dir = plugin_dir / "skills" / "analyze"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# Analyze skill")
+
+        # Create command named "report"
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "report.md").write_text("# Report command")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "unique-names", "source": "./plugins/unique-names"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is True

@@ -177,10 +177,70 @@ def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidatio
     return result
 
 
-def validate_name_uniqueness(_plugin_path: Path, _plugin_json: dict) -> PluginValidationResult:
-    """Validate no name collisions between components."""
-    # Placeholder - implemented in Task 5
-    return PluginValidationResult()
+def collect_component_names(plugin_path: Path, plugin_json: dict) -> dict[str, list[str]]:
+    """Collect component names from all component directories.
+
+    Returns:
+        Dict mapping component type to list of names.
+        {"skill": ["name1", "name2"], "command": ["name3"], "agent": ["name4"]}
+    """
+    names: dict[str, list[str]] = {"skill": [], "command": [], "agent": []}
+
+    # Get paths (custom or default)
+    skills_path = plugin_json.get("skills", "./skills")
+    commands_path = plugin_json.get("commands", "./commands")
+    agents_path = plugin_json.get("agents", "./agents")
+
+    def normalize_path(p: str) -> str:
+        return p[2:] if p.startswith("./") else p
+
+    # Collect skill names (folder names)
+    skills_dir = plugin_path / normalize_path(skills_path)
+    if skills_dir.exists() and skills_dir.is_dir():
+        for skill_folder in skills_dir.iterdir():
+            if skill_folder.is_dir():
+                names["skill"].append(skill_folder.name)
+
+    # Collect command names (file names without .md)
+    commands_dir = plugin_path / normalize_path(commands_path)
+    if commands_dir.exists() and commands_dir.is_dir():
+        for cmd_file in commands_dir.iterdir():
+            if cmd_file.is_file() and cmd_file.name.endswith(".md"):
+                names["command"].append(cmd_file.stem)
+
+    # Collect agent names (file names without .md)
+    agents_dir = plugin_path / normalize_path(agents_path)
+    if agents_dir.exists() and agents_dir.is_dir():
+        for agent_file in agents_dir.iterdir():
+            if agent_file.is_file() and agent_file.name.endswith(".md"):
+                names["agent"].append(agent_file.stem)
+
+    return names
+
+
+def validate_name_uniqueness(plugin_path: Path, plugin_json: dict) -> PluginValidationResult:
+    """Validate no name collisions between components.
+
+    A name collision occurs when the same name exists in multiple
+    component types (e.g., skill and command both named "review").
+    """
+    result = PluginValidationResult()
+    names = collect_component_names(plugin_path, plugin_json)
+
+    # Build name -> component_types mapping
+    name_to_types: dict[str, list[str]] = {}
+    for component_type, component_names in names.items():
+        for name in component_names:
+            if name not in name_to_types:
+                name_to_types[name] = []
+            name_to_types[name].append(component_type)
+
+    # Check for collisions
+    for name, types in name_to_types.items():
+        if len(types) > 1:
+            result.add_error(f"Name collision: '{name}' exists in both {types[0]}s and {types[1]}s")
+
+    return result
 
 
 def validate_marketplace_registration(
