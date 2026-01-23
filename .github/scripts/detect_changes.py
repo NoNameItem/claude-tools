@@ -123,30 +123,28 @@ def detect_changes(
     result.has_packages = bool(changed_packages)
     result.has_plugins = bool(changed_plugins)
 
-    # Build matrix for changed packages
+    # Build matrix for changed packages (one entry per package)
     for pkg_name in result.packages:
         pkg_info = all_projects.get(pkg_name)
         if pkg_info and pkg_info.python_versions:
-            for py_version in pkg_info.python_versions:
-                result.matrix["include"].append(
-                    {
-                        "package": pkg_name,
-                        "path": pkg_info.path,
-                        "python": py_version,
-                    }
-                )
+            result.matrix["include"].append(
+                {
+                    "package": pkg_name,
+                    "path": pkg_info.path,
+                    "python-versions": pkg_info.python_versions,
+                }
+            )
 
-    # Build all_packages_matrix (for tooling check)
+    # Build all_packages_matrix (one entry per package)
     for pkg_name, pkg_info in sorted(all_projects.items()):
         if pkg_info.kind == "package" and pkg_info.python_versions:
-            for py_version in pkg_info.python_versions:
-                result.all_packages_matrix["include"].append(
-                    {
-                        "package": pkg_name,
-                        "path": pkg_info.path,
-                        "python": py_version,
-                    }
-                )
+            result.all_packages_matrix["include"].append(
+                {
+                    "package": pkg_name,
+                    "path": pkg_info.path,
+                    "python-versions": pkg_info.python_versions,
+                }
+            )
 
     result.changed_files = build_changed_files_map(changed_files)
 
