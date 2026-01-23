@@ -243,12 +243,67 @@ def validate_name_uniqueness(plugin_path: Path, plugin_json: dict) -> PluginVali
     return result
 
 
-def validate_marketplace_registration(
-    _plugin_path: Path, _plugin_json: dict, _repo_root: Path
-) -> PluginValidationResult:
-    """Validate plugin is registered in marketplace."""
-    # Placeholder - implemented in Task 6
-    return PluginValidationResult()
+def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo_root: Path) -> PluginValidationResult:
+    """Validate plugin is registered in marketplace.
+
+    Checks:
+    - Plugin is listed in .claude-plugin/marketplace.json
+    - Name matches between plugin.json and marketplace
+    - Source path matches plugin location
+    """
+    result = PluginValidationResult()
+    marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
+
+    # Check marketplace exists
+    if not marketplace_path.exists():
+        result.add_error("marketplace.json not found at .claude-plugin/marketplace.json")
+        return result
+
+    # Parse marketplace
+    try:
+        marketplace_data = json.loads(marketplace_path.read_text())
+    except json.JSONDecodeError as e:
+        result.add_error(f"Invalid marketplace.json: {e}")
+        return result
+
+    plugins = marketplace_data.get("plugins", [])
+    plugin_name = plugin_json.get("name", "")
+
+    # Calculate expected source path
+    try:
+        relative_path = plugin_path.relative_to(repo_root)
+        expected_source = f"./{relative_path}"
+    except ValueError:
+        expected_source = f"./plugins/{plugin_path.name}"
+
+    # Find plugin in marketplace by name
+    found = False
+    for mp_plugin in plugins:
+        mp_name = mp_plugin.get("name", "")
+        mp_source = mp_plugin.get("source", "")
+
+        # Check if this entry matches our plugin by name
+        if mp_name == plugin_name:
+            found = True
+
+            # Check source matches
+            if mp_source != expected_source:
+                result.add_error(f"Marketplace source mismatch: expected '{expected_source}', got '{mp_source}'")
+            break
+
+        # Also check by source path (for name mismatch detection)
+        if mp_source == expected_source:
+            found = True
+
+            # Check name matches
+            if mp_name != plugin_name:
+                result.add_error(f"Name mismatch: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
+            break
+
+    if not found:
+        result.add_error(f"Plugin '{plugin_name}' not registered in marketplace")
+
+    return result
 
 
 def main() -> int:  # noqa: PLR0911, PLR0912
