@@ -132,38 +132,23 @@ This applies to ALL Python files in the repo, including `.github/scripts/`.
 
 PRs создаются через GitHub App бота, чтобы пользователь мог быть ревьювером.
 
-### Branch naming convention
-
-```
-<type>/<scope>-<description>    # для пакетов/плагинов
-<type>/<description>            # для repo-level изменений
-```
-
-**Примеры:**
-```bash
-feature/statuskit-add-quota-module   # → feat(statuskit): add quota module
-fix/flow-handle-missing-task         # → fix(flow): handle missing task
-ci/add-release-workflow              # → ci: add release workflow
-docs/update-contributing             # → docs: update contributing
-```
-
 ### Workflow
 
 1. **Создать ветку и запушить:**
    ```bash
-   git checkout -b feature/statuskit-add-module
+   git checkout -b <любое-имя-ветки>
    # ... commits ...
    git push -u origin HEAD
    ```
 
-2. **Bot автоматически создаёт PR** с:
-   - Title из имени ветки
-   - Label из scope (statuskit, flow, repo)
-   - Placeholder описанием
+2. **Bot автоматически создаёт PR** с placeholder title и описанием
 
-3. **Обновить описание PR:**
+3. **Обновить PR (title, description, label):**
    ```bash
-   gh pr edit <N> --body "$(cat <<'EOF'
+   gh pr edit <N> \
+     --title "feat(statuskit): add quota module" \
+     --add-label "statuskit" \
+     --body "$(cat <<'EOF'
    ## Summary
    ...
    ## How it works
@@ -172,7 +157,7 @@ docs/update-contributing             # → docs: update contributing
    )"
    ```
 
-4. **Добавить себя как ревьювера** (теперь можно, т.к. автор — бот)
+4. **Назначить себя ревьювером** (теперь можно, т.к. автор — бот)
 
 ### PR Description Format
 
