@@ -305,3 +305,82 @@ class TestValidateNameUniqueness:
 
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is True
+
+
+class TestValidateMarketplace:
+    """Tests for marketplace registration validation."""
+
+    def test_not_in_marketplace(self, tmp_path: Path) -> None:
+        """Should fail when plugin not registered in marketplace."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "not-registered"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "not-registered"}')
+
+        # Create marketplace without this plugin
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text('{"plugins": []}')
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("not registered in marketplace" in e for e in result.errors)
+
+    def test_marketplace_name_mismatch(self, tmp_path: Path) -> None:
+        """Should fail when marketplace name doesn't match plugin.json."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "name-mismatch"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "name-mismatch"}')
+
+        # Create marketplace with different name
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "wrong-name", "source": "./plugins/name-mismatch"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("mismatch" in e.lower() for e in result.errors)
+
+    def test_marketplace_source_mismatch(self, tmp_path: Path) -> None:
+        """Should fail when marketplace source doesn't match plugin path."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "source-mismatch"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "source-mismatch"}')
+
+        # Create marketplace with wrong source
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "source-mismatch", "source": "./plugins/wrong-path"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("source mismatch" in e.lower() for e in result.errors)
+
+    def test_missing_marketplace_file(self, tmp_path: Path) -> None:
+        """Should fail when marketplace.json doesn't exist."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "no-marketplace"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "no-marketplace"}')
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("marketplace.json" in e for e in result.errors)
