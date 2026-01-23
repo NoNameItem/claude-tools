@@ -97,6 +97,67 @@ PR title должен следовать формату conventional commit — 
 feat(statuskit): add git module
 ```
 
+### Labels
+
+PR должен иметь label соответствующий scope в заголовке:
+
+| Scope | Label | Описание |
+|-------|-------|----------|
+| `statuskit` | `statuskit` | Python statusline package |
+| `flow` | `flow` | Beads workflow plugin |
+| без scope | `repo` | Repository-level changes |
+
+```
+PR title: feat(statuskit): add git module
+Label: statuskit
+
+PR title: ci: add release workflow
+Label: repo
+```
+
+### PR Description
+
+PR description должен объяснять **как работает** изменение, а не просто перечислять файлы.
+
+**Шаблон:**
+
+```markdown
+## Summary
+<зачем это нужно — 1-2 предложения>
+
+## How it works
+
+### Overview
+<общая картина — что делает, какую проблему решает>
+
+### Architecture
+<как устроено — компоненты, их связи, поток данных>
+<диаграммы в ASCII если помогают понять>
+
+### Key components
+
+**`path/to/file.py`** — <роль файла>
+- `ClassName` — <что делает класс>
+- `function_name()` — <что делает функция>
+
+### Design decisions
+<почему выбран такой подход, какие альтернативы рассматривались>
+
+### Edge cases
+<какие граничные случаи обработаны>
+
+## Test plan
+<как проверить — команды, сценарии>
+
+## Related issues
+<ссылки на beads/github issues или "None">
+```
+
+**Опциональные секции** (добавлять когда актуально):
+- `## Breaking changes` — что сломается, как мигрировать
+- `## Screenshots` — для UI изменений
+- `## Performance` — если влияет на скорость
+
 ### Merge Strategy
 
 Используется **squash merge**. Все коммиты PR объединяются в один коммит с сообщением = PR title.
