@@ -94,10 +94,11 @@ uv run ruff format . # Format
 
 ## Pre-commit Workflow
 
-**Before every commit**, run linter, formatter, and type checker:
+**Before every commit**, run formatter and linter on changed files:
 
 ```bash
-uv run ruff check --fix . && uv run ruff format . && uv run ty check .
+git diff --name-only '*.py' | xargs uv run ruff format
+git diff --name-only '*.py' | xargs uv run ruff check --fix
 ```
 
 This is required because:
@@ -108,9 +109,13 @@ This is required because:
 The pre-commit hooks will then verify:
 1. `ruff-format` — auto-formats code (safe)
 2. `ruff` — checks for remaining lint errors
-3. `ty` — type checking
-4. `single-package-commit` — validates commit scope
-5. `beads` — syncs beads state
+3. `single-package-commit` — validates commit scope
+4. `beads` — syncs beads state
+
+**Type checking** (only for packages, run manually or in CI):
+```bash
+uv run ty check
+```
 
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 
