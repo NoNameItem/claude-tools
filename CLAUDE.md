@@ -119,6 +119,15 @@ uv run ty check
 
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 
+## Writing Implementation Plans
+
+When writing plans that modify Python files, each commit step MUST include:
+1. `uv run ruff format <files>`
+2. `uv run ruff check --fix <files>`
+3. Then `git add` and `git commit`
+
+This applies to ALL Python files in the repo, including `.github/scripts/`.
+
 ## Claude Code Plugins
 
 This repository is also a Claude Code plugin marketplace containing workflow automation tools.
