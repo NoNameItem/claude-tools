@@ -21,6 +21,34 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
+    """Group changed files by project.
+
+    Returns ALL files without extension filtering.
+    Filtering (.py etc.) happens on consumer side (workflow).
+
+    Args:
+        changed_files: List of file paths relative to repo root.
+
+    Returns:
+        Dict mapping project name to list of files.
+        Repo-level files are under "repo" key.
+    """
+    from .projects import get_project_from_path
+
+    result: dict[str, list[str]] = {}
+
+    for file_path in changed_files:
+        project_name = get_project_from_path(file_path)
+        key = project_name if project_name else "repo"
+
+        if key not in result:
+            result[key] = []
+        result[key].append(file_path)
+
+    return result
+
+
 @dataclass
 class DetectionResult:
     """Result of change detection."""
@@ -34,6 +62,7 @@ class DetectionResult:
     tooling_changed: bool = False
     matrix: dict = field(default_factory=lambda: {"include": []})
     all_packages_matrix: dict = field(default_factory=lambda: {"include": []})
+    changed_files: dict[str, list[str]] = field(default_factory=dict)
 
     def to_json(self) -> str:
         """Convert to JSON string."""
@@ -48,6 +77,7 @@ class DetectionResult:
                 "tooling_changed": self.tooling_changed,
                 "matrix": self.matrix,
                 "all_packages_matrix": self.all_packages_matrix,
+                "changed_files": self.changed_files,
             }
         )
 
@@ -117,6 +147,8 @@ def detect_changes(
                         "python": py_version,
                     }
                 )
+
+    result.changed_files = build_changed_files_map(changed_files)
 
     return result
 
