@@ -128,6 +128,56 @@ When writing plans that modify Python files, each commit step MUST include:
 
 This applies to ALL Python files in the repo, including `.github/scripts/`.
 
+## Creating Pull Requests
+
+PRs создаются через GitHub App бота, чтобы пользователь мог быть ревьювером.
+
+### Branch naming convention
+
+```
+<type>/<scope>-<description>    # для пакетов/плагинов
+<type>/<description>            # для repo-level изменений
+```
+
+**Примеры:**
+```bash
+feature/statuskit-add-quota-module   # → feat(statuskit): add quota module
+fix/flow-handle-missing-task         # → fix(flow): handle missing task
+ci/add-release-workflow              # → ci: add release workflow
+docs/update-contributing             # → docs: update contributing
+```
+
+### Workflow
+
+1. **Создать ветку и запушить:**
+   ```bash
+   git checkout -b feature/statuskit-add-module
+   # ... commits ...
+   git push -u origin HEAD
+   ```
+
+2. **Bot автоматически создаёт PR** с:
+   - Title из имени ветки
+   - Label из scope (statuskit, flow, repo)
+   - Placeholder описанием
+
+3. **Обновить описание PR:**
+   ```bash
+   gh pr edit <N> --body "$(cat <<'EOF'
+   ## Summary
+   ...
+   ## How it works
+   ...
+   EOF
+   )"
+   ```
+
+4. **Добавить себя как ревьювера** (теперь можно, т.к. автор — бот)
+
+### PR Description Format
+
+См. CONTRIBUTING.md для полного шаблона описания PR.
+
 ## Claude Code Plugins
 
 This repository is also a Claude Code plugin marketplace containing workflow automation tools.
