@@ -34,7 +34,10 @@ def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
         Dict mapping project name to list of files.
         Repo-level files are under "repo" key.
     """
-    from .projects import get_project_from_path
+    try:
+        from .projects import get_project_from_path
+    except ImportError:
+        from projects import get_project_from_path
 
     result: dict[str, list[str]] = {}
 
@@ -87,11 +90,18 @@ def detect_changes(
     repo_root: Path,
 ) -> DetectionResult:
     """Detect changed packages and generate CI matrix."""
-    from .projects import (  # type: ignore[unresolved-import]
-        discover_projects,
-        get_project_from_path,
-        is_repo_level_path,
-    )
+    try:
+        from .projects import (  # type: ignore[unresolved-import]
+            discover_projects,
+            get_project_from_path,
+            is_repo_level_path,
+        )
+    except ImportError:
+        from projects import (  # type: ignore[unresolved-import]
+            discover_projects,
+            get_project_from_path,
+            is_repo_level_path,
+        )
 
     result = DetectionResult()
     all_projects = discover_projects(repo_root)
