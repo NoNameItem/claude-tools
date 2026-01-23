@@ -1,0 +1,110 @@
+name: Create PR from Bot
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'fix/**'
+      - 'refactor/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'chore/**'
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    # Only run if PR doesn't exist for this branch
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
+
+      - name: Check if PR exists
+        id: check-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="${GITHUB_REF#refs/heads/}"
+          PR_EXISTS=$(gh pr list --head "$BRANCH" --json number --jq 'length')
+          echo "exists=$([[ $PR_EXISTS -gt 0 ]] && echo 'true' || echo 'false')" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Extract PR info from branch
+        if: steps.check-pr.outputs.exists == 'false'
+        id: pr-info
+        run: |
+          BRANCH="${{ steps.check-pr.outputs.branch }}"
+
+          # Extract type from branch: feature/xxx -> feat, fix/xxx -> fix, etc.
+          TYPE=$(echo "$BRANCH" | cut -d'/' -f1)
+          case "$TYPE" in
+            feature) TYPE="feat" ;;
+            refactor) TYPE="refactor" ;;
+            docs) TYPE="docs" ;;
+            ci) TYPE="ci" ;;
+            chore) TYPE="chore" ;;
+            fix) TYPE="fix" ;;
+          esac
+
+          # Extract scope and description: feature/statuskit-add-module -> statuskit, add-module
+          REST=$(echo "$BRANCH" | cut -d'/' -f2-)
+
+          # Check if first part before dash is a known scope
+          FIRST_PART=$(echo "$REST" | cut -d'-' -f1)
+          if [[ "$FIRST_PART" == "statuskit" || "$FIRST_PART" == "flow" ]]; then
+            SCOPE="$FIRST_PART"
+            DESC=$(echo "$REST" | sed "s/^$FIRST_PART-//")
+            LABEL="$SCOPE"
+          else
+            SCOPE=""
+            DESC="$REST"
+            LABEL="repo"
+          fi
+
+          # Convert dashes to spaces in description
+          DESC=$(echo "$DESC" | tr '-' ' ')
+
+          # Build title
+          if [[ -n "$SCOPE" ]]; then
+            TITLE="${TYPE}(${SCOPE}): ${DESC}"
+          else
+            TITLE="${TYPE}: ${DESC}"
+          fi
+
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "label=$LABEL" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR
+        if: steps.check-pr.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr create \
+            --title "${{ steps.pr-info.outputs.title }}" \
+            --label "${{ steps.pr-info.outputs.label }}" \
+            --body "$(cat <<'EOF'
+          ## Summary
+
+          _TODO: Add description_
+
+          ## How it works
+
+          _TODO: Describe architecture and key components_
+
+          ## Test plan
+
+          - [ ] Tests pass
+
+          ## Related issues
+
+          None
+
+          ---
+          Created by bot. Description will be updated by Claude.
+          EOF
+          )"
