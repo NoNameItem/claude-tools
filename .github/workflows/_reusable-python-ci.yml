@@ -1,0 +1,133 @@
+# .github/workflows/_reusable-python-ci.yml
+name: Python CI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: 'Package name (e.g., statuskit)'
+        required: true
+        type: string
+      package-path:
+        description: 'Path to package (e.g., packages/statuskit)'
+        required: true
+        type: string
+      python-versions:
+        description: 'JSON array of Python versions'
+        required: true
+        type: string
+      changed-files:
+        description: 'JSON array of changed files for targeted linting'
+        required: false
+        type: string
+        default: '[]'
+
+jobs:
+  lint:
+    name: Lint (${{ inputs.package }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get minimum Python version
+        id: py-version
+        run: |
+          MIN_PY=$(echo '${{ inputs.python-versions }}' | jq -r '.[0]')
+          echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ steps.py-version.outputs.version }}
+
+      - name: Install dependencies
+        run: uv sync
+        working-directory: ${{ inputs.package-path }}
+
+      - name: Filter Python files
+        id: filter
+        run: |
+          FILES='${{ inputs.changed-files }}'
+          if [ "$FILES" == "[]" ] || [ -z "$FILES" ]; then
+            echo "py_files=${{ inputs.package-path }}" >> "$GITHUB_OUTPUT"
+          else
+            PY_FILES=$(echo "$FILES" | jq -r '.[] | select(endswith(".py"))' | tr '\n' ' ')
+            if [ -z "$PY_FILES" ]; then
+              echo "py_files=" >> "$GITHUB_OUTPUT"
+            else
+              echo "py_files=$PY_FILES" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Ruff format check
+        id: format
+        if: steps.filter.outputs.py_files != ''
+        continue-on-error: true
+        run: uv run ruff format --check ${{ steps.filter.outputs.py_files }}
+
+      - name: Ruff lint
+        id: lint
+        if: steps.filter.outputs.py_files != ''
+        continue-on-error: true
+        run: uv run ruff check ${{ steps.filter.outputs.py_files }}
+
+      - name: Type check
+        id: typecheck
+        continue-on-error: true
+        run: uv run ty check
+        working-directory: ${{ inputs.package-path }}
+
+      - name: Check results
+        run: |
+          failed=false
+          if [ "${{ steps.format.outcome }}" == "failure" ]; then
+            echo "::error::Ruff format check failed"
+            failed=true
+          fi
+          if [ "${{ steps.lint.outcome }}" == "failure" ]; then
+            echo "::error::Ruff lint failed"
+            failed=true
+          fi
+          if [ "${{ steps.typecheck.outcome }}" == "failure" ]; then
+            echo "::error::Type check failed"
+            failed=true
+          fi
+          if [ "$failed" == "true" ]; then
+            exit 1
+          fi
+
+  test:
+    name: Test (${{ inputs.package }}, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJson(inputs.python-versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: uv sync
+        working-directory: ${{ inputs.package-path }}
+
+      - name: Run tests
+        run: uv run pytest --cov --cov-report=xml
+        working-directory: ${{ inputs.package-path }}
+
+      - name: Get minimum Python version
+        id: min-py
+        run: |
+          MIN_PY=$(echo '${{ inputs.python-versions }}' | jq -r '.[0]')
+          echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage
+        if: matrix.python == steps.min-py.outputs.version
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ inputs.package }}
+          path: ${{ inputs.package-path }}/coverage.xml
