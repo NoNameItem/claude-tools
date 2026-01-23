@@ -52,7 +52,10 @@ def _get_projects_from_files(
     files: list[str],
 ) -> tuple[set[str], list[str]]:
     """Extract projects and repo-level files from file list."""
-    from .projects import get_project_from_path, is_repo_level_path  # type: ignore[unresolved-import]
+    try:
+        from .projects import get_project_from_path, is_repo_level_path  # type: ignore[unresolved-import]
+    except ImportError:
+        from projects import get_project_from_path, is_repo_level_path  # type: ignore[unresolved-import]
 
     projects: set[str] = set()
     repo_level_files: list[str] = []
@@ -73,8 +76,12 @@ def validate_pr(
     repo_root: Path,
 ) -> ValidationResult:
     """Validate PR title and changed files."""
-    from .commits import parse_commit_message  # type: ignore[unresolved-import]
-    from .projects import discover_projects  # type: ignore[unresolved-import]
+    try:
+        from .commits import parse_commit_message  # type: ignore[unresolved-import]
+        from .projects import discover_projects  # type: ignore[unresolved-import]
+    except ImportError:
+        from commits import parse_commit_message  # type: ignore[unresolved-import]
+        from projects import discover_projects  # type: ignore[unresolved-import]
 
     # Check for scope collision first
     try:
@@ -134,7 +141,10 @@ def validate_pr(
 
 def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
     """Validate a single commit."""
-    from .commits import parse_commit_message  # type: ignore[unresolved-import]
+    try:
+        from .commits import parse_commit_message  # type: ignore[unresolved-import]
+    except ImportError:
+        from commits import parse_commit_message  # type: ignore[unresolved-import]
 
     msg = subprocess.check_output(
         ["git", "log", "-1", "--format=%s", sha],  # noqa: S607
