@@ -8,7 +8,7 @@ requires-python = ">=3.11"
 members = ["packages/*"]
 
 [tool.uv.sources]
-statuskit = { workspace = true }
+claude-statuskit = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -16,7 +16,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.9",
     "ty",
-    "statuskit",
+    "claude-statuskit",
 ]
 
 [tool.ruff]
