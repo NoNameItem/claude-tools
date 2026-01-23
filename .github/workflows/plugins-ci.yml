@@ -36,19 +36,21 @@ jobs:
           OUTPUT=$(python -m scripts.detect_changes --ref "$REF")
           echo "Output: $OUTPUT"
           PLUGIN=$(echo "$OUTPUT" | jq -r '.plugins[0] // empty')
-          echo "plugin=$PLUGIN" >> $GITHUB_OUTPUT
-          echo "plugin_path=plugins/$PLUGIN" >> $GITHUB_OUTPUT
-          echo "has_plugins=$(echo "$OUTPUT" | jq -r '.has_plugins')" >> $GITHUB_OUTPUT
+          {
+            echo "plugin=$PLUGIN"
+            echo "plugin_path=plugins/$PLUGIN"
+            echo "has_plugins=$(echo "$OUTPUT" | jq -r '.has_plugins')"
+          } >> "$GITHUB_OUTPUT"
         working-directory: .github
 
       - name: Check for Python files
         id: check-python
         if: steps.detect.outputs.has_plugins == 'true'
         run: |
-          if find ${{ steps.detect.outputs.plugin_path }} -name "*.py" 2>/dev/null | grep -q .; then
-            echo "has_python=true" >> $GITHUB_OUTPUT
+          if find "${{ steps.detect.outputs.plugin_path }}" -name "*.py" 2>/dev/null | grep -q .; then
+            echo "has_python=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_python=false" >> $GITHUB_OUTPUT
+            echo "has_python=false" >> "$GITHUB_OUTPUT"
           fi
 
   validate-structure:
@@ -65,7 +67,7 @@ jobs:
 
       - name: Validate plugin structure
         run: |
-          python -m scripts.validate_plugin ${{ needs.detect-changes.outputs.plugin_path }}
+          python -m scripts.validate_plugin "${{ needs.detect-changes.outputs.plugin_path }}"
         working-directory: .github
 
   lint-scripts:
@@ -87,7 +89,7 @@ jobs:
         run: uv tool install ruff
 
       - name: Ruff check
-        run: ruff check --config pyproject.toml ${{ needs.detect-changes.outputs.plugin_path }}
+        run: ruff check --config pyproject.toml "${{ needs.detect-changes.outputs.plugin_path }}"
 
       - name: Ruff format check
-        run: ruff format --config pyproject.toml --check ${{ needs.detect-changes.outputs.plugin_path }}
+        run: ruff format --config pyproject.toml --check "${{ needs.detect-changes.outputs.plugin_path }}"
