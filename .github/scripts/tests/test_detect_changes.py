@@ -58,11 +58,22 @@ class TestDetectChanges:
         """Should generate CI matrix with Python versions."""
         changed_files = ["packages/statuskit/src/module.py"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert len(result.matrix["include"]) == 2  # 3.11, 3.12
+        assert len(result.matrix["include"]) == 1
         entry = result.matrix["include"][0]
         assert entry["package"] == "statuskit"
         assert entry["path"] == "packages/statuskit"
-        assert entry["python"] in ["3.11", "3.12"]
+        assert entry["python-versions"] == ["3.11", "3.12"]
+
+    def test_matrix_has_python_versions_array(self, temp_repo: Path) -> None:
+        """Matrix entry should have python-versions as array."""
+        changed_files = ["packages/statuskit/src/module.py"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+        assert len(result.matrix["include"]) == 1
+        entry = result.matrix["include"][0]
+        assert entry["package"] == "statuskit"
+        assert entry["path"] == "packages/statuskit"
+        assert entry["python-versions"] == ["3.11", "3.12"]
+        assert "python" not in entry  # Old field should not exist
 
     def test_all_packages_matrix(self, temp_repo: Path) -> None:
         """Should include all packages in all_packages_matrix."""

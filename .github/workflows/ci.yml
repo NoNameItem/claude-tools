@@ -77,7 +77,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   ci:
-    name: CI
+    name: CI (${{ matrix.package }})
     needs: detect
     if: needs.detect.outputs.has-packages == 'true' || needs.detect.outputs.tooling-changed == 'true'
     strategy:
@@ -87,5 +87,5 @@ jobs:
     with:
       package: ${{ matrix.package }}
       package-path: ${{ matrix.path }}
-      python-versions: ${{ toJson(fromJson(format('["{0}"]', matrix.python))) }}
+      python-versions: ${{ toJson(matrix.python-versions) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.changed-files)[matrix.package] || fromJson('[]')) }}
