@@ -85,6 +85,7 @@ class DetectionResult:
         )
 
 
+# noinspection D
 def detect_changes(
     changed_files: list[str],
     repo_root: Path,

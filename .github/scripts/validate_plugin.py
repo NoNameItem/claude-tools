@@ -54,6 +54,7 @@ class PluginValidationResult:
             self.success = False
 
 
+# noinspection D
 def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dict | None]:
     """Validate plugin.json exists and has valid structure.
 
@@ -130,6 +131,7 @@ def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResul
     return result
 
 
+# noinspection D
 def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidationResult:
     """Validate component directories and files exist.
 

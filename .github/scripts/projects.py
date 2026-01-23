@@ -107,6 +107,7 @@ def _parse_python_versions(pyproject_path: Path) -> list[str]:
     return versions
 
 
+# noinspection D
 def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
     """Discover all packages and plugins in the repository.
 

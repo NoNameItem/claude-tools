@@ -249,6 +249,7 @@ def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]
     return [c for c in output.strip().split("\n") if c]
 
 
+# noinspection D
 def main() -> int:  # noqa: PLR0911, PLR0912
     """Main entry point."""
     from pathlib import Path
