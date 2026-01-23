@@ -130,10 +130,51 @@ def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResul
     return result
 
 
-def validate_components(_plugin_path: Path, _plugin_json: dict) -> PluginValidationResult:
-    """Validate component directories and files exist."""
-    # Placeholder - implemented in Task 4
-    return PluginValidationResult()
+def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidationResult:
+    """Validate component directories and files exist.
+
+    Checks:
+    - skills: Each subfolder must contain SKILL.md
+    - commands: Each file must have .md extension
+    - agents: Each file must have .md extension
+    """
+    result = PluginValidationResult()
+
+    # Get paths (custom or default)
+    skills_path = plugin_json.get("skills", "./skills")
+    commands_path = plugin_json.get("commands", "./commands")
+    agents_path = plugin_json.get("agents", "./agents")
+
+    # Normalize paths (remove ./ prefix)
+    def normalize_path(p: str) -> str:
+        return p[2:] if p.startswith("./") else p
+
+    # Validate skills
+    skills_dir = plugin_path / normalize_path(skills_path)
+    if skills_dir.exists() and skills_dir.is_dir():
+        for skill_folder in skills_dir.iterdir():
+            if skill_folder.is_dir():
+                skill_md = skill_folder / "SKILL.md"
+                if not skill_md.exists():
+                    result.add_error(
+                        f"Skill '{skill_folder.name}' missing SKILL.md at {skill_folder.relative_to(plugin_path)}"
+                    )
+
+    # Validate commands
+    commands_dir = plugin_path / normalize_path(commands_path)
+    if commands_dir.exists() and commands_dir.is_dir():
+        for cmd_file in commands_dir.iterdir():
+            if cmd_file.is_file() and not cmd_file.name.endswith(".md"):
+                result.add_error(f"Command file '{cmd_file.name}' must have .md extension")
+
+    # Validate agents
+    agents_dir = plugin_path / normalize_path(agents_path)
+    if agents_dir.exists() and agents_dir.is_dir():
+        for agent_file in agents_dir.iterdir():
+            if agent_file.is_file() and not agent_file.name.endswith(".md"):
+                result.add_error(f"Agent file '{agent_file.name}' must have .md extension")
+
+    return result
 
 
 def validate_name_uniqueness(_plugin_path: Path, _plugin_json: dict) -> PluginValidationResult:
