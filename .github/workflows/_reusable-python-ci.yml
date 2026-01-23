@@ -131,3 +131,31 @@ jobs:
         with:
           name: coverage-${{ inputs.package }}
           path: ${{ inputs.package-path }}/coverage.xml
+
+  sonarcloud:
+    name: SonarCloud (${{ inputs.package }})
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-${{ inputs.package }}
+          path: ${{ inputs.package-path }}
+
+      - uses: SonarSource/sonarcloud-github-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ inputs.package-path }}
+          args: >
+            -Dsonar.projectKey=NoNameItem_${{ inputs.package }}
+            -Dsonar.organization=nonameitem
+            -Dsonar.python.version=${{ join(fromJson(inputs.python-versions), ',') }}
+            -Dsonar.sources=src
+            -Dsonar.tests=tests
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.coverage.exclusions=**/tests/**,**/conftest.py
