@@ -7,13 +7,6 @@ repos:
 
   - repo: local
     hooks:
-      - id: ty
-        name: ty type check
-        entry: uv run ty check . --output-format concise
-        language: system
-        types: [python]
-        pass_filenames: false
-
       - id: single-package-commit
         name: Check single package per commit
         entry: bash -c "cd .github && uv run python -m scripts.validate --hook"

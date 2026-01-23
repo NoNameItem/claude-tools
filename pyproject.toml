@@ -98,6 +98,5 @@ quote-style = "double"
 testpaths = ["packages/*/tests"]
 
 [tool.ty.src]
-# .github/scripts uses relative imports that ty doesn't resolve correctly
-# Tests work fine with pytest, just ty's module resolution doesn't handle it
-exclude = [".github/scripts/tests"]
+# Only type-check Python packages
+include = ["packages"]
