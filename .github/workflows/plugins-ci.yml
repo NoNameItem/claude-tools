@@ -4,7 +4,7 @@ on:
   pull_request:
     paths: ['plugins/**']
   push:
-    branches: [main]
+    branches: [master]
     paths: ['plugins/**']
 
 jobs:
