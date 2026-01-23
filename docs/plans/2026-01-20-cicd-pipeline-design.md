@@ -41,6 +41,7 @@ GitHub Actions CI/CD для monorepo с независимыми Python паке
 | Структура workflows | Reusable workflows                                 |
 | Детекция изменений  | Динамическая (скрипт определяет изменённые пакеты) |
 | CI проверки         | lint + format + typecheck + tests + coverage       |
+| Workflow lint       | actionlint (локально и в CI)                       |
 | Lint scope          | Только изменённые файлы в PR                       |
 | Python версии       | Из classifiers в pyproject.toml                    |
 | Coverage/анализ     | SonarCloud + импорт Ruff report                    |
@@ -709,7 +710,6 @@ repos:
 
 2. **lint-scripts**
     - `ruff check` и `ruff format --check` для `.py` файлов
-    - `ty check` если есть Python файлы
     - Python 3.11 (одна версия, только линтинг)
 
 ## SonarCloud конфигурация
@@ -881,17 +881,23 @@ pytest .github/scripts/tests/
    pytest .github/scripts/tests/
    ```
 
-2. **Workflows в act:**
+2. **Линтинг workflows:**
+   ```bash
+   actionlint
+   ```
+   Все workflow файлы должны проходить без ошибок.
+
+3. **Workflows в act:**
    ```bash
    act pull_request -v
    ```
 
-3. **Финальная проверка на GitHub:**
+4. **Финальная проверка на GitHub:**
    - Создать PR с изменениями
    - Убедиться что CI проходит
    - Проверить что валидация коммитов работает
 
-4. **Release flow (после мержа в main):**
+5. **Release flow (после мержа в main):**
    - Сделать тестовый коммит `feat(statuskit): test release`
    - Проверить что release-please создал PR
    - Смержить release PR
