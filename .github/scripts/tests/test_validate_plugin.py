@@ -131,3 +131,111 @@ class TestValidatePluginJson:
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
         assert any("must start with ./" in e for e in result.errors)
+
+
+class TestValidateComponents:
+    """Tests for component validation."""
+
+    def test_skill_missing_skill_md(self, tmp_path: Path) -> None:
+        """Should fail when skill folder lacks SKILL.md."""
+        from ..validate_plugin import validate_plugin
+
+        # Create plugin with skill folder but no SKILL.md
+        plugin_dir = tmp_path / "plugins" / "missing-skill-md"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "missing-skill-md"}')
+
+        # Create skill folder without SKILL.md
+        skills_dir = plugin_dir / "skills" / "my-skill"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "helper.py").write_text("# helper")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "missing-skill-md", "source": "./plugins/missing-skill-md"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("SKILL.md" in e for e in result.errors)
+
+    def test_valid_skill_structure(self, tmp_path: Path) -> None:
+        """Should pass for valid skill structure."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "valid-skills"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "valid-skills"}')
+
+        # Create valid skill folder
+        skills_dir = plugin_dir / "skills" / "my-skill"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text("# My Skill")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "valid-skills", "source": "./plugins/valid-skills"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is True
+
+    def test_command_missing_md_extension(self, tmp_path: Path) -> None:
+        """Should fail when command file lacks .md extension."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "bad-command"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "bad-command"}')
+
+        # Create commands folder with non-.md file
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir(parents=True)
+        (commands_dir / "my-command.txt").write_text("# Not md")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "bad-command", "source": "./plugins/bad-command"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any(".md extension" in e for e in result.errors)
+
+    def test_custom_skills_path(self, tmp_path: Path) -> None:
+        """Should validate skills at custom path."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "custom-path"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "custom-path", "skills": "./custom-skills"}')
+
+        # Create skill at custom path without SKILL.md
+        custom_skills = plugin_dir / "custom-skills" / "my-skill"
+        custom_skills.mkdir(parents=True)
+        (custom_skills / "helper.py").write_text("# no SKILL.md")
+
+        # Create marketplace
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            '{"plugins": [{"name": "custom-path", "source": "./plugins/custom-path"}]}'
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("SKILL.md" in e for e in result.errors)
