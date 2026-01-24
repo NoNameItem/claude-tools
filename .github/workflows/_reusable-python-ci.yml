@@ -47,7 +47,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
-        working-directory: ${{ matrix.path }}
 
       - name: Filter Python files
         id: filter
@@ -123,7 +122,6 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
-        working-directory: ${{ matrix.path }}
 
       - name: Run tests
         run: uv run pytest --cov --cov-report=xml
