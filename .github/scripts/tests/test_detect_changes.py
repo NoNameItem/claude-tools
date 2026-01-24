@@ -206,3 +206,58 @@ class TestBuildChangedFilesMap:
 
         result = build_changed_files_map([])
         assert result == {}
+
+
+class TestDetectChangesNewStructure:
+    """Tests for new detect_changes output structure."""
+
+    def test_by_type_structure(self, temp_repo: Path) -> None:
+        """Should output by_type with changed/unchanged per type."""
+        changed_files = ["packages/statuskit/src/module.py"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        assert hasattr(result, "by_type")
+        assert "package" in result.by_type
+        pkg_data = result.by_type["package"]
+        assert pkg_data.changed == ["statuskit"]
+        assert pkg_data.has_changed is True
+        assert pkg_data.matrix is not None
+
+    def test_single_project_field(self, temp_repo: Path) -> None:
+        """Should have single_project when exactly one project changed."""
+        changed_files = ["packages/statuskit/src/module.py"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        assert result.single_project == "statuskit"
+        assert result.single_project_type == "package"
+        assert result.total_changed_count == 1
+
+    def test_total_changed_count_multiple(self, temp_repo: Path) -> None:
+        """Should count total changed projects across types."""
+        changed_files = [
+            "packages/statuskit/src/module.py",
+            "plugins/flow/skills/start.md",
+        ]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        assert result.total_changed_count == 2
+        assert result.single_project is None
+        assert result.single_project_type is None
+
+    def test_tooling_changed_from_config(self, temp_repo: Path) -> None:
+        """Should detect tooling changes from config tooling_files."""
+        # temp_repo fixture has tooling_files = ["pyproject.toml", "uv.lock"]
+        changed_files = ["uv.lock"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        assert result.tooling_changed is True
+
+    def test_unchanged_matrix_when_tooling_changed(self, temp_repo: Path) -> None:
+        """Should include unchanged_matrix when tooling changed."""
+        changed_files = ["pyproject.toml"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        assert result.tooling_changed is True
+        pkg_data = result.by_type["package"]
+        assert pkg_data.has_unchanged is True
+        assert len(pkg_data.unchanged_matrix["include"]) > 0
