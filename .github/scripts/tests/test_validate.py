@@ -176,3 +176,76 @@ class TestValidateStagedFiles:
         result = validate_staged_files(staged_files)
         assert result.success is False
         assert result.error == ValidationError.MULTIPLE_PACKAGES
+
+
+class TestValidatePRWithDetectResult:
+    """Tests for validate_pr using detect result."""
+
+    def test_validates_with_detect_result(self, temp_repo: Path) -> None:
+        """Should validate PR using detect_result from env."""
+        from ..validate import validate_pr_with_detect_result
+
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "statuskit",
+            "single_project_type": "package",
+        }
+        result = validate_pr_with_detect_result(
+            "feat(statuskit): add feature",
+            detect_result,
+            temp_repo,
+        )
+        assert result.success is True
+
+    def test_fails_multiple_projects(self, temp_repo: Path) -> None:
+        """Should fail if multiple projects changed."""
+        from ..validate import validate_pr_with_detect_result
+
+        detect_result = {
+            "total_changed_count": 2,
+            "single_project": None,
+            "by_type": {
+                "package": {"changed": ["statuskit"]},
+                "plugin": {"changed": ["flow"]},
+            },
+        }
+        result = validate_pr_with_detect_result(
+            "feat(statuskit): add feature",
+            detect_result,
+            temp_repo,
+        )
+        assert result.success is False
+        assert result.error == ValidationError.MULTIPLE_PACKAGES
+
+    def test_fails_scope_mismatch(self, temp_repo: Path) -> None:
+        """Should fail if scope doesn't match single_project."""
+        from ..validate import validate_pr_with_detect_result
+
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "statuskit",
+            "single_project_type": "package",
+        }
+        result = validate_pr_with_detect_result(
+            "feat(flow): wrong scope",
+            detect_result,
+            temp_repo,
+        )
+        assert result.success is False
+        assert result.error == ValidationError.SCOPE_MISMATCH
+
+    def test_allows_no_scope_for_repo_level(self, temp_repo: Path) -> None:
+        """Should allow no scope for repo-level changes."""
+        from ..validate import validate_pr_with_detect_result
+
+        detect_result = {
+            "total_changed_count": 0,
+            "single_project": None,
+            "has_repo_level": True,
+        }
+        result = validate_pr_with_detect_result(
+            "ci: update workflows",
+            detect_result,
+            temp_repo,
+        )
+        assert result.success is True

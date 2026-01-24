@@ -13,6 +13,7 @@ Environment variables (for --pr mode):
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -131,6 +132,87 @@ def validate_pr(
             success=False,
             error=ValidationError.SCOPE_MISMATCH,
             message=f"Scope '{commit_info.scope}' but no package files changed",
+        )
+
+    return ValidationResult(
+        success=True,
+        message=f"✓ PR title valid: {pr_title}",
+    )
+
+
+def validate_pr_with_detect_result(
+    pr_title: str,
+    detect_result: dict,
+    repo_root: Path,
+) -> ValidationResult:
+    """Validate PR title using pre-computed detect result.
+
+    Args:
+        pr_title: PR title string.
+        detect_result: Output from detect_changes.py (as dict).
+        repo_root: Path to repository root.
+
+    Returns:
+        ValidationResult.
+    """
+    try:
+        from .commits import parse_commit_message
+        from .projects import discover_projects
+    except ImportError:
+        from commits import parse_commit_message
+        from projects import discover_projects
+
+    # Check for scope collision first
+    try:
+        discover_projects(repo_root)
+    except ValueError as e:
+        if "collision" in str(e).lower():
+            return ValidationResult(
+                success=False,
+                error=ValidationError.SCOPE_COLLISION,
+                message=str(e),
+            )
+        raise
+
+    # Parse PR title
+    commit_info = parse_commit_message(pr_title)
+    if commit_info is None:
+        return ValidationResult(
+            success=False,
+            error=ValidationError.INVALID_FORMAT,
+            message=(
+                f"Invalid conventional commit format\n\n  Expected: type(scope): description\n  Got:      {pr_title}"
+            ),
+        )
+
+    total_count = detect_result.get("total_changed_count", 0)
+
+    # Check multiple projects
+    if total_count > 1:
+        all_changed = []
+        for kind_data in detect_result.get("by_type", {}).values():
+            all_changed.extend(kind_data.get("changed", []))
+        return ValidationResult(
+            success=False,
+            error=ValidationError.MULTIPLE_PACKAGES,
+            message=f"PR changes multiple projects: {sorted(all_changed)}",
+        )
+
+    # Check scope match
+    expected_scope = detect_result.get("single_project")
+
+    if expected_scope:
+        if commit_info.scope != expected_scope:
+            return ValidationResult(
+                success=False,
+                error=ValidationError.SCOPE_MISMATCH,
+                message=f"Scope mismatch: expected '{expected_scope}', got '{commit_info.scope}'",
+            )
+    elif commit_info.scope and commit_info.scope not in ("ci", "deps", "docs"):
+        return ValidationResult(
+            success=False,
+            error=ValidationError.SCOPE_MISMATCH,
+            message=f"Unexpected scope '{commit_info.scope}' for repo-level changes",
         )
 
     return ValidationResult(
@@ -272,12 +354,21 @@ def main() -> int:  # noqa: PLR0911, PLR0912
 
         elif mode == "--pr":
             pr_title = os.environ.get("PR_TITLE", "")
-            base_ref = os.environ.get("BASE_REF", "main")
+            detect_result_json = os.environ.get("DETECT_RESULT")
+
             if not pr_title:
                 print("Error: PR_TITLE environment variable not set")
                 return ValidationError.SCRIPT_ERROR
-            changed_files = _get_changed_files_pr(base_ref, repo_root)
-            result = validate_pr(pr_title, changed_files, repo_root)
+
+            if detect_result_json:
+                # New mode: use pre-computed detect result
+                detect_result = json.loads(detect_result_json)
+                result = validate_pr_with_detect_result(pr_title, detect_result, repo_root)
+            else:
+                # Legacy mode: compute changes from git
+                base_ref = os.environ.get("BASE_REF", "main")
+                changed_files = _get_changed_files_pr(base_ref, repo_root)
+                result = validate_pr(pr_title, changed_files, repo_root)
 
         elif mode == "--commits":
             if len(sys.argv) < COMMITS_ARGS:
