@@ -100,3 +100,14 @@ testpaths = ["packages/*/tests"]
 [tool.ty.src]
 # Only type-check Python packages
 include = ["packages"]
+
+[tool.ci]
+tooling_files = [
+    "pyproject.toml",
+    "uv.lock",
+    "sonar-project.properties",
+]
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]
