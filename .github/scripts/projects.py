@@ -53,17 +53,6 @@ def get_ci_config(repo_root: Path) -> CIConfig:
     )
 
 
-# Patterns for repo-level paths (don't require scope)
-REPO_LEVEL_PATTERNS = [
-    r"^\.github/",
-    r"^docs/",
-    r"^[^/]+\.md$",  # *.md in root
-    r"^pyproject\.toml$",
-    r"^uv\.lock$",
-    r"^\.[^/]+$",  # dotfiles in root
-]
-
-
 def get_project_from_path(path: str) -> str | None:
     """Extract package/plugin name from file path.
 
@@ -83,18 +72,14 @@ def get_project_from_path(path: str) -> str | None:
 
 
 def is_repo_level_path(path: str) -> bool:
-    """Check if path is a repo-level file (not in package/plugin).
+    """Check if path is a repo-level file (not in any project).
 
     Args:
         path: File path relative to repo root.
 
     Returns:
-        True if repo-level, False otherwise.
+        True if repo-level (not belonging to any project), False otherwise.
     """
-    for pattern in REPO_LEVEL_PATTERNS:
-        if re.match(pattern, path):
-            return True
-    # Also true if not in packages/ or plugins/
     return get_project_from_path(path) is None
 
 
