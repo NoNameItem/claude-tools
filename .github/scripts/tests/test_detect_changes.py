@@ -261,3 +261,18 @@ class TestDetectChangesNewStructure:
         pkg_data = result.by_type["package"]
         assert pkg_data.has_unchanged is True
         assert len(pkg_data.unchanged_matrix["include"]) > 0
+
+    def test_test_matrix_flat_structure(self, temp_repo: Path) -> None:
+        """Should have flat test_matrix with one entry per python version."""
+        changed_files = ["packages/statuskit/src/module.py"]
+        result = detect_changes(changed_files, repo_root=temp_repo)
+
+        pkg_data = result.by_type["package"]
+        # temp_repo has Python 3.11 and 3.12
+        assert len(pkg_data.test_matrix["include"]) == 2
+        entries = pkg_data.test_matrix["include"]
+        assert entries[0]["project"] == "statuskit"
+        assert entries[0]["python"] == "3.11"
+        assert entries[1]["python"] == "3.12"
+        # Each entry should have python-versions for coverage upload logic
+        assert entries[0]["python-versions"] == ["3.11", "3.12"]

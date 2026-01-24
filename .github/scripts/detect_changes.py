@@ -62,6 +62,9 @@ class ByTypeResult:
     has_unchanged: bool = False
     matrix: dict = field(default_factory=lambda: {"include": []})
     unchanged_matrix: dict = field(default_factory=lambda: {"include": []})
+    # Flat matrix for test jobs: one entry per (project, python_version)
+    test_matrix: dict = field(default_factory=lambda: {"include": []})
+    unchanged_test_matrix: dict = field(default_factory=lambda: {"include": []})
 
 
 @dataclass
@@ -97,6 +100,8 @@ class DetectionResult:
                 "has_unchanged": data.has_unchanged,
                 "matrix": data.matrix,
                 "unchanged_matrix": data.unchanged_matrix,
+                "test_matrix": data.test_matrix,
+                "unchanged_test_matrix": data.unchanged_test_matrix,
             }
 
         return json.dumps(
@@ -193,6 +198,16 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
                 }
                 if proj.python_versions:
                     entry["python-versions"] = proj.python_versions
+                    # Build flat test matrix: one entry per python version
+                    for py_ver in proj.python_versions:
+                        by_type.test_matrix["include"].append(
+                            {
+                                "project": proj_name,
+                                "path": proj.path,
+                                "python": py_ver,
+                                "python-versions": proj.python_versions,
+                            }
+                        )
                 by_type.matrix["include"].append(entry)
 
         for proj_name in by_type.unchanged:
@@ -204,6 +219,16 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
                 }
                 if proj.python_versions:
                     entry["python-versions"] = proj.python_versions
+                    # Build flat unchanged test matrix
+                    for py_ver in proj.python_versions:
+                        by_type.unchanged_test_matrix["include"].append(
+                            {
+                                "project": proj_name,
+                                "path": proj.path,
+                                "python": py_ver,
+                                "python-versions": proj.python_versions,
+                            }
+                        )
                 by_type.unchanged_matrix["include"].append(entry)
 
     # Set single_project fields

@@ -4,35 +4,40 @@ name: Python CI (Reusable)
 on:
   workflow_call:
     inputs:
-      package:
-        description: 'Package name (e.g., statuskit)'
+      matrix:
+        description: 'JSON matrix with packages (from detect output)'
         required: true
         type: string
-      package-path:
-        description: 'Path to package (e.g., packages/statuskit)'
-        required: true
-        type: string
-      python-versions:
-        description: 'JSON array of Python versions'
+      test-matrix:
+        description: 'JSON flat test matrix (project × python combinations)'
         required: true
         type: string
       changed-files:
-        description: 'JSON array of changed files for targeted linting'
+        description: 'JSON map of project -> files'
         required: false
         type: string
-        default: '[]'
+        default: '{}'
+      tooling-changed:
+        description: 'Whether tooling files changed'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   lint:
-    name: Lint (${{ inputs.package }})
+    name: Lint (${{ matrix.project }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Get minimum Python version
         id: py-version
         run: |
-          MIN_PY=$(echo '${{ inputs.python-versions }}' | jq -r '.[0]')
+          MIN_PY=$(echo '${{ toJson(matrix.python-versions) }}' | jq -r '.[0]')
           echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
 
       - uses: astral-sh/setup-uv@v7
@@ -42,16 +47,21 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
-        working-directory: ${{ inputs.package-path }}
+        working-directory: ${{ matrix.path }}
 
       - name: Filter Python files
         id: filter
         run: |
-          FILES='${{ inputs.changed-files }}'
-          if [ "$FILES" == "[]" ] || [ -z "$FILES" ]; then
-            echo "py_files=${{ inputs.package-path }}" >> "$GITHUB_OUTPUT"
+          PROJECT="${{ matrix.project }}"
+          CHANGED_FILES='${{ inputs.changed-files }}'
+          TOOLING_CHANGED="${{ inputs.tooling-changed }}"
+
+          if [ "$TOOLING_CHANGED" == "true" ] || [ "$CHANGED_FILES" == "{}" ]; then
+            # Lint all Python files in package
+            echo "py_files=${{ matrix.path }}" >> "$GITHUB_OUTPUT"
           else
-            PY_FILES=$(echo "$FILES" | jq -r '.[] | select(endswith(".py"))' | tr '\n' ' ')
+            # Lint only changed Python files
+            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PROJECT" '.[$p] // [] | .[] | select(endswith(".py"))' | tr '\n' ' ')
             if [ -z "$PY_FILES" ]; then
               echo "py_files=" >> "$GITHUB_OUTPUT"
             else
@@ -75,7 +85,7 @@ jobs:
         id: typecheck
         continue-on-error: true
         run: uv run ty check
-        working-directory: ${{ inputs.package-path }}
+        working-directory: ${{ matrix.path }}
 
       - name: Check results
         run: |
@@ -97,12 +107,12 @@ jobs:
           fi
 
   test:
-    name: Test (${{ inputs.package }}, py${{ matrix.python }})
+    name: Test (${{ matrix.project }}, py${{ matrix.python }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        python: ${{ fromJson(inputs.python-versions) }}
+      matrix: ${{ fromJson(inputs.test-matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -113,29 +123,35 @@ jobs:
 
       - name: Install dependencies
         run: uv sync
-        working-directory: ${{ inputs.package-path }}
+        working-directory: ${{ matrix.path }}
 
       - name: Run tests
         run: uv run pytest --cov --cov-report=xml
-        working-directory: ${{ inputs.package-path }}
+        working-directory: ${{ matrix.path }}
 
       - name: Get minimum Python version
         id: min-py
         run: |
-          MIN_PY=$(echo '${{ inputs.python-versions }}' | jq -r '.[0]')
+          MIN_PY=$(echo '${{ toJson(matrix.python-versions) }}' | jq -r '.[0]')
           echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
 
       - name: Upload coverage
         if: matrix.python == steps.min-py.outputs.version
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ inputs.package }}
-          path: ${{ inputs.package-path }}/coverage.xml
+          name: coverage-${{ matrix.project }}
+          path: ${{ matrix.path }}/coverage.xml
+          retention-days: 30
 
   sonarcloud:
-    name: SonarCloud (${{ inputs.package }})
+    name: SonarCloud (${{ matrix.project }})
     needs: [lint, test]
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -143,18 +159,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: coverage-${{ inputs.package }}
-          path: ${{ inputs.package-path }}
+          name: coverage-${{ matrix.project }}
+          path: ${{ matrix.path }}
 
       - uses: SonarSource/sonarcloud-github-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
-          projectBaseDir: ${{ inputs.package-path }}
+          projectBaseDir: ${{ matrix.path }}
           args: >
-            -Dsonar.projectKey=NoNameItem_${{ inputs.package }}
+            -Dsonar.projectKey=NoNameItem_${{ matrix.project }}
             -Dsonar.organization=nonameitem
-            -Dsonar.python.version=${{ join(fromJson(inputs.python-versions), ',') }}
+            -Dsonar.python.version=${{ join(matrix.python-versions, ',') }}
             -Dsonar.sources=src
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
