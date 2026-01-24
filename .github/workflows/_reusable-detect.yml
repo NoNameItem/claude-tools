@@ -1,0 +1,32 @@
+# .github/workflows/_reusable-detect.yml
+name: Detect Changes (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Git ref range (e.g., origin/master..HEAD)'
+        required: true
+        type: string
+    outputs:
+      result:
+        description: 'JSON with detection result'
+        value: ${{ jobs.detect.outputs.result }}
+
+jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      result: ${{ steps.detect.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changes
+        id: detect
+        run: |
+          RESULT=$(python .github/scripts/detect_changes.py --ref "${{ inputs.ref }}")
+          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
