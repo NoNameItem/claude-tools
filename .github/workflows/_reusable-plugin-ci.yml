@@ -1,0 +1,103 @@
+# .github/workflows/_reusable-plugin-ci.yml
+name: Plugin CI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      plugins:
+        description: 'JSON array of plugin names'
+        required: true
+        type: string
+      changed-files:
+        description: 'JSON map of project -> files'
+        required: false
+        type: string
+        default: '{}'
+      tooling-changed:
+        description: 'Whether tooling files changed'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  validate-structure:
+    name: Validate (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJson(inputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate plugin structure
+        run: python .github/scripts/validate_plugin.py "plugins/${{ matrix.plugin }}"
+
+  lint:
+    name: Lint (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJson(inputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Python files
+        id: check-python
+        run: |
+          if find "plugins/${{ matrix.plugin }}" -name "*.py" 2>/dev/null | grep -q .; then
+            echo "has_python=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_python=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python
+        if: steps.check-python.outputs.has_python == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup uv
+        if: steps.check-python.outputs.has_python == 'true'
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install ruff
+        if: steps.check-python.outputs.has_python == 'true'
+        run: uv tool install ruff
+
+      - name: Determine files to lint
+        if: steps.check-python.outputs.has_python == 'true'
+        id: files
+        run: |
+          PLUGIN="${{ matrix.plugin }}"
+          CHANGED_FILES='${{ inputs.changed-files }}'
+          TOOLING_CHANGED="${{ inputs.tooling-changed }}"
+
+          if [ "$TOOLING_CHANGED" == "true" ] || [ "$CHANGED_FILES" == "{}" ]; then
+            # Lint all Python files in plugin
+            echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
+          else
+            # Lint only changed Python files
+            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PLUGIN" '.[$p] // [] | .[] | select(endswith(".py"))' | tr '\n' ' ')
+            if [ -z "$PY_FILES" ]; then
+              echo "files=" >> "$GITHUB_OUTPUT"
+            else
+              echo "files=$PY_FILES" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Ruff format check
+        if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
+        run: ruff format --config pyproject.toml --check ${{ steps.files.outputs.files }}
+
+      - name: Ruff lint
+        if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
+        run: ruff check --config pyproject.toml ${{ steps.files.outputs.files }}
