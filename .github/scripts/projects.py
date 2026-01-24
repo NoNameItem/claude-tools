@@ -5,10 +5,15 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path  # noqa: TC003 - used at runtime
 
-if TYPE_CHECKING:
-    from pathlib import Path
+
+@dataclass
+class CIConfig:
+    """CI configuration from pyproject.toml."""
+
+    tooling_files: list[str]
+    project_types: dict[str, list[str]]
 
 
 @dataclass
@@ -19,6 +24,33 @@ class ProjectInfo:
     path: str
     kind: str  # "package" or "plugin"
     python_versions: list[str]
+
+
+def get_ci_config(repo_root: Path) -> CIConfig:
+    """Load CI config from pyproject.toml.
+
+    Args:
+        repo_root: Path to repository root.
+
+    Returns:
+        CIConfig with tooling_files and project_types.
+
+    Raises:
+        ValueError: If [tool.ci] section is missing.
+    """
+    pyproject_path = repo_root / "pyproject.toml"
+    content = pyproject_path.read_text()
+    data = tomllib.loads(content)
+
+    ci_config = data.get("tool", {}).get("ci")
+    if ci_config is None:
+        msg = "Missing [tool.ci] configuration in pyproject.toml"
+        raise ValueError(msg)
+
+    return CIConfig(
+        tooling_files=ci_config.get("tooling_files", []),
+        project_types=ci_config.get("project-types", {}),
+    )
 
 
 # Patterns for repo-level paths (don't require scope)
@@ -107,68 +139,67 @@ def _parse_python_versions(pyproject_path: Path) -> list[str]:
     return versions
 
 
-# noinspection D
 def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
-    """Discover all packages and plugins in the repository.
+    """Discover all projects based on [tool.ci] configuration.
 
     Args:
         repo_root: Path to repository root.
 
     Returns:
-        Dict mapping package/plugin name to ProjectInfo.
+        Dict mapping project name to ProjectInfo.
 
     Raises:
         ValueError: If scope collision detected or missing classifiers.
     """
+    config = get_ci_config(repo_root)
     projects: dict[str, ProjectInfo] = {}
 
-    # Discover packages
-    packages_dir = repo_root / "packages"
-    if packages_dir.exists():
-        for pkg_dir in packages_dir.iterdir():
-            if not pkg_dir.is_dir():
+    for kind, dirs in config.project_types.items():
+        for dir_name in dirs:
+            dir_path = repo_root / dir_name
+            if not dir_path.exists():
                 continue
 
-            name = pkg_dir.name
-            pyproject = pkg_dir / "pyproject.toml"
+            for project_dir in dir_path.iterdir():
+                if not project_dir.is_dir():
+                    continue
 
-            if not pyproject.exists():
-                continue
+                name = project_dir.name
 
-            python_versions = _parse_python_versions(pyproject)
+                # Check for collision
+                if name in projects:
+                    msg = (
+                        f"Scope collision detected\n\n"
+                        f"  Name '{name}' exists in multiple locations:\n"
+                        f"    - {projects[name].path}/\n"
+                        f"    - {dir_name}/{name}/\n\n"
+                        f"  Rename one to ensure unique scope names."
+                    )
+                    raise ValueError(msg)
 
-            projects[name] = ProjectInfo(
-                name=name,
-                path=f"packages/{name}",
-                kind="package",
-                python_versions=python_versions,
-            )
+                python_versions = _get_python_versions(project_dir, kind)
 
-    # Discover plugins
-    plugins_dir = repo_root / "plugins"
-    if plugins_dir.exists():
-        for plugin_dir in plugins_dir.iterdir():
-            if not plugin_dir.is_dir():
-                continue
-
-            name = plugin_dir.name
-
-            # Check for collision
-            if name in projects:
-                msg = (
-                    f"Scope collision detected\n\n"
-                    f"  Name '{name}' exists in both:\n"
-                    f"    - packages/{name}/\n"
-                    f"    - plugins/{name}/\n\n"
-                    f"  Rename one to ensure unique scope names."
+                projects[name] = ProjectInfo(
+                    name=name,
+                    path=f"{dir_name}/{name}",
+                    kind=kind,
+                    python_versions=python_versions,
                 )
-                raise ValueError(msg)
-
-            projects[name] = ProjectInfo(
-                name=name,
-                path=f"plugins/{name}",
-                kind="plugin",
-                python_versions=[],  # Plugins don't have Python versions
-            )
 
     return projects
+
+
+def _get_python_versions(project_dir: Path, kind: str) -> list[str]:
+    """Get Python versions for a project.
+
+    For packages: parse from pyproject.toml classifiers.
+    For other types: return empty list.
+    """
+    if kind != "package":
+        return []
+
+    pyproject = project_dir / "pyproject.toml"
+    if not pyproject.exists():
+        return []
+
+    return _parse_python_versions(pyproject)

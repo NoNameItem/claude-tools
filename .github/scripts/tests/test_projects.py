@@ -123,3 +123,83 @@ version = "0.1.0"
 
         with pytest.raises(ValueError, match="Missing Python version classifiers"):
             discover_projects(temp_repo)
+
+
+class TestCIConfig:
+    """Tests for CI config loading."""
+
+    def test_get_ci_config_reads_toml(self, temp_repo: Path) -> None:
+        """Should read [tool.ci] from pyproject.toml."""
+        from ..projects import get_ci_config
+
+        # Create pyproject.toml with [tool.ci]
+        (temp_repo / "pyproject.toml").write_text("""\
+[project]
+name = "test"
+
+[tool.ci]
+tooling_files = ["pyproject.toml", "uv.lock"]
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]
+""")
+        config = get_ci_config(temp_repo)
+        assert config.tooling_files == ["pyproject.toml", "uv.lock"]
+        assert config.project_types == {"package": ["packages"], "plugin": ["plugins"]}
+
+    def test_get_ci_config_missing_raises(self, temp_repo: Path) -> None:
+        """Should raise error if [tool.ci] is missing."""
+        from ..projects import get_ci_config
+
+        (temp_repo / "pyproject.toml").write_text("""\
+[project]
+name = "test"
+""")
+        with pytest.raises(ValueError, match=r"Missing \[tool.ci\]"):
+            get_ci_config(temp_repo)
+
+
+class TestDiscoverProjectsConfigDriven:
+    """Tests for config-driven project discovery."""
+
+    def test_discovers_from_config(self, temp_repo: Path) -> None:
+        """Should discover projects based on [tool.ci.project-types]."""
+        # Add config to pyproject.toml
+        (temp_repo / "pyproject.toml").write_text("""\
+[project]
+name = "test"
+
+[tool.ci]
+tooling_files = ["pyproject.toml"]
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]
+""")
+        projects = discover_projects(temp_repo)
+        assert "statuskit" in projects
+        assert "flow" in projects
+
+    def test_custom_project_type(self, temp_repo: Path) -> None:
+        """Should support custom project types from config."""
+        # Create custom dir
+        custom_dir = temp_repo / "custom-projects" / "myproject"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "config.json").write_text("{}")
+
+        (temp_repo / "pyproject.toml").write_text("""\
+[project]
+name = "test"
+
+[tool.ci]
+tooling_files = []
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]
+custom = ["custom-projects"]
+""")
+        projects = discover_projects(temp_repo)
+        assert "myproject" in projects
+        assert projects["myproject"].kind == "custom"

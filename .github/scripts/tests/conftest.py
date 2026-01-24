@@ -20,6 +20,7 @@ def temp_repo(tmp_path: Path) -> Path:
     - packages/statuskit/src/statuskit/__init__.py
     - plugins/flow/.claude-plugin/plugin.json
     - README.md (repo-level file)
+    - pyproject.toml (with [tool.ci] config)
     """
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -43,6 +44,20 @@ def temp_repo(tmp_path: Path) -> Path:
         check=True,
         capture_output=True,
     )
+
+    # Create root pyproject.toml with [tool.ci] config
+    (repo / "pyproject.toml").write_text("""\
+[project]
+name = "test-repo"
+version = "0.1.0"
+
+[tool.ci]
+tooling_files = ["pyproject.toml", "uv.lock"]
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]
+""")
 
     # Create packages/statuskit structure
     statuskit_dir = repo / "packages" / "statuskit"
