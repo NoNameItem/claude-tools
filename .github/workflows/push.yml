@@ -1,0 +1,85 @@
+# .github/workflows/push.yml
+name: Push
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    uses: ./.github/workflows/_reusable-detect.yml
+    with:
+      ref: HEAD~1..HEAD
+
+  validate-commits:
+    name: Validate commits
+    needs: [detect]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Validate commits
+        env:
+          DETECT_RESULT: ${{ needs.detect.outputs.result }}
+        run: |
+          python .github/scripts/validate.py --commits \
+            ${{ github.event.before }} \
+            ${{ github.sha }}
+
+  package-ci:
+    name: Package CI
+    needs: [detect, validate-commits]
+    if: fromJson(needs.detect.outputs.result).by_type.package.has_changed == true
+    uses: ./.github/workflows/_reusable-python-ci.yml
+    with:
+      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.matrix) }}
+      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.test_matrix) }}
+      changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
+      tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
+    secrets: inherit
+
+  plugin-ci:
+    name: Plugin CI
+    needs: [detect, validate-commits]
+    if: fromJson(needs.detect.outputs.result).by_type.plugin.has_changed == true
+    uses: ./.github/workflows/_reusable-plugin-ci.yml
+    with:
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.plugin.changed) }}
+      changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
+      tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
+
+  package-ci-info:
+    name: Package CI (info)
+    needs: [detect, validate-commits]
+    if: |
+      fromJson(needs.detect.outputs.result).tooling_changed == true &&
+      fromJson(needs.detect.outputs.result).by_type.package.has_unchanged == true
+    uses: ./.github/workflows/_reusable-python-ci.yml
+    with:
+      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_matrix) }}
+      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_test_matrix) }}
+      tooling-changed: true
+    secrets: inherit
+    continue-on-error: true
+
+  plugin-ci-info:
+    name: Plugin CI (info)
+    needs: [detect, validate-commits]
+    if: |
+      fromJson(needs.detect.outputs.result).tooling_changed == true &&
+      fromJson(needs.detect.outputs.result).by_type.plugin.has_unchanged == true
+    uses: ./.github/workflows/_reusable-plugin-ci.yml
+    with:
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.plugin.unchanged) }}
+      tooling-changed: true
+    continue-on-error: true
