@@ -366,7 +366,7 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
                 error=ValidationError.SCOPE_MISMATCH,
                 message=f"Scope '{commit_info.scope}' doesn't match: {expected_scope}",
             )
-    elif commit_info.scope and commit_info.scope not in ("ci", "deps", "docs"):
+    elif commit_info.scope:
         return ValidationResult(
             success=False,
             error=ValidationError.SCOPE_MISMATCH,
