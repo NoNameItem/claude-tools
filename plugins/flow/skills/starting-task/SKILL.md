@@ -61,7 +61,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 0. Detect | Check if in worktree | Environment awareness |
+| 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
 | 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` | Script builds tree |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
@@ -80,16 +80,19 @@ The script outputs a properly formatted hierarchical tree. Example output:
 
 Follow these steps **in order**. Do not skip steps.
 
-### 0. Environment Detection
+### 0. Environment Detection & Sync
 
-**Run at skill start to detect worktree context:**
+**Run at skill start:**
 
 ```bash
+# Sync tasks from all branches
+bd sync
+
 # Check if already in a worktree
 pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
-Store this value for use in Step 6.5.
+`bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.5.
 
 ### 1. Build and Display Task Tree
 
