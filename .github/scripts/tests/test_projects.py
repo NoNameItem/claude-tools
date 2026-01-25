@@ -111,7 +111,7 @@ class TestDiscoverProjects:
         assert projects["statuskit"].python_versions == ["3.11", "3.12"]
 
     def test_missing_classifiers(self, temp_repo: Path) -> None:
-        """Should raise error if package has no Python classifiers."""
+        """Should return empty python_versions if no classifiers."""
         # Create package without classifiers
         no_classifiers_dir = temp_repo / "packages" / "noclassifiers"
         no_classifiers_dir.mkdir(parents=True)
@@ -121,8 +121,9 @@ name = "noclassifiers"
 version = "0.1.0"
 """)
 
-        with pytest.raises(ValueError, match="Missing Python version classifiers"):
-            discover_projects(temp_repo)
+        projects = discover_projects(temp_repo)
+        assert "noclassifiers" in projects
+        assert projects["noclassifiers"].python_versions == []
 
 
 class TestCIConfig:

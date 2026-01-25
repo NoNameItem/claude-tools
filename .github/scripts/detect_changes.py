@@ -21,7 +21,10 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
+def build_changed_files_map(
+    changed_files: list[str],
+    repo_root: Path,
+) -> dict[str, list[str]]:
     """Group changed files by project.
 
     Returns ALL files without extension filtering.
@@ -29,6 +32,7 @@ def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
 
     Args:
         changed_files: List of file paths relative to repo root.
+        repo_root: Repository root for loading config.
 
     Returns:
         Dict mapping project name to list of files.
@@ -42,7 +46,7 @@ def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
 
     for file_path in changed_files:
-        project_name = get_project_from_path(file_path)
+        project_name = get_project_from_path(file_path, repo_root)
         key = project_name if project_name else "repo"
 
         if key not in result:
@@ -161,7 +165,7 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
     tooling_files_set = set(config.tooling_files)
 
     for f in changed_files:
-        project_name = get_project_from_path(f)
+        project_name = get_project_from_path(f, repo_root)
         if project_name:
             all_changed_projects.add(project_name)
             project_info = all_projects.get(project_name)
@@ -271,7 +275,7 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
                 }
             )
 
-    result.changed_files = build_changed_files_map(changed_files)
+    result.changed_files = build_changed_files_map(changed_files, repo_root)
 
     return result
 

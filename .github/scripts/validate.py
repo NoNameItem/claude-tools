@@ -145,6 +145,7 @@ def _write_error_annotation(result: ValidationResult) -> None:
 
 def _get_projects_from_files(
     files: list[str],
+    repo_root: Path,
 ) -> tuple[set[str], list[str]]:
     """Extract projects and repo-level files from file list."""
     try:
@@ -156,10 +157,10 @@ def _get_projects_from_files(
     repo_level_files: list[str] = []
 
     for f in files:
-        pkg = get_project_from_path(f)
+        pkg = get_project_from_path(f, repo_root)
         if pkg:
             projects.add(pkg)
-        elif is_repo_level_path(f):
+        elif is_repo_level_path(f, repo_root):
             repo_level_files.append(f)
 
     return projects, repo_level_files
@@ -280,7 +281,7 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
             message=f"Invalid format: {msg}",
         )
 
-    packages, _ = _get_projects_from_files(changed_files)
+    packages, _ = _get_projects_from_files(changed_files, repo_root)
 
     if len(packages) > 1:
         return ValidationResult(
@@ -309,9 +310,10 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
 
 def validate_staged_files(
     staged_files: list[str],
+    repo_root: Path,
 ) -> ValidationResult:
     """Validate staged files for single-package rule."""
-    packages, _ = _get_projects_from_files(staged_files)
+    packages, _ = _get_projects_from_files(staged_files, repo_root)
 
     if len(packages) > 1:
         return ValidationResult(
@@ -351,7 +353,13 @@ def main() -> int:  # noqa: PLR0911, PLR0912
     """Main entry point."""
     from pathlib import Path
 
-    repo_root = Path.cwd()
+    # Get repo root from git (works even if cwd is a subdirectory)
+    repo_root = Path(
+        subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],  # noqa: S607
+            text=True,
+        ).strip()
+    )
 
     if len(sys.argv) < MIN_ARGS:
         print("Usage: validate.py --hook | --pr | --commits <before> <after>")
@@ -365,7 +373,7 @@ def main() -> int:  # noqa: PLR0911, PLR0912
             if not staged_files:
                 print("✓ No staged files")
                 return ValidationError.SUCCESS
-            result = validate_staged_files(staged_files)
+            result = validate_staged_files(staged_files, repo_root)
 
         elif mode == "--pr":
             pr_title = os.environ.get("PR_TITLE", "")

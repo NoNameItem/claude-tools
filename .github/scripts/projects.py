@@ -53,15 +53,26 @@ def get_ci_config(repo_root: Path) -> CIConfig:
     )
 
 
-def get_project_from_path(path: str) -> str | None:
+def get_project_from_path(path: str, repo_root: Path | None = None) -> str | None:
     """Extract package/plugin name from file path.
 
     Args:
         path: File path relative to repo root.
+        repo_root: Repository root for loading config. If None, uses hardcoded prefixes.
 
     Returns:
         Package/plugin name or None if repo-level path.
     """
+    if repo_root is not None:
+        config = get_ci_config(repo_root)
+        for prefixes in config.project_types.values():
+            for prefix in prefixes:
+                if path.startswith(f"{prefix}/"):
+                    parts = path.split("/")
+                    return parts[1] if len(parts) > 1 else None
+        return None
+
+    # Fallback for backwards compatibility (no repo_root provided)
     if path.startswith("packages/"):
         parts = path.split("/")
         return parts[1] if len(parts) > 1 else None
@@ -71,16 +82,17 @@ def get_project_from_path(path: str) -> str | None:
     return None
 
 
-def is_repo_level_path(path: str) -> bool:
+def is_repo_level_path(path: str, repo_root: Path | None = None) -> bool:
     """Check if path is a repo-level file (not in any project).
 
     Args:
         path: File path relative to repo root.
+        repo_root: Repository root for loading config.
 
     Returns:
         True if repo-level (not belonging to any project), False otherwise.
     """
-    return get_project_from_path(path) is None
+    return get_project_from_path(path, repo_root) is None
 
 
 def _parse_python_versions(pyproject_path: Path) -> list[str]:
@@ -162,7 +174,7 @@ def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
                     )
                     raise ValueError(msg)
 
-                python_versions = _get_python_versions(project_dir, kind)
+                python_versions = _get_python_versions(project_dir)
 
                 projects[name] = ProjectInfo(
                     name=name,
@@ -174,17 +186,18 @@ def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
     return projects
 
 
-def _get_python_versions(project_dir: Path, kind: str) -> list[str]:
+def _get_python_versions(project_dir: Path) -> list[str]:
     """Get Python versions for a project.
 
-    For packages: parse from pyproject.toml classifiers.
-    For other types: return empty list.
+    Parses from pyproject.toml classifiers if available.
+    Returns empty list if no pyproject.toml or no classifiers.
     """
-    if kind != "package":
-        return []
-
     pyproject = project_dir / "pyproject.toml"
     if not pyproject.exists():
         return []
 
-    return _parse_python_versions(pyproject)
+    try:
+        return _parse_python_versions(pyproject)
+    except ValueError:
+        # No Python classifiers found - not a Python project
+        return []

@@ -177,27 +177,27 @@ class TestValidateCommit:
 class TestValidateStagedFiles:
     """Tests for staged files validation (--hook mode)."""
 
-    def test_single_package(self) -> None:
+    def test_single_package(self, temp_repo: Path) -> None:
         """Should pass for staged files from one package."""
         staged_files = [
             "packages/statuskit/src/a.py",
             "packages/statuskit/src/b.py",
         ]
-        result = validate_staged_files(staged_files)
+        result = validate_staged_files(staged_files, temp_repo)
         assert result.success is True
 
-    def test_repo_level_only(self) -> None:
+    def test_repo_level_only(self, temp_repo: Path) -> None:
         """Should pass for repo-level files only."""
         staged_files = [".github/workflows/ci.yml", "README.md"]
-        result = validate_staged_files(staged_files)
+        result = validate_staged_files(staged_files, temp_repo)
         assert result.success is True
 
-    def test_multiple_packages(self) -> None:
+    def test_multiple_packages(self, temp_repo_with_another_package: Path) -> None:
         """Should fail for files from multiple packages."""
         staged_files = [
             "packages/statuskit/src/a.py",
             "packages/another/src/b.py",
         ]
-        result = validate_staged_files(staged_files)
+        result = validate_staged_files(staged_files, temp_repo_with_another_package)
         assert result.success is False
         assert result.error == ValidationError.MULTIPLE_PACKAGES

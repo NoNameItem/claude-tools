@@ -155,23 +155,23 @@ class TestDetectionResultJsonPlugins:
 class TestBuildChangedFilesMap:
     """Tests for build_changed_files_map function."""
 
-    def test_single_package(self) -> None:
+    def test_single_package(self, temp_repo: Path) -> None:
         """Should group files by package."""
         from ..detect_changes import build_changed_files_map
 
         files = ["packages/statuskit/src/foo.py", "packages/statuskit/tests/test_foo.py"]
-        result = build_changed_files_map(files)
+        result = build_changed_files_map(files, temp_repo)
         assert result == {"statuskit": files}
 
-    def test_repo_level_files(self) -> None:
+    def test_repo_level_files(self, temp_repo: Path) -> None:
         """Should group repo-level files under 'repo' key."""
         from ..detect_changes import build_changed_files_map
 
         files = ["pyproject.toml", ".github/scripts/validate.py"]
-        result = build_changed_files_map(files)
+        result = build_changed_files_map(files, temp_repo)
         assert result == {"repo": files}
 
-    def test_mixed_files(self) -> None:
+    def test_mixed_files(self, temp_repo: Path) -> None:
         """Should separate package and repo-level files."""
         from ..detect_changes import build_changed_files_map
 
@@ -180,13 +180,13 @@ class TestBuildChangedFilesMap:
             "packages/statuskit/README.md",
             "pyproject.toml",
         ]
-        result = build_changed_files_map(files)
+        result = build_changed_files_map(files, temp_repo)
         assert result == {
             "statuskit": ["packages/statuskit/src/foo.py", "packages/statuskit/README.md"],
             "repo": ["pyproject.toml"],
         }
 
-    def test_multiple_packages(self) -> None:
+    def test_multiple_packages(self, temp_repo_with_another_package: Path) -> None:
         """Should group files by their respective packages."""
         from ..detect_changes import build_changed_files_map
 
@@ -194,17 +194,17 @@ class TestBuildChangedFilesMap:
             "packages/statuskit/src/foo.py",
             "packages/another/src/bar.py",
         ]
-        result = build_changed_files_map(files)
+        result = build_changed_files_map(files, temp_repo_with_another_package)
         assert result == {
             "statuskit": ["packages/statuskit/src/foo.py"],
             "another": ["packages/another/src/bar.py"],
         }
 
-    def test_empty_list(self) -> None:
+    def test_empty_list(self, temp_repo: Path) -> None:
         """Should return empty dict for empty input."""
         from ..detect_changes import build_changed_files_map
 
-        result = build_changed_files_map([])
+        result = build_changed_files_map([], temp_repo)
         assert result == {}
 
 
