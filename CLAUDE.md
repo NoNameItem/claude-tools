@@ -130,34 +130,19 @@ This applies to ALL Python files in the repo, including `.github/scripts/`.
 
 ## Creating Pull Requests
 
-PRs создаются через GitHub App бота, чтобы пользователь мог быть ревьювером.
-
-### Workflow
-
-1. **Запушить ветку:**
-   ```bash
-   git push -u origin HEAD
-   ```
-
-2. **Bot автоматически создаёт PR** с placeholder title и описанием
-
-3. **Обновить PR (title, description, label):**
-   ```bash
-   gh pr edit <N> \
-     --title "feat(statuskit): add quota module" \
-     --add-label "statuskit" \
-     --body "$(cat <<'EOF'
-   ## Summary
-   ...
-   ## How it works
-   ...
-   EOF
-   )"
-   ```
-
-4. **Пользователь назначает себя ревьювером** (возможно, т.к. автор — бот)
-
-### PR Description Format
+```bash
+git push -u origin HEAD
+gh pr create \
+  --title "feat(statuskit): add quota module" \
+  --label "statuskit" \
+  --body "$(cat <<'EOF'
+## Summary
+...
+## How it works
+...
+EOF
+)"
+```
 
 См. CONTRIBUTING.md для полного шаблона описания PR.
 
