@@ -148,7 +148,7 @@ jobs:
           if [ "${{ inputs.info-only }}" == "true" ]; then
             uv run pytest --junitxml=pytest-results.xml
           else
-            uv run pytest --cov --cov-report=xml --junitxml=pytest-results.xml
+            uv run pytest --cov=src --cov-report=xml --junitxml=pytest-results.xml
           fi
         working-directory: ${{ matrix.path }}
 
