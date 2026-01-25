@@ -146,9 +146,9 @@ jobs:
       - name: Run tests
         run: |
           if [ "${{ inputs.info-only }}" == "true" ]; then
-            uv run pytest
+            uv run pytest --junitxml=pytest-results.xml
           else
-            uv run pytest --cov --cov-report=xml
+            uv run pytest --cov --cov-report=xml --junitxml=pytest-results.xml
           fi
         working-directory: ${{ matrix.path }}
 
@@ -165,6 +165,18 @@ jobs:
           name: coverage-${{ matrix.project }}
           path: ${{ matrix.path }}/coverage.xml
           retention-days: 30
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: ${{ matrix.path }}/pytest-results.xml
+          check_run: true
+          check_run_annotations: none
+          check_name: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          comment_mode: always
+          comment_title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          job_summary: true
 
   sonarcloud:
     name: SonarCloud (${{ matrix.project }})
