@@ -81,9 +81,10 @@ jobs:
         continue-on-error: true
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
         run: |
           uv run ruff format --check --preview --output-format=rdjson ${{ steps.filter.outputs.py_files }} 2>&1 | \
-            reviewdog -f=rdjson -name="ruff-format" -reporter=github-pr-review -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjson -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
         id: lint
@@ -91,19 +92,21 @@ jobs:
         continue-on-error: true
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
         run: |
           uv run ruff check --output-format=rdjson ${{ steps.filter.outputs.py_files }} 2>&1 | \
-            reviewdog -f=rdjson -name="ruff" -reporter=github-pr-review -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Type check
         id: typecheck
         continue-on-error: true
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
         run: |
           uv run ty check --output-format concise 2>&1 | \
             python ${{ github.workspace }}/.github/scripts/ty_to_rdjsonl.py | \
-            reviewdog -f=rdjsonl -name="ty" -reporter=github-pr-review -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjsonl -name="ty" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
         working-directory: ${{ matrix.path }}
 
       - name: Check results
