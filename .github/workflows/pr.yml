@@ -82,3 +82,32 @@ jobs:
     with:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.plugin.unchanged) }}
       tooling-changed: true
+
+  # Summary jobs for branch protection required checks
+  # When reusable workflows run, they create sub-jobs like "Package CI / Lint (statuskit)"
+  # but not a parent "Package CI" job. These summary jobs provide that parent check.
+  package-ci-result:
+    name: Package CI
+    needs: [package-ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        run: |
+          RESULT="${{ needs.package-ci.result }}"
+          echo "Package CI result: $RESULT"
+          [[ "$RESULT" == "failure" ]] && exit 1
+          exit 0
+
+  plugin-ci-result:
+    name: Plugin CI
+    needs: [plugin-ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check result
+        run: |
+          RESULT="${{ needs.plugin-ci.result }}"
+          echo "Plugin CI result: $RESULT"
+          [[ "$RESULT" == "failure" ]] && exit 1
+          exit 0
