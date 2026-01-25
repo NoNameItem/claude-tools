@@ -83,12 +83,12 @@ jobs:
         id: lint
         if: steps.filter.outputs.py_files != ''
         continue-on-error: true
-        run: uv run ruff check ${{ steps.filter.outputs.py_files }}
+        run: uv run ruff check --output-format=github ${{ steps.filter.outputs.py_files }}
 
       - name: Type check
         id: typecheck
         continue-on-error: true
-        run: uv run ty check
+        run: uv run ty check --output-format github
         working-directory: ${{ matrix.path }}
 
       - name: Check results
