@@ -91,6 +91,14 @@ name: PR
 on:
   pull_request:
     branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   detect:
@@ -160,6 +168,13 @@ name: Push
 on:
   push:
     branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   detect:
@@ -375,20 +390,109 @@ def validate_pr(title: str, detect_result: dict) -> list[str]:
      uses: ./.github/workflows/_reusable-other-ci.yml
    ```
 
-## Открытые вопросы
+## Решения
 
-1. **Python version для plugins** — сейчас `python_versions=[]`, но ruff запускаем. Хардкодим 3.11 или брать откуда-то?
+### Python version для plugins
 
-2. **REPO_LEVEL_PATTERNS** в projects.py — сейчас хардкод. Нужно конфигурировать?
+Для плагинов достаточно `target-version` в ruff конфиге (pyproject.toml). Поле `python_versions` нужно только для матрицы тестов (pytest), которых у плагинов нет. Для `setup-python` используем любую версию (3.11).
 
-3. **Branch protection** — какие jobs добавить в required checks?
+### Repo-level paths
 
-4. **Concurrency** — отменять in-progress runs при новом push в PR?
+Удалить `REPO_LEVEL_PATTERNS` из projects.py. Вместо этого использовать простую логику:
 
-5. **validate.py --commits** — нужен ли вообще на push to main, если PR уже провалидирован?
+```python
+def is_repo_level_path(path: str) -> bool:
+    return get_project_from_path(path) is None
+```
 
-6. **Тесты** — обновить tests для detect_changes.py, validate.py, projects.py?
+Всё, что не принадлежит проекту — repo-level.
 
-7. **Обработка ошибок** — что если pyproject.toml битый или нет `[tool.ci]`?
+### Branch protection
 
-8. **Отображение результатов** — badges, summary table (отдельная задача)
+Required checks (blocking):
+- `validate-pr`
+- `package-ci`
+- `plugin-ci`
+
+Info jobs (`*-ci-info`) намеренно non-blocking и не включаются в required checks.
+
+### Concurrency
+
+Отменять in-progress runs при новом push в PR:
+
+```yaml
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+```
+
+### Валидация на push to main
+
+Оставить `validate.py --commits` как safety net. Защита от:
+- Admin bypass branch protection
+- Прямой push в main
+- Squash merge с некорректным message
+
+### Тесты
+
+TDD подход — сначала тесты, потом код. Обновление тестов включено в implementation plan.
+
+### Обработка ошибок
+
+Fail fast с понятным сообщением:
+- Если pyproject.toml битый → ошибка парсинга
+- Если нет `[tool.ci]` → ошибка "Missing [tool.ci] configuration in pyproject.toml"
+
+Без fallback на defaults — явная конфигурация обязательна.
+
+### Отображение результатов
+
+Отдельная задача: claude-tools-dwk (CI Reporting). Badges, summary table — после основной реализации.
+
+### Fork PRs
+
+Для PR из форков secrets недоступны. Стратегия:
+- Lint и test запускаются (не требуют secrets)
+- SonarCloud пропускается: `if: github.event.pull_request.head.repo.full_name == github.repository`
+
+### Timeouts
+
+Явные таймауты для всех jobs:
+
+| Job | timeout-minutes |
+|-----|-----------------|
+| detect | 5 |
+| validate | 5 |
+| lint | 10 |
+| test | 30 |
+| sonarcloud | 15 |
+
+### Permissions
+
+Security hardening — явные минимальные permissions на уровне workflow:
+
+```yaml
+permissions:
+  contents: read
+```
+
+### workflow_dispatch
+
+Добавить ручной триггер в pr.yml для дебага и перезапуска:
+
+```yaml
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+```
+
+### Artifact retention
+
+Coverage artifacts нужны только для SonarCloud в том же run, но на всякий случай храним 30 дней:
+
+```yaml
+- uses: actions/upload-artifact@v4
+  with:
+    retention-days: 30
+```
