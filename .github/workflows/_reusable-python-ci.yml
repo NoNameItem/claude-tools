@@ -165,7 +165,7 @@ jobs:
           retention-days: 30
 
       - name: Publish coverage report
-        if: always()
+        if: always() && github.event_name == 'pull_request'
         uses: MishaKav/pytest-coverage-comment@main
         with:
           pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
