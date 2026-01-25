@@ -144,12 +144,7 @@ jobs:
         run: uv sync
 
       - name: Run tests
-        run: |
-          if [ "${{ inputs.info-only }}" == "true" ]; then
-            uv run pytest --junitxml=pytest-results.xml
-          else
-            uv run pytest --cov=src --cov-report=xml --junitxml=pytest-results.xml
-          fi
+        run: uv run pytest --cov=src --cov-report=xml --junitxml=pytest-results.xml
         working-directory: ${{ matrix.path }}
 
       - name: Get minimum Python version
@@ -159,7 +154,7 @@ jobs:
           echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
 
       - name: Upload coverage
-        if: matrix.python == steps.min-py.outputs.version && inputs.info-only == false
+        if: matrix.python == steps.min-py.outputs.version
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.project }}
@@ -167,7 +162,7 @@ jobs:
           retention-days: 30
 
       - name: Publish coverage report
-        if: always() && inputs.info-only == false
+        if: always()
         uses: MishaKav/pytest-coverage-comment@main
         with:
           pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
