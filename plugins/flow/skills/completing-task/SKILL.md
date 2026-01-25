@@ -15,14 +15,14 @@ This skill handles task completion: close task, check parents recursively, sync.
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. **Branch Check** | Validate git branch | Feature → stop, suggest workflow |
+| 1. **Branch Check** | Validate git branch + PR | Feature + no PR → stop; Feature + PR → ask |
 | 2. Find Task | Get in_progress leaf | Ask if multiple |
 | 3. Close | `bd close {task-id}` | Use bd, not SQL |
 | 4. **Check Parent** | Recursive parent check | With confirmation |
 | 5. **Ask** | Before closing parent | Even if "obvious" |
 | 6. **Sync** | `bd sync` | Always, at end |
 
-**Key behavior:** Always ask before closing parents. Always run bd sync.
+**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always run bd sync.
 
 ## Workflow
 
@@ -34,20 +34,39 @@ Follow these steps **in order**. Do not skip steps.
 git branch --show-current
 ```
 
-**If feature branch detected** (`feature/*`, `fix/*`, or any non-generic):
+**If generic branch** (main, master, develop, trunk):
+Continue to step 2.
+
+**If feature branch detected** (`feature/*`, `fix/*`, `chore/*`, or any non-generic):
+
+Check if PR exists for current branch:
+
+```bash
+gh pr view --json state,url 2>/dev/null || echo "NO_PR"
+```
+
+**If NO PR exists:**
 
 **STOP** and inform user:
 
-> "You're on feature branch `{branch-name}`.
+> "You're on feature branch `{branch-name}` with no PR.
 >
-> Use `superpowers:finishing-a-development-branch` to properly complete this work (handles merge/PR/cleanup and task closure together).
->
-> Do NOT proceed with flow:done on feature branches."
+> Use `superpowers:finishing-a-development-branch` to properly complete this work (handles merge/PR/cleanup and task closure together)."
 
 Then exit. Do not continue workflow.
 
-**If generic branch** (main, master, develop, trunk):
-Continue to step 2.
+**If PR exists (any state: open, merged, closed):**
+
+**ASK** user:
+
+> "You're on feature branch `{branch-name}`.
+>
+> PR exists: {url} (state: {state})
+>
+> Proceed to close task on this branch? (yes/no)"
+
+- **If yes:** Continue to step 2.
+- **If no:** Stop and suggest `superpowers:finishing-a-development-branch` if needed.
 
 ### 2. Find In-Progress Leaf Task
 
@@ -148,9 +167,9 @@ Confirm sync completed.
 ❌ Update PRs or issues
 ❌ Run tests or builds
 ❌ Auto-close parents without asking
-❌ Proceed on feature branches
+❌ Auto-proceed on feature branches without asking
 
-**Scope note:** On feature branches, this skill STOPS and refers to finishing-a-development-branch.
+**Scope note:** On feature branches without PR, this skill STOPS and refers to finishing-a-development-branch. On feature branches WITH PR, it asks user before proceeding.
 
 ## Red Flags - STOP
 
@@ -162,9 +181,10 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Use SQL for efficiency"
 - "Parent obviously should close"
 - "Being helpful by auto-closing cascade"
-- "Feature branch doesn't matter"
+- "Feature branch → always block"
+- "PR exists → auto-proceed"
 
-**All of these mean: Follow workflow. Check branch. Ask before closing parents. Run bd sync.**
+**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Run bd sync.**
 
 ## Common Rationalizations
 
@@ -176,7 +196,8 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Use SQL for efficiency" | bd close has logging, events, validation. Use it. |
 | "Parent obviously should close" | Obvious to you ≠ user wants it. Ask. |
 | "Being helpful by auto-closing" | Asking IS being helpful. Assuming isn't. |
-| "Feature branch doesn't matter" | Feature branches need PR workflow. Always check. |
+| "Feature branch → always block" | Check for PR first. If PR exists, ask user. |
+| "PR exists → auto-proceed" | Still ask user. PR exists ≠ user wants to close here. |
 
 ## Examples
 
@@ -223,35 +244,64 @@ Agent: [Closes parent]
 - Ran bd sync
 - Clear confirmation
 
-### ❌ BAD: Feature branch proceed
+### ❌ BAD: Feature branch proceed without checking PR
 
 ```
 User: "Done with this feature, flow:done"
 Agent: [On feature/add-auth branch]
-       [Closes task anyway]
+       [Closes task without checking for PR]
 ```
 
-**Problem:** Proceeded on feature branch without checking.
+**Problem:** Proceeded on feature branch without checking PR status.
 
-### ✅ GOOD: Feature branch handling
+### ✅ GOOD: Feature branch with no PR
 
 ```
 User: "Done with this feature, flow:done"
 Agent: [Checks branch: feature/add-auth]
+       [Checks PR: no PR exists]
 
-       You're on feature branch `feature/add-auth`.
+       You're on feature branch `feature/add-auth` with no PR.
 
        Use `superpowers:finishing-a-development-branch` to properly
        complete this work (handles merge/PR/cleanup and task closure together).
-
-       Do NOT proceed with flow:done on feature branches.
 ```
 
 **Correct because:**
 - Checked branch
-- Stopped when detected feature branch
+- Checked PR status
+- Stopped when no PR exists
 - Suggested correct workflow
-- Did not close task
+
+### ✅ GOOD: Feature branch with PR exists
+
+```
+User: "PR merged, flow:done"
+Agent: [Checks branch: feature/add-auth]
+       [Checks PR: exists, merged]
+
+       You're on feature branch `feature/add-auth`.
+
+       PR exists: https://github.com/org/repo/pull/123 (state: MERGED)
+
+       Proceed to close task on this branch? (yes/no)
+
+User: yes
+Agent: [Continues to step 2, finds task, closes it]
+       [Runs bd sync]
+
+       ✓ Closed claude-tools-xyz
+       ✓ Synced with remote
+
+       Done.
+```
+
+**Correct because:**
+- Checked branch
+- Checked PR status
+- Asked user before proceeding
+- User confirmed, so continued workflow
+- Did not assume - asked first
 
 ### ❌ BAD: Skip bd sync
 
@@ -342,7 +392,7 @@ Running bd sync...
 
 Always follow the workflow.
 
-**Check branch FIRST.** Feature branch → stop, suggest finishing-a-development-branch.
+**Check branch FIRST.** Feature branch + no PR → stop. Feature branch + PR → ask user.
 
 **Ask before closing parents.** Even when "obviously" all children closed.
 
