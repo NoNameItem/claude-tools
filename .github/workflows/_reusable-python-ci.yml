@@ -148,7 +148,7 @@ jobs:
           if [ "${{ inputs.info-only }}" == "true" ]; then
             uv run pytest --junitxml=pytest-results.xml
           else
-            uv run pytest --cov --cov-report=xml --junitxml=pytest-results.xml
+            uv run pytest --cov --cov-report=xml --cov-report=term-missing:coverage.txt --junitxml=pytest-results.xml
           fi
         working-directory: ${{ matrix.path }}
 
@@ -166,15 +166,16 @@ jobs:
           path: ${{ matrix.path }}/coverage.xml
           retention-days: 30
 
-      - name: Publish test summary
-        if: always()
-        uses: EnricoMi/publish-unit-test-result-action@v2
+      - name: Publish coverage report
+        if: always() && inputs.info-only == false
+        uses: MishaKav/pytest-coverage-comment@main
         with:
-          files: ${{ matrix.path }}/pytest-results.xml
-          check_run: false
-          comment_mode: always
-          comment_title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
-          job_summary: true
+          pytest-coverage-path: ${{ matrix.path }}/coverage.txt
+          pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
+          junitxml-path: ${{ matrix.path }}/pytest-results.xml
+          title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          unique-id-for-comment: ${{ matrix.project }}-py${{ matrix.python }}
+          report-only-changed-files: true
 
       - name: Publish test details
         if: always()
