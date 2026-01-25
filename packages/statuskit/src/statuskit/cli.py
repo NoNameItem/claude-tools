@@ -1,7 +1,11 @@
 """CLI argument parsing for statuskit."""
 
 import argparse
+import os  # TEST: unused import for lint check
 from importlib.metadata import version
+
+# TEST: type error for ty check
+_test_var: int = "not an int"
 
 MODULES_HELP = """
 Built-in modules:
