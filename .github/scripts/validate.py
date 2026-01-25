@@ -130,6 +130,19 @@ def _write_job_summary(result: ValidationResult) -> None:
         f.write("\n".join(lines) + "\n")
 
 
+def _write_error_annotation(result: ValidationResult) -> None:
+    """Write ::error:: annotation for GitHub Actions."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+
+    error_title = ERROR_TITLES.get(result.error or 0, "Validation Error")
+    # Extract first line of message for annotation (keep it short)
+    short_message = result.message.split("\n")[0]
+    # Escape special characters for workflow command
+    short_message = short_message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::error title={error_title}::{short_message}")
+
+
 def _get_projects_from_files(
     files: list[str],
 ) -> tuple[set[str], list[str]]:
@@ -413,7 +426,7 @@ def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]
 
 
 # noinspection D
-def main() -> int:  # noqa: PLR0911, PLR0912
+def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
     """Main entry point."""
     from pathlib import Path
 
@@ -451,8 +464,9 @@ def main() -> int:  # noqa: PLR0911, PLR0912
                 changed_files = _get_changed_files_pr(base_ref, repo_root)
                 result = validate_pr(pr_title, changed_files, repo_root)
 
-            # Write job summary on failure
+            # Write error annotation and job summary on failure
             if not result.success:
+                _write_error_annotation(result)
                 _write_job_summary(result)
 
         elif mode == "--commits":
