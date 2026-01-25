@@ -66,6 +66,7 @@ jobs:
       matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_matrix) }}
       test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_test_matrix) }}
       tooling-changed: true
+      info-only: true
     secrets: inherit
 
   plugin-ci-info:
