@@ -14,6 +14,7 @@ claude-statuskit = { workspace = true }
 dev = [
     "pre-commit>=4.0",
     "pytest>=8.0",
+    "pytest-cov>=6.0",
     "ruff>=0.9",
     "ty",
     "claude-statuskit",
@@ -98,6 +99,16 @@ quote-style = "double"
 testpaths = ["packages/*/tests"]
 
 [tool.ty.src]
-# .github/scripts uses relative imports that ty doesn't resolve correctly
-# Tests work fine with pytest, just ty's module resolution doesn't handle it
-exclude = [".github/scripts/tests"]
+# Only type-check Python packages
+include = ["packages"]
+
+[tool.ci]
+tooling_files = [
+    "pyproject.toml",
+    "uv.lock",
+    "sonar-project.properties",
+]
+
+[tool.ci.project-types]
+package = ["packages"]
+plugin = ["plugins"]

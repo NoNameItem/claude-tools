@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  profile: "chill"
+  high_level_summary: true
+  path_filters:
+    - "!**/*.md"
+    - "!.beads/**"
+    - "!**/*.lock"
+  tools:
+    ruff:
+      enabled: false
+    gitleaks:
+      enabled: true
+    shellcheck:
+      enabled: true
+    actionlint:
+      enabled: true
+  path_instructions:
+    - path: "packages/statuskit/**"
+      instructions: |
+        Python package for Claude Code statusline. Modular plugin architecture.
+        Check for proper error handling, type hints, and module isolation.
+    - path: "plugins/**/skills/**"
+      instructions: |
+        Claude Code skills (markdown with YAML frontmatter).
+        Focus on clarity of instructions, completeness, and correct skill metadata.
+    - path: "tests/**"
+      instructions: |
+        Pytest tests. Check for edge cases coverage and clear test naming.
+    - path: ".github/workflows/**"
+      instructions: |
+        GitHub Actions CI/CD. Check for security best practices and job dependencies.

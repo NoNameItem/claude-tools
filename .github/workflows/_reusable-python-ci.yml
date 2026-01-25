@@ -1,0 +1,221 @@
+# .github/workflows/_reusable-python-ci.yml
+name: Python CI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: 'JSON matrix with packages (from detect output)'
+        required: true
+        type: string
+      test-matrix:
+        description: 'JSON flat test matrix (project × python combinations)'
+        required: true
+        type: string
+      changed-files:
+        description: 'JSON map of project -> files'
+        required: false
+        type: string
+        default: '{}'
+      tooling-changed:
+        description: 'Whether tooling files changed'
+        required: false
+        type: boolean
+        default: false
+      info-only:
+        description: 'Skip SonarCloud (for info jobs)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  lint:
+    name: Lint (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get minimum Python version
+        id: py-version
+        run: |
+          MIN_PY=$(echo '${{ toJson(matrix.python-versions) }}' | jq -r '.[0]')
+          echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ steps.py-version.outputs.version }}
+
+      - uses: reviewdog/action-setup@v1
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Filter Python files
+        id: filter
+        run: |
+          PROJECT="${{ matrix.project }}"
+          CHANGED_FILES='${{ inputs.changed-files }}'
+          TOOLING_CHANGED="${{ inputs.tooling-changed }}"
+
+          if [ "$TOOLING_CHANGED" == "true" ] || [ "$CHANGED_FILES" == "{}" ]; then
+            # Lint all Python files in package
+            echo "py_files=${{ matrix.path }}" >> "$GITHUB_OUTPUT"
+          else
+            # Lint only changed Python files
+            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PROJECT" '.[$p] // [] | .[] | select(endswith(".py"))' | tr '\n' ' ')
+            if [ -z "$PY_FILES" ]; then
+              echo "py_files=" >> "$GITHUB_OUTPUT"
+            else
+              echo "py_files=$PY_FILES" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Ruff format check
+        id: format
+        if: steps.filter.outputs.py_files != ''
+        continue-on-error: true
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+        run: |
+          uv run ruff format --check --preview --output-format=rdjson -- ${{ steps.filter.outputs.py_files }} 2>&1 | \
+            reviewdog -f=rdjson -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+
+      - name: Ruff lint
+        id: lint
+        if: steps.filter.outputs.py_files != ''
+        continue-on-error: true
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+        run: |
+          uv run ruff check --output-format=rdjson -- ${{ steps.filter.outputs.py_files }} 2>&1 | \
+            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+
+      - name: Type check
+        id: typecheck
+        continue-on-error: true
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+        run: |
+          uv run ty check --output-format concise 2>&1 | \
+            python ${{ github.workspace }}/.github/scripts/ty_to_rdjsonl.py | \
+            reviewdog -f=rdjsonl -name="ty" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+        working-directory: ${{ matrix.path }}
+
+      - name: Check results
+        run: |
+          failed=false
+          if [ "${{ steps.format.outcome }}" == "failure" ]; then
+            echo "::error::Ruff format check failed"
+            failed=true
+          fi
+          if [ "${{ steps.lint.outcome }}" == "failure" ]; then
+            echo "::error::Ruff lint failed"
+            failed=true
+          fi
+          if [ "${{ steps.typecheck.outcome }}" == "failure" ]; then
+            echo "::error::Type check failed"
+            failed=true
+          fi
+          if [ "$failed" == "true" ]; then
+            exit 1
+          fi
+
+  test:
+    name: Test (${{ matrix.project }}, py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.test-matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run tests
+        run: uv run pytest --cov=src --cov-report=xml --junitxml=pytest-results.xml
+        working-directory: ${{ matrix.path }}
+
+      - name: Get minimum Python version
+        id: min-py
+        run: |
+          MIN_PY=$(echo '${{ toJson(matrix.python-versions) }}' | jq -r '.[0]')
+          echo "version=$MIN_PY" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage
+        if: matrix.python == steps.min-py.outputs.version
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.project }}
+          path: ${{ matrix.path }}/coverage.xml
+          retention-days: 30
+
+      - name: Publish coverage report
+        if: always()
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
+          junitxml-path: ${{ matrix.path }}/pytest-results.xml
+          title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          badge-title: '${{ matrix.project }} py${{ matrix.python }}'
+          unique-id-for-comment: ${{ matrix.project }}-py${{ matrix.python }}
+          coverage-path-prefix: ${{ matrix.path }}/
+          default-branch: master
+          report-only-changed-files: true
+
+      - name: Publish test details
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: 'Test Details: ${{ matrix.project }} (py${{ matrix.python }})'
+          path: ${{ matrix.path }}/pytest-results.xml
+          reporter: java-junit
+
+  sonarcloud:
+    name: SonarCloud (${{ matrix.project }})
+    needs: [lint, test]
+    if: |
+      inputs.info-only == false &&
+      (github.event.pull_request.head.repo.full_name == github.repository || github.event_name == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(inputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: coverage-${{ matrix.project }}
+          path: ${{ matrix.path }}
+
+      - uses: SonarSource/sonarqube-scan-action@v7.0.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ matrix.path }}
+          args: >
+            -Dsonar.projectKey=NoNameItem_${{ matrix.project }}
+            -Dsonar.organization=nonameitem
+            -Dsonar.python.version=${{ join(matrix.python-versions, ',') }}
+            -Dsonar.sources=src
+            -Dsonar.tests=tests
+            -Dsonar.python.coverage.reportPaths=coverage.xml
+            -Dsonar.coverage.exclusions=**/tests/**,**/conftest.py
