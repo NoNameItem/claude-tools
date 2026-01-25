@@ -76,7 +76,11 @@ class TestParseCommitMessage:
             assert parse_commit_message(msg) is None, f"'{msg}' should be invalid"
 
     def test_merge_commit(self) -> None:
-        """Should return None for merge commits."""
+        """
+        Verify that merge commit messages are not parsed as conventional commits.
+        
+        The parser treats merge commits (e.g., "Merge branch 'feature/x' into main") as non-conventional and produces no parsed result.
+        """
         result = parse_commit_message("Merge branch 'feature/x' into main")
         assert result is None
 

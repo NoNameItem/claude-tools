@@ -13,7 +13,15 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def temp_plugin(tmp_path: Path) -> Path:
-    """Create minimal valid plugin structure."""
+    """
+    Create a minimal plugin directory structure for tests.
+    
+    Creates plugins/test-plugin with a .claude-plugin subdirectory containing a plugin.json
+    file with name "test-plugin" and version "1.0.0".
+    
+    Returns:
+        Path: Path to the created plugin directory (plugins/test-plugin).
+    """
     plugin_dir = tmp_path / "plugins" / "test-plugin"
     plugin_dir.mkdir(parents=True)
     claude_plugin = plugin_dir / ".claude-plugin"
@@ -24,7 +32,15 @@ def temp_plugin(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def temp_marketplace(tmp_path: Path) -> Path:
-    """Create marketplace.json in repo root."""
+    """
+    Create a minimal marketplace.json under a .claude-plugin directory in the given repository root.
+    
+    Parameters:
+        tmp_path (Path): Path to the repository root (pytest tmp_path fixture).
+    
+    Returns:
+        repo_root (Path): The same tmp_path provided, representing the repository root.
+    """
     claude_plugin = tmp_path / ".claude-plugin"
     claude_plugin.mkdir(exist_ok=True)
     marketplace = {
@@ -105,7 +121,11 @@ class TestValidatePluginJson:
         assert any("must be kebab-case" in e for e in result.errors)
 
     def test_invalid_version(self, tmp_path: Path) -> None:
-        """Should fail when version is not semver."""
+        """
+        Check that plugin validation fails for a plugin.json with a non-semantic-version `version` field.
+        
+        Asserts that validation reports failure and that at least one error message contains "must be semver".
+        """
         from ..validate_plugin import validate_plugin
 
         plugin_dir = tmp_path / "plugins" / "bad-version"
@@ -215,7 +235,11 @@ class TestValidateComponents:
         assert any(".md extension" in e for e in result.errors)
 
     def test_custom_skills_path(self, tmp_path: Path) -> None:
-        """Should validate skills at custom path."""
+        """
+        Verify that validation fails when a plugin specifies a custom skills path and a skill directory there is missing `SKILL.md`.
+        
+        The test creates a plugin whose `plugin.json` sets `"skills": "./custom-skills"`, places a skill directory without `SKILL.md` under that custom path, and asserts that validate_plugin reports failure and includes an error mentioning `SKILL.md`.
+        """
         from ..validate_plugin import validate_plugin
 
         plugin_dir = tmp_path / "plugins" / "custom-path"
@@ -245,7 +269,11 @@ class TestValidateNameUniqueness:
     """Tests for name uniqueness validation."""
 
     def test_name_collision_skill_command(self, tmp_path: Path) -> None:
-        """Should fail when same name in skills and commands."""
+        """
+        Verifies that validation fails when a plugin defines a skill and a command with the same name.
+        
+        The test expects validation errors that mention a naming collision and include the conflicting name ("review").
+        """
         from ..validate_plugin import validate_plugin
 
         plugin_dir = tmp_path / "plugins" / "name-collision"

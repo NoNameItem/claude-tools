@@ -27,7 +27,25 @@ SEVERITY_MAP = {
 
 
 def convert_line(line: str) -> dict | None:
-    """Convert a single ty output line to rdjsonl diagnostic."""
+    """
+    Parse a Ty concise output line into a reviewdog rdjsonl diagnostic dictionary.
+    
+    Parameters:
+        line (str): A single line of Ty concise output in the form
+            "file:line:col: level[code] message".
+    
+    Returns:
+        dict | None: A diagnostic dictionary with keys:
+            - message: diagnostic message string.
+            - location: object containing:
+                - path: file path string.
+                - range.start.line: integer line number.
+                - range.start.column: integer column number.
+            - severity: mapped severity string (RDJSONL).
+            - code.value: diagnostic code string.
+            - source.name: set to "ty".
+        Returns `None` if the input line does not match the expected pattern.
+    """
     match = TY_PATTERN.match(line.strip())
     if not match:
         return None

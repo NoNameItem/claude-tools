@@ -58,7 +58,11 @@ class ValidationResult:
 
 
 def _write_job_summary(result: ValidationResult) -> None:
-    """Write validation error to GitHub Job Summary."""
+    """
+    Write a formatted PR validation summary to the GitHub Actions job summary file.
+    
+    If the GITHUB_STEP_SUMMARY environment variable is set, appends a Markdown block describing the validation result (title, message, and tailored "How to Fix" guidance for INVALID_FORMAT, SCOPE_MISMATCH, and MULTIPLE_PACKAGES). If the environment variable is not set, the function does nothing.
+    """
     from pathlib import Path
 
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -131,7 +135,14 @@ def _write_job_summary(result: ValidationResult) -> None:
 
 
 def _write_error_annotation(result: ValidationResult) -> None:
-    """Write ::error:: annotation for GitHub Actions."""
+    """
+    Emit a GitHub Actions error annotation for the given validation result.
+    
+    If running inside GitHub Actions, writes a single ::error:: workflow command that uses the result's error (to derive a title) and the first line of result.message as the annotation text; special characters are escaped for the workflow command.
+    
+    Parameters:
+        result (ValidationResult): Validation outcome whose `error` determines the annotation title and whose `message` provides the annotation text.
+    """
     if not os.environ.get("GITHUB_ACTIONS"):
         return
 
@@ -146,7 +157,16 @@ def _write_error_annotation(result: ValidationResult) -> None:
 def _get_projects_from_files(
     files: list[str],
 ) -> tuple[set[str], list[str]]:
-    """Extract projects and repo-level files from file list."""
+    """
+    Determine which projects and repository-level files are referenced by a list of file paths.
+    
+    Parameters:
+        files (list[str]): File paths to analyze.
+    
+    Returns:
+        projects (set[str]): Set of project scope names detected from the paths.
+        repo_level_files (list[str]): Paths considered repository-level (not within a project).
+    """
     try:
         from .projects import get_project_from_path, is_repo_level_path  # type: ignore[unresolved-import]
     except ImportError:
@@ -170,7 +190,17 @@ def validate_pr(
     changed_files: list[str],
     repo_root: Path,
 ) -> ValidationResult:
-    """Validate PR title and changed files."""
+    """
+    Validate that a pull request title follows conventional-commit format and that its scope matches the changed files.
+    
+    Parameters:
+        pr_title (str): The pull request title to validate.
+        changed_files (list[str]): File paths changed in the pull request.
+        repo_root (Path): Path to the repository root used for project discovery.
+    
+    Returns:
+        ValidationResult: Result object indicating success or containing a ValidationError and a human-readable message describing the failure.
+    """
     try:
         from .commits import parse_commit_message  # type: ignore[unresolved-import]
         from .projects import discover_projects  # type: ignore[unresolved-import]
@@ -239,15 +269,18 @@ def validate_pr_with_detect_result(
     detect_result: dict,
     repo_root: Path,
 ) -> ValidationResult:
-    """Validate PR title using pre-computed detect result.
-
-    Args:
-        pr_title: PR title string.
-        detect_result: Output from detect_changes.py (as dict).
-        repo_root: Path to repository root.
-
+    """
+    Validate a PR title against a precomputed detect_result to enforce conventional-commit scope and single-package rules.
+    
+    Parameters:
+        pr_title (str): The PR title to validate (conventional commit format).
+        detect_result (dict): Output from detect_changes.py describing changed projects and counts.
+        repo_root (Path): Path to the repository root used for project discovery.
+    
     Returns:
-        ValidationResult.
+        ValidationResult: success=True when the title and detected changes conform to rules.
+            On failure, contains an appropriate ValidationError and a human-readable message describing the violation
+            (invalid commit format, scope collision, multiple projects changed, or scope mismatch).
     """
     try:
         from .commits import parse_commit_message
@@ -316,7 +349,18 @@ def validate_pr_with_detect_result(
 
 
 def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
-    """Validate a single commit."""
+    """
+    Validate that a single commit's message and changed files follow repository rules.
+    
+    Performs these checks: commit message format, disallows merge commits, enforces that a commit touches at most one package, and requires the commit scope to match the changed package (or be one of the allowed repo-level scopes `ci`, `deps`, `docs` when no package files changed).
+    
+    Parameters:
+        sha (str): The commit SHA to validate.
+        repo_root (Path): Path to the repository root where git commands are run.
+    
+    Returns:
+        ValidationResult: Result describing success or failure. On failure, `error` contains a ValidationError code and `message` explains the failure.
+    """
     try:
         from .commits import parse_commit_message  # type: ignore[unresolved-import]
     except ImportError:
@@ -379,7 +423,15 @@ def validate_commit(sha: str, repo_root: Path) -> ValidationResult:
 def validate_staged_files(
     staged_files: list[str],
 ) -> ValidationResult:
-    """Validate staged files for single-package rule."""
+    """
+    Enforces the single-package-per-commit rule for a list of staged file paths.
+    
+    Parameters:
+        staged_files (list[str]): File paths currently staged for commit.
+    
+    Returns:
+        ValidationResult: If more than one package is affected, `success` is `False`, `error` is `ValidationError.MULTIPLE_PACKAGES`, and `message` lists the packages. If exactly one package is affected, `success` is `True` and `message` names the package. If only repository-level files are affected, `success` is `True` and `message` indicates repo-level changes.
+    """
     packages, _ = _get_projects_from_files(staged_files)
 
     if len(packages) > 1:
@@ -396,7 +448,15 @@ def validate_staged_files(
 
 
 def _get_staged_files(repo_root: Path) -> list[str]:
-    """Get list of staged files from git."""
+    """
+    List file paths currently staged in git for the repository.
+    
+    Parameters:
+        repo_root (Path): Path to the repository root used as the git working directory.
+    
+    Returns:
+        list[str]: Staged file paths (relative to the repository root). Empty list if none are staged.
+    """
     output = subprocess.check_output(
         ["git", "diff", "--cached", "--name-only"],  # noqa: S607
         cwd=repo_root,
@@ -406,7 +466,16 @@ def _get_staged_files(repo_root: Path) -> list[str]:
 
 
 def _get_changed_files_pr(base_ref: str, repo_root: Path) -> list[str]:
-    """Get list of changed files in PR compared to base branch."""
+    """
+    Return the list of file paths changed between the base branch and the current HEAD.
+    
+    Parameters:
+        base_ref (str): The name of the base branch to compare against (e.g., "main").
+        repo_root (Path): Path to the repository root where the git command will run.
+    
+    Returns:
+        list[str]: File paths (relative to the repository root) that differ between origin/{base_ref} and HEAD.
+    """
     output = subprocess.check_output(
         ["git", "diff", "--name-only", f"origin/{base_ref}...HEAD"],  # noqa: S607
         cwd=repo_root,
@@ -416,7 +485,17 @@ def _get_changed_files_pr(base_ref: str, repo_root: Path) -> list[str]:
 
 
 def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]:
-    """Get list of commit SHAs in range."""
+    """
+    Return the list of commit SHAs included in the git range `before..after`.
+    
+    Parameters:
+        before (str): A git ref marking the start of the range (exclusive).
+        after (str): A git ref marking the end of the range (inclusive).
+        repo_root (Path): Path to the repository where the git command will run.
+    
+    Returns:
+        list[str]: Commit SHAs that are in the range `before..after`. Returns an empty list if no commits are found.
+    """
     output = subprocess.check_output(
         ["git", "rev-list", f"{before}..{after}"],  # noqa: S607
         cwd=repo_root,
@@ -427,7 +506,20 @@ def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]
 
 # noinspection D
 def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
-    """Main entry point."""
+    """
+    Dispatch CLI modes to validate staged files, a pull request, or a commit range and return an appropriate exit code.
+    
+    Performs validations for three modes: --hook (staged files), --pr (PR title vs changed files or provided detect result), and --commits (range of commits). Outputs status messages to stdout and, for PR failures, may emit GitHub Actions annotations and append a job summary.
+    
+    Returns:
+        int: Exit code from ValidationError:
+            - SUCCESS (0) on success
+            - INVALID_FORMAT (1) for commit/PR title format errors
+            - SCOPE_MISMATCH (2) when scopes do not match changed package(s)
+            - MULTIPLE_PACKAGES (3) when changes touch multiple packages
+            - SCOPE_COLLISION (4) when project discovery reports a collision
+            - SCRIPT_ERROR (10) for usage errors, git failures, or unexpected exceptions
+    """
     from pathlib import Path
 
     repo_root = Path.cwd()

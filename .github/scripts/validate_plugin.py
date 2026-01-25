@@ -38,16 +38,35 @@ class PluginValidationResult:
     warnings: list[str] = field(default_factory=list)
 
     def add_error(self, message: str) -> None:
-        """Add an error and mark as failed."""
+        """
+        Record an error message and mark the validation result as unsuccessful.
+        
+        Parameters:
+            message (str): Error message to append to the result's error list.
+        """
         self.errors.append(message)
         self.success = False
 
     def add_warning(self, message: str) -> None:
-        """Add a warning."""
+        """
+        Record a warning message in the validation result.
+        
+        Appends the given message to the `warnings` list without modifying the `success` flag.
+        
+        Parameters:
+            message (str): The warning text to add.
+        """
         self.warnings.append(message)
 
     def merge(self, other: PluginValidationResult) -> None:
-        """Merge another result into this one."""
+        """
+        Merge another PluginValidationResult into this result.
+        
+        Appends the other's errors and warnings and marks this result as unsuccessful if the other.result indicates failure.
+        
+        Parameters:
+            other (PluginValidationResult): Result to merge into this result.
+        """
         self.errors.extend(other.errors)
         self.warnings.extend(other.warnings)
         if not other.success:
@@ -56,10 +75,13 @@ class PluginValidationResult:
 
 # noinspection D
 def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dict | None]:
-    """Validate plugin.json exists and has valid structure.
-
+    """
+    Validate the plugin.json file inside the given plugin directory and return structured validation feedback.
+    
+    Performs existence check, JSON parsing, ensures a required `name` in kebab-case, validates `version` (if present) against semver, and ensures path-like fields start with "./".
+    
     Returns:
-        Tuple of (result, plugin_json_data or None if invalid).
+        tuple: `result` — PluginValidationResult containing collected errors and warnings; `data` — the parsed plugin.json dictionary, or `None` if validation failed.
     """
     result = PluginValidationResult()
     plugin_json_path = plugin_path / ".claude-plugin" / "plugin.json"
@@ -99,14 +121,18 @@ def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dic
 
 
 def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResult:
-    """Validate complete plugin structure.
-
-    Args:
-        plugin_path: Path to plugin directory.
-        repo_root: Path to repository root.
-
+    """
+    Validate a plugin directory and return an aggregated validation result.
+    
+    Runs all validation steps (plugin.json, components, name uniqueness, and marketplace registration)
+    and merges their findings into a single PluginValidationResult.
+    
+    Parameters:
+        plugin_path (Path): Path to the plugin directory to validate.
+        repo_root (Path): Path to the repository root used to locate marketplace.json and compute expected sources.
+    
     Returns:
-        PluginValidationResult with all validation results.
+        PluginValidationResult: Aggregated result containing success flag, errors, and warnings.
     """
     # Validate plugin.json
     json_result, plugin_data = validate_plugin_json(plugin_path)
@@ -133,12 +159,19 @@ def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResul
 
 # noinspection D
 def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidationResult:
-    """Validate component directories and files exist.
-
-    Checks:
-    - skills: Each subfolder must contain SKILL.md
-    - commands: Each file must have .md extension
-    - agents: Each file must have .md extension
+    """
+    Validate plugin component directories and their required files.
+    
+    Performs these checks based on the plugin_json paths (defaults: "./skills", "./commands", "./agents"):
+    - skills: for each subdirectory, verifies a SKILL.md file exists.
+    - commands: verifies every file in the commands directory has a `.md` extension.
+    - agents: verifies every file in the agents directory has a `.md` extension.
+    
+    Parameters:
+        plugin_json (dict): Parsed plugin.json whose keys `skills`, `commands`, and `agents` may override the default relative paths.
+    
+    Returns:
+        PluginValidationResult: Aggregated validation result containing errors for missing SKILL.md files or non-`.md` command/agent files; `success` is true if no errors were recorded.
     """
     result = PluginValidationResult()
 
@@ -149,6 +182,12 @@ def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidatio
 
     # Normalize paths (remove ./ prefix)
     def normalize_path(p: str) -> str:
+        """
+        Strip a leading "./" from a path string.
+        
+        Returns:
+            The input string with a leading "./" removed if present, otherwise the original string.
+        """
         return p[2:] if p.startswith("./") else p
 
     # Validate skills
@@ -180,11 +219,15 @@ def validate_components(plugin_path: Path, plugin_json: dict) -> PluginValidatio
 
 
 def collect_component_names(plugin_path: Path, plugin_json: dict) -> dict[str, list[str]]:
-    """Collect component names from all component directories.
-
+    """
+    Collect names of skills, commands, and agents from the plugin directory based on paths in plugin_json.
+    
+    Parameters:
+        plugin_path (Path): Root path of the plugin repository containing the component directories.
+        plugin_json (dict): Parsed .claude-plugin/plugin.json providing optional keys "skills", "commands", and "agents" which may override default relative paths.
+    
     Returns:
-        Dict mapping component type to list of names.
-        {"skill": ["name1", "name2"], "command": ["name3"], "agent": ["name4"]}
+        dict[str, list[str]]: Mapping with keys "skill", "command", and "agent" to lists of component names. Skill names are directory names under the skills path; command and agent names are file stems of `.md` files under their respective paths. Paths in plugin_json may use the "./" prefix; defaults are "./skills", "./commands", and "./agents".
     """
     names: dict[str, list[str]] = {"skill": [], "command": [], "agent": []}
 
@@ -194,6 +237,12 @@ def collect_component_names(plugin_path: Path, plugin_json: dict) -> dict[str, l
     agents_path = plugin_json.get("agents", "./agents")
 
     def normalize_path(p: str) -> str:
+        """
+        Strip a leading "./" from a path string.
+        
+        Returns:
+            The input string with a leading "./" removed if present, otherwise the original string.
+        """
         return p[2:] if p.startswith("./") else p
 
     # Collect skill names (folder names)
@@ -221,10 +270,15 @@ def collect_component_names(plugin_path: Path, plugin_json: dict) -> dict[str, l
 
 
 def validate_name_uniqueness(plugin_path: Path, plugin_json: dict) -> PluginValidationResult:
-    """Validate no name collisions between components.
-
-    A name collision occurs when the same name exists in multiple
-    component types (e.g., skill and command both named "review").
+    """
+    Check for duplicate component names across skills, commands, and agents.
+    
+    Parameters:
+        plugin_path (Path): Path to the plugin root directory used when resolving component locations.
+        plugin_json (dict): Parsed plugin.json data used to determine component paths and configuration.
+    
+    Returns:
+        PluginValidationResult: Result containing an error for each name that appears in more than one component type; `success` is false if any collisions are found.
     """
     result = PluginValidationResult()
     names = collect_component_names(plugin_path, plugin_json)
@@ -246,12 +300,13 @@ def validate_name_uniqueness(plugin_path: Path, plugin_json: dict) -> PluginVali
 
 
 def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo_root: Path) -> PluginValidationResult:
-    """Validate plugin is registered in marketplace.
-
-    Checks:
-    - Plugin is listed in .claude-plugin/marketplace.json
-    - Name matches between plugin.json and marketplace
-    - Source path matches plugin location
+    """
+    Validate that the plugin is registered correctly in the repository marketplace.
+    
+    Validates that .claude-plugin/marketplace.json exists at the repository root, can be parsed, and contains an entry that corresponds to the plugin. Computes the expected marketplace `source` for the plugin (relative path from repo_root, or `./plugins/<plugin-dir>` if relative computation fails) and checks that either a marketplace entry with the same `name` has a matching `source`, or an entry with the same `source` has a matching `name`. Records errors for a missing marketplace file, invalid JSON, missing registration, source mismatches, or name mismatches.
+    
+    Returns:
+        PluginValidationResult: Aggregated validation outcome with errors for any registration issues and warnings if applicable.
     """
     result = PluginValidationResult()
     marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
@@ -309,7 +364,19 @@ def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo
 
 
 def main() -> int:  # noqa: PLR0911, PLR0912
-    """Main entry point."""
+    """
+    Validate a plugin at the filesystem path provided on the command line and emit validation results.
+    
+    Parses the first command-line argument as the plugin path, locates the repository root (by searching for a .git directory, falling back to the current working directory), runs full plugin validation, prints any warnings or errors, and maps the first error to a process exit code.
+    
+    Returns:
+        int: Exit code indicating result:
+            0 — plugin is valid;
+            1 — resource not found or generic validation failure (including "not found" or "Invalid JSON" errors);
+            2 — missing required field error (contains "Missing required");
+            3 — invalid field error (contains "Invalid");
+            10 — usage error, missing/invalid CLI arguments, or an internal script error.
+    """
     if len(sys.argv) < 2:  # noqa: PLR2004
         print("Usage: python -m scripts.validate_plugin <plugin-path>", file=sys.stderr)
         return 10

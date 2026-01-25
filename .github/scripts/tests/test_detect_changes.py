@@ -143,7 +143,9 @@ class TestDetectionResultJsonPlugins:
         assert "has_plugins" in data
 
     def test_json_has_changed_files(self, temp_repo: Path) -> None:
-        """Should include changed_files in JSON output."""
+        """
+        Verify that JSON produced by detect_changes includes a "changed_files" key mapping each package name to its list of changed file paths. For the input ["packages/statuskit/src/module.py"], the JSON's "changed_files" value must equal {"statuskit": ["packages/statuskit/src/module.py"]}.
+        """
         changed_files = ["packages/statuskit/src/module.py"]
         result = detect_changes(changed_files, repo_root=temp_repo)
         output = result.to_json()

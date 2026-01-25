@@ -54,13 +54,14 @@ def get_ci_config(repo_root: Path) -> CIConfig:
 
 
 def get_project_from_path(path: str) -> str | None:
-    """Extract package/plugin name from file path.
-
-    Args:
-        path: File path relative to repo root.
-
+    """
+    Extract the package or plugin name from a repository-relative path.
+    
+    Parameters:
+        path (str): Path relative to the repository root.
+    
     Returns:
-        Package/plugin name or None if repo-level path.
+        The project name (the second path component) if the path starts with "packages/" or "plugins/", `None` otherwise.
     """
     if path.startswith("packages/"):
         parts = path.split("/")
@@ -72,28 +73,32 @@ def get_project_from_path(path: str) -> str | None:
 
 
 def is_repo_level_path(path: str) -> bool:
-    """Check if path is a repo-level file (not in any project).
-
-    Args:
-        path: File path relative to repo root.
-
+    """
+    Determine whether the given path refers to a repository-level file (not inside any project).
+    
+    Parameters:
+        path (str): File path relative to the repository root.
+    
     Returns:
-        True if repo-level (not belonging to any project), False otherwise.
+        `true` if the path is repository-level (does not belong to any package or plugin), `false` otherwise.
     """
     return get_project_from_path(path) is None
 
 
 def _parse_python_versions(pyproject_path: Path) -> list[str]:
-    """Parse Python versions from pyproject.toml classifiers.
-
-    Args:
-        pyproject_path: Path to pyproject.toml file.
-
+    """
+    Extract Python `X.Y` version strings from a package's pyproject.toml classifiers.
+    
+    Parameters:
+        pyproject_path (Path): Path to the project's pyproject.toml file.
+    
     Returns:
-        List of Python versions (e.g., ["3.11", "3.12"]).
-
+        list[str]: Discovered Python versions (e.g., ["3.11", "3.12"]).
+    
     Raises:
-        ValueError: If no Python classifiers found.
+        ValueError: If no Python classifiers of the form
+            "Programming Language :: Python :: X.Y" are present; the exception
+            message contains guidance and the package/file context.
     """
     content = pyproject_path.read_text()
     data = tomllib.loads(content)
@@ -125,16 +130,17 @@ def _parse_python_versions(pyproject_path: Path) -> list[str]:
 
 
 def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
-    """Discover all projects based on [tool.ci] configuration.
-
-    Args:
-        repo_root: Path to repository root.
-
+    """
+    Discover projects defined in the repository according to the [tool.ci] configuration in pyproject.toml.
+    
+    Parameters:
+        repo_root (Path): Path to repository root.
+    
     Returns:
-        Dict mapping project name to ProjectInfo.
-
+        dict[str, ProjectInfo]: Mapping from project name to its ProjectInfo (name, path, kind, python_versions).
+    
     Raises:
-        ValueError: If scope collision detected or missing classifiers.
+        ValueError: If two projects share the same name (scope collision) or if a package is missing Python classifiers required to determine supported versions.
     """
     config = get_ci_config(repo_root)
     projects: dict[str, ProjectInfo] = {}
@@ -175,10 +181,18 @@ def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
 
 
 def _get_python_versions(project_dir: Path, kind: str) -> list[str]:
-    """Get Python versions for a project.
-
-    For packages: parse from pyproject.toml classifiers.
-    For other types: return empty list.
+    """
+    Determine the Python versions declared for a project.
+    
+    For projects of kind "package", returns the Python versions declared in the project's pyproject.toml classifiers.
+    For non-package kinds or when pyproject.toml is missing, returns an empty list.
+    
+    Parameters:
+        project_dir (Path): Path to the project directory.
+        kind (str): Project kind (e.g., "package", "plugin").
+    
+    Returns:
+        list[str]: Python version strings extracted from classifiers (e.g., "3.10"), or an empty list if none are declared.
     """
     if kind != "package":
         return []

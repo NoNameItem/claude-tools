@@ -13,14 +13,16 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def temp_repo(tmp_path: Path) -> Path:
-    """Create a temporary git repo with packages/plugins structure.
-
-    Structure created:
-    - packages/statuskit/pyproject.toml (with Python classifiers)
-    - packages/statuskit/src/statuskit/__init__.py
-    - plugins/flow/.claude-plugin/plugin.json
-    - README.md (repo-level file)
-    - pyproject.toml (with [tool.ci] config)
+    """
+    Create a temporary git repository with a predefined packages/plugins layout for testing.
+    
+    Creates repository files, initializes git, configures a test user, and makes an initial commit. The created layout includes a root pyproject.toml with [tool.ci] config, packages/statuskit (package pyproject and src with __version__), plugins/flow/.claude-plugin/plugin.json, and a README.md.
+    
+    Parameters:
+        tmp_path (Path): Base temporary directory (typically pytest's `tmp_path`) in which the repository directory "repo" will be created.
+    
+    Returns:
+        Path: Path to the created repository directory.
     """
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -103,7 +105,17 @@ classifiers = [
 
 @pytest.fixture
 def temp_repo_with_another_package(temp_repo: Path) -> Path:
-    """Extend temp_repo with another package for multi-package tests."""
+    """
+    Add a second package named "another" to the given temporary repository for multi-package tests.
+    
+    Creates the package layout (packages/another with pyproject.toml and src/another/__init__.py), stages the new files, and commits them to the repository.
+    
+    Parameters:
+        temp_repo (Path): Path to the existing temporary git repository to modify.
+    
+    Returns:
+        Path: The same repository path after the new package has been added and committed.
+    """
     another_dir = temp_repo / "packages" / "another"
     another_src = another_dir / "src" / "another"
     another_src.mkdir(parents=True)

@@ -65,7 +65,9 @@ class TestIsRepoLevelPath:
         assert is_repo_level_path(".gitignore") is True
 
     def test_package_path(self) -> None:
-        """Should return False for package paths."""
+        """
+        Verify that package directory paths are not considered repository-level paths.
+        """
         assert is_repo_level_path("packages/statuskit/src/foo.py") is False
 
     def test_plugin_path(self) -> None:

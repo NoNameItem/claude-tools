@@ -22,17 +22,14 @@ if TYPE_CHECKING:
 
 
 def build_changed_files_map(changed_files: list[str]) -> dict[str, list[str]]:
-    """Group changed files by project.
-
-    Returns ALL files without extension filtering.
-    Filtering (.py etc.) happens on consumer side (workflow).
-
-    Args:
-        changed_files: List of file paths relative to repo root.
-
+    """
+    Group changed file paths by the project that owns each path.
+    
+    Parameters:
+        changed_files (list[str]): File paths relative to the repository root.
+    
     Returns:
-        Dict mapping project name to list of files.
-        Repo-level files are under "repo" key.
+        dict[str, list[str]]: Mapping from project name to list of file paths. Files not attributed to any project are placed under the "repo" key.
     """
     try:
         from .projects import get_project_from_path
@@ -90,7 +87,18 @@ class DetectionResult:
     all_packages_matrix: dict = field(default_factory=lambda: {"include": []})
 
     def to_json(self) -> str:
-        """Convert to JSON string."""
+        """
+        Serialize the DetectionResult to a JSON string.
+        
+        The resulting JSON contains the top-level keys:
+        - by_type: mapping of project type to its changed/unchanged lists, flags, and matrices.
+        - total_changed_count, single_project, single_project_type, has_repo_level, tooling_changed.
+        - changed_files and project_types.
+        - Legacy compatibility fields: projects, packages, plugins, has_packages, has_plugins, matrix, all_packages_matrix.
+        
+        Returns:
+            json_str (str): JSON-formatted string representing the DetectionResult.
+        """
         by_type_dict = {}
         for kind, data in self.by_type.items():
             by_type_dict[kind] = {
@@ -130,7 +138,16 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
     changed_files: list[str],
     repo_root: Path,
 ) -> DetectionResult:
-    """Detect changed projects and generate CI matrices."""
+    """
+    Detect changed projects and assemble CI matrices and metadata for those changes.
+    
+    Parameters:
+    	changed_files (list[str]): File paths (relative to the repository root) that have changed.
+    	repo_root (Path): Path to the repository root used to discover projects and load CI config.
+    
+    Returns:
+    	DetectionResult: Aggregated detection data including per-type ByTypeResult entries, legacy compatibility fields, matrices for changed and unchanged projects, tooling/repo-level flags, and a map of changed files by project.
+    """
     try:
         from .projects import (
             discover_projects,
@@ -277,7 +294,16 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
 
 
 def _get_changed_files_from_ref(ref: str, repo_root: Path) -> list[str]:
-    """Get changed files from git ref range."""
+    """
+    Get the file paths changed in the specified git ref or ref range.
+    
+    Parameters:
+        ref (str): A git ref or ref range (e.g., "HEAD", "origin/main", "HEAD~1..HEAD") to compare.
+        repo_root (Path): Repository root directory in which to run the git command.
+    
+    Returns:
+        list[str]: File paths (relative to repo_root) changed in the given ref; an empty list if no files changed.
+    """
     output = subprocess.check_output(
         ["git", "diff", "--name-only", ref],  # noqa: S607
         cwd=repo_root,
@@ -287,7 +313,14 @@ def _get_changed_files_from_ref(ref: str, repo_root: Path) -> list[str]:
 
 
 def main() -> int:
-    """Main entry point."""
+    """
+    Run change detection for the current repository and print the serialized JSON result.
+    
+    Reads changed file paths from stdin unless invoked with "--ref <git-ref>", in which case it obtains the changed files for that ref. Uses the current working directory as the repository root.
+    
+    Returns:
+        int: 0 on success, 1 on error or incorrect usage.
+    """
     from pathlib import Path
 
     repo_root = Path.cwd()
