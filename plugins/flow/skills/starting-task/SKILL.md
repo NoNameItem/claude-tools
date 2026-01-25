@@ -61,7 +61,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 0. Detect | Check agent-deck, worktree context | Environment awareness |
+| 0. Detect | Check if in worktree | Environment awareness |
 | 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` | Script builds tree |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
@@ -82,17 +82,14 @@ Follow these steps **in order**. Do not skip steps.
 
 ### 0. Environment Detection
 
-**Run at skill start to detect available tools and context:**
+**Run at skill start to detect worktree context:**
 
 ```bash
-# Check if agent-deck is available
-command -v agent-deck >/dev/null 2>&1 && echo "HAS_AGENT_DECK=true" || echo "HAS_AGENT_DECK=false"
-
 # Check if already in a worktree
 pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
-Store these values for use in Step 6.5.
+Store this value for use in Step 6.5.
 
 ### 1. Build and Display Task Tree
 
@@ -305,32 +302,17 @@ git worktree list | grep "{branch-name}"
 
 #### If Worktree Already Exists
 
-**With agent-deck:**
+Extract worktree path from `git worktree list` output, cd into it, and continue:
+
 ```bash
-agent-deck session list | grep "{branch-name}"
+cd {worktree-path}
 ```
-- Session exists → "Сессия уже существует. Переключитесь в agent-deck TUI (Ctrl+j/k)."
-- No session → "Worktree есть. Создать сессию agent-deck?" → `agent-deck add "$(pwd)" -t "{task-title}"` (without --worktree)
 
-**Without agent-deck:**
-> "Worktree уже существует: `.worktrees/{branch-name-sanitized}/`
-> Откройте в новом терминале:
-> ```
-> cd .worktrees/{branch-name-sanitized} && claude
-> ```"
+> "Worktree для этой ветки уже существует. Перешёл в `{worktree-path}`."
 
-Skip to Step 7.
+Skip to Step 7 (update task status only, no branch operations needed).
 
 #### If No Existing Worktree
-
-**With agent-deck (`HAS_AGENT_DECK=true`):**
-
-> "Как открыть ветку `{branch-name}`?
->
-> 1. Здесь (обычный checkout)
-> 2. В новой сессии agent-deck с worktree"
-
-**Without agent-deck (`HAS_AGENT_DECK=false`):**
 
 > "Как открыть ветку `{branch-name}`?
 >
@@ -342,24 +324,30 @@ Skip to Step 7.
 **Option 1 (checkout here):**
 - Proceed to Step 7, then Step 8 (normal checkout)
 
-**Option 2 with agent-deck:**
+**Option 2 (worktree):**
+
+Create worktree with the branch and cd into it:
 ```bash
-agent-deck add "$(pwd)" -t "{task-title}" --worktree {branch-name}
+# Sanitize branch name for directory (replace / with -)
+WORKTREE_DIR=".worktrees/$(echo '{branch-name}' | tr '/' '-')"
+
+# Create worktree with the branch
+git worktree add "$WORKTREE_DIR" -b {branch-name}
+
+# Switch to worktree
+cd "$WORKTREE_DIR"
 ```
+
+If branch already exists (from remote or previous work):
+```bash
+git worktree add "$WORKTREE_DIR" {branch-name}
+cd "$WORKTREE_DIR"
+```
+
 - Proceed to Step 7 (update beads status)
-- **Skip Step 8** (branch created by agent-deck)
-- Tell user: "Создана сессия `{task-title}` с worktree. Переключитесь в agent-deck TUI."
+- **Skip Step 8** (branch created with worktree)
 
-**Option 2 without agent-deck:**
-- Invoke `superpowers:using-git-worktrees` skill with branch name
-- Proceed to Step 7 (update beads status)
-- **Skip Step 8** (branch created by worktree skill)
-- Tell user the worktree path and how to open it
-
-**If agent-deck command fails:**
-> "agent-deck недоступен или вернул ошибку. Создаю worktree через git..."
-
-Then invoke `superpowers:using-git-worktrees` as fallback.
+> "Worktree создан. Перешёл в `{worktree-path}`."
 
 ### 7. Update Task Status
 
@@ -632,17 +620,8 @@ If `IN_WORKTREE=true` (detected in Step 0):
 
 If `git worktree list | grep "{branch-name}"` returns result:
 - **Do NOT create duplicate worktree**
-- Show existing worktree path
-- With agent-deck: check for existing session, offer to create session if none
-- Without agent-deck: tell user to open existing worktree manually
-
-### When agent-deck Command Fails
-
-If `agent-deck add` returns non-zero exit code:
-1. Log the error (don't hide it)
-2. Inform user: "agent-deck недоступен или вернул ошибку"
-3. **Fallback:** invoke `superpowers:using-git-worktrees` instead
-4. Continue workflow normally
+- Extract worktree path from output
+- `cd` into existing worktree and continue working
 
 ## The Bottom Line
 
