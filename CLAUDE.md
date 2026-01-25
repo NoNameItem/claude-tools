@@ -146,17 +146,6 @@ EOF
 
 См. CONTRIBUTING.md для полного шаблона описания PR.
 
-## Git Push Policy
-
-**ALWAYS ask for explicit confirmation before running `git push`.**
-
-Never push automatically after commits. Always show what will be pushed and ask:
-- Branch name
-- Number of commits
-- Brief summary of changes
-
-This prevents accidental pushes and gives the user control over when changes go to remote.
-
 ## Claude Code Plugins
 
 This repository is also a Claude Code plugin marketplace containing workflow automation tools.
