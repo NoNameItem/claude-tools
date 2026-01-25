@@ -460,7 +460,17 @@ def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
                 result = validate_pr_with_detect_result(pr_title, detect_result, repo_root)
             else:
                 # Legacy mode: compute changes from git
-                base_ref = os.environ.get("BASE_REF", "main")
+                base_ref = os.environ.get("BASE_REF")
+                if not base_ref:
+                    base_ref = (
+                        subprocess.check_output(
+                            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                            cwd=repo_root,
+                            text=True,
+                        )
+                        .strip()
+                        .rsplit("/", 1)[-1]
+                    )
                 changed_files = _get_changed_files_pr(base_ref, repo_root)
                 result = validate_pr(pr_title, changed_files, repo_root)
 
