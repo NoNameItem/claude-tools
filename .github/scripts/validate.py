@@ -8,7 +8,7 @@ Usage:
 
 Environment variables (for --pr mode):
     PR_TITLE: Pull request title
-    BASE_REF: Base branch name
+    DETECT_RESULT: JSON output from detect_changes.py
 """
 
 from __future__ import annotations
@@ -167,79 +167,10 @@ def _get_projects_from_files(
 
 def validate_pr(
     pr_title: str,
-    changed_files: list[str],
-    repo_root: Path,
-) -> ValidationResult:
-    """Validate PR title and changed files."""
-    try:
-        from .commits import parse_commit_message  # type: ignore[unresolved-import]
-        from .projects import discover_projects  # type: ignore[unresolved-import]
-    except ImportError:
-        from commits import parse_commit_message  # type: ignore[unresolved-import]
-        from projects import discover_projects  # type: ignore[unresolved-import]
-
-    # Check for scope collision first
-    try:
-        discover_projects(repo_root)
-    except ValueError as e:
-        if "collision" in str(e).lower():
-            return ValidationResult(
-                success=False,
-                error=ValidationError.SCOPE_COLLISION,
-                message=str(e),
-            )
-        raise
-
-    # Parse PR title
-    commit_info = parse_commit_message(pr_title)
-    if commit_info is None:
-        return ValidationResult(
-            success=False,
-            error=ValidationError.INVALID_FORMAT,
-            message=(
-                f"Invalid conventional commit format\n\n  Expected: type(scope): description\n  Got:      {pr_title}"
-            ),
-        )
-
-    # Extract packages from changed files
-    packages, _ = _get_projects_from_files(changed_files)
-
-    # Check multiple packages
-    if len(packages) > 1:
-        return ValidationResult(
-            success=False,
-            error=ValidationError.MULTIPLE_PACKAGES,
-            message=f"Multiple packages changed: {', '.join(sorted(packages))}",
-        )
-
-    # Check scope matches
-    if packages:
-        expected_scope = next(iter(packages))
-        if commit_info.scope != expected_scope:
-            return ValidationResult(
-                success=False,
-                error=ValidationError.SCOPE_MISMATCH,
-                message=f"Scope '{commit_info.scope}' doesn't match changed package: {expected_scope}",
-            )
-    elif commit_info.scope:
-        return ValidationResult(
-            success=False,
-            error=ValidationError.SCOPE_MISMATCH,
-            message=f"Scope '{commit_info.scope}' but no package files changed",
-        )
-
-    return ValidationResult(
-        success=True,
-        message=f"✓ PR title valid: {pr_title}",
-    )
-
-
-def validate_pr_with_detect_result(
-    pr_title: str,
     detect_result: dict,
     repo_root: Path,
 ) -> ValidationResult:
-    """Validate PR title using pre-computed detect result.
+    """Validate PR title using detect result.
 
     Args:
         pr_title: PR title string.
@@ -405,16 +336,6 @@ def _get_staged_files(repo_root: Path) -> list[str]:
     return [f for f in output.strip().split("\n") if f]
 
 
-def _get_changed_files_pr(base_ref: str, repo_root: Path) -> list[str]:
-    """Get list of changed files in PR compared to base branch."""
-    output = subprocess.check_output(
-        ["git", "diff", "--name-only", f"origin/{base_ref}...HEAD"],  # noqa: S607
-        cwd=repo_root,
-        text=True,
-    )
-    return [f for f in output.strip().split("\n") if f]
-
-
 def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]:
     """Get list of commit SHAs in range."""
     output = subprocess.check_output(
@@ -426,7 +347,7 @@ def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]
 
 
 # noinspection D
-def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
+def main() -> int:  # noqa: PLR0911, PLR0912
     """Main entry point."""
     from pathlib import Path
 
@@ -454,25 +375,12 @@ def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
                 print("Error: PR_TITLE environment variable not set")
                 return ValidationError.SCRIPT_ERROR
 
-            if detect_result_json:
-                # New mode: use pre-computed detect result
-                detect_result = json.loads(detect_result_json)
-                result = validate_pr_with_detect_result(pr_title, detect_result, repo_root)
-            else:
-                # Legacy mode: compute changes from git
-                base_ref = os.environ.get("BASE_REF")
-                if not base_ref:
-                    base_ref = (
-                        subprocess.check_output(
-                            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-                            cwd=repo_root,
-                            text=True,
-                        )
-                        .strip()
-                        .rsplit("/", 1)[-1]
-                    )
-                changed_files = _get_changed_files_pr(base_ref, repo_root)
-                result = validate_pr(pr_title, changed_files, repo_root)
+            if not detect_result_json:
+                print("Error: DETECT_RESULT environment variable not set")
+                return ValidationError.SCRIPT_ERROR
+
+            detect_result = json.loads(detect_result_json)
+            result = validate_pr(pr_title, detect_result, repo_root)
 
             # Write error annotation and job summary on failure
             if not result.success:

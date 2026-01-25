@@ -21,29 +21,42 @@ class TestValidatePR:
 
     def test_valid_single_package(self, temp_repo: Path) -> None:
         """Should pass when PR title scope matches changed package."""
-        changed_files = ["packages/statuskit/src/new_module.py"]
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "statuskit",
+            "single_project_type": "package",
+        }
         result = validate_pr(
             pr_title="feat(statuskit): add new module",
-            changed_files=changed_files,
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
         assert result.success is True
 
     def test_valid_repo_level_no_scope(self, temp_repo: Path) -> None:
         """Should pass for repo-level changes without scope."""
-        changed_files = [".github/workflows/ci.yml", "docs/design.md"]
+        detect_result = {
+            "total_changed_count": 0,
+            "single_project": None,
+            "has_repo_level": True,
+        }
         result = validate_pr(
             pr_title="ci: add CI workflow",
-            changed_files=changed_files,
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
         assert result.success is True
 
     def test_invalid_format(self, temp_repo: Path) -> None:
         """Should fail for invalid PR title format."""
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "statuskit",
+            "single_project_type": "package",
+        }
         result = validate_pr(
             pr_title="add new feature",
-            changed_files=["packages/statuskit/src/foo.py"],
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
         assert result.success is False
@@ -51,10 +64,14 @@ class TestValidatePR:
 
     def test_scope_mismatch(self, temp_repo: Path) -> None:
         """Should fail when scope doesn't match changed files."""
-        changed_files = ["plugins/flow/skills/start.md"]
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "flow",
+            "single_project_type": "plugin",
+        }
         result = validate_pr(
             pr_title="feat(statuskit): add feature",
-            changed_files=changed_files,
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
         assert result.success is False
@@ -62,13 +79,16 @@ class TestValidatePR:
 
     def test_multiple_packages(self, temp_repo_with_another_package: Path) -> None:
         """Should fail when multiple packages changed."""
-        changed_files = [
-            "packages/statuskit/src/foo.py",
-            "packages/another/src/bar.py",
-        ]
+        detect_result = {
+            "total_changed_count": 2,
+            "single_project": None,
+            "by_type": {
+                "package": {"changed": ["statuskit", "another"]},
+            },
+        }
         result = validate_pr(
             pr_title="feat(statuskit): add feature",
-            changed_files=changed_files,
+            detect_result=detect_result,
             repo_root=temp_repo_with_another_package,
         )
         assert result.success is False
@@ -76,28 +96,33 @@ class TestValidatePR:
 
     def test_missing_scope_for_package(self, temp_repo: Path) -> None:
         """Should fail when scope missing for package changes."""
-        changed_files = ["packages/statuskit/src/foo.py"]
+        detect_result = {
+            "total_changed_count": 1,
+            "single_project": "statuskit",
+            "single_project_type": "package",
+        }
         result = validate_pr(
             pr_title="feat: add feature",
-            changed_files=changed_files,
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
         assert result.success is False
         assert result.error == ValidationError.SCOPE_MISMATCH
 
-    def test_mixed_package_and_repo_level(self, temp_repo: Path) -> None:
-        """Should use package scope when mixed with repo-level."""
-        changed_files = [
-            "packages/statuskit/src/foo.py",
-            "pyproject.toml",
-            "uv.lock",
-        ]
+    def test_scope_not_allowed_for_repo_level(self, temp_repo: Path) -> None:
+        """Should fail when scope provided for repo-level changes."""
+        detect_result = {
+            "total_changed_count": 0,
+            "single_project": None,
+            "has_repo_level": True,
+        }
         result = validate_pr(
-            pr_title="feat(statuskit): add dependency",
-            changed_files=changed_files,
+            pr_title="ci(statuskit): update workflow",
+            detect_result=detect_result,
             repo_root=temp_repo,
         )
-        assert result.success is True
+        assert result.success is False
+        assert result.error == ValidationError.SCOPE_MISMATCH
 
 
 class TestValidateCommit:
@@ -176,76 +201,3 @@ class TestValidateStagedFiles:
         result = validate_staged_files(staged_files)
         assert result.success is False
         assert result.error == ValidationError.MULTIPLE_PACKAGES
-
-
-class TestValidatePRWithDetectResult:
-    """Tests for validate_pr using detect result."""
-
-    def test_validates_with_detect_result(self, temp_repo: Path) -> None:
-        """Should validate PR using detect_result from env."""
-        from ..validate import validate_pr_with_detect_result
-
-        detect_result = {
-            "total_changed_count": 1,
-            "single_project": "statuskit",
-            "single_project_type": "package",
-        }
-        result = validate_pr_with_detect_result(
-            "feat(statuskit): add feature",
-            detect_result,
-            temp_repo,
-        )
-        assert result.success is True
-
-    def test_fails_multiple_projects(self, temp_repo: Path) -> None:
-        """Should fail if multiple projects changed."""
-        from ..validate import validate_pr_with_detect_result
-
-        detect_result = {
-            "total_changed_count": 2,
-            "single_project": None,
-            "by_type": {
-                "package": {"changed": ["statuskit"]},
-                "plugin": {"changed": ["flow"]},
-            },
-        }
-        result = validate_pr_with_detect_result(
-            "feat(statuskit): add feature",
-            detect_result,
-            temp_repo,
-        )
-        assert result.success is False
-        assert result.error == ValidationError.MULTIPLE_PACKAGES
-
-    def test_fails_scope_mismatch(self, temp_repo: Path) -> None:
-        """Should fail if scope doesn't match single_project."""
-        from ..validate import validate_pr_with_detect_result
-
-        detect_result = {
-            "total_changed_count": 1,
-            "single_project": "statuskit",
-            "single_project_type": "package",
-        }
-        result = validate_pr_with_detect_result(
-            "feat(flow): wrong scope",
-            detect_result,
-            temp_repo,
-        )
-        assert result.success is False
-        assert result.error == ValidationError.SCOPE_MISMATCH
-
-    def test_allows_no_scope_for_repo_level(self, temp_repo: Path) -> None:
-        """Should allow no scope for repo-level changes."""
-        from ..validate import validate_pr_with_detect_result
-
-        detect_result = {
-            "total_changed_count": 0,
-            "single_project": None,
-            "has_repo_level": True,
-        }
-        result = validate_pr_with_detect_result(
-            "ci: update workflows",
-            detect_result,
-            temp_repo,
-        )
-        assert result.success is True
