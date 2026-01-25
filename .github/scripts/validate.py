@@ -302,11 +302,11 @@ def validate_pr_with_detect_result(
                 error=ValidationError.SCOPE_MISMATCH,
                 message=f"Scope mismatch: expected '{expected_scope}', got '{commit_info.scope}'",
             )
-    elif commit_info.scope and commit_info.scope not in ("ci", "deps", "docs"):
+    elif commit_info.scope:
         return ValidationResult(
             success=False,
             error=ValidationError.SCOPE_MISMATCH,
-            message=f"Unexpected scope '{commit_info.scope}' for repo-level changes",
+            message=f"Scope '{commit_info.scope}' but no project files changed",
         )
 
     return ValidationResult(

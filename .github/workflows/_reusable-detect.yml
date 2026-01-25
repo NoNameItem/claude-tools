@@ -27,6 +27,8 @@ jobs:
 
       - name: Detect changes
         id: detect
+        env:
+          REF: ${{ inputs.ref }}
         run: |
-          RESULT=$(python .github/scripts/detect_changes.py --ref "${{ inputs.ref }}")
+          RESULT=$(python .github/scripts/detect_changes.py --ref "$REF")
           echo "result=$RESULT" >> "$GITHUB_OUTPUT"
