@@ -148,7 +148,7 @@ jobs:
           if [ "${{ inputs.info-only }}" == "true" ]; then
             uv run pytest --junitxml=pytest-results.xml
           else
-            uv run pytest --cov --cov-report=xml --cov-report=term-missing:coverage.txt --junitxml=pytest-results.xml
+            uv run pytest --cov --cov-report=xml --junitxml=pytest-results.xml
           fi
         working-directory: ${{ matrix.path }}
 
@@ -170,7 +170,6 @@ jobs:
         if: always() && inputs.info-only == false
         uses: MishaKav/pytest-coverage-comment@main
         with:
-          pytest-coverage-path: ${{ matrix.path }}/coverage.txt
           pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
           junitxml-path: ${{ matrix.path }}/pytest-results.xml
           title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
