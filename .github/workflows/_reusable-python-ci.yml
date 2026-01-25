@@ -166,17 +166,23 @@ jobs:
           path: ${{ matrix.path }}/coverage.xml
           retention-days: 30
 
-      - name: Publish test results
+      - name: Publish test summary
         if: always()
         uses: EnricoMi/publish-unit-test-result-action@v2
         with:
           files: ${{ matrix.path }}/pytest-results.xml
-          check_run: true
-          check_run_annotations: none
-          check_name: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          check_run: false
           comment_mode: always
           comment_title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
           job_summary: true
+
+      - name: Publish test details
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: 'Test Details: ${{ matrix.project }} (py${{ matrix.python }})'
+          path: ${{ matrix.path }}/pytest-results.xml
+          reporter: java-junit
 
   sonarcloud:
     name: SonarCloud (${{ matrix.project }})
