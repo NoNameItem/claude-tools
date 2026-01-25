@@ -39,6 +39,14 @@ class ValidationError(IntEnum):
 MIN_ARGS = 2
 COMMITS_ARGS = 4
 
+# Error titles for job summary
+ERROR_TITLES: dict[int, str] = {
+    ValidationError.INVALID_FORMAT: "Invalid PR Title Format",
+    ValidationError.SCOPE_MISMATCH: "Scope Mismatch",
+    ValidationError.MULTIPLE_PACKAGES: "Multiple Projects Changed",
+    ValidationError.SCOPE_COLLISION: "Scope Collision",
+}
+
 
 @dataclass
 class ValidationResult:
@@ -47,6 +55,79 @@ class ValidationResult:
     success: bool
     error: ValidationError | None = None
     message: str = ""
+
+
+def _write_job_summary(result: ValidationResult) -> None:
+    """Write validation error to GitHub Job Summary."""
+    from pathlib import Path
+
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_file:
+        return
+
+    error_title = ERROR_TITLES.get(result.error or 0, "Validation Error")
+
+    lines = [
+        "## :x: PR Validation Failed",
+        "",
+        f"### {error_title}",
+        "",
+        f"> {result.message.replace(chr(10), chr(10) + '> ')}",
+        "",
+    ]
+
+    # Add specific guidance based on error type
+    if result.error == ValidationError.INVALID_FORMAT:
+        lines.extend(
+            [
+                "### How to Fix",
+                "",
+                "Change PR title to conventional commit format:",
+                "",
+                "```",
+                "type(scope): description",
+                "```",
+                "",
+                "| Type | When to use |",
+                "|------|-------------|",
+                "| `feat` | New feature |",
+                "| `fix` | Bug fix |",
+                "| `docs` | Documentation only |",
+                "| `chore` | Maintenance tasks |",
+                "| `refactor` | Code restructuring |",
+                "| `test` | Adding tests |",
+                "| `ci` | CI/CD changes |",
+                "",
+                "**Examples:**",
+                "- `feat(statuskit): add quota module`",
+                "- `fix(flow): handle empty task list`",
+                "- `ci: update workflow triggers`",
+            ]
+        )
+    elif result.error == ValidationError.SCOPE_MISMATCH:
+        lines.extend(
+            [
+                "### How to Fix",
+                "",
+                "The scope in PR title must match the changed project.",
+                "",
+                "- If you changed files in `packages/statuskit/`, use `(statuskit)`",
+                "- If you changed files in `plugins/flow/`, use `(flow)`",
+                "- For repo-level changes only, use `ci`, `docs`, or `deps` scope",
+            ]
+        )
+    elif result.error == ValidationError.MULTIPLE_PACKAGES:
+        lines.extend(
+            [
+                "### How to Fix",
+                "",
+                "Each PR should change only one project. Split this PR into separate PRs,",
+                "one for each project.",
+            ]
+        )
+
+    with Path(summary_file).open("a") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _get_projects_from_files(
@@ -369,6 +450,10 @@ def main() -> int:  # noqa: PLR0911, PLR0912
                 base_ref = os.environ.get("BASE_REF", "main")
                 changed_files = _get_changed_files_pr(base_ref, repo_root)
                 result = validate_pr(pr_title, changed_files, repo_root)
+
+            # Write job summary on failure
+            if not result.success:
+                _write_job_summary(result)
 
         elif mode == "--commits":
             if len(sys.argv) < COMMITS_ARGS:
