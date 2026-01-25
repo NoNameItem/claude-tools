@@ -173,7 +173,10 @@ jobs:
           pytest-xml-coverage-path: ${{ matrix.path }}/coverage.xml
           junitxml-path: ${{ matrix.path }}/pytest-results.xml
           title: 'Tests: ${{ matrix.project }} (py${{ matrix.python }})'
+          badge-title: '${{ matrix.project }} py${{ matrix.python }}'
           unique-id-for-comment: ${{ matrix.project }}-py${{ matrix.python }}
+          coverage-path-prefix: ${{ matrix.path }}/
+          default-branch: master
           report-only-changed-files: true
 
       - name: Publish test details
