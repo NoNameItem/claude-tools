@@ -146,7 +146,7 @@ def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
         Dict mapping project name to ProjectInfo.
 
     Raises:
-        ValueError: If scope collision detected or missing classifiers.
+        ValueError: If scope collision detected.
     """
     config = get_ci_config(repo_root)
     projects: dict[str, ProjectInfo] = {}

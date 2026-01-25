@@ -84,15 +84,6 @@ class DetectionResult:
     changed_files: dict[str, list[str]] = field(default_factory=dict)
     project_types: list[str] = field(default_factory=list)
 
-    # Legacy fields for backward compatibility during migration
-    projects: list[str] = field(default_factory=list)
-    packages: list[str] = field(default_factory=list)
-    plugins: list[str] = field(default_factory=list)
-    has_packages: bool = False
-    has_plugins: bool = False
-    matrix: dict = field(default_factory=lambda: {"include": []})
-    all_packages_matrix: dict = field(default_factory=lambda: {"include": []})
-
     def to_json(self) -> str:
         """Convert to JSON string."""
         by_type_dict = {}
@@ -118,19 +109,11 @@ class DetectionResult:
                 "tooling_changed": self.tooling_changed,
                 "changed_files": self.changed_files,
                 "project_types": self.project_types,
-                # Legacy fields
-                "projects": self.projects,
-                "packages": self.packages,
-                "plugins": self.plugins,
-                "has_packages": self.has_packages,
-                "has_plugins": self.has_plugins,
-                "matrix": self.matrix,
-                "all_packages_matrix": self.all_packages_matrix,
             }
         )
 
 
-def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
+def detect_changes(  # noqa: PLR0912, PLR0915
     changed_files: list[str],
     repo_root: Path,
 ) -> DetectionResult:
@@ -243,37 +226,6 @@ def detect_changes(  # noqa: PLR0912, PLR0915 - complex due to backward compat
         proj = all_projects.get(proj_name)
         if proj:
             result.single_project_type = proj.kind
-
-    # Populate legacy fields for backward compatibility
-    result.projects = sorted(all_changed_projects)
-    result.packages = sorted(changed_by_type.get("package", set()))
-    result.plugins = sorted(changed_by_type.get("plugin", set()))
-    result.has_packages = bool(result.packages)
-    result.has_plugins = bool(result.plugins)
-
-    # Legacy matrix uses "package" key instead of "project"
-    result.matrix = {"include": []}
-    for pkg_name in result.packages:
-        proj = all_projects.get(pkg_name)
-        if proj and proj.python_versions:
-            result.matrix["include"].append(
-                {
-                    "package": proj.name,
-                    "path": proj.path,
-                    "python-versions": proj.python_versions,
-                }
-            )
-
-    result.all_packages_matrix = {"include": []}
-    for proj in all_projects.values():
-        if proj.kind == "package" and proj.python_versions:
-            result.all_packages_matrix["include"].append(
-                {
-                    "package": proj.name,
-                    "path": proj.path,
-                    "python-versions": proj.python_versions,
-                }
-            )
 
     result.changed_files = build_changed_files_map(changed_files, repo_root)
 

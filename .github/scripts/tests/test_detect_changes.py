@@ -21,24 +21,24 @@ class TestDetectChanges:
             "packages/statuskit/tests/test_new.py",
         ]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.packages == ["statuskit"]
-        assert result.has_packages is True
+        assert result.by_type["package"].changed == ["statuskit"]
+        assert result.by_type["package"].has_changed is True
         assert result.has_repo_level is False
 
     def test_repo_level_only(self, temp_repo: Path) -> None:
         """Should detect repo-level changes only."""
         changed_files = [".github/workflows/ci.yml", "README.md"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.packages == []
-        assert result.has_packages is False
+        assert result.by_type["package"].changed == []
+        assert result.by_type["package"].has_changed is False
         assert result.has_repo_level is True
 
     def test_mixed_changes(self, temp_repo: Path) -> None:
         """Should detect both package and repo-level changes."""
         changed_files = ["packages/statuskit/src/module.py", "pyproject.toml"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.packages == ["statuskit"]
-        assert result.has_packages is True
+        assert result.by_type["package"].changed == ["statuskit"]
+        assert result.by_type["package"].has_changed is True
         assert result.has_repo_level is True
 
     def test_tooling_changed(self, temp_repo: Path) -> None:
@@ -46,7 +46,7 @@ class TestDetectChanges:
         changed_files = ["pyproject.toml", "uv.lock"]
         result = detect_changes(changed_files, repo_root=temp_repo)
         assert result.tooling_changed is True
-        assert result.has_packages is False
+        assert result.by_type["package"].has_changed is False
 
     def test_tooling_not_changed_with_package(self, temp_repo: Path) -> None:
         """Should not flag tooling when package is also changed."""
@@ -58,9 +58,10 @@ class TestDetectChanges:
         """Should generate CI matrix with Python versions."""
         changed_files = ["packages/statuskit/src/module.py"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert len(result.matrix["include"]) == 1
-        entry = result.matrix["include"][0]
-        assert entry["package"] == "statuskit"
+        matrix = result.by_type["package"].matrix
+        assert len(matrix["include"]) == 1
+        entry = matrix["include"][0]
+        assert entry["project"] == "statuskit"
         assert entry["path"] == "packages/statuskit"
         assert entry["python-versions"] == ["3.11", "3.12"]
 
@@ -68,19 +69,21 @@ class TestDetectChanges:
         """Matrix entry should have python-versions as array."""
         changed_files = ["packages/statuskit/src/module.py"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert len(result.matrix["include"]) == 1
-        entry = result.matrix["include"][0]
-        assert entry["package"] == "statuskit"
+        matrix = result.by_type["package"].matrix
+        assert len(matrix["include"]) == 1
+        entry = matrix["include"][0]
+        assert entry["project"] == "statuskit"
         assert entry["path"] == "packages/statuskit"
         assert entry["python-versions"] == ["3.11", "3.12"]
         assert "python" not in entry  # Old field should not exist
 
-    def test_all_packages_matrix(self, temp_repo: Path) -> None:
-        """Should include all packages in all_packages_matrix."""
+    def test_unchanged_matrix(self, temp_repo: Path) -> None:
+        """Should include all unchanged packages in unchanged_matrix."""
         changed_files = ["pyproject.toml"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        packages_in_matrix = {e["package"] for e in result.all_packages_matrix["include"]}
-        assert "statuskit" in packages_in_matrix
+        unchanged_matrix = result.by_type["package"].unchanged_matrix
+        projects_in_matrix = {e["project"] for e in unchanged_matrix["include"]}
+        assert "statuskit" in projects_in_matrix
 
 
 class TestDetectChangesPlugins:
@@ -90,10 +93,10 @@ class TestDetectChangesPlugins:
         """Should detect changes in plugin."""
         changed_files = ["plugins/flow/skills/start.md"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.plugins == ["flow"]
-        assert result.has_plugins is True
-        assert result.packages == []
-        assert result.has_packages is False
+        assert result.by_type["plugin"].changed == ["flow"]
+        assert result.by_type["plugin"].has_changed is True
+        assert result.by_type["package"].changed == []
+        assert result.by_type["package"].has_changed is False
 
     def test_separates_packages_and_plugins(self, temp_repo: Path) -> None:
         """Should separate packages and plugins in output."""
@@ -102,11 +105,10 @@ class TestDetectChangesPlugins:
             "plugins/flow/skills/start.md",
         ]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.projects == ["flow", "statuskit"]
-        assert result.packages == ["statuskit"]
-        assert result.plugins == ["flow"]
-        assert result.has_packages is True
-        assert result.has_plugins is True
+        assert result.by_type["package"].changed == ["statuskit"]
+        assert result.by_type["plugin"].changed == ["flow"]
+        assert result.by_type["package"].has_changed is True
+        assert result.by_type["plugin"].has_changed is True
 
 
 class TestDetectionResultJson:
@@ -118,29 +120,13 @@ class TestDetectionResultJson:
         result = detect_changes(changed_files, repo_root=temp_repo)
         output = result.to_json()
         data = json.loads(output)
-        assert "packages" in data
-        assert "has_packages" in data
+        assert "by_type" in data
+        assert "package" in data["by_type"]
+        assert "has_changed" in data["by_type"]["package"]
         assert "has_repo_level" in data
         assert "tooling_changed" in data
-        assert "matrix" in data
-        assert "all_packages_matrix" in data
-        assert "include" in data["matrix"]
-
-
-class TestDetectionResultJsonPlugins:
-    """Tests for JSON output with plugin fields."""
-
-    def test_json_has_plugin_fields(self, temp_repo: Path) -> None:
-        """Should include plugin fields in JSON output."""
-        changed_files = ["plugins/flow/skills/start.md"]
-        result = detect_changes(changed_files, repo_root=temp_repo)
-        output = result.to_json()
-        data = json.loads(output)
-        assert "projects" in data
-        assert "packages" in data
-        assert "plugins" in data
-        assert "has_packages" in data
-        assert "has_plugins" in data
+        assert "matrix" in data["by_type"]["package"]
+        assert "include" in data["by_type"]["package"]["matrix"]
 
     def test_json_has_changed_files(self, temp_repo: Path) -> None:
         """Should include changed_files in JSON output."""
@@ -209,7 +195,7 @@ class TestBuildChangedFilesMap:
 
 
 class TestDetectChangesNewStructure:
-    """Tests for new detect_changes output structure."""
+    """Tests for detect_changes output structure."""
 
     def test_by_type_structure(self, temp_repo: Path) -> None:
         """Should output by_type with changed/unchanged per type."""

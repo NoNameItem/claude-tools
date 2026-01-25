@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       info-only:
-        description: 'Skip coverage and SonarCloud (for info jobs)'
+        description: 'Skip SonarCloud (for info jobs)'
         required: false
         type: boolean
         default: false
@@ -83,7 +83,7 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
         run: |
-          uv run ruff format --check --preview --output-format=rdjson ${{ steps.filter.outputs.py_files }} 2>&1 | \
+          uv run ruff format --check --preview --output-format=rdjson -- ${{ steps.filter.outputs.py_files }} 2>&1 | \
             reviewdog -f=rdjson -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
@@ -94,7 +94,7 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
         run: |
-          uv run ruff check --output-format=rdjson ${{ steps.filter.outputs.py_files }} 2>&1 | \
+          uv run ruff check --output-format=rdjson -- ${{ steps.filter.outputs.py_files }} 2>&1 | \
             reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Type check
@@ -179,7 +179,7 @@ jobs:
 
       - name: Publish test details
         if: always()
-        uses: dorny/test-reporter@v1
+        uses: dorny/test-reporter@v2
         with:
           name: 'Test Details: ${{ matrix.project }} (py${{ matrix.python }})'
           path: ${{ matrix.path }}/pytest-results.xml

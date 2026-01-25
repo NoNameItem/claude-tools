@@ -113,7 +113,7 @@ def _write_job_summary(result: ValidationResult) -> None:
                 "",
                 "- If you changed files in `packages/statuskit/`, use `(statuskit)`",
                 "- If you changed files in `plugins/flow/`, use `(flow)`",
-                "- For repo-level changes only, use `ci`, `docs`, or `deps` scope",
+                "- For repo-level changes only, omit the scope (e.g., `ci: update workflow`)",
             ]
         )
     elif result.error == ValidationError.MULTIPLE_PACKAGES:
@@ -349,7 +349,7 @@ def _get_commits_in_range(before: str, after: str, repo_root: Path) -> list[str]
 
 
 # noinspection D
-def main() -> int:  # noqa: PLR0911, PLR0912
+def main() -> int:  # noqa: PLR0911, PLR0912, PLR0915
     """Main entry point."""
     from pathlib import Path
 
@@ -406,14 +406,17 @@ def main() -> int:  # noqa: PLR0911, PLR0912
                 return ValidationError.SUCCESS
 
             errors: list[str] = []
+            first_error: ValidationResult | None = None
             for sha in commits:
                 r = validate_commit(sha, repo_root)
                 if not r.success:
                     errors.append(f"❌ {sha[:8]}: {r.message}")
+                    if first_error is None:
+                        first_error = r
 
             if errors:
                 print("Commit validation errors:\n" + "\n".join(errors))
-                return ValidationError.INVALID_FORMAT
+                return first_error.error if first_error and first_error.error else ValidationError.INVALID_FORMAT
 
             print(f"✓ All {len(commits)} commit(s) valid")
             return ValidationError.SUCCESS
