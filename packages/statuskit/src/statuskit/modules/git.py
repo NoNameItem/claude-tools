@@ -5,6 +5,7 @@ import subprocess
 from statuskit.modules.base import BaseModule
 
 _GIT_TIMEOUT = 2  # seconds
+_EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 
 
 class GitModule(BaseModule):
@@ -57,3 +58,39 @@ class GitModule(BaseModule):
             # Detached HEAD - get short hash
             return self._run_git("rev-parse", "--short", "HEAD")
         return branch
+
+    def _get_remote_status(self) -> tuple[str, int]:  # noqa: PLR0911
+        """Get remote tracking status.
+
+        Returns:
+            Tuple of (status, count) where status is one of:
+            - "ahead": local has N commits not on remote
+            - "behind": remote has N commits not on local
+            - "diverged": both have commits, count is total
+            - "synced": local and remote are identical
+            - "no_upstream": no tracking branch configured
+        """
+        # Check if upstream exists
+        upstream = self._run_git("rev-parse", "--abbrev-ref", "@{upstream}")
+        if upstream is None:
+            return ("no_upstream", 0)
+
+        # Get ahead/behind counts
+        counts = self._run_git("rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if counts is None:
+            return ("no_upstream", 0)
+
+        parts = counts.split("\t")
+        if len(parts) != _EXPECTED_COUNT_PARTS:
+            return ("no_upstream", 0)
+
+        ahead = int(parts[0])
+        behind = int(parts[1])
+
+        if ahead > 0 and behind > 0:
+            return ("diverged", ahead + behind)
+        if ahead > 0:
+            return ("ahead", ahead)
+        if behind > 0:
+            return ("behind", behind)
+        return ("synced", 0)

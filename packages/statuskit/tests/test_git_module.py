@@ -88,3 +88,63 @@ class TestGitModule:
             result = mod._get_branch()
 
         assert result is None
+
+    def test_get_remote_status_ahead(self, make_render_context):
+        """_get_remote_status returns ahead count."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: "origin/main" if "abbrev-ref" in args else "2\t0"
+            result = mod._get_remote_status()
+
+        assert result == ("ahead", 2)
+
+    def test_get_remote_status_behind(self, make_render_context):
+        """_get_remote_status returns behind count."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: "origin/main" if "abbrev-ref" in args else "0\t3"
+            result = mod._get_remote_status()
+
+        assert result == ("behind", 3)
+
+    def test_get_remote_status_diverged(self, make_render_context):
+        """_get_remote_status returns diverged with total count."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: "origin/main" if "abbrev-ref" in args else "2\t3"
+            result = mod._get_remote_status()
+
+        assert result == ("diverged", 5)
+
+    def test_get_remote_status_synced(self, make_render_context):
+        """_get_remote_status returns synced when no difference."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: "origin/main" if "abbrev-ref" in args else "0\t0"
+            result = mod._get_remote_status()
+
+        assert result == ("synced", 0)
+
+    def test_get_remote_status_no_upstream(self, make_render_context):
+        """_get_remote_status returns no_upstream when no tracking branch."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None
+            result = mod._get_remote_status()
+
+        assert result == ("no_upstream", 0)
