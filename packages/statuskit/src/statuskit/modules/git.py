@@ -43,3 +43,17 @@ class GitModule(BaseModule):
             return result.stdout.strip()
         except subprocess.TimeoutExpired:
             return None
+
+    def _get_branch(self) -> str | None:
+        """Get current branch name or short hash for detached HEAD.
+
+        Returns:
+            Branch name, short commit hash, or None if not a git repo
+        """
+        branch = self._run_git("branch", "--show-current")
+        if branch is None:
+            return None
+        if branch == "":
+            # Detached HEAD - get short hash
+            return self._run_git("rev-parse", "--short", "HEAD")
+        return branch

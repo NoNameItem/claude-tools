@@ -50,3 +50,41 @@ class TestGitModule:
             result = mod._run_git("status")
 
         assert result is None
+
+    def test_get_branch_name(self, make_render_context):
+        """_get_branch returns current branch name."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "feature/test"
+            result = mod._get_branch()
+
+        assert result == "feature/test"
+        mock_git.assert_called_with("branch", "--show-current")
+
+    def test_get_branch_detached_head(self, make_render_context):
+        """_get_branch returns short hash for detached HEAD."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            # Empty string means detached HEAD
+            mock_git.side_effect = lambda *args: "" if "show-current" in args else "abc1234"
+            result = mod._get_branch()
+
+        assert result == "abc1234"
+
+    def test_get_branch_not_git_repo(self, make_render_context):
+        """_get_branch returns None when not in git repo."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None
+            result = mod._get_branch()
+
+        assert result is None
