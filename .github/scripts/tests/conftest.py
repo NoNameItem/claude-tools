@@ -45,18 +45,22 @@ def temp_repo(tmp_path: Path) -> Path:
         capture_output=True,
     )
 
-    # Create root pyproject.toml with [tool.ci] config
+    # Create root pyproject.toml with [tool.repo] config
     (repo / "pyproject.toml").write_text("""\
 [project]
 name = "test-repo"
 version = "0.1.0"
 
-[tool.ci]
+[tool.repo]
 tooling_files = ["pyproject.toml", "uv.lock"]
 
-[tool.ci.project-types]
-package = ["packages"]
-plugin = ["plugins"]
+[tool.repo.project-types.python]
+paths = ["packages"]
+publish = ["pypi"]
+
+[tool.repo.project-types.claude-code-plugin]
+paths = ["plugins"]
+publish = []
 """)
 
     # Create packages/statuskit structure
