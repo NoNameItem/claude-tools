@@ -6,6 +6,8 @@ from statuskit.modules.usage_limits import (
     UsageData,
     UsageLimit,
     calculate_color,
+    format_remaining_time,
+    format_reset_at,
     parse_api_response,
 )
 
@@ -162,3 +164,37 @@ class TestCalculateColor:
             window_hours=7 * 24,
         )
         assert color == "red"
+
+
+class TestFormatRemainingTime:
+    """Tests for remaining time formatting."""
+
+    def test_under_one_hour(self):
+        """Format as minutes when under 1 hour."""
+        assert format_remaining_time(0.75) == "45m"
+        assert format_remaining_time(0.5) == "30m"
+
+    def test_one_to_24_hours(self):
+        """Format as hours and minutes when 1-24 hours."""
+        assert format_remaining_time(2.5) == "2h 30m"
+        assert format_remaining_time(1.0) == "1h 0m"
+        assert format_remaining_time(23.5) == "23h 30m"
+
+    def test_over_24_hours(self):
+        """Format as days and hours when over 24 hours."""
+        assert format_remaining_time(27.0) == "1d 3h"
+        assert format_remaining_time(72.0) == "3d 0h"
+        assert format_remaining_time(123.5) == "5d 3h"
+
+
+class TestFormatResetAt:
+    """Tests for reset_at time formatting."""
+
+    def test_format_weekday_time(self):
+        """Format as weekday and time in local timezone."""
+        # Thursday 17:00 UTC
+        reset_time = datetime(2026, 1, 29, 17, 0, 0, tzinfo=UTC)
+        result = format_reset_at(reset_time)
+        # Result depends on local timezone, just check format
+        assert len(result.split()) == 2  # "Thu 17:00" or similar
+        assert ":" in result  # Contains time

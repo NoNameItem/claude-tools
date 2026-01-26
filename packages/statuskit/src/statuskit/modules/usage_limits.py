@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+HOURS_PER_DAY = 24
+
 
 @dataclass
 class UsageLimit:
@@ -67,3 +69,37 @@ def calculate_color(utilization: float, remaining_hours: float, window_hours: fl
     if utilization > time_percent - margin:
         return "yellow"
     return "green"
+
+
+def format_remaining_time(hours: float) -> str:
+    """Format remaining time as human-readable string.
+
+    Args:
+        hours: Remaining hours until reset
+
+    Returns:
+        Formatted string: "45m", "2h 30m", or "5d 3h"
+    """
+    if hours < 1:
+        minutes = int(hours * 60)
+        return f"{minutes}m"
+    if hours < HOURS_PER_DAY:
+        h = int(hours)
+        m = int((hours - h) * 60)
+        return f"{h}h {m}m"
+    days = int(hours / HOURS_PER_DAY)
+    h = int(hours % HOURS_PER_DAY)
+    return f"{days}d {h}h"
+
+
+def format_reset_at(reset_time: datetime) -> str:
+    """Format reset time as weekday and local time.
+
+    Args:
+        reset_time: UTC datetime of reset
+
+    Returns:
+        Formatted string: "Thu 17:00"
+    """
+    local_time = reset_time.astimezone()  # Convert to local timezone
+    return local_time.strftime("%a %H:%M")
