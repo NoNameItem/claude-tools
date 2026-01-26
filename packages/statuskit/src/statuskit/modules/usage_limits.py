@@ -1,9 +1,14 @@
 """Usage limits module for statuskit."""
 
+import json
+import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 HOURS_PER_DAY = 24
+CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
 @dataclass
@@ -118,3 +123,50 @@ def format_progress_bar(utilization: float, width: int = 10) -> str:
     filled = int(utilization / 100 * width)
     empty = width - filled
     return f"[{'█' * filled}{'░' * empty}]"
+
+
+def _get_keychain_token() -> str | None:
+    """Get token from macOS Keychain.
+
+    Returns:
+        Token string or None if not found
+    """
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            # Keychain returns JSON with the token
+            data = json.loads(result.stdout.strip())
+            return data.get("claudeAiOauth", {}).get("accessToken")
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        pass
+    return None
+
+
+def _get_file_token() -> str | None:
+    """Get token from credentials file.
+
+    Returns:
+        Token string or None if not found
+    """
+    try:
+        if CREDENTIALS_PATH.exists():
+            data = json.loads(CREDENTIALS_PATH.read_text())
+            return data.get("claudeAiOauth", {}).get("accessToken")
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None
+
+
+def get_token() -> str | None:
+    """Get OAuth token from Keychain or credentials file.
+
+    Returns:
+        Token string or None if not found
+    """
+    return _get_keychain_token() or _get_file_token()

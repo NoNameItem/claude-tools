@@ -1,6 +1,8 @@
 """Tests for usage_limits module."""
 
+import json
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from statuskit.modules.usage_limits import (
     UsageData,
@@ -9,6 +11,7 @@ from statuskit.modules.usage_limits import (
     format_progress_bar,
     format_remaining_time,
     format_reset_at,
+    get_token,
     parse_api_response,
 )
 
@@ -228,3 +231,33 @@ class TestFormatProgressBar:
         """Respects custom width."""
         result = format_progress_bar(50.0, width=6)
         assert result == "[███░░░]"
+
+
+class TestGetToken:
+    """Tests for OAuth token retrieval."""
+
+    def test_get_token_from_keychain(self):
+        """Gets token from macOS Keychain first."""
+        with patch("statuskit.modules.usage_limits._get_keychain_token") as mock_keychain:
+            mock_keychain.return_value = "keychain-token"
+            token = get_token()
+            assert token == "keychain-token"  # noqa: S105
+
+    def test_fallback_to_credentials_file(self, tmp_path):
+        """Falls back to credentials file if Keychain fails."""
+        creds_file = tmp_path / ".credentials.json"
+        creds_file.write_text(json.dumps({"claudeAiOauth": {"accessToken": "file-token"}}))
+
+        with patch("statuskit.modules.usage_limits._get_keychain_token") as mock_keychain:
+            mock_keychain.return_value = None
+            with patch("statuskit.modules.usage_limits.CREDENTIALS_PATH", creds_file):
+                token = get_token()
+                assert token == "file-token"  # noqa: S105
+
+    def test_returns_none_when_no_token(self, tmp_path):
+        """Returns None when token not found anywhere."""
+        with patch("statuskit.modules.usage_limits._get_keychain_token") as mock_keychain:
+            mock_keychain.return_value = None
+            with patch("statuskit.modules.usage_limits.CREDENTIALS_PATH", tmp_path / "nonexistent"):
+                token = get_token()
+                assert token is None
