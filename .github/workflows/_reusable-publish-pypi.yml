@@ -1,0 +1,116 @@
+# .github/workflows/_reusable-publish-pypi.yml
+name: Publish to PyPI (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      project-path:
+        description: 'Path to project (e.g., packages/statuskit)'
+        required: true
+        type: string
+      project-name:
+        description: 'Project name (e.g., statuskit)'
+        required: true
+        type: string
+      version:
+        description: 'Version to publish (e.g., 0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  id-token: write  # Required for OIDC Trusted Publisher
+
+jobs:
+  build-and-publish:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ inputs.project-name }}/${{ inputs.version }}/
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Read package metadata
+        id: metadata
+        working-directory: ${{ inputs.project-path }}
+        run: |
+          # Extract PyPI package name from pyproject.toml
+          PYPI_NAME=$(python -c "
+          import tomllib
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+          print(data['project']['name'])
+          ")
+          echo "pypi-name=$PYPI_NAME" >> "$GITHUB_OUTPUT"
+
+          # Extract CLI scripts for smoke test
+          SCRIPTS=$(python -c "
+          import tomllib
+          import json
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+          scripts = list(data.get('project', {}).get('scripts', {}).keys())
+          print(json.dumps(scripts))
+          ")
+          echo "scripts=$SCRIPTS" >> "$GITHUB_OUTPUT"
+
+      - name: Build package
+        working-directory: ${{ inputs.project-path }}
+        run: uv build
+
+      - name: Smoke test
+        working-directory: ${{ inputs.project-path }}
+        env:
+          PYPI_NAME: ${{ steps.metadata.outputs.pypi-name }}
+          EXPECTED_VERSION: ${{ inputs.version }}
+          CLI_SCRIPTS: ${{ steps.metadata.outputs.scripts }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Creating clean venv ==="
+          python -m venv .smoke-test-venv
+          source .smoke-test-venv/bin/activate
+
+          echo "=== Installing wheel ==="
+          WHEEL=$(ls dist/*.whl)
+          pip install "$WHEEL"
+
+          echo "=== Checking import ==="
+          python -c "import ${PYPI_NAME//-/_}"
+
+          echo "=== Checking version ==="
+          INSTALLED_VERSION=$(python -c "
+          from importlib.metadata import version
+          print(version('$PYPI_NAME'))
+          ")
+
+          if [ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "  Expected: $EXPECTED_VERSION"
+            echo "  Installed: $INSTALLED_VERSION"
+            exit 1
+          fi
+          echo "Version OK: $INSTALLED_VERSION"
+
+          echo "=== Checking CLI commands ==="
+          for cmd in $(echo "$CLI_SCRIPTS" | python -c "import sys, json; print(' '.join(json.load(sys.stdin)))"); do
+            echo "Testing: $cmd --help"
+            $cmd --help > /dev/null
+          done
+
+          echo "=== Smoke test passed ==="
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ inputs.project-path }}/dist/
