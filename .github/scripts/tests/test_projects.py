@@ -92,7 +92,7 @@ class TestDiscoverProjects:
         assert "flow" in projects
         assert projects["flow"].name == "flow"
         assert projects["flow"].path == "plugins/flow"
-        assert projects["flow"].kind == "claude-code-plugin"
+        assert projects["flow"].kind == "claude_code_plugin"
 
     def test_detects_collision(self, temp_repo: Path) -> None:
         """Should raise error if same name in packages/ and plugins/."""
@@ -144,7 +144,7 @@ tooling_files = ["pyproject.toml", "uv.lock"]
 paths = ["packages"]
 publish = ["pypi"]
 
-[tool.repo.project-types.claude-code-plugin]
+[tool.repo.project-types.claude_code_plugin]
 paths = ["plugins"]
 publish = []
 """)
@@ -153,8 +153,8 @@ publish = []
         assert "python" in config.project_types
         assert config.project_types["python"].paths == ["packages"]
         assert config.project_types["python"].publish == ["pypi"]
-        assert "claude-code-plugin" in config.project_types
-        assert config.project_types["claude-code-plugin"].publish == []
+        assert "claude_code_plugin" in config.project_types
+        assert config.project_types["claude_code_plugin"].publish == []
 
     def test_get_repo_config_missing_raises(self, temp_repo: Path) -> None:
         """Should raise error if [tool.repo] is missing."""
@@ -171,7 +171,7 @@ name = "test"
         """Should map project type name to kind in ProjectInfo."""
         projects = discover_projects(temp_repo)
         assert projects["statuskit"].kind == "python"
-        assert projects["flow"].kind == "claude-code-plugin"
+        assert projects["flow"].kind == "claude_code_plugin"
 
 
 class TestCIConfig:
@@ -185,7 +185,7 @@ class TestCIConfig:
         assert config.tooling_files == ["pyproject.toml", "uv.lock"]
         assert config.project_types == {
             "python": ["packages"],
-            "claude-code-plugin": ["plugins"],
+            "claude_code_plugin": ["plugins"],
         }
 
     def test_get_ci_config_missing_raises(self, temp_repo: Path) -> None:
@@ -227,7 +227,7 @@ tooling_files = []
 paths = ["packages"]
 publish = ["pypi"]
 
-[tool.repo.project-types.claude-code-plugin]
+[tool.repo.project-types.claude_code_plugin]
 paths = ["plugins"]
 publish = []
 

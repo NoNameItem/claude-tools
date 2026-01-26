@@ -93,8 +93,8 @@ class TestDetectChangesPlugins:
         """Should detect changes in plugin."""
         changed_files = ["plugins/flow/skills/start.md"]
         result = detect_changes(changed_files, repo_root=temp_repo)
-        assert result.by_type["claude-code-plugin"].changed == ["flow"]
-        assert result.by_type["claude-code-plugin"].has_changed is True
+        assert result.by_type["claude_code_plugin"].changed == ["flow"]
+        assert result.by_type["claude_code_plugin"].has_changed is True
         assert result.by_type["python"].changed == []
         assert result.by_type["python"].has_changed is False
 
@@ -106,9 +106,9 @@ class TestDetectChangesPlugins:
         ]
         result = detect_changes(changed_files, repo_root=temp_repo)
         assert result.by_type["python"].changed == ["statuskit"]
-        assert result.by_type["claude-code-plugin"].changed == ["flow"]
+        assert result.by_type["claude_code_plugin"].changed == ["flow"]
         assert result.by_type["python"].has_changed is True
-        assert result.by_type["claude-code-plugin"].has_changed is True
+        assert result.by_type["claude_code_plugin"].has_changed is True
 
 
 class TestDetectionResultJson:

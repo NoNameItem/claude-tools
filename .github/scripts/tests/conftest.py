@@ -58,7 +58,7 @@ tooling_files = ["pyproject.toml", "uv.lock"]
 paths = ["packages"]
 publish = ["pypi"]
 
-[tool.repo.project-types.claude-code-plugin]
+[tool.repo.project-types.claude_code_plugin]
 paths = ["plugins"]
 publish = []
 """)

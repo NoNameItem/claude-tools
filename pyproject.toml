@@ -113,6 +113,6 @@ tooling_files = [
 paths = ["packages"]
 publish = ["pypi"]
 
-[tool.repo.project-types.claude-code-plugin]
+[tool.repo.project-types.claude_code_plugin]
 paths = ["plugins"]
 publish = []

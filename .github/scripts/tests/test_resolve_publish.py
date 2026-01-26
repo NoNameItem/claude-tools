@@ -77,7 +77,7 @@ class TestResolvePublish:
 
         assert result["project_name"] == "flow"
         assert result["project_path"] == "plugins/flow"
-        assert result["project_type"] == "claude-code-plugin"
+        assert result["project_type"] == "claude_code_plugin"
         assert result["version"] == "1.0.0"
         assert result["publish_targets"] == []
 

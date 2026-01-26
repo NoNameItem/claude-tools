@@ -53,10 +53,10 @@ jobs:
   claude-code-plugin-ci:
     name: Claude Code Plugin CI
     needs: [detect, validate-commits]
-    if: fromJson(needs.detect.outputs.result).by_type["claude-code-plugin"].has_changed == true
+    if: fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.has_changed == true
     uses: ./.github/workflows/_reusable-claude-code-plugin-ci.yml
     with:
-      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type["claude-code-plugin"].changed) }}
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.changed) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
 
@@ -79,8 +79,8 @@ jobs:
     needs: [detect, validate-commits]
     if: |
       fromJson(needs.detect.outputs.result).tooling_changed == true &&
-      fromJson(needs.detect.outputs.result).by_type["claude-code-plugin"].has_unchanged == true
+      fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.has_unchanged == true
     uses: ./.github/workflows/_reusable-claude-code-plugin-ci.yml
     with:
-      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type["claude-code-plugin"].unchanged) }}
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
