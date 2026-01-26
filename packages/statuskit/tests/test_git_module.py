@@ -447,3 +447,197 @@ M  staged_modified.py
         result = mod._render_location_line(location)
 
         assert result is None
+
+    def test_render_status_line_branch_only(self, make_render_context):
+        """_render_status_line shows branch name."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_remote_status": False, "show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=("abc1234", "2h"),
+        )
+
+        assert "main" in result
+
+    def test_render_status_line_remote_ahead(self, make_render_context):
+        """_render_status_line shows ahead indicator."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("ahead", 2),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "↑2" in result
+
+    def test_render_status_line_remote_behind(self, make_render_context):
+        """_render_status_line shows behind indicator."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("behind", 3),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "↓3" in result
+
+    def test_render_status_line_remote_diverged(self, make_render_context):
+        """_render_status_line shows diverged indicator."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("diverged", 5),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "⇅5" in result
+
+    def test_render_status_line_remote_synced(self, make_render_context):
+        """_render_status_line shows synced indicator."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "✓" in result
+
+    def test_render_status_line_no_upstream(self, make_render_context):
+        """_render_status_line shows no upstream indicator."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_changes": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("no_upstream", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "☁✗" in result
+
+    def test_render_status_line_changes(self, make_render_context):
+        """_render_status_line shows change counts."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_remote_status": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 3, "modified": 2, "untracked": 1},
+            commit=None,
+        )
+
+        assert "+3" in result
+        assert "~2" in result
+        assert "?1" in result
+        assert "[" in result
+        assert "]" in result
+
+    def test_render_status_line_changes_partial(self, make_render_context):
+        """_render_status_line shows only non-zero changes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_remote_status": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 2, "untracked": 0},
+            commit=None,
+        )
+
+        assert "+0" not in result
+        assert "~2" in result
+        assert "?0" not in result
+
+    def test_render_status_line_changes_clean(self, make_render_context):
+        """_render_status_line hides brackets when no changes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_remote_status": False, "show_commit": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+        )
+
+        assert "[" not in result
+
+    def test_render_status_line_commit(self, make_render_context):
+        """_render_status_line shows commit hash and age."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_remote_status": False, "show_changes": False})
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=("abc1234", "2h"),
+        )
+
+        assert "abc1234" in result
+        assert "2h" in result
+
+    def test_render_status_line_full(self, make_render_context):
+        """_render_status_line shows all components."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        result = mod._render_status_line(
+            branch="feature/test",
+            remote_status=("ahead", 2),
+            changes={"staged": 1, "modified": 1, "untracked": 1},
+            commit=("abc1234", "2h"),
+        )
+
+        assert "feature/test" in result
+        assert "↑2" in result
+        assert "+1" in result
+        assert "~1" in result
+        assert "?1" in result
+        assert "abc1234" in result
+
+    def test_render_status_line_all_disabled(self, make_render_context):
+        """_render_status_line returns None when all disabled."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(
+            ctx, {"show_branch": False, "show_remote_status": False, "show_changes": False, "show_commit": False}
+        )
+
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=("abc1234", "2h"),
+        )
+
+        assert result is None

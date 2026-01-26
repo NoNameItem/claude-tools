@@ -24,6 +24,10 @@ class GitModule(BaseModule):
         self.show_project = config.get("show_project", True)
         self.show_worktree = config.get("show_worktree", True)
         self.show_folder = config.get("show_folder", True)
+        self.show_branch = config.get("show_branch", True)
+        self.show_remote_status = config.get("show_remote_status", True)
+        self.show_changes = config.get("show_changes", True)
+        self.show_commit = config.get("show_commit", True)
 
     def render(self) -> str | None:
         """Render git status output."""
@@ -264,3 +268,63 @@ class GitModule(BaseModule):
             return None
 
         return separator.join(parts)
+
+    def _render_status_line(  # noqa: PLR0912
+        self,
+        branch: str,
+        remote_status: tuple[str, int],
+        changes: dict[str, int],
+        commit: tuple[str, str] | None,
+    ) -> str | None:
+        """Render the status line (Line 2).
+
+        Args:
+            branch: Branch name or commit hash
+            remote_status: Tuple of (status, count)
+            changes: Dict with staged, modified, untracked counts
+            commit: Tuple of (hash, age) or None
+
+        Returns:
+            Formatted status string or None if all disabled
+        """
+        parts = []
+
+        # Branch name
+        if self.show_branch:
+            parts.append(colored(branch, "magenta"))
+
+        # Remote status
+        if self.show_remote_status:
+            status, count = remote_status
+            if status == "ahead":
+                parts.append(colored(f"↑{count}", "yellow"))
+            elif status == "behind":
+                parts.append(colored(f"↓{count}", "red"))
+            elif status == "diverged":
+                parts.append(colored(f"⇅{count}", "red"))
+            elif status == "synced":
+                parts.append(colored("✓", "green"))
+            elif status == "no_upstream":
+                parts.append(colored("☁✗", "blue"))
+
+        # Changes
+        if self.show_changes:
+            change_parts = []
+            if changes["staged"] > 0:
+                change_parts.append(colored(f"+{changes['staged']}", "green"))
+            if changes["modified"] > 0:
+                change_parts.append(colored(f"~{changes['modified']}", "yellow"))
+            if changes["untracked"] > 0:
+                change_parts.append(colored(f"?{changes['untracked']}", "cyan"))
+            if change_parts:
+                parts.append("[" + " ".join(change_parts) + "]")
+
+        # Commit info
+        if self.show_commit and commit:
+            commit_hash, commit_age = commit
+            parts.append(colored(f"{commit_hash} {commit_age}", "white", attrs=["dark"]))
+
+        if not parts:
+            return None
+
+        return " ".join(parts)
