@@ -25,15 +25,18 @@ This repository contains two types of tools for Claude Code:
 
 ## Commit Messages & PR Titles
 
-**Scope rules:**
-- **Package/plugin changes** → scope = project name: `feat(statuskit):`, `fix(flow):`
-- **Repo-level files** (`.github/`, `docs/`, root configs) → NO scope: `ci: add workflow`, `docs: update guide`
+**Scope and label rules:**
+
+| Changes in | Title scope | PR label |
+|------------|-------------|----------|
+| `packages/statuskit/` | `(statuskit)` | `statuskit` |
+| `plugins/flow/` | `(flow)` | `flow` |
+| `.github/`, `docs/`, root configs | no scope | `repo` |
 
 ```
-✅ feat(statuskit): add git module      # changes packages/statuskit/
-✅ fix(flow): correct skill loading     # changes plugins/flow/
-✅ ci: add release workflow             # changes .github/
-✅ docs: update contributing guide      # changes docs/
+✅ feat(statuskit): add git module      # label: statuskit
+✅ fix(flow): correct skill loading     # label: flow
+✅ ci: add release workflow             # label: repo
 ❌ fix(ci): add workflow                # WRONG - ci is type, not scope
 ❌ feat: add git module                 # WRONG - missing scope for package
 ```
