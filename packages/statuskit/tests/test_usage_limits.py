@@ -6,6 +6,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 from statuskit.modules.usage_limits import (
+    UsageCache,
     UsageData,
     UsageLimit,
     calculate_color,
@@ -295,3 +296,55 @@ class TestFetchUsageApi:
             mock_urlopen.side_effect = URLError("connection failed")
             data = fetch_usage_api("test-token")
             assert data is None
+
+
+class TestUsageCache:
+    """Tests for usage data caching."""
+
+    def test_save_and_load(self, tmp_path):
+        """Cache saves and loads data."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        cache.save(data)
+        loaded = cache.load()
+
+        assert loaded is not None
+        assert loaded.session.utilization == 45.0
+
+    def test_load_returns_none_when_expired(self, tmp_path):
+        """Cache returns None when TTL expired."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=0)  # 0 TTL = always expired
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        cache.save(data)
+        loaded = cache.load()
+
+        assert loaded is None
+
+    def test_load_returns_none_when_no_cache(self, tmp_path):
+        """Cache returns None when file doesn't exist."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        loaded = cache.load()
+        assert loaded is None
+
+    def test_can_fetch_respects_rate_limit(self, tmp_path):
+        """Rate limit prevents fetching too frequently."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
+
+        # First fetch allowed
+        assert cache.can_fetch() is True
+        cache.mark_fetched()
+
+        # Second fetch blocked
+        assert cache.can_fetch() is False

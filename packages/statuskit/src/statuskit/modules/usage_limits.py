@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,8 @@ CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
+CACHE_FILENAME = "usage_limits.json"
+LOCK_FILENAME = "usage_limits.lock"
 
 
 @dataclass
@@ -199,3 +202,113 @@ def fetch_usage_api(token: str) -> UsageData | None:
     except (TimeoutError, URLError, json.JSONDecodeError):
         pass
     return None
+
+
+class UsageCache:
+    """Cache for usage data with TTL and rate limiting."""
+
+    def __init__(
+        self,
+        cache_dir: Path,
+        ttl: int = 60,
+        rate_limit: int = 30,
+    ):
+        """Initialize cache.
+
+        Args:
+            cache_dir: Directory for cache files
+            ttl: Time-to-live in seconds
+            rate_limit: Minimum seconds between API fetches
+        """
+        self.cache_dir = cache_dir
+        self.ttl = ttl
+        self.rate_limit = rate_limit
+        self.cache_file = cache_dir / CACHE_FILENAME
+        self.lock_file = cache_dir / LOCK_FILENAME
+
+    def load(self) -> UsageData | None:
+        """Load cached data if valid.
+
+        Returns:
+            UsageData or None if cache invalid/expired
+        """
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            data = json.loads(self.cache_file.read_text())
+            fetched_at = datetime.fromisoformat(data["fetched_at"])
+
+            # Check TTL
+            age = (datetime.now(UTC) - fetched_at).total_seconds()
+            if age > self.ttl:
+                return None
+
+            # Parse cached data
+            def parse_limit(d: dict | None) -> UsageLimit | None:
+                if d is None:
+                    return None
+                return UsageLimit(
+                    utilization=d["utilization"],
+                    resets_at=datetime.fromisoformat(d["resets_at"]),
+                )
+
+            return UsageData(
+                session=parse_limit(data["data"].get("session")),
+                weekly=parse_limit(data["data"].get("weekly")),
+                sonnet=parse_limit(data["data"].get("sonnet")),
+                fetched_at=fetched_at,
+            )
+        except (json.JSONDecodeError, KeyError, OSError):
+            return None
+
+    def save(self, data: UsageData) -> None:
+        """Save data to cache.
+
+        Args:
+            data: UsageData to cache
+        """
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+            def serialize_limit(limit: UsageLimit | None) -> dict | None:
+                if limit is None:
+                    return None
+                return {
+                    "utilization": limit.utilization,
+                    "resets_at": limit.resets_at.isoformat(),
+                }
+
+            cache_data = {
+                "data": {
+                    "session": serialize_limit(data.session),
+                    "weekly": serialize_limit(data.weekly),
+                    "sonnet": serialize_limit(data.sonnet),
+                },
+                "fetched_at": data.fetched_at.isoformat(),
+            }
+            self.cache_file.write_text(json.dumps(cache_data))
+        except OSError:
+            pass
+
+    def can_fetch(self) -> bool:
+        """Check if API fetch is allowed (rate limiting).
+
+        Returns:
+            True if fetch allowed
+        """
+        try:
+            if not self.lock_file.exists():
+                return True
+            last_fetch = float(self.lock_file.read_text())
+            return (time.time() - last_fetch) >= self.rate_limit
+        except (ValueError, OSError):
+            return True
+
+    def mark_fetched(self) -> None:
+        """Mark that an API fetch was performed."""
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self.lock_file.write_text(str(time.time()))
+        except OSError:
+            pass
