@@ -1,6 +1,7 @@
 """Data types for statuskit."""
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -138,3 +139,4 @@ class RenderContext:
 
     debug: bool
     data: StatusInput
+    cache_dir: Path | None = None
