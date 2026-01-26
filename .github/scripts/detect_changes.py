@@ -121,17 +121,17 @@ def detect_changes(  # noqa: PLR0912, PLR0915
     try:
         from .projects import (
             discover_projects,
-            get_ci_config,
             get_project_from_path,
+            get_repo_config,
         )
     except ImportError:
         from projects import (
             discover_projects,
-            get_ci_config,
             get_project_from_path,
+            get_repo_config,
         )
 
-    config = get_ci_config(repo_root)
+    config = get_repo_config(repo_root)
     all_projects = discover_projects(repo_root)
     result = DetectionResult()
     result.project_types = list(config.project_types.keys())

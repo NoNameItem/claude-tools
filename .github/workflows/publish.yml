@@ -1,0 +1,71 @@
+# .github/workflows/publish.yml
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write  # For PyPI Trusted Publisher
+
+jobs:
+  resolve:
+    name: Resolve publish targets
+    runs-on: ubuntu-latest
+    outputs:
+      project-name: ${{ steps.resolve.outputs.project-name }}
+      project-path: ${{ steps.resolve.outputs.project-path }}
+      project-type: ${{ steps.resolve.outputs.project-type }}
+      version: ${{ steps.resolve.outputs.version }}
+      publish-targets: ${{ steps.resolve.outputs.publish-targets }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Resolve publish targets
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          RESULT=$(python .github/scripts/resolve_publish.py "$RELEASE_TAG")
+          echo "Result: $RESULT"
+
+          echo "project-name=$(echo "$RESULT" | jq -r '.project_name')" >> "$GITHUB_OUTPUT"
+          echo "project-path=$(echo "$RESULT" | jq -r '.project_path')" >> "$GITHUB_OUTPUT"
+          echo "project-type=$(echo "$RESULT" | jq -r '.project_type')" >> "$GITHUB_OUTPUT"
+          echo "version=$(echo "$RESULT" | jq -r '.version')" >> "$GITHUB_OUTPUT"
+          echo "publish-targets=$(echo "$RESULT" | jq -c '.publish_targets')" >> "$GITHUB_OUTPUT"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [resolve]
+    if: contains(fromJson(needs.resolve.outputs.publish-targets), 'pypi')
+    uses: ./.github/workflows/_reusable-publish-pypi.yml
+    with:
+      project-path: ${{ needs.resolve.outputs.project-path }}
+      project-name: ${{ needs.resolve.outputs.project-name }}
+      version: ${{ needs.resolve.outputs.version }}
+
+  summary:
+    name: Publish Summary
+    needs: [resolve, publish-pypi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Summary
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: python .github/scripts/publish_summary.py

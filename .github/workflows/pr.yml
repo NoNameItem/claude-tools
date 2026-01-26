@@ -36,78 +36,78 @@ jobs:
           DETECT_RESULT: ${{ needs.detect.outputs.result }}
         run: python .github/scripts/validate.py --pr
 
-  package-ci:
-    name: Package CI
+  python-ci:
+    name: Python CI
     needs: [detect, validate-pr]
-    if: fromJson(needs.detect.outputs.result).by_type.package.has_changed == true
+    if: fromJson(needs.detect.outputs.result).by_type.python.has_changed == true
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
-      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.matrix) }}
-      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.test_matrix) }}
+      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.matrix) }}
+      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.test_matrix) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
     secrets: inherit
 
-  plugin-ci:
-    name: Plugin CI
+  claude-code-plugin-ci:
+    name: Claude Code Plugin CI
     needs: [detect, validate-pr]
-    if: fromJson(needs.detect.outputs.result).by_type.plugin.has_changed == true
-    uses: ./.github/workflows/_reusable-plugin-ci.yml
+    if: fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.has_changed == true
+    uses: ./.github/workflows/_reusable-claude-code-plugin-ci.yml
     with:
-      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.plugin.changed) }}
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.changed) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
 
-  package-ci-info:
-    name: Package CI (info)
+  python-ci-info:
+    name: Python CI (info)
     needs: [detect, validate-pr]
     if: |
       fromJson(needs.detect.outputs.result).tooling_changed == true &&
-      fromJson(needs.detect.outputs.result).by_type.package.has_unchanged == true
+      fromJson(needs.detect.outputs.result).by_type.python.has_unchanged == true
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
-      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_matrix) }}
-      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.package.unchanged_test_matrix) }}
+      matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.unchanged_matrix) }}
+      test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.unchanged_test_matrix) }}
       tooling-changed: true
       info-only: true
     secrets: inherit
 
-  plugin-ci-info:
-    name: Plugin CI (info)
+  claude-code-plugin-ci-info:
+    name: Claude Code Plugin CI (info)
     needs: [detect, validate-pr]
     if: |
       fromJson(needs.detect.outputs.result).tooling_changed == true &&
-      fromJson(needs.detect.outputs.result).by_type.plugin.has_unchanged == true
-    uses: ./.github/workflows/_reusable-plugin-ci.yml
+      fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.has_unchanged == true
+    uses: ./.github/workflows/_reusable-claude-code-plugin-ci.yml
     with:
-      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.plugin.unchanged) }}
+      plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
 
   # Summary jobs for branch protection required checks
-  # When reusable workflows run, they create sub-jobs like "Package CI / Lint (statuskit)"
-  # but not a parent "Package CI" job. These summary jobs provide that parent check.
-  package-ci-result:
-    name: Package CI
-    needs: [package-ci]
+  # When reusable workflows run, they create sub-jobs like "Python CI / Lint (statuskit)"
+  # but not a parent "Python CI" job. These summary jobs provide that parent check.
+  python-ci-result:
+    name: Python CI
+    needs: [python-ci]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
         run: |
-          RESULT="${{ needs.package-ci.result }}"
-          echo "Package CI result: $RESULT"
+          RESULT="${{ needs.python-ci.result }}"
+          echo "Python CI result: $RESULT"
           [[ "$RESULT" == "failure" ]] && exit 1
           exit 0
 
-  plugin-ci-result:
-    name: Plugin CI
-    needs: [plugin-ci]
+  claude-code-plugin-ci-result:
+    name: Claude Code Plugin CI
+    needs: [claude-code-plugin-ci]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
         run: |
-          RESULT="${{ needs.plugin-ci.result }}"
-          echo "Plugin CI result: $RESULT"
+          RESULT="${{ needs.claude-code-plugin-ci.result }}"
+          echo "Claude Code Plugin CI result: $RESULT"
           [[ "$RESULT" == "failure" ]] && exit 1
           exit 0

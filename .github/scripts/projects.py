@@ -9,11 +9,19 @@ from pathlib import Path  # noqa: TC003 - used at runtime
 
 
 @dataclass
-class CIConfig:
-    """CI configuration from pyproject.toml."""
+class ProjectTypeConfig:
+    """Configuration for a project type."""
+
+    paths: list[str]
+    publish: list[str]
+
+
+@dataclass
+class RepoConfig:
+    """Repository configuration from pyproject.toml."""
 
     tooling_files: list[str]
-    project_types: dict[str, list[str]]
+    project_types: dict[str, ProjectTypeConfig]
 
 
 @dataclass
@@ -26,30 +34,37 @@ class ProjectInfo:
     python_versions: list[str]
 
 
-def get_ci_config(repo_root: Path) -> CIConfig:
-    """Load CI config from pyproject.toml.
+def get_repo_config(repo_root: Path) -> RepoConfig:
+    """Load repo config from pyproject.toml.
 
     Args:
         repo_root: Path to repository root.
 
     Returns:
-        CIConfig with tooling_files and project_types.
+        RepoConfig with tooling_files and project_types.
 
     Raises:
-        ValueError: If [tool.ci] section is missing.
+        ValueError: If [tool.repo] section is missing.
     """
     pyproject_path = repo_root / "pyproject.toml"
     content = pyproject_path.read_text()
     data = tomllib.loads(content)
 
-    ci_config = data.get("tool", {}).get("ci")
-    if ci_config is None:
-        msg = "Missing [tool.ci] configuration in pyproject.toml"
+    repo_config = data.get("tool", {}).get("repo")
+    if repo_config is None:
+        msg = "Missing [tool.repo] configuration in pyproject.toml"
         raise ValueError(msg)
 
-    return CIConfig(
-        tooling_files=ci_config.get("tooling_files", []),
-        project_types=ci_config.get("project-types", {}),
+    project_types: dict[str, ProjectTypeConfig] = {}
+    for type_name, type_config in repo_config.get("project-types", {}).items():
+        project_types[type_name] = ProjectTypeConfig(
+            paths=type_config.get("paths", []),
+            publish=type_config.get("publish", []),
+        )
+
+    return RepoConfig(
+        tooling_files=repo_config.get("tooling_files", []),
+        project_types=project_types,
     )
 
 
@@ -64,9 +79,9 @@ def get_project_from_path(path: str, repo_root: Path | None = None) -> str | Non
         Package/plugin name or None if repo-level path.
     """
     if repo_root is not None:
-        config = get_ci_config(repo_root)
-        for prefixes in config.project_types.values():
-            for prefix in prefixes:
+        config = get_repo_config(repo_root)
+        for type_config in config.project_types.values():
+            for prefix in type_config.paths:
                 if path.startswith(f"{prefix}/"):
                     parts = path.split("/")
                     return parts[1] if len(parts) > 1 else None
@@ -137,7 +152,7 @@ def _parse_python_versions(pyproject_path: Path) -> list[str]:
 
 
 def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
-    """Discover all projects based on [tool.ci] configuration.
+    """Discover all projects based on [tool.repo] configuration.
 
     Args:
         repo_root: Path to repository root.
@@ -148,11 +163,11 @@ def discover_projects(repo_root: Path) -> dict[str, ProjectInfo]:
     Raises:
         ValueError: If scope collision detected.
     """
-    config = get_ci_config(repo_root)
+    config = get_repo_config(repo_root)
     projects: dict[str, ProjectInfo] = {}
 
-    for kind, dirs in config.project_types.items():
-        for dir_name in dirs:
+    for kind, type_config in config.project_types.items():
+        for dir_name in type_config.paths:
             dir_path = repo_root / dir_name
             if not dir_path.exists():
                 continue
