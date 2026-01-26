@@ -1,6 +1,7 @@
 """Git module for statuskit."""
 
 import subprocess
+from pathlib import Path
 
 from statuskit.modules.base import BaseModule
 
@@ -185,3 +186,48 @@ class GitModule(BaseModule):
                 return f"{num}{suffix}"
 
         return age_str
+
+    def _get_location(self) -> dict[str, str | None] | None:
+        """Get project, worktree, and subfolder info.
+
+        Returns:
+            Dict with keys: project, worktree, subfolder
+            or None if not in git repo
+        """
+        # Get main repo .git path
+        git_common_dir = self._run_git("rev-parse", "--git-common-dir")
+        if git_common_dir is None:
+            return None
+
+        # Get current worktree root
+        toplevel = self._run_git("rev-parse", "--show-toplevel")
+        if toplevel is None:
+            return None
+
+        # Extract project name from main repo path
+        git_path = Path(git_common_dir)
+        if git_path.name == ".git":
+            project_name = git_path.parent.name
+        else:
+            project_name = git_path.name
+
+        # Detect worktree: .git is a file (not directory) in worktrees
+        toplevel_path = Path(toplevel)
+        git_file = toplevel_path / ".git"
+        is_worktree = git_file.is_file()
+
+        worktree_name = toplevel_path.name if is_worktree else None
+
+        # Get subfolder relative to worktree/repo root
+        current_dir = self.data.workspace.current_dir if self.data.workspace else None
+        subfolder = None
+        if current_dir:
+            current_path = Path(current_dir)
+            try:
+                rel_path = current_path.relative_to(toplevel_path)
+                if rel_path != Path():
+                    subfolder = str(rel_path)
+            except ValueError:
+                pass
+
+        return {"project": project_name, "worktree": worktree_name, "subfolder": subfolder}

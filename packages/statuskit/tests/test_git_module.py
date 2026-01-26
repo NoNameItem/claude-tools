@@ -275,3 +275,97 @@ M  staged_modified.py
         assert mod._format_commit_age("4 months ago") == "4mo"
         assert mod._format_commit_age("1 year ago") == "1y"
         assert mod._format_commit_age("10 seconds ago") == "10s"
+
+    def test_get_location_regular_repo_root(self, make_render_context):
+        """_get_location returns project name for regular repo at root."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/myproject", "project_dir": "/home/user/myproject"},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): "/home/user/myproject/.git",
+                ("rev-parse", "--show-toplevel"): "/home/user/myproject",
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=False):
+                result = mod._get_location()
+
+        assert result == {"project": "myproject", "worktree": None, "subfolder": None}
+
+    def test_get_location_regular_repo_subfolder(self, make_render_context):
+        """_get_location returns project and subfolder for regular repo."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/myproject/src/utils", "project_dir": "/home/user/myproject"},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): "/home/user/myproject/.git",
+                ("rev-parse", "--show-toplevel"): "/home/user/myproject",
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=False):
+                result = mod._get_location()
+
+        assert result == {"project": "myproject", "worktree": None, "subfolder": "src/utils"}
+
+    def test_get_location_worktree_root(self, make_render_context):
+        """_get_location returns project and worktree name for worktree at root."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={
+                "current_dir": "/home/user/myproject/.worktrees/feature-branch",
+                "project_dir": "/home/user/myproject/.worktrees/feature-branch",
+            },
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): "/home/user/myproject/.git",
+                ("rev-parse", "--show-toplevel"): "/home/user/myproject/.worktrees/feature-branch",
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=True):
+                result = mod._get_location()
+
+        assert result == {"project": "myproject", "worktree": "feature-branch", "subfolder": None}
+
+    def test_get_location_worktree_subfolder(self, make_render_context):
+        """_get_location returns all components for worktree with subfolder."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={
+                "current_dir": "/home/user/myproject/.worktrees/feature-branch/src",
+                "project_dir": "/home/user/myproject/.worktrees/feature-branch",
+            },
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): "/home/user/myproject/.git",
+                ("rev-parse", "--show-toplevel"): "/home/user/myproject/.worktrees/feature-branch",
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=True):
+                result = mod._get_location()
+
+        assert result == {"project": "myproject", "worktree": "feature-branch", "subfolder": "src"}
+
+    def test_get_location_not_git_repo(self, make_render_context):
+        """_get_location returns None when not in git repo."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None
+            result = mod._get_location()
+
+        assert result is None
