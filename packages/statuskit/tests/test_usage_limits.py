@@ -6,6 +6,7 @@ from statuskit.modules.usage_limits import (
     UsageData,
     UsageLimit,
     calculate_color,
+    format_progress_bar,
     format_remaining_time,
     format_reset_at,
     parse_api_response,
@@ -198,3 +199,32 @@ class TestFormatResetAt:
         # Result depends on local timezone, just check format
         assert len(result.split()) == 2  # "Thu 17:00" or similar
         assert ":" in result  # Contains time
+
+
+class TestFormatProgressBar:
+    """Tests for progress bar formatting."""
+
+    def test_empty_bar(self):
+        """0% utilization shows empty bar."""
+        result = format_progress_bar(0.0, width=10)
+        assert result == "[░░░░░░░░░░]"
+
+    def test_full_bar(self):
+        """100% utilization shows full bar."""
+        result = format_progress_bar(100.0, width=10)
+        assert result == "[██████████]"
+
+    def test_half_bar(self):
+        """50% utilization shows half-filled bar."""
+        result = format_progress_bar(50.0, width=10)
+        assert result == "[█████░░░░░]"
+
+    def test_partial_bar(self):
+        """45% utilization rounds to 4 filled chars."""
+        result = format_progress_bar(45.0, width=10)
+        assert result == "[████░░░░░░]"
+
+    def test_custom_width(self):
+        """Respects custom width."""
+        result = format_progress_bar(50.0, width=6)
+        assert result == "[███░░░]"

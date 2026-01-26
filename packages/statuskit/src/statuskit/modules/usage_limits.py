@@ -103,3 +103,18 @@ def format_reset_at(reset_time: datetime) -> str:
     """
     local_time = reset_time.astimezone()  # Convert to local timezone
     return local_time.strftime("%a %H:%M")
+
+
+def format_progress_bar(utilization: float, width: int = 10) -> str:
+    """Format utilization as a progress bar.
+
+    Args:
+        utilization: Usage percentage (0-100)
+        width: Bar width in characters
+
+    Returns:
+        Formatted bar: "[████░░░░░░]"
+    """
+    filled = int(utilization / 100 * width)
+    empty = width - filled
+    return f"[{'█' * filled}{'░' * empty}]"
