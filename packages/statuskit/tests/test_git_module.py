@@ -148,3 +148,83 @@ class TestGitModule:
             result = mod._get_remote_status()
 
         assert result == ("no_upstream", 0)
+
+    def test_get_changes_all_types(self, make_render_context):
+        """_get_changes returns counts for all change types."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        porcelain_output = """A  staged_new.py
+M  staged_modified.py
+ M unstaged.py
+ M another_unstaged.py
+?? untracked1.txt
+?? untracked2.txt
+?? untracked3.txt"""
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = porcelain_output
+            result = mod._get_changes()
+
+        assert result == {"staged": 2, "modified": 2, "untracked": 3}
+
+    def test_get_changes_staged_only(self, make_render_context):
+        """_get_changes counts staged files."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "A  new.py\nM  modified.py\nD  deleted.py"
+            result = mod._get_changes()
+
+        assert result == {"staged": 3, "modified": 0, "untracked": 0}
+
+    def test_get_changes_modified_only(self, make_render_context):
+        """_get_changes counts modified files."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = " M file1.py\n M file2.py"
+            result = mod._get_changes()
+
+        assert result == {"staged": 0, "modified": 2, "untracked": 0}
+
+    def test_get_changes_untracked_only(self, make_render_context):
+        """_get_changes counts untracked files."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "?? file1.txt\n?? file2.txt"
+            result = mod._get_changes()
+
+        assert result == {"staged": 0, "modified": 0, "untracked": 2}
+
+    def test_get_changes_clean(self, make_render_context):
+        """_get_changes returns zeros for clean working directory."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = ""
+            result = mod._get_changes()
+
+        assert result == {"staged": 0, "modified": 0, "untracked": 0}
+
+    def test_get_changes_not_git_repo(self, make_render_context):
+        """_get_changes returns zeros when not in git repo."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None
+            result = mod._get_changes()
+
+        assert result == {"staged": 0, "modified": 0, "untracked": 0}

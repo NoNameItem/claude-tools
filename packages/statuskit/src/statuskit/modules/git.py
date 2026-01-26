@@ -6,6 +6,7 @@ from statuskit.modules.base import BaseModule
 
 _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
+_MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
 
 
 class GitModule(BaseModule):
@@ -94,3 +95,37 @@ class GitModule(BaseModule):
         if behind > 0:
             return ("behind", behind)
         return ("synced", 0)
+
+    def _get_changes(self) -> dict[str, int]:
+        """Get working directory change counts.
+
+        Returns:
+            Dict with keys: staged, modified, untracked
+        """
+        result = {"staged": 0, "modified": 0, "untracked": 0}
+
+        status = self._run_git("status", "--porcelain")
+        if status is None or status == "":
+            return result
+
+        for line in status.split("\n"):
+            if not line or len(line) < _MIN_STATUS_LINE_LEN:
+                continue
+
+            index_status = line[0]
+            worktree_status = line[1]
+
+            # Untracked files
+            if index_status == "?" and worktree_status == "?":
+                result["untracked"] += 1
+            # Staged changes (index has changes)
+            elif index_status in "AMDRC":
+                result["staged"] += 1
+                # File can be both staged and modified
+                if worktree_status in "MD":
+                    result["modified"] += 1
+            # Unstaged modifications only
+            elif worktree_status in "MD":
+                result["modified"] += 1
+
+        return result
