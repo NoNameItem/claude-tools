@@ -369,3 +369,81 @@ M  staged_modified.py
             result = mod._get_location()
 
         assert result is None
+
+    def test_render_location_line_project_only(self, make_render_context):
+        """_render_location_line shows just project name."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        location = {"project": "myproject", "worktree": None, "subfolder": None}
+        result = mod._render_location_line(location)
+
+        assert "myproject" in result
+        # Should not have separator when only project
+        assert "→" not in result
+
+    def test_render_location_line_with_worktree(self, make_render_context):
+        """_render_location_line shows project and worktree."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        location = {"project": "myproject", "worktree": "feature-x", "subfolder": None}
+        result = mod._render_location_line(location)
+
+        assert "myproject" in result
+        assert "→" in result
+        assert "feature-x" in result
+
+    def test_render_location_line_with_subfolder(self, make_render_context):
+        """_render_location_line shows project and subfolder."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        location = {"project": "myproject", "worktree": None, "subfolder": "src/utils"}
+        result = mod._render_location_line(location)
+
+        assert "myproject" in result
+        assert "→" in result
+        assert "src/utils" in result
+
+    def test_render_location_line_full(self, make_render_context):
+        """_render_location_line shows all components."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        location = {"project": "myproject", "worktree": "feature-x", "subfolder": "src"}
+        result = mod._render_location_line(location)
+
+        assert "myproject" in result
+        assert "feature-x" in result
+        assert "src" in result
+        # Tree icon for worktree
+        assert "🌲" in result
+
+    def test_render_location_line_config_disabled(self, make_render_context):
+        """_render_location_line respects config flags."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_project": False, "show_worktree": True, "show_folder": True})
+
+        location = {"project": "myproject", "worktree": "feature-x", "subfolder": "src"}
+        result = mod._render_location_line(location)
+
+        assert "myproject" not in result
+        assert "feature-x" in result
+        assert "src" in result
+
+    def test_render_location_line_all_disabled(self, make_render_context):
+        """_render_location_line returns None when all disabled."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_project": False, "show_worktree": False, "show_folder": False})
+
+        location = {"project": "myproject", "worktree": "feature-x", "subfolder": "src"}
+        result = mod._render_location_line(location)
+
+        assert result is None

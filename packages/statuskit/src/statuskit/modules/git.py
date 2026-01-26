@@ -3,6 +3,8 @@
 import subprocess
 from pathlib import Path
 
+from termcolor import colored
+
 from statuskit.modules.base import BaseModule
 
 _GIT_TIMEOUT = 2  # seconds
@@ -19,6 +21,9 @@ class GitModule(BaseModule):
     def __init__(self, ctx, config: dict):
         super().__init__(ctx, config)
         self.commit_age_format = config.get("commit_age_format", "relative")
+        self.show_project = config.get("show_project", True)
+        self.show_worktree = config.get("show_worktree", True)
+        self.show_folder = config.get("show_folder", True)
 
     def render(self) -> str | None:
         """Render git status output."""
@@ -231,3 +236,31 @@ class GitModule(BaseModule):
                 pass
 
         return {"project": project_name, "worktree": worktree_name, "subfolder": subfolder}
+
+    def _render_location_line(self, location: dict[str, str | None]) -> str | None:
+        """Render the location line (Line 1).
+
+        Args:
+            location: Dict with project, worktree, subfolder
+
+        Returns:
+            Formatted location string or None if all disabled
+        """
+        parts = []
+        separator = colored(" → ", "white", attrs=["dark"])
+
+        if self.show_project and location["project"]:
+            parts.append(colored(location["project"], "cyan"))
+
+        if self.show_worktree and location["worktree"]:
+            tree_icon = colored("🌲", "green")
+            worktree_name = colored(location["worktree"], "yellow")
+            parts.append(f"{tree_icon} {worktree_name}")
+
+        if self.show_folder and location["subfolder"]:
+            parts.append(colored(location["subfolder"], "white"))
+
+        if not parts:
+            return None
+
+        return separator.join(parts)
