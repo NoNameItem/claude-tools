@@ -228,3 +228,50 @@ M  staged_modified.py
             result = mod._get_changes()
 
         assert result == {"staged": 0, "modified": 0, "untracked": 0}
+
+    def test_get_last_commit(self, make_render_context):
+        """_get_last_commit returns hash and age."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "abc1234 2 hours ago"
+            result = mod._get_last_commit()
+
+        assert result == ("abc1234", "2 hours ago")
+
+    def test_get_last_commit_no_commits(self, make_render_context):
+        """_get_last_commit returns None for empty repo."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None
+            result = mod._get_last_commit()
+
+        assert result is None
+
+    def test_format_commit_age_relative(self, make_render_context):
+        """_format_commit_age keeps relative format as-is."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "relative"})
+
+        result = mod._format_commit_age("2 hours ago")
+        assert result == "2 hours ago"
+
+    def test_format_commit_age_compact(self, make_render_context):
+        """_format_commit_age converts to compact format."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "compact"})
+
+        assert mod._format_commit_age("2 hours ago") == "2h"
+        assert mod._format_commit_age("5 minutes ago") == "5m"
+        assert mod._format_commit_age("3 days ago") == "3d"
+        assert mod._format_commit_age("2 weeks ago") == "2w"
+        assert mod._format_commit_age("4 months ago") == "4mo"
+        assert mod._format_commit_age("1 year ago") == "1y"
+        assert mod._format_commit_age("10 seconds ago") == "10s"

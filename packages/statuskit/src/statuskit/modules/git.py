@@ -17,6 +17,7 @@ class GitModule(BaseModule):
 
     def __init__(self, ctx, config: dict):
         super().__init__(ctx, config)
+        self.commit_age_format = config.get("commit_age_format", "relative")
 
     def render(self) -> str | None:
         """Render git status output."""
@@ -129,3 +130,58 @@ class GitModule(BaseModule):
                 result["modified"] += 1
 
         return result
+
+    def _get_last_commit(self) -> tuple[str, str] | None:
+        """Get last commit hash and relative age.
+
+        Returns:
+            Tuple of (short_hash, relative_age) or None if no commits
+        """
+        output = self._run_git("log", "-1", "--format=%h %ar")
+        if output is None:
+            return None
+
+        parts = output.split(" ", 1)
+        if len(parts) != _EXPECTED_COUNT_PARTS:
+            return None
+
+        return (parts[0], parts[1])
+
+    def _format_commit_age(self, age_str: str) -> str:
+        """Format commit age according to config.
+
+        Args:
+            age_str: Relative age string from git (e.g., "2 hours ago")
+
+        Returns:
+            Formatted age string
+        """
+        if self.commit_age_format == "relative":
+            return age_str
+
+        if self.commit_age_format == "compact":
+            # Parse "N unit ago" format
+            parts = age_str.split()
+            if len(parts) >= _EXPECTED_COUNT_PARTS:
+                num = parts[0]
+                unit = parts[1]
+                unit_map = {
+                    "second": "s",
+                    "seconds": "s",
+                    "minute": "m",
+                    "minutes": "m",
+                    "hour": "h",
+                    "hours": "h",
+                    "day": "d",
+                    "days": "d",
+                    "week": "w",
+                    "weeks": "w",
+                    "month": "mo",
+                    "months": "mo",
+                    "year": "y",
+                    "years": "y",
+                }
+                suffix = unit_map.get(unit, unit[0])
+                return f"{num}{suffix}"
+
+        return age_str
