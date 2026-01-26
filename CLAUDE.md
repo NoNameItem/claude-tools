@@ -22,7 +22,26 @@ This repository contains two types of tools for Claude Code:
 - "project" = package OR plugin (generic)
 - "package" = only Python packages
 - "plugin" = only Claude Code plugins
-- Scope in conventional commits = project name (e.g., `feat(statuskit):`, `fix(flow):`)
+
+## Commit Messages & PR Titles
+
+**Scope and label rules:**
+
+| Changes in | Title scope | PR label |
+|------------|-------------|----------|
+| `packages/statuskit/` | `(statuskit)` | `statuskit` |
+| `plugins/flow/` | `(flow)` | `flow` |
+| `.github/`, `docs/`, root configs | no scope | `repo` |
+
+```
+✅ feat(statuskit): add git module      # label: statuskit
+✅ fix(flow): correct skill loading     # label: flow
+✅ ci: add release workflow             # label: repo
+❌ fix(ci): add workflow                # WRONG - ci is type, not scope
+❌ feat: add git module                 # WRONG - missing scope for package
+```
+
+See CONTRIBUTING.md for full details.
 
 ## Project Structure
 
