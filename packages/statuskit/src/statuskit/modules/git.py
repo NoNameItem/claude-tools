@@ -30,8 +30,40 @@ class GitModule(BaseModule):
         self.show_commit = config.get("show_commit", True)
 
     def render(self) -> str | None:
-        """Render git status output."""
-        return None
+        """Render git status output.
+
+        Returns:
+            Two-line output (location + status) or None if not a git repo
+        """
+        # Check if we're in a git repo
+        branch = self._get_branch()
+        if branch is None:
+            return None
+
+        lines = []
+
+        # Line 1: Location
+        location = self._get_location()
+        if location:
+            line1 = self._render_location_line(location)
+            if line1:
+                lines.append(line1)
+
+        # Line 2: Git status
+        remote_status = self._get_remote_status()
+        changes = self._get_changes()
+        commit = self._get_last_commit()
+        if commit:
+            commit = (commit[0], self._format_commit_age(commit[1]))
+
+        line2 = self._render_status_line(branch, remote_status, changes, commit)
+        if line2:
+            lines.append(line2)
+
+        if not lines:
+            return None
+
+        return "\n".join(lines)
 
     def _run_git(self, *args: str) -> str | None:
         """Run git command and return output.

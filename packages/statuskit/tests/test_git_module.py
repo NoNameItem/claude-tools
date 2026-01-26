@@ -641,3 +641,123 @@ M  staged_modified.py
         )
 
         assert result is None
+
+    def test_render_not_git_repo(self, make_render_context):
+        """render returns None when not in git repo."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_get_branch") as mock_branch:
+            mock_branch.return_value = None
+            result = mod.render()
+
+        assert result is None
+
+    def test_render_two_lines(self, make_render_context):
+        """render returns two lines of output."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+            patch.object(mod, "_get_remote_status") as mock_remote,
+            patch.object(mod, "_get_changes") as mock_changes,
+            patch.object(mod, "_get_last_commit") as mock_commit,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = "main"
+            mock_remote.return_value = ("synced", 0)
+            mock_changes.return_value = {"staged": 1, "modified": 0, "untracked": 0}
+            mock_commit.return_value = ("abc1234", "2 hours ago")
+
+            result = mod.render()
+
+        assert result is not None
+        lines = result.split("\n")
+        assert len(lines) == 2
+        assert "project" in lines[0]
+        assert "main" in lines[1]
+
+    def test_render_line1_only(self, make_render_context):
+        """render returns one line when line 2 disabled."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(
+            ctx,
+            {"show_branch": False, "show_remote_status": False, "show_changes": False, "show_commit": False},
+        )
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = "main"
+
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "project" in result
+
+    def test_render_line2_only(self, make_render_context):
+        """render returns one line when line 1 disabled."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"show_project": False, "show_worktree": False, "show_folder": False})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+            patch.object(mod, "_get_remote_status") as mock_remote,
+            patch.object(mod, "_get_changes") as mock_changes,
+            patch.object(mod, "_get_last_commit") as mock_commit,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = "main"
+            mock_remote.return_value = ("synced", 0)
+            mock_changes.return_value = {"staged": 0, "modified": 0, "untracked": 0}
+            mock_commit.return_value = ("abc1234", "2h")
+
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "main" in result
+
+    def test_render_all_disabled(self, make_render_context):
+        """render returns None when both lines disabled."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(
+            ctx,
+            {
+                "show_project": False,
+                "show_worktree": False,
+                "show_folder": False,
+                "show_branch": False,
+                "show_remote_status": False,
+                "show_changes": False,
+                "show_commit": False,
+            },
+        )
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = "main"
+
+            result = mod.render()
+
+        assert result is None
