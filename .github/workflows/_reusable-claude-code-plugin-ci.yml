@@ -1,5 +1,5 @@
-# .github/workflows/_reusable-plugin-ci.yml
-name: Plugin CI (Reusable)
+# .github/workflows/_reusable-claude-code-plugin-ci.yml
+name: Claude Code Plugin CI (Reusable)
 
 on:
   workflow_call:
