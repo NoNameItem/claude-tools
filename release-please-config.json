@@ -20,7 +20,8 @@
       "release-type": "python",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
-      "prerelease": true
+      "prerelease": true,
+      "labels": ["ci:full", "statuskit"]
     },
     "plugins/flow": {
       "package-name": "flow",
@@ -32,7 +33,8 @@
           "path": ".claude-plugin/plugin.json",
           "jsonpath": "$.version"
         }
-      ]
+      ],
+      "labels": ["ci:full", "flow"]
     }
   }
 }
