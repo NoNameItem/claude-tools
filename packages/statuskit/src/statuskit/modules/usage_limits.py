@@ -5,10 +5,14 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 HOURS_PER_DAY = 24
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
+API_URL = "https://api.anthropic.com/api/oauth/usage"
+API_TIMEOUT = 3.0
 
 
 @dataclass
@@ -170,3 +174,28 @@ def get_token() -> str | None:
         Token string or None if not found
     """
     return _get_keychain_token() or _get_file_token()
+
+
+def fetch_usage_api(token: str) -> UsageData | None:
+    """Fetch usage data from Anthropic API.
+
+    Args:
+        token: OAuth access token
+
+    Returns:
+        UsageData or None on error
+    """
+    try:
+        request = Request(  # noqa: S310
+            API_URL,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        )
+        with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310
+            data = json.loads(response.read())
+            return parse_api_response(data)
+    except (TimeoutError, URLError, json.JSONDecodeError):
+        pass
+    return None

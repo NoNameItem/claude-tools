@@ -3,11 +3,13 @@
 import json
 from datetime import UTC, datetime
 from unittest.mock import patch
+from urllib.error import URLError
 
 from statuskit.modules.usage_limits import (
     UsageData,
     UsageLimit,
     calculate_color,
+    fetch_usage_api,
     format_progress_bar,
     format_remaining_time,
     format_reset_at,
@@ -261,3 +263,35 @@ class TestGetToken:
             with patch("statuskit.modules.usage_limits.CREDENTIALS_PATH", tmp_path / "nonexistent"):
                 token = get_token()
                 assert token is None
+
+
+class TestFetchUsageApi:
+    """Tests for API fetching."""
+
+    def test_fetch_success(self):
+        """Successful API call returns parsed data."""
+        response_data = json.dumps(make_api_response()).encode()
+
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_response = mock_urlopen.return_value.__enter__.return_value
+            mock_response.read.return_value = response_data
+            mock_response.status = 200
+
+            data = fetch_usage_api("test-token")
+
+            assert data is not None
+            assert data.session.utilization == 45.0
+
+    def test_fetch_timeout(self):
+        """Returns None on timeout."""
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = TimeoutError("timeout")
+            data = fetch_usage_api("test-token")
+            assert data is None
+
+    def test_fetch_error(self):
+        """Returns None on URL error."""
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = URLError("connection failed")
+            data = fetch_usage_api("test-token")
+            assert data is None
