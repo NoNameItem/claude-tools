@@ -2,7 +2,12 @@
 
 from datetime import UTC, datetime
 
-from statuskit.modules.usage_limits import UsageData, UsageLimit, parse_api_response
+from statuskit.modules.usage_limits import (
+    UsageData,
+    UsageLimit,
+    calculate_color,
+    parse_api_response,
+)
 
 from tests.factories.usage_limits import make_api_response
 
@@ -93,3 +98,67 @@ class TestParseApiResponse:
         after = datetime.now(UTC)
 
         assert before <= data.fetched_at <= after
+
+
+class TestCalculateColor:
+    """Tests for color calculation based on utilization vs time."""
+
+    def test_red_when_over_time_percent(self):
+        """Red when utilization exceeds time percent."""
+        # 2.5h passed of 5h window = 50% time, 60% usage = over
+        color = calculate_color(
+            utilization=60.0,
+            remaining_hours=2.5,
+            window_hours=5.0,
+        )
+        assert color == "red"
+
+    def test_yellow_when_within_margin(self):
+        """Yellow when utilization is within 10% margin of time percent."""
+        # 2.5h passed of 5h window = 50% time, 45% usage = within margin
+        color = calculate_color(
+            utilization=45.0,
+            remaining_hours=2.5,
+            window_hours=5.0,
+        )
+        assert color == "yellow"
+
+    def test_green_when_well_under(self):
+        """Green when utilization is well under time percent."""
+        # 2.5h passed of 5h window = 50% time, 35% usage = under
+        color = calculate_color(
+            utilization=35.0,
+            remaining_hours=2.5,
+            window_hours=5.0,
+        )
+        assert color == "green"
+
+    def test_yellow_at_80_percent_time_75_usage(self):
+        """Yellow at 80% time with 75% usage."""
+        # 1h remaining of 5h = 80% time, 75% usage
+        color = calculate_color(
+            utilization=75.0,
+            remaining_hours=1.0,
+            window_hours=5.0,
+        )
+        assert color == "yellow"
+
+    def test_green_at_80_percent_time_65_usage(self):
+        """Green at 80% time with 65% usage."""
+        # 1h remaining of 5h = 80% time, 65% usage
+        color = calculate_color(
+            utilization=65.0,
+            remaining_hours=1.0,
+            window_hours=5.0,
+        )
+        assert color == "green"
+
+    def test_weekly_window(self):
+        """Works correctly for 7-day window."""
+        # 3.5 days remaining of 7 days = 50% time, 60% usage = red
+        color = calculate_color(
+            utilization=60.0,
+            remaining_hours=3.5 * 24,
+            window_hours=7 * 24,
+        )
+        assert color == "red"

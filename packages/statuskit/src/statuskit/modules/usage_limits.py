@@ -46,3 +46,24 @@ def parse_api_response(response: dict) -> UsageData:
         sonnet=parse_limit(response.get("seven_day_sonnet")),
         fetched_at=datetime.now(UTC),
     )
+
+
+def calculate_color(utilization: float, remaining_hours: float, window_hours: float) -> str:
+    """Calculate color based on utilization vs elapsed time.
+
+    Args:
+        utilization: Current usage percentage (0-100)
+        remaining_hours: Hours until reset
+        window_hours: Total window size in hours
+
+    Returns:
+        Color name: "red", "yellow", or "green"
+    """
+    time_percent = (1 - remaining_hours / window_hours) * 100
+    margin = 10  # fixed corridor
+
+    if utilization > time_percent:
+        return "red"
+    if utilization > time_percent - margin:
+        return "yellow"
+    return "green"
