@@ -1,0 +1,82 @@
+# .github/workflows/publish.yml
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write  # For PyPI Trusted Publisher
+
+jobs:
+  resolve:
+    name: Resolve publish targets
+    runs-on: ubuntu-latest
+    outputs:
+      project-name: ${{ steps.resolve.outputs.project-name }}
+      project-path: ${{ steps.resolve.outputs.project-path }}
+      project-type: ${{ steps.resolve.outputs.project-type }}
+      version: ${{ steps.resolve.outputs.version }}
+      publish-targets: ${{ steps.resolve.outputs.publish-targets }}
+      has-pypi: ${{ contains(fromJson(steps.resolve.outputs.publish-targets), 'pypi') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve publish targets
+        id: resolve
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          RESULT=$(python .github/scripts/resolve_publish.py "$RELEASE_TAG")
+          echo "Result: $RESULT"
+
+          echo "project-name=$(echo "$RESULT" | jq -r '.project_name')" >> "$GITHUB_OUTPUT"
+          echo "project-path=$(echo "$RESULT" | jq -r '.project_path')" >> "$GITHUB_OUTPUT"
+          echo "project-type=$(echo "$RESULT" | jq -r '.project_type')" >> "$GITHUB_OUTPUT"
+          echo "version=$(echo "$RESULT" | jq -r '.version')" >> "$GITHUB_OUTPUT"
+          echo "publish-targets=$(echo "$RESULT" | jq -c '.publish_targets')" >> "$GITHUB_OUTPUT"
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [resolve]
+    if: needs.resolve.outputs.has-pypi == 'true'
+    uses: ./.github/workflows/_reusable-publish-pypi.yml
+    with:
+      project-path: ${{ needs.resolve.outputs.project-path }}
+      project-name: ${{ needs.resolve.outputs.project-name }}
+      version: ${{ needs.resolve.outputs.version }}
+
+  summary:
+    name: Publish Summary
+    needs: [resolve, publish-pypi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        env:
+          PROJECT_NAME: ${{ needs.resolve.outputs.project-name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PUBLISH_TARGETS: ${{ needs.resolve.outputs.publish-targets }}
+          PYPI_RESULT: ${{ needs.publish-pypi.result }}
+        run: |
+          echo "## Publish Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Project:** $PROJECT_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Targets:** $PUBLISH_TARGETS" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PYPI_RESULT" == "success" ]; then
+            echo "✅ PyPI: Published successfully" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PYPI_RESULT" == "skipped" ]; then
+            echo "⏭️ PyPI: Skipped (not in publish targets)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PYPI_RESULT" == "failure" ]; then
+            echo "❌ PyPI: Failed" >> "$GITHUB_STEP_SUMMARY"
+          fi
