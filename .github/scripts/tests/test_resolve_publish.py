@@ -42,16 +42,6 @@ class TestResolvePublish:
         """Should resolve Python package with pypi publish target."""
         from ..resolve_publish import resolve_publish
 
-        # Create release-please-config.json
-        (temp_repo / "release-please-config.json").write_text("""\
-{
-  "packages": {
-    "packages/statuskit": {
-      "package-name": "statuskit"
-    }
-  }
-}
-""")
         result = resolve_publish("statuskit-0.2.0", temp_repo)
 
         assert result["project_name"] == "statuskit"
@@ -64,15 +54,6 @@ class TestResolvePublish:
         """Should resolve plugin with empty publish targets."""
         from ..resolve_publish import resolve_publish
 
-        (temp_repo / "release-please-config.json").write_text("""\
-{
-  "packages": {
-    "plugins/flow": {
-      "package-name": "flow"
-    }
-  }
-}
-""")
         result = resolve_publish("flow-1.0.0", temp_repo)
 
         assert result["project_name"] == "flow"
@@ -84,8 +65,6 @@ class TestResolvePublish:
     def test_unknown_component_raises(self, temp_repo: Path) -> None:
         """Should raise for unknown component."""
         from ..resolve_publish import resolve_publish
-
-        (temp_repo / "release-please-config.json").write_text('{"packages": {}}')
 
         with pytest.raises(ValueError, match="Unknown component"):
             resolve_publish("unknown-1.0.0", temp_repo)

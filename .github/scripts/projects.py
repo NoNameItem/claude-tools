@@ -25,14 +25,6 @@ class RepoConfig:
 
 
 @dataclass
-class CIConfig:
-    """CI configuration from pyproject.toml (legacy)."""
-
-    tooling_files: list[str]
-    project_types: dict[str, list[str]]
-
-
-@dataclass
 class ProjectInfo:
     """Information about a package or plugin."""
 
@@ -76,25 +68,6 @@ def get_repo_config(repo_root: Path) -> RepoConfig:
     )
 
 
-def get_ci_config(repo_root: Path) -> CIConfig:
-    """Load CI config from pyproject.toml (legacy wrapper).
-
-    Args:
-        repo_root: Path to repository root.
-
-    Returns:
-        CIConfig with tooling_files and project_types (paths only).
-
-    Raises:
-        ValueError: If [tool.repo] section is missing.
-    """
-    repo_config = get_repo_config(repo_root)
-    return CIConfig(
-        tooling_files=repo_config.tooling_files,
-        project_types={k: v.paths for k, v in repo_config.project_types.items()},
-    )
-
-
 def get_project_from_path(path: str, repo_root: Path | None = None) -> str | None:
     """Extract package/plugin name from file path.
 
@@ -106,9 +79,9 @@ def get_project_from_path(path: str, repo_root: Path | None = None) -> str | Non
         Package/plugin name or None if repo-level path.
     """
     if repo_root is not None:
-        config = get_ci_config(repo_root)
-        for prefixes in config.project_types.values():
-            for prefix in prefixes:
+        config = get_repo_config(repo_root)
+        for type_config in config.project_types.values():
+            for prefix in type_config.paths:
                 if path.startswith(f"{prefix}/"):
                     parts = path.split("/")
                     return parts[1] if len(parts) > 1 else None

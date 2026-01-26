@@ -19,7 +19,6 @@ jobs:
       project-type: ${{ steps.resolve.outputs.project-type }}
       version: ${{ steps.resolve.outputs.version }}
       publish-targets: ${{ steps.resolve.outputs.publish-targets }}
-      has-pypi: ${{ contains(fromJson(steps.resolve.outputs.publish-targets), 'pypi') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +26,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Resolve publish targets
         id: resolve
@@ -46,7 +45,7 @@ jobs:
   publish-pypi:
     name: Publish to PyPI
     needs: [resolve]
-    if: needs.resolve.outputs.has-pypi == 'true'
+    if: contains(fromJson(needs.resolve.outputs.publish-targets), 'pypi')
     uses: ./.github/workflows/_reusable-publish-pypi.yml
     with:
       project-path: ${{ needs.resolve.outputs.project-path }}
@@ -59,24 +58,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Summary
-        env:
-          PROJECT_NAME: ${{ needs.resolve.outputs.project-name }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-          PUBLISH_TARGETS: ${{ needs.resolve.outputs.publish-targets }}
-          PYPI_RESULT: ${{ needs.publish-pypi.result }}
-        run: |
-          echo "## Publish Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Project:** $PROJECT_NAME" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Version:** $VERSION" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Targets:** $PUBLISH_TARGETS" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
 
-          if [ "$PYPI_RESULT" == "success" ]; then
-            echo "✅ PyPI: Published successfully" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$PYPI_RESULT" == "skipped" ]; then
-            echo "⏭️ PyPI: Skipped (not in publish targets)" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$PYPI_RESULT" == "failure" ]; then
-            echo "❌ PyPI: Failed" >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate Summary
+        env:
+          NEEDS_JSON: ${{ toJson(needs) }}
+        run: python .github/scripts/publish_summary.py

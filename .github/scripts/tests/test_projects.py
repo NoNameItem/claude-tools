@@ -174,32 +174,6 @@ name = "test"
         assert projects["flow"].kind == "claude_code_plugin"
 
 
-class TestCIConfig:
-    """Tests for CI config loading (legacy compatibility)."""
-
-    def test_get_ci_config_reads_toml(self, temp_repo: Path) -> None:
-        """Should read [tool.repo] from pyproject.toml via legacy wrapper."""
-        from ..projects import get_ci_config
-
-        config = get_ci_config(temp_repo)
-        assert config.tooling_files == ["pyproject.toml", "uv.lock"]
-        assert config.project_types == {
-            "python": ["packages"],
-            "claude_code_plugin": ["plugins"],
-        }
-
-    def test_get_ci_config_missing_raises(self, temp_repo: Path) -> None:
-        """Should raise error if [tool.repo] is missing."""
-        from ..projects import get_ci_config
-
-        (temp_repo / "pyproject.toml").write_text("""\
-[project]
-name = "test"
-""")
-        with pytest.raises(ValueError, match=r"Missing \[tool.repo\]"):
-            get_ci_config(temp_repo)
-
-
 class TestDiscoverProjectsConfigDriven:
     """Tests for config-driven project discovery."""
 

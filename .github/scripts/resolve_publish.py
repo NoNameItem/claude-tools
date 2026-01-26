@@ -56,55 +56,30 @@ def resolve_publish(tag: str, repo_root: Path) -> dict:
     Raises:
         ValueError: If component is unknown or config is missing.
     """
+    try:
+        from .projects import discover_projects, get_repo_config
+    except ImportError:
+        from projects import discover_projects, get_repo_config
+
     component, version = parse_release_tag(tag)
 
-    # Load release-please config to find project path
-    config_path = repo_root / "release-please-config.json"
-    if not config_path.exists():
-        msg = "Missing release-please-config.json"
+    # Find project by name using discover_projects
+    projects = discover_projects(repo_root)
+
+    if component not in projects:
+        msg = f"Unknown component: {component}. Not found in discovered projects."
         raise ValueError(msg)
 
-    config = json.loads(config_path.read_text())
+    project = projects[component]
+    project_type = project.kind
 
-    # Find project path by package-name
-    project_path = None
-    for path, pkg_config in config.get("packages", {}).items():
-        if pkg_config.get("package-name") == component:
-            project_path = path
-            break
-
-    if project_path is None:
-        msg = f"Unknown component: {component}. Not found in release-please-config.json"
-        raise ValueError(msg)
-
-    # Load repo config to determine project type and publish targets
-    try:
-        from .projects import get_repo_config
-    except ImportError:
-        from projects import get_repo_config
-
+    # Get publish targets from repo config
     repo_config = get_repo_config(repo_root)
-
-    # Find project type by path prefix
-    project_type = None
-    publish_targets: list[str] = []
-
-    for type_name, type_config in repo_config.project_types.items():
-        for prefix in type_config.paths:
-            if project_path.startswith(f"{prefix}/"):
-                project_type = type_name
-                publish_targets = type_config.publish
-                break
-        if project_type:
-            break
-
-    if project_type is None:
-        msg = f"Cannot determine project type for path: {project_path}"
-        raise ValueError(msg)
+    publish_targets = repo_config.project_types[project_type].publish
 
     return {
         "project_name": component,
-        "project_path": project_path,
+        "project_path": project.path,
         "project_type": project_type,
         "version": version,
         "publish_targets": publish_targets,

@@ -16,8 +16,13 @@ on:
         description: 'Version to publish (e.g., 0.2.0)'
         required: true
         type: string
+    outputs:
+      summary-message:
+        description: 'Summary message for publish results'
+        value: ${{ jobs.build-and-publish.outputs.summary-message }}
 
 permissions:
+  contents: read   # Required for actions/checkout
   id-token: write  # Required for OIDC Trusted Publisher
 
 jobs:
@@ -28,6 +33,8 @@ jobs:
     environment:
       name: pypi
       url: https://pypi.org/project/${{ inputs.project-name }}/${{ inputs.version }}/
+    outputs:
+      summary-message: ${{ steps.summary.outputs.message }}
 
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +42,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.11'
 
       - name: Setup uv
         uses: astral-sh/setup-uv@v7
@@ -111,6 +118,28 @@ jobs:
           echo "=== Smoke test passed ==="
 
       - name: Publish to PyPI
+        id: publish
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: ${{ inputs.project-path }}/dist/
+
+      - name: Generate summary message
+        id: summary
+        if: always()
+        env:
+          PYPI_NAME: ${{ steps.metadata.outputs.pypi-name }}
+          VERSION: ${{ inputs.version }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          if [ "$PUBLISH_OUTCOME" == "success" ]; then
+            MESSAGE="Published to https://pypi.org/project/$PYPI_NAME/$VERSION/
+          Install: pip install $PYPI_NAME==$VERSION"
+          else
+            MESSAGE="Publish failed"
+          fi
+          # Use heredoc for multiline output
+          {
+            echo "message<<EOF"
+            echo "$MESSAGE"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
