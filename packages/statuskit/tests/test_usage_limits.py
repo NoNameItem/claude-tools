@@ -336,6 +336,7 @@ class TestUsageCache:
         loaded = cache.load()
 
         assert loaded is not None
+        assert loaded.session is not None
         assert loaded.session.utilization == 45.0
 
     def test_load_returns_none_when_no_cache(self, tmp_path):
@@ -541,6 +542,7 @@ class TestGetUsageDataRateLimited:
         config = {}
 
         module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
 
         # Prepare cache with rate limit active
         cached_data = UsageData(
@@ -560,6 +562,7 @@ class TestGetUsageDataRateLimited:
             result = module._get_usage_data()
 
         assert result is not None
+        assert result.session is not None
         assert result.session.utilization == 45.0
 
     def test_fetches_first_when_allowed(self, make_render_context, minimal_input_data, tmp_path):
@@ -568,6 +571,7 @@ class TestGetUsageDataRateLimited:
         config = {}
 
         module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
 
         # Prepare old cache (will be overwritten)
         old_data = UsageData(
@@ -594,6 +598,7 @@ class TestGetUsageDataRateLimited:
 
         # Should return NEW data, not cached
         assert result is not None
+        assert result.session is not None
         assert result.session.utilization == 50.0  # New value, not 10.0
 
     def test_returns_cached_on_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
@@ -602,6 +607,7 @@ class TestGetUsageDataRateLimited:
         config = {}
 
         module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
 
         # Prepare cache
         cached_data = UsageData(
@@ -620,6 +626,7 @@ class TestGetUsageDataRateLimited:
 
         # Should return cached data
         assert result is not None
+        assert result.session is not None
         assert result.session.utilization == 45.0
 
     def test_debug_output_in_render(self, make_render_context, minimal_input_data, tmp_path):
