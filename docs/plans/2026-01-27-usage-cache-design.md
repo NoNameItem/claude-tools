@@ -79,7 +79,7 @@ Write to temp file, then rename:
 ```python
 def _save_cache(self, data, fetched_at):
     cache_data = {"data": serialize(data), "fetched_at": fetched_at.isoformat()}
-    temp_file = self.cache_file.with_suffix('.tmp')
+    temp_file = self.cache_file.with_suffix(f'.{os.getpid()}.tmp')
     temp_file.write_text(json.dumps(cache_data))
     temp_file.rename(self.cache_file)
 ```
