@@ -322,20 +322,21 @@ class TestUsageCache:
         assert loaded.session is not None
         assert loaded.session.utilization == 45.0
 
-    def test_load_returns_none_when_expired(self, tmp_path):
-        """Cache returns None when TTL expired."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=0)  # 0 TTL = always expired
+    def test_load_returns_data_regardless_of_age(self, tmp_path):
+        """Cache load returns data regardless of age (no TTL)."""
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=30)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
             sonnet=None,
-            fetched_at=datetime.now(UTC),
+            fetched_at=datetime.now(UTC) - timedelta(hours=1),  # Old data
         )
 
         cache.save(data)
         loaded = cache.load()
 
-        assert loaded is None
+        assert loaded is not None
+        assert loaded.session.utilization == 45.0
 
     def test_load_returns_none_when_no_cache(self, tmp_path):
         """Cache returns None when file doesn't exist."""

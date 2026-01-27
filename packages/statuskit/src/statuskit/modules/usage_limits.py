@@ -217,64 +217,25 @@ def fetch_usage_api(token: str) -> UsageData | None:
 
 
 class UsageCache:
-    """Cache for usage data with TTL and rate limiting."""
+    """Cache for usage data with rate limiting."""
 
     def __init__(
         self,
         cache_dir: Path,
-        ttl: int = 60,
         rate_limit: int = 30,
     ):
         """Initialize cache.
 
         Args:
             cache_dir: Directory for cache files
-            ttl: Time-to-live in seconds
             rate_limit: Minimum seconds between API fetches
         """
         self.cache_dir = cache_dir
-        self.ttl = ttl
         self.rate_limit = rate_limit
         self.cache_file = cache_dir / CACHE_FILENAME
 
     def load(self) -> UsageData | None:
-        """Load cached data if valid.
-
-        Returns:
-            UsageData or None if cache invalid/expired
-        """
-        try:
-            if not self.cache_file.exists():
-                return None
-
-            data = json.loads(self.cache_file.read_text())
-            fetched_at = datetime.fromisoformat(data["fetched_at"])
-
-            # Check TTL
-            age = (datetime.now(UTC) - fetched_at).total_seconds()
-            if age > self.ttl:
-                return None
-
-            # Parse cached data
-            def parse_limit(d: dict | None) -> UsageLimit | None:
-                if d is None:
-                    return None
-                return UsageLimit(
-                    utilization=d["utilization"],
-                    resets_at=datetime.fromisoformat(d["resets_at"]),
-                )
-
-            return UsageData(
-                session=parse_limit(data["data"].get("session")),
-                weekly=parse_limit(data["data"].get("weekly")),
-                sonnet=parse_limit(data["data"].get("sonnet")),
-                fetched_at=fetched_at,
-            )
-        except (json.JSONDecodeError, KeyError, OSError):
-            return None
-
-    def load_stale(self) -> UsageData | None:
-        """Load cached data ignoring TTL.
+        """Load cached data.
 
         Returns:
             UsageData or None if cache doesn't exist or is corrupted
