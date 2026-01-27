@@ -491,3 +491,36 @@ class TestUsageLimitsIntegration:
                 output2 = module.render()
                 mock_fetch.assert_not_called()  # Used cache
                 assert output2 is not None
+
+
+class TestGetUsageDataRateLimited:
+    """Tests for _get_usage_data when rate limited."""
+
+    def test_returns_stale_data_when_rate_limited(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns stale cache when rate limited and TTL expired."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"cache_ttl": 0}  # TTL=0 means cache always "expired"
+
+        module = UsageLimitsModule(ctx, config)
+
+        # Prepare stale cache with rate limit active
+        stale_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+        module.cache.save(stale_data)
+        module.cache.mark_fetched()  # Activate rate limit
+
+        # Verify setup: TTL expired, rate limit active
+        assert module.cache.load() is None  # TTL expired
+        assert module.cache.can_fetch() is False  # Rate limited
+
+        # _get_usage_data should return stale data, not None
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            result = module._get_usage_data()
+
+        assert result is not None
+        assert result.session.utilization == 45.0

@@ -416,7 +416,7 @@ class UsageLimitsModule(BaseModule):
 
         if self.cache and not self.cache.can_fetch():
             # Rate limited, return stale cache or None
-            return self.cache.load()
+            return self.cache.load_stale()
 
         data = fetch_usage_api(token)
         if self.cache:
