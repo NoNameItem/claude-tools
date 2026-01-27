@@ -73,7 +73,7 @@ jobs:
 
       - name: Build package
         working-directory: ${{ inputs.project-path }}
-        run: uv build
+        run: uv build --out-dir dist
 
       - name: Smoke test
         working-directory: ${{ inputs.project-path }}
