@@ -300,7 +300,47 @@ class GitModule(BaseModule):
 
         return separator.join(parts)
 
-    def _render_status_line(  # noqa: PLR0912
+    def _render_remote_status(self, remote_status: tuple[str, int]) -> str | None:
+        """Render remote tracking status indicator.
+
+        Args:
+            remote_status: Tuple of (status, count)
+
+        Returns:
+            Colored status indicator or None
+        """
+        status_map = {
+            "ahead": ("↑{}", "yellow"),
+            "behind": ("↓{}", "red"),
+            "diverged": ("⇅{}", "red"),
+            "synced": ("✓", "green"),
+            "no_upstream": ("☁✗", "blue"),
+        }
+        status, count = remote_status
+        if status not in status_map:
+            return None
+        template, color = status_map[status]
+        text = template.format(count) if "{}" in template else template
+        return colored(text, color)
+
+    def _render_changes(self, changes: dict[str, int]) -> str | None:
+        """Render working directory changes indicator.
+
+        Args:
+            changes: Dict with staged, modified, untracked counts
+
+        Returns:
+            Bracketed change indicators or None if no changes
+        """
+        indicators = [
+            (changes["staged"], "+", "green"),
+            (changes["modified"], "~", "yellow"),
+            (changes["untracked"], "?", "cyan"),
+        ]
+        change_parts = [colored(f"{prefix}{count}", color) for count, prefix, color in indicators if count > 0]
+        return "[" + " ".join(change_parts) + "]" if change_parts else None
+
+    def _render_status_line(
         self,
         branch: str,
         remote_status: tuple[str, int],
@@ -320,42 +360,21 @@ class GitModule(BaseModule):
         """
         parts = []
 
-        # Branch name
         if self.show_branch:
             parts.append(colored(branch, "magenta"))
 
-        # Remote status
         if self.show_remote_status:
-            status, count = remote_status
-            if status == "ahead":
-                parts.append(colored(f"↑{count}", "yellow"))
-            elif status == "behind":
-                parts.append(colored(f"↓{count}", "red"))
-            elif status == "diverged":
-                parts.append(colored(f"⇅{count}", "red"))
-            elif status == "synced":
-                parts.append(colored("✓", "green"))
-            elif status == "no_upstream":
-                parts.append(colored("☁✗", "blue"))
+            remote = self._render_remote_status(remote_status)
+            if remote:
+                parts.append(remote)
 
-        # Changes
         if self.show_changes:
-            change_parts = []
-            if changes["staged"] > 0:
-                change_parts.append(colored(f"+{changes['staged']}", "green"))
-            if changes["modified"] > 0:
-                change_parts.append(colored(f"~{changes['modified']}", "yellow"))
-            if changes["untracked"] > 0:
-                change_parts.append(colored(f"?{changes['untracked']}", "cyan"))
-            if change_parts:
-                parts.append("[" + " ".join(change_parts) + "]")
+            changes_str = self._render_changes(changes)
+            if changes_str:
+                parts.append(changes_str)
 
-        # Commit info
         if self.show_commit and commit:
             commit_hash, commit_age = commit
             parts.append(colored(f"{commit_hash} {commit_age}", "white", attrs=["dark"]))
 
-        if not parts:
-            return None
-
-        return " ".join(parts)
+        return " ".join(parts) if parts else None
