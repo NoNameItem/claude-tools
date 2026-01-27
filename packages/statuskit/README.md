@@ -42,10 +42,10 @@ Run the setup command to configure Claude Code:
 statuskit setup
 
 # Project-level setup (shared config for team)
-statuskit setup --project
+statuskit setup --scope project
 
 # Local setup (personal overrides, gitignored)
-statuskit setup --local
+statuskit setup --scope local
 ```
 
 Setup will:
@@ -112,7 +112,7 @@ Displays model name, session duration, and context window usage.
 | `"free"` | `150,000 free (75.0%)` |
 | `"used"` | `50,000 used (25.0%)` |
 | `"ratio"` | `50,000/200,000 (25.0%)` |
-| `"bar"` | `[███████░░░] 75%` |
+| `"bar"` | `[███████░░░] 70%` |
 
 ### `git` Module
 
