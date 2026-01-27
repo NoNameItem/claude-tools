@@ -5,6 +5,12 @@ from pathlib import Path
 from statuskit.core.config import Config, load_config
 
 
+def test_config_colors_default_true():
+    """Config.colors defaults to True."""
+    cfg = Config()
+    assert cfg.colors is True
+
+
 def test_config_defaults():
     """Config has sensible defaults."""
     cfg = Config()

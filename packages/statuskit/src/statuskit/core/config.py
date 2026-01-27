@@ -25,6 +25,7 @@ class Config:
     """Statuskit configuration."""
 
     debug: bool = False
+    colors: bool = True
     modules: list[str] = field(default_factory=lambda: ["model", "git", "beads", "quota"])
     module_configs: dict[str, dict] = field(default_factory=dict)
     cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
