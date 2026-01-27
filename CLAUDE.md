@@ -136,6 +136,14 @@ The pre-commit hooks will then verify:
 uv run ty check
 ```
 
+**Running checks via subagent:** Use haiku subagent to filter verbose output:
+
+| Check | Return format |
+|-------|---------------|
+| Tests | Pass/fail count. If failures: test name + one-line error |
+| Lint/Format | Only errors not auto-fixed. If clean: "No issues" |
+| Type check | Only type errors. If clean: "All checks passed" |
+
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 
 ## Writing Implementation Plans
