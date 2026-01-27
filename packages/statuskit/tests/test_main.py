@@ -49,11 +49,20 @@ def test_main_parses_json_and_renders(capsys, monkeypatch):
 
 def test_main_invalid_json_silent(capsys, monkeypatch):
     """main silently exits on invalid JSON (non-debug)."""
+    from statuskit.core.config import Config
+
     monkeypatch.setattr(sys, "argv", ["statuskit"])
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = False
 
-    with patch("sys.stdin", mock_stdin), patch("json.load", side_effect=json.JSONDecodeError("", "", 0)):
+    # Explicitly set debug=False to ensure silent error handling
+    mock_config = Config(modules=["model"], debug=False)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", side_effect=json.JSONDecodeError("", "", 0)),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
         main()
 
     captured = capsys.readouterr()
@@ -109,3 +118,96 @@ def test_main_setup_check(capsys, monkeypatch, tmp_path):
     captured = capsys.readouterr()
     assert "User:" in captured.out
     assert "Not installed" in captured.out
+
+
+def test_render_statusline_sets_force_color(monkeypatch):
+    """_render_statusline sets FORCE_COLOR=1 when colors enabled."""
+    import os
+
+    from statuskit import _render_statusline
+    from statuskit.core.config import Config
+
+    monkeypatch.setattr(sys, "argv", ["statuskit"])
+
+    # Remove FORCE_COLOR if present
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    input_data = {"model": {"display_name": "Test"}}
+    mock_config = Config(modules=["model"], colors=True)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value=input_data),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
+        _render_statusline()
+
+    assert os.environ.get("FORCE_COLOR") == "1"
+
+
+def test_render_statusline_respects_colors_false(monkeypatch):
+    """_render_statusline does not set FORCE_COLOR when colors=false."""
+    import os
+
+    from statuskit import _render_statusline
+    from statuskit.core.config import Config
+
+    monkeypatch.setattr(sys, "argv", ["statuskit"])
+
+    # Remove FORCE_COLOR if present
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    input_data = {"model": {"display_name": "Test"}}
+    mock_config = Config(modules=["model"], colors=False)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value=input_data),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
+        _render_statusline()
+
+    assert os.environ.get("FORCE_COLOR") is None
+
+
+def test_main_outputs_ansi_codes_when_colors_enabled(capsys, monkeypatch):
+    """main outputs ANSI escape codes when colors=true."""
+    from statuskit.core.config import Config
+    from termcolor.termcolor import can_colorize
+
+    monkeypatch.setattr(sys, "argv", ["statuskit"])
+
+    # Set FORCE_COLOR before calling main() and clear termcolor's cache
+    # termcolor uses @cache on can_colorize(), so we must clear it
+    # after setting the env var for the new value to be detected
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    can_colorize.cache_clear()
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    input_data = {
+        "model": {"display_name": "Opus"},
+        "context_window": {
+            "context_window_size": 200000,
+            "current_usage": {"input_tokens": 1000},
+        },
+    }
+    mock_config = Config(modules=["model"], colors=True)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value=input_data),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    # ANSI escape sequence starts with \x1b[
+    assert "\x1b[" in captured.out, f"Expected ANSI codes in output, got: {captured.out!r}"
