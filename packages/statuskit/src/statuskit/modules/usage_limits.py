@@ -1,13 +1,19 @@
 """Usage limits module for statuskit."""
 
+from __future__ import annotations
+
 import json
 import subprocess
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    from statuskit.core.models import RenderContext
 
 HOURS_PER_DAY = 24
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
@@ -312,3 +318,173 @@ class UsageCache:
             self.lock_file.write_text(str(time.time()))
         except OSError:
             pass
+
+
+# Window sizes in hours
+FIVE_HOUR_WINDOW = 5.0
+SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY
+
+
+class UsageLimitsModule:
+    """Module for displaying API usage limits."""
+
+    name = "usage_limits"
+    description = "API usage limits (5h session, 7d weekly, Sonnet-only)"
+
+    def __init__(self, ctx: RenderContext, config: dict):
+        """Initialize module with context and config."""
+        self.debug = ctx.debug
+        self.ctx = ctx
+        self.show_session = config.get("show_session", True)
+        self.show_weekly = config.get("show_weekly", True)
+        self.show_sonnet = config.get("show_sonnet", False)
+        self.show_reset_time = config.get("show_reset_time", True)
+        self.multiline = config.get("multiline", True)
+        self.show_progress_bar = config.get("show_progress_bar", False)
+        self.bar_width = config.get("bar_width", 10)
+        self.session_time_format = config.get("session_time_format", "remaining")
+        self.weekly_time_format = config.get("weekly_time_format", "reset_at")
+        self.sonnet_time_format = config.get("sonnet_time_format", "reset_at")
+        self.cache_ttl = config.get("cache_ttl", 60)
+
+        # Initialize cache if cache_dir available
+        self.cache = None
+        if ctx.cache_dir:
+            self.cache = UsageCache(
+                cache_dir=ctx.cache_dir,
+                ttl=self.cache_ttl,
+            )
+
+    def render(self) -> str | None:
+        """Render usage limits display."""
+        data = self._get_usage_data()
+        if data is None:
+            return None
+
+        if self.multiline:
+            return self._render_multiline(data)
+        return self._render_single_line(data)
+
+    def _get_usage_data(self) -> UsageData | None:
+        """Get usage data from cache or API."""
+        # Try cache first
+        if self.cache:
+            cached = self.cache.load()
+            if cached:
+                return cached
+
+        # Fetch from API
+        token = get_token()
+        if not token:
+            return None
+
+        if self.cache and not self.cache.can_fetch():
+            # Rate limited, return stale cache or None
+            return self.cache.load()
+
+        data = fetch_usage_api(token)
+        if data and self.cache:
+            self.cache.save(data)
+            self.cache.mark_fetched()
+
+        return data
+
+    def _render_multiline(self, data: UsageData) -> str:
+        """Render multiline format."""
+        lines = ["Usage:"]
+        items = self._get_display_items(data)
+
+        for i, (label, limit, window, time_fmt) in enumerate(items):
+            is_last = i == len(items) - 1
+            prefix = "└" if is_last else "├"
+            line = self._format_line(label, limit, window, time_fmt)
+            lines.append(f"{prefix} {line}")
+
+        return "\n".join(lines)
+
+    def _render_single_line(self, data: UsageData) -> str:
+        """Render single-line format."""
+        parts = []
+        items = self._get_display_items(data)
+
+        for label, limit, window, time_fmt in items:
+            short_label = "5h" if "Session" in label else ("7d" if "Weekly" in label else "Sonnet")
+            part = self._format_short(short_label, limit, window, time_fmt)
+            parts.append(part)
+
+        return "Usage: " + " | ".join(parts)
+
+    def _get_display_items(self, data: UsageData) -> list[tuple]:
+        """Get list of (label, limit, window_hours, time_format) to display."""
+        items = []
+        if self.show_session and data.session:
+            items.append(("Session:", data.session, FIVE_HOUR_WINDOW, self.session_time_format))
+        if self.show_weekly and data.weekly:
+            items.append(("Weekly:", data.weekly, SEVEN_DAY_WINDOW, self.weekly_time_format))
+        if self.show_sonnet and data.sonnet:
+            items.append(("Sonnet:", data.sonnet, SEVEN_DAY_WINDOW, self.sonnet_time_format))
+        return items
+
+    def _format_line(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
+        """Format a single line for multiline output."""
+        now = datetime.now(UTC)
+        remaining = (limit.resets_at - now).total_seconds() / 3600
+        remaining = max(0, remaining)
+
+        color = calculate_color(limit.utilization, remaining, window)
+        util_str = _colorize(f"{limit.utilization:.0f}%", color)
+
+        bar = ""
+        if self.show_progress_bar:
+            bar = f" {format_progress_bar(limit.utilization, self.bar_width)}"
+
+        time_str = ""
+        if self.show_reset_time:
+            if time_fmt == "remaining":
+                time_str = f" ({format_remaining_time(remaining)})"
+            else:
+                time_str = f" ({format_reset_at(limit.resets_at)})"
+
+        return f"{label:8}{bar} {util_str}{time_str}"
+
+    def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
+        """Format a single item for single-line output."""
+        now = datetime.now(UTC)
+        remaining = (limit.resets_at - now).total_seconds() / 3600
+        remaining = max(0, remaining)
+
+        color = calculate_color(limit.utilization, remaining, window)
+
+        bar = ""
+        if self.show_progress_bar:
+            bar = f" {format_progress_bar(limit.utilization, self.bar_width // 2)}"
+
+        util_str = _colorize(f"{limit.utilization:.0f}%", color)
+
+        time_str = ""
+        if self.show_reset_time:
+            if time_fmt == "remaining":
+                time_str = f" ({format_remaining_time(remaining)})"
+            else:
+                time_str = f" ({format_reset_at(limit.resets_at)})"
+
+        return f"{label}{bar} {util_str}{time_str}"
+
+
+def _colorize(text: str, color: str) -> str:
+    """Apply ANSI color to text.
+
+    Args:
+        text: Text to colorize
+        color: Color name (red, yellow, green)
+
+    Returns:
+        Colored text with ANSI codes
+    """
+    colors = {
+        "red": "\033[91m",
+        "yellow": "\033[93m",
+        "green": "\033[92m",
+    }
+    reset = "\033[0m"
+    return f"{colors.get(color, '')}{text}{reset}"

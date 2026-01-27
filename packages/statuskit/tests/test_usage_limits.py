@@ -1,7 +1,7 @@
 """Tests for usage_limits module."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -9,6 +9,7 @@ from statuskit.modules.usage_limits import (
     UsageCache,
     UsageData,
     UsageLimit,
+    UsageLimitsModule,
     calculate_color,
     fetch_usage_api,
     format_progress_bar,
@@ -348,3 +349,85 @@ class TestUsageCache:
 
         # Second fetch blocked
         assert cache.can_fetch() is False
+
+
+class TestUsageLimitsModule:
+    """Tests for UsageLimitsModule rendering."""
+
+    def test_render_multiline_default(self, make_render_context, minimal_input_data, tmp_path):
+        """Renders multiline format by default."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        # Mock data retrieval
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                sonnet=None,
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert "Usage:" in output
+            assert "Session:" in output
+            assert "45%" in output
+            assert "Weekly:" in output
+            assert "32%" in output
+
+    def test_render_returns_none_when_no_data(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns None when no usage data available."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = None
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is None
+
+    def test_render_single_line(self, make_render_context, minimal_input_data, tmp_path):
+        """Renders single-line when multiline=false."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"multiline": False}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                sonnet=None,
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert output.count("\n") == 0  # Single line
+            assert "5h" in output
+            assert "7d" in output
+
+    def test_render_with_progress_bar(self, make_render_context, minimal_input_data, tmp_path):
+        """Renders with progress bar when enabled."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"show_progress_bar": True}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=None,
+                sonnet=None,
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert "[" in output  # Progress bar brackets
+            assert "]" in output
