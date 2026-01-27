@@ -13,8 +13,10 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.action }}
   cancel-in-progress: true
+  # Note: github.event.action separates synchronize/edited into different groups
+  # so they don't cancel each other (needed for release-please PRs)
 
 jobs:
   detect:
