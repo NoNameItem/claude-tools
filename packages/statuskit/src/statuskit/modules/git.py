@@ -238,6 +238,21 @@ class GitModule(BaseModule):
 
         return num * _UNIT_TO_MINUTES[unit]
 
+    def _decompose_minutes(self, total_minutes: int) -> tuple[int, int, int]:
+        """Decompose total minutes into days, hours, minutes.
+
+        Args:
+            total_minutes: Total number of minutes
+
+        Returns:
+            Tuple of (days, hours, minutes)
+        """
+        days = total_minutes // _MINUTES_PER_DAY
+        remaining = total_minutes % _MINUTES_PER_DAY
+        hours = remaining // _MINUTES_PER_HOUR
+        minutes = remaining % _MINUTES_PER_HOUR
+        return (days, hours, minutes)
+
     def _format_commit_age(self, age_str: str) -> str:
         """Format commit age according to config.
 

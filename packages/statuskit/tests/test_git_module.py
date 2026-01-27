@@ -346,6 +346,43 @@ M  staged_modified.py
         assert mod._parse_git_age("invalid") is None
         assert mod._parse_git_age("") is None
 
+    def test_decompose_minutes_only_minutes(self, make_render_context):
+        """_decompose_minutes returns only minutes for small values."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(5) == (0, 0, 5)
+        assert mod._decompose_minutes(59) == (0, 0, 59)
+
+    def test_decompose_minutes_hours_and_minutes(self, make_render_context):
+        """_decompose_minutes breaks into hours and minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(69) == (0, 1, 9)
+        assert mod._decompose_minutes(120) == (0, 2, 0)
+        assert mod._decompose_minutes(150) == (0, 2, 30)
+
+    def test_decompose_minutes_days_hours_minutes(self, make_render_context):
+        """_decompose_minutes breaks into days, hours, minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(1501) == (1, 1, 1)  # 1d 1h 1m
+        assert mod._decompose_minutes(1560) == (1, 2, 0)  # 26h = 1d 2h
+        assert mod._decompose_minutes(4320) == (3, 0, 0)  # 3 days
+
+    def test_decompose_minutes_zero(self, make_render_context):
+        """_decompose_minutes returns zeros for zero input."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(0) == (0, 0, 0)
+
     def test_get_location_regular_repo_root(self, make_render_context):
         """_get_location returns project name for regular repo at root."""
         data = make_input_data(
