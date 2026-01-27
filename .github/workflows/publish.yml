@@ -46,11 +46,132 @@ jobs:
     name: Publish to PyPI
     needs: [resolve]
     if: contains(fromJson(needs.resolve.outputs.publish-targets), 'pypi')
-    uses: ./.github/workflows/_reusable-publish-pypi.yml
-    with:
-      project-path: ${{ needs.resolve.outputs.project-path }}
-      project-name: ${{ needs.resolve.outputs.project-name }}
-      version: ${{ needs.resolve.outputs.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/${{ needs.resolve.outputs.project-name }}/${{ needs.resolve.outputs.version }}/
+    outputs:
+      summary-message: ${{ steps.summary.outputs.message }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Read package metadata
+        id: metadata
+        working-directory: ${{ needs.resolve.outputs.project-path }}
+        run: |
+          # Extract metadata from pyproject.toml
+          python -c "
+          import tomllib
+          import json
+          import os
+
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+
+          # PyPI package name
+          pypi_name = data['project']['name']
+
+          # Python module name (from hatch packages or derive from pypi name)
+          packages = data.get('tool', {}).get('hatch', {}).get('build', {}).get('targets', {}).get('wheel', {}).get('packages', [])
+          if packages:
+              # Extract module name from 'src/statuskit' -> 'statuskit'
+              module_name = os.path.basename(packages[0])
+          else:
+              # Fallback: convert pypi name to module name
+              module_name = pypi_name.replace('-', '_')
+
+          # CLI scripts
+          scripts = list(data.get('project', {}).get('scripts', {}).keys())
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'pypi-name={pypi_name}\n')
+              f.write(f'module-name={module_name}\n')
+              f.write(f'scripts={json.dumps(scripts)}\n')
+          "
+
+      - name: Build package
+        working-directory: ${{ needs.resolve.outputs.project-path }}
+        run: uv build --out-dir dist
+
+      - name: Smoke test
+        working-directory: ${{ needs.resolve.outputs.project-path }}
+        env:
+          PYPI_NAME: ${{ steps.metadata.outputs.pypi-name }}
+          MODULE_NAME: ${{ steps.metadata.outputs.module-name }}
+          EXPECTED_VERSION: ${{ needs.resolve.outputs.version }}
+          CLI_SCRIPTS: ${{ steps.metadata.outputs.scripts }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Creating clean venv ==="
+          python -m venv .smoke-test-venv
+          source .smoke-test-venv/bin/activate
+
+          echo "=== Installing wheel ==="
+          WHEEL=$(ls dist/*.whl)
+          pip install "$WHEEL"
+
+          echo "=== Checking import ==="
+          python -c "import $MODULE_NAME"
+
+          echo "=== Checking version ==="
+          INSTALLED_VERSION=$(python -c "
+          from importlib.metadata import version
+          print(version('$PYPI_NAME'))
+          ")
+
+          if [ "$INSTALLED_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "ERROR: Version mismatch!"
+            echo "  Expected: $EXPECTED_VERSION"
+            echo "  Installed: $INSTALLED_VERSION"
+            exit 1
+          fi
+          echo "Version OK: $INSTALLED_VERSION"
+
+          echo "=== Checking CLI commands ==="
+          for cmd in $(echo "$CLI_SCRIPTS" | python -c "import sys, json; print(' '.join(json.load(sys.stdin)))"); do
+            echo "Testing: $cmd --help"
+            $cmd --help > /dev/null
+          done
+
+          echo "=== Smoke test passed ==="
+
+      - name: Publish to PyPI
+        id: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: ${{ needs.resolve.outputs.project-path }}/dist/
+
+      - name: Generate summary message
+        id: summary
+        if: always()
+        env:
+          PYPI_NAME: ${{ steps.metadata.outputs.pypi-name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PUBLISH_OUTCOME: ${{ steps.publish.outcome }}
+        run: |
+          if [ "$PUBLISH_OUTCOME" == "success" ]; then
+            MESSAGE="Published to https://pypi.org/project/$PYPI_NAME/$VERSION/
+          Install: pip install $PYPI_NAME==$VERSION"
+          else
+            MESSAGE="Publish failed"
+          fi
+          # Use heredoc for multiline output
+          {
+            echo "message<<EOF"
+            echo "$MESSAGE"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   summary:
     name: Publish Summary
