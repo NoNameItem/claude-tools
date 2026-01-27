@@ -352,15 +352,20 @@ class UsageCache:
     def can_fetch(self) -> bool:
         """Check if API fetch is allowed (rate limiting).
 
+        Reads fetched_at timestamp from cache file.
+
         Returns:
             True if fetch allowed
         """
         try:
-            if not self.lock_file.exists():
+            if not self.cache_file.exists():
                 return True
-            last_fetch = float(self.lock_file.read_text())
-            return (time.time() - last_fetch) >= self.rate_limit
-        except (ValueError, OSError):
+
+            data = json.loads(self.cache_file.read_text())
+            fetched_at = datetime.fromisoformat(data["fetched_at"])
+            age = (datetime.now(UTC) - fetched_at).total_seconds()
+            return age >= self.rate_limit
+        except (json.JSONDecodeError, KeyError, OSError):
             return True
 
     def mark_fetched(self) -> None:

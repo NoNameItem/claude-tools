@@ -347,11 +347,19 @@ class TestUsageCache:
         """Rate limit prevents fetching too frequently."""
         cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
 
-        # First fetch allowed
+        # First fetch allowed (no cache file)
         assert cache.can_fetch() is True
-        cache.mark_fetched()
 
-        # Second fetch blocked
+        # Save data (this sets fetched_at)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+        cache.save(data)
+
+        # Second fetch blocked (within rate limit)
         assert cache.can_fetch() is False
 
     def test_load_stale_returns_expired_data(self, tmp_path):
@@ -400,6 +408,27 @@ class TestUsageCache:
 
                 # Verify atomic rename was called
                 mock_replace.assert_called_once()
+
+    def test_can_fetch_reads_from_cache_file(self, tmp_path):
+        """can_fetch uses fetched_at from cache file, not lock file."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        # Save data (this sets fetched_at in cache file)
+        cache.save(data)
+
+        # Delete lock file if exists (we're migrating away from it)
+        lock_file = tmp_path / "usage_limits.lock"
+        if lock_file.exists():
+            lock_file.unlink()
+
+        # can_fetch should still work using cache file timestamp
+        assert cache.can_fetch() is False  # Just saved, within rate limit
 
 
 class TestUsageLimitsModule:
