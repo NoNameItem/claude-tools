@@ -22,7 +22,7 @@
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "prerelease": true,
-      "labels": ["ci:full", "statuskit"]
+      "extra-label": "ci:full,statuskit"
     },
     "plugins/flow": {
       "package-name": "flow",
@@ -35,7 +35,7 @@
           "jsonpath": "$.version"
         }
       ],
-      "labels": ["ci:full", "flow"]
+      "extra-label": "ci:full,flow"
     }
   }
 }
