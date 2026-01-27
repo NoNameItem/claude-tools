@@ -77,11 +77,21 @@ def _get_usage_data(self):
 Write to temp file, then rename:
 
 ```python
+import tempfile
+
 def _save_cache(self, data, fetched_at):
     cache_data = {"data": serialize(data), "fetched_at": fetched_at.isoformat()}
-    temp_file = self.cache_file.with_suffix(f'.{os.getpid()}.tmp')
-    temp_file.write_text(json.dumps(cache_data))
-    temp_file.rename(self.cache_file)
+
+    with tempfile.NamedTemporaryFile(
+        mode='w',
+        dir=self.cache_dir,
+        suffix='.tmp',
+        delete=False
+    ) as f:
+        f.write(json.dumps(cache_data))
+        temp_path = Path(f.name)
+
+    temp_path.rename(self.cache_file)
 ```
 
 This prevents partial reads during concurrent access.
