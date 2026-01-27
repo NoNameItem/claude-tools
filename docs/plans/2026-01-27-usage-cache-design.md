@@ -91,10 +91,10 @@ def _save_cache(self, data, fetched_at):
         f.write(json.dumps(cache_data))
         temp_path = Path(f.name)
 
-    temp_path.rename(self.cache_file)
+    temp_path.replace(self.cache_file)  # atomic on POSIX and Windows
 ```
 
-This prevents partial reads during concurrent access.
+This prevents partial reads during concurrent access. Works on POSIX and Windows.
 
 ## Files to Change
 
