@@ -283,15 +283,14 @@ class GitModule(BaseModule):
             Formatted location string or None if all disabled
         """
         parts = []
-        separator = colored(" → ", "white", attrs=["dark"])
+        separator = colored(" → ", "dark_grey")
 
         if self.show_project and location["project"]:
             parts.append(colored(location["project"], "cyan"))
 
         if self.show_worktree and location["worktree"]:
-            tree_icon = colored("🌲", "green")
             worktree_name = colored(location["worktree"], "yellow")
-            parts.append(f"{tree_icon} {worktree_name}")
+            parts.append(f"🌲 {worktree_name}")
 
         if self.show_folder and location["subfolder"]:
             parts.append(colored(location["subfolder"], "white"))
