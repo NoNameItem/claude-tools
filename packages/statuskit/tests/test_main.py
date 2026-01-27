@@ -146,3 +146,31 @@ def test_render_statusline_sets_force_color(monkeypatch):
         _render_statusline()
 
     assert os.environ.get("FORCE_COLOR") == "1"
+
+
+def test_render_statusline_respects_colors_false(monkeypatch):
+    """_render_statusline does not set FORCE_COLOR when colors=false."""
+    import os
+
+    from statuskit import _render_statusline
+    from statuskit.core.config import Config
+
+    monkeypatch.setattr(sys, "argv", ["statuskit"])
+
+    # Remove FORCE_COLOR if present
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    input_data = {"model": {"display_name": "Test"}}
+    mock_config = Config(modules=["model"], colors=False)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value=input_data),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
+        _render_statusline()
+
+    assert os.environ.get("FORCE_COLOR") is None
