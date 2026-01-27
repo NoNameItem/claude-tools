@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from termcolor import colored
+
 from statuskit.modules.base import BaseModule
 
 if TYPE_CHECKING:
@@ -57,10 +59,13 @@ def parse_api_response(response: dict) -> UsageData:
     def parse_limit(data: dict | None) -> UsageLimit | None:
         if data is None:
             return None
-        return UsageLimit(
-            utilization=data["utilization"],
-            resets_at=datetime.fromisoformat(data["resets_at"]),
-        )
+        try:
+            return UsageLimit(
+                utilization=data["utilization"],
+                resets_at=datetime.fromisoformat(data["resets_at"]),
+            )
+        except (KeyError, ValueError):
+            return None
 
     return UsageData(
         session=parse_limit(response.get("five_hour")),
@@ -336,7 +341,6 @@ class UsageLimitsModule(BaseModule):
     def __init__(self, ctx: RenderContext, config: dict):
         """Initialize module with context and config."""
         super().__init__(ctx, config)
-        self.ctx = ctx
         self.show_session = config.get("show_session", True)
         self.show_weekly = config.get("show_weekly", True)
         self.show_sonnet = config.get("show_sonnet", False)
@@ -393,12 +397,12 @@ class UsageLimitsModule(BaseModule):
 
     def _render_multiline(self, data: UsageData) -> str:
         """Render multiline format."""
-        lines = ["Usage:"]
+        lines = [colored("Usage:", attrs=["dark"])]
         items = self._get_display_items(data)
 
         for i, (label, limit, window, time_fmt) in enumerate(items):
             is_last = i == len(items) - 1
-            prefix = "└" if is_last else "├"
+            prefix = colored("└" if is_last else "├", attrs=["dark"])
             line = self._format_line(label, limit, window, time_fmt)
             lines.append(f"{prefix} {line}")
 
@@ -410,11 +414,17 @@ class UsageLimitsModule(BaseModule):
         items = self._get_display_items(data)
 
         for label, limit, window, time_fmt in items:
-            short_label = "5h" if "Session" in label else ("7d" if "Weekly" in label else "Sonnet")
+            if "Session" in label:
+                short_label = "5h"
+            elif "Weekly" in label:
+                short_label = "7d"
+            else:
+                short_label = "Sonnet"
             part = self._format_short(short_label, limit, window, time_fmt)
             parts.append(part)
 
-        return "Usage: " + " | ".join(parts)
+        sep = colored(" | ", attrs=["dark"])
+        return colored("Usage: ", attrs=["dark"]) + sep.join(parts)
 
     def _get_display_items(self, data: UsageData) -> list[tuple]:
         """Get list of (label, limit, window_hours, time_format) to display."""
@@ -434,7 +444,7 @@ class UsageLimitsModule(BaseModule):
         remaining = max(0, remaining)
 
         color = calculate_color(limit.utilization, remaining, window)
-        util_str = _colorize(f"{limit.utilization:.0f}%", color)
+        util_str = colored(f"{limit.utilization:.0f}%", color)
 
         bar = ""
         if self.show_progress_bar:
@@ -443,11 +453,12 @@ class UsageLimitsModule(BaseModule):
         time_str = ""
         if self.show_reset_time:
             if time_fmt == "remaining":
-                time_str = f" ({format_remaining_time(remaining)})"
+                time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
             else:
-                time_str = f" ({format_reset_at(limit.resets_at)})"
+                time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
-        return f"{label:8}{bar} {util_str}{time_str}"
+        label_str = colored(f"{label:8}", attrs=["dark"])
+        return f"{label_str}{bar} {util_str}{time_str}"
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
@@ -461,32 +472,14 @@ class UsageLimitsModule(BaseModule):
         if self.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, self.bar_width // 2)}"
 
-        util_str = _colorize(f"{limit.utilization:.0f}%", color)
+        util_str = colored(f"{limit.utilization:.0f}%", color)
 
         time_str = ""
         if self.show_reset_time:
             if time_fmt == "remaining":
-                time_str = f" ({format_remaining_time(remaining)})"
+                time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
             else:
-                time_str = f" ({format_reset_at(limit.resets_at)})"
+                time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
-        return f"{label}{bar} {util_str}{time_str}"
-
-
-def _colorize(text: str, color: str) -> str:
-    """Apply ANSI color to text.
-
-    Args:
-        text: Text to colorize
-        color: Color name (red, yellow, green)
-
-    Returns:
-        Colored text with ANSI codes
-    """
-    colors = {
-        "red": "\033[91m",
-        "yellow": "\033[93m",
-        "green": "\033[92m",
-    }
-    reset = "\033[0m"
-    return f"{colors.get(color, '')}{text}{reset}"
+        label_str = colored(label, attrs=["dark"])
+        return f"{label_str}{bar} {util_str}{time_str}"
