@@ -1,8 +1,20 @@
-"""Config file creation for setup command."""
+# Update Default Config Design
 
-from pathlib import Path
+## Overview
 
-DEFAULT_CONFIG = """\
+Update `DEFAULT_CONFIG` in `packages/statuskit/src/statuskit/setup/config.py` to serve as documentation for all available options.
+
+## Changes
+
+1. **Fix URL**: GitHub → PyPI (`https://pypi.org/project/claude-statuskit/`)
+2. **Remove `beads`**: Module doesn't exist yet
+3. **Fix `quota` → `usage_limits`**: Correct module name
+4. **Document all options**: Show all module options with default values
+5. **Comment everything**: Config serves as documentation template
+
+## New DEFAULT_CONFIG
+
+```toml
 # Statuskit configuration
 # See: https://pypi.org/project/claude-statuskit/
 #
@@ -64,18 +76,12 @@ DEFAULT_CONFIG = """\
 # weekly_time_format = "reset_at"    # "remaining", "reset_at"
 # sonnet_time_format = "reset_at"    # "remaining", "reset_at"
 # cache_ttl = 60
-"""
+```
 
+## File to modify
 
-def create_config(path: Path) -> bool:
-    """Create statuskit.toml with default content.
+- `packages/statuskit/src/statuskit/setup/config.py`: Replace `DEFAULT_CONFIG` string
 
-    Does not overwrite existing file.
-    Returns True if file was created, False if it already existed.
-    """
-    if path.exists():
-        return False
+## Related
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_CONFIG)
-    return True
+- `claude-tools-5dl.9`: Declarative module configuration (future improvement)

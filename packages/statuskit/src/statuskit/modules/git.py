@@ -11,6 +11,31 @@ _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
 
+# Time conversion constants
+_MINUTES_PER_HOUR = 60
+_MINUTES_PER_DAY = 1440  # 24 * 60
+_MINUTES_PER_WEEK = 10080  # 7 * 1440
+_MINUTES_PER_MONTH = 43200  # 30 * 1440
+_MINUTES_PER_YEAR = 525600  # 365 * 1440
+
+# Git age unit to minutes mapping
+_UNIT_TO_MINUTES: dict[str, int] = {
+    "second": 0,
+    "seconds": 0,
+    "minute": 1,
+    "minutes": 1,
+    "hour": _MINUTES_PER_HOUR,
+    "hours": _MINUTES_PER_HOUR,
+    "day": _MINUTES_PER_DAY,
+    "days": _MINUTES_PER_DAY,
+    "week": _MINUTES_PER_WEEK,
+    "weeks": _MINUTES_PER_WEEK,
+    "month": _MINUTES_PER_MONTH,
+    "months": _MINUTES_PER_MONTH,
+    "year": _MINUTES_PER_YEAR,
+    "years": _MINUTES_PER_YEAR,
+}
+
 
 class GitModule(BaseModule):
     """Display git branch, status, and location."""
@@ -189,6 +214,45 @@ class GitModule(BaseModule):
 
         return (parts[0], parts[1])
 
+    def _parse_git_age(self, age_str: str) -> int | None:
+        """Parse git relative age string to total minutes.
+
+        Args:
+            age_str: Relative age string from git (e.g., "2 hours ago")
+
+        Returns:
+            Total minutes, or None if parsing fails
+        """
+        parts = age_str.split()
+        if len(parts) < _EXPECTED_COUNT_PARTS:
+            return None
+
+        try:
+            num = int(parts[0])
+        except ValueError:
+            return None
+
+        unit = parts[1]
+        if unit not in _UNIT_TO_MINUTES:
+            return None
+
+        return num * _UNIT_TO_MINUTES[unit]
+
+    def _decompose_minutes(self, total_minutes: int) -> tuple[int, int, int]:
+        """Decompose total minutes into days, hours, minutes.
+
+        Args:
+            total_minutes: Total number of minutes
+
+        Returns:
+            Tuple of (days, hours, minutes)
+        """
+        days = total_minutes // _MINUTES_PER_DAY
+        remaining = total_minutes % _MINUTES_PER_DAY
+        hours = remaining // _MINUTES_PER_HOUR
+        minutes = remaining % _MINUTES_PER_HOUR
+        return (days, hours, minutes)
+
     def _format_commit_age(self, age_str: str) -> str:
         """Format commit age according to config.
 
@@ -198,35 +262,49 @@ class GitModule(BaseModule):
         Returns:
             Formatted age string
         """
-        if self.commit_age_format == "relative":
+        # Raw format: return as-is
+        if self.commit_age_format == "raw":
             return age_str
 
-        if self.commit_age_format == "compact":
-            # Parse "N unit ago" format
-            parts = age_str.split()
-            if len(parts) >= _EXPECTED_COUNT_PARTS:
-                num = parts[0]
-                unit = parts[1]
-                unit_map = {
-                    "second": "s",
-                    "seconds": "s",
-                    "minute": "m",
-                    "minutes": "m",
-                    "hour": "h",
-                    "hours": "h",
-                    "day": "d",
-                    "days": "d",
-                    "week": "w",
-                    "weeks": "w",
-                    "month": "mo",
-                    "months": "mo",
-                    "year": "y",
-                    "years": "y",
-                }
-                suffix = unit_map.get(unit, unit[0])
-                return f"{num}{suffix}"
+        # Parse git output to minutes
+        total_minutes = self._parse_git_age(age_str)
+        if total_minutes is None:
+            return age_str  # Fallback for invalid input
 
-        return age_str
+        # Less than 1 minute
+        if total_minutes == 0:
+            return "just now"
+
+        # Decompose into d/h/m
+        days, hours, minutes = self._decompose_minutes(total_minutes)
+
+        # Format based on config
+        if self.commit_age_format == "compact":
+            return self._format_compact(days, hours, minutes)
+        # relative (default)
+        return self._format_relative(days, hours, minutes)
+
+    def _format_compact(self, days: int, hours: int, minutes: int) -> str:
+        """Format time as compact string (e.g., '1d 2h 30m')."""
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        return " ".join(parts) if parts else "just now"
+
+    def _format_relative(self, days: int, hours: int, minutes: int) -> str:
+        """Format time as relative string (e.g., '1 day 2 hours ago')."""
+        parts = []
+        if days > 0:
+            parts.append(f"{days} day" if days == 1 else f"{days} days")
+        if hours > 0:
+            parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
+        if minutes > 0:
+            parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
+        return " ".join(parts) + " ago" if parts else "just now"
 
     def _get_location(self) -> dict[str, str | None] | None:
         """Get project, worktree, and subfolder info.
@@ -246,7 +324,8 @@ class GitModule(BaseModule):
             return None
 
         # Extract project name from main repo path
-        git_path = Path(git_common_dir)
+        # resolve() converts relative paths (like ".git" or "../.git") to absolute
+        git_path = Path(git_common_dir).resolve()
         if git_path.name == ".git":
             project_name = git_path.parent.name
         else:
