@@ -1,6 +1,7 @@
 """Modular statusline kit for Claude Code."""
 
 import json
+import os
 import sys
 from argparse import Namespace
 
@@ -76,6 +77,10 @@ def _handle_install(scope, force: bool, ui) -> None:
 def _render_statusline() -> None:
     """Read from stdin and render statusline."""
     config = load_config()
+
+    # Enable colors for termcolor (stdout is not a TTY in Claude Code hooks)
+    if config.colors:
+        os.environ["FORCE_COLOR"] = "1"
 
     try:
         raw_data = json.load(sys.stdin)

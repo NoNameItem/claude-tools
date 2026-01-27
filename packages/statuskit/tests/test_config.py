@@ -5,6 +5,27 @@ from pathlib import Path
 from statuskit.core.config import Config, load_config
 
 
+def test_config_colors_default_true():
+    """Config.colors defaults to True."""
+    cfg = Config()
+    assert cfg.colors is True
+
+
+def test_load_config_colors_false(tmp_path: Path, monkeypatch):
+    """load_config parses colors=false from TOML."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    config_file = home / ".claude" / "statuskit.toml"
+    config_file.write_text("colors = false")
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.colors is False
+
+
 def test_config_defaults():
     """Config has sensible defaults."""
     cfg = Config()
