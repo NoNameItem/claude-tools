@@ -13,7 +13,7 @@ class TestCreateConfig:
 
         assert config_path.exists()
         content = config_path.read_text()
-        assert 'modules = ["model", "git", "beads", "quota"]' in content
+        assert '# modules = ["model", "git", "usage_limits"]' in content
 
     def test_creates_parent_dirs(self, tmp_path):
         """Creates parent directories if needed."""

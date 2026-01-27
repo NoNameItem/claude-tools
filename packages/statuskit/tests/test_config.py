@@ -31,7 +31,7 @@ def test_config_defaults():
     cfg = Config()
 
     assert cfg.debug is False
-    assert cfg.modules == ["model", "git", "beads", "quota"]
+    assert cfg.modules == ["model", "git", "usage_limits"]
     assert cfg.module_configs == {}
 
 
@@ -55,7 +55,7 @@ def test_load_config_no_file(tmp_path: Path, monkeypatch):
     cfg = load_config()
 
     assert cfg.debug is False
-    assert cfg.modules == ["model", "git", "beads", "quota"]
+    assert cfg.modules == ["model", "git", "usage_limits"]
 
 
 def test_load_config_with_file(tmp_path: Path, monkeypatch):
