@@ -431,3 +431,41 @@ class TestUsageLimitsModule:
             assert output is not None
             assert "[" in output  # Progress bar brackets
             assert "]" in output
+
+
+class TestUsageLimitsIntegration:
+    """Integration tests for usage_limits module."""
+
+    def test_full_flow_with_mock_api(self, make_render_context, minimal_input_data, tmp_path):
+        """Full flow: API fetch -> cache -> render."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"cache_ttl": 60}
+
+        # Mock token and API
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = UsageData(
+                    session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                    weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                    sonnet=None,
+                    fetched_at=datetime.now(UTC),
+                )
+
+                module = UsageLimitsModule(ctx, config)
+                output = module.render()
+
+                assert output is not None
+                assert "Session:" in output
+                assert "Weekly:" in output
+
+                # Verify cache was saved
+                cache_file = tmp_path / "usage_limits.json"
+                assert cache_file.exists()
+
+                # Second render uses cache
+                mock_fetch.reset_mock()
+                output2 = module.render()
+                mock_fetch.assert_not_called()  # Used cache
+                assert output2 is not None
