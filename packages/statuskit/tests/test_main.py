@@ -174,3 +174,36 @@ def test_render_statusline_respects_colors_false(monkeypatch):
         _render_statusline()
 
     assert os.environ.get("FORCE_COLOR") is None
+
+
+def test_main_outputs_ansi_codes_when_colors_enabled(capsys, monkeypatch):
+    """main outputs ANSI escape codes when colors=true."""
+    from statuskit.core.config import Config
+
+    monkeypatch.setattr(sys, "argv", ["statuskit"])
+
+    # Ensure FORCE_COLOR is not pre-set
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    input_data = {
+        "model": {"display_name": "Opus"},
+        "context_window": {
+            "context_window_size": 200000,
+            "current_usage": {"input_tokens": 1000},
+        },
+    }
+    mock_config = Config(modules=["model"], colors=True)
+
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value=input_data),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
+        main()
+
+    captured = capsys.readouterr()
+    # ANSI escape sequence starts with \x1b[
+    assert "\x1b[" in captured.out, f"Expected ANSI codes in output, got: {captured.out!r}"
