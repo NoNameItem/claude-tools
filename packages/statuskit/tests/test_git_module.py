@@ -253,28 +253,183 @@ M  staged_modified.py
 
         assert result is None
 
-    def test_format_commit_age_relative(self, make_render_context):
-        """_format_commit_age keeps relative format as-is."""
+    def test_format_commit_age_raw(self, make_render_context):
+        """_format_commit_age returns git output as-is for raw format."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "raw"})
+
+        assert mod._format_commit_age("2 hours ago") == "2 hours ago"
+        assert mod._format_commit_age("69 minutes ago") == "69 minutes ago"
+
+    def test_format_commit_age_relative_decomposed(self, make_render_context):
+        """_format_commit_age decomposes and uses full names for relative format."""
         data = make_input_data(model=make_model_data())
         ctx = make_render_context(data)
         mod = GitModule(ctx, {"commit_age_format": "relative"})
 
-        result = mod._format_commit_age("2 hours ago")
-        assert result == "2 hours ago"
+        assert mod._format_commit_age("5 minutes ago") == "5 minutes ago"
+        assert mod._format_commit_age("69 minutes ago") == "1 hour 9 minutes ago"
+        assert mod._format_commit_age("120 minutes ago") == "2 hours ago"
+        assert mod._format_commit_age("26 hours ago") == "1 day 2 hours ago"
+        assert mod._format_commit_age("3 days ago") == "3 days ago"
 
-    def test_format_commit_age_compact(self, make_render_context):
-        """_format_commit_age converts to compact format."""
+    def test_format_commit_age_relative_singular(self, make_render_context):
+        """_format_commit_age uses singular forms correctly."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "relative"})
+
+        assert mod._format_commit_age("60 minutes ago") == "1 hour ago"
+        assert mod._format_commit_age("1 day ago") == "1 day ago"
+
+    def test_format_commit_age_compact_decomposed(self, make_render_context):
+        """_format_commit_age decomposes and uses short names for compact format."""
         data = make_input_data(model=make_model_data())
         ctx = make_render_context(data)
         mod = GitModule(ctx, {"commit_age_format": "compact"})
 
-        assert mod._format_commit_age("2 hours ago") == "2h"
         assert mod._format_commit_age("5 minutes ago") == "5m"
+        assert mod._format_commit_age("69 minutes ago") == "1h 9m"
+        assert mod._format_commit_age("120 minutes ago") == "2h"
+        assert mod._format_commit_age("26 hours ago") == "1d 2h"
         assert mod._format_commit_age("3 days ago") == "3d"
-        assert mod._format_commit_age("2 weeks ago") == "2w"
-        assert mod._format_commit_age("4 months ago") == "4mo"
-        assert mod._format_commit_age("1 year ago") == "1y"
-        assert mod._format_commit_age("10 seconds ago") == "10s"
+        assert mod._format_commit_age("1501 minutes ago") == "1d 1h 1m"
+
+    def test_format_commit_age_just_now(self, make_render_context):
+        """_format_commit_age returns 'just now' for < 1 minute."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+
+        mod_relative = GitModule(ctx, {"commit_age_format": "relative"})
+        mod_compact = GitModule(ctx, {"commit_age_format": "compact"})
+
+        assert mod_relative._format_commit_age("30 seconds ago") == "just now"
+        assert mod_compact._format_commit_age("30 seconds ago") == "just now"
+
+    def test_format_commit_age_default_is_relative(self, make_render_context):
+        """_format_commit_age defaults to relative format."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})  # No format specified
+
+        assert mod._format_commit_age("69 minutes ago") == "1 hour 9 minutes ago"
+
+    def test_format_commit_age_invalid_fallback(self, make_render_context):
+        """_format_commit_age returns input as-is for invalid strings."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "compact"})
+
+        assert mod._format_commit_age("invalid") == "invalid"
+        assert mod._format_commit_age("") == ""
+
+    def test_parse_git_age_seconds(self, make_render_context):
+        """_parse_git_age returns 0 for seconds."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("30 seconds ago") == 0
+        assert mod._parse_git_age("1 second ago") == 0
+
+    def test_parse_git_age_minutes(self, make_render_context):
+        """_parse_git_age converts minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("5 minutes ago") == 5
+        assert mod._parse_git_age("1 minute ago") == 1
+        assert mod._parse_git_age("69 minutes ago") == 69
+
+    def test_parse_git_age_hours(self, make_render_context):
+        """_parse_git_age converts hours to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 hours ago") == 120
+        assert mod._parse_git_age("1 hour ago") == 60
+
+    def test_parse_git_age_days(self, make_render_context):
+        """_parse_git_age converts days to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("3 days ago") == 4320  # 3 * 1440
+        assert mod._parse_git_age("1 day ago") == 1440
+
+    def test_parse_git_age_weeks(self, make_render_context):
+        """_parse_git_age converts weeks to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 weeks ago") == 20160  # 2 * 7 * 1440
+
+    def test_parse_git_age_months(self, make_render_context):
+        """_parse_git_age converts months to minutes (30 days)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 months ago") == 86400  # 2 * 30 * 1440
+
+    def test_parse_git_age_years(self, make_render_context):
+        """_parse_git_age converts years to minutes (365 days)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("1 year ago") == 525600  # 365 * 1440
+
+    def test_parse_git_age_invalid(self, make_render_context):
+        """_parse_git_age returns None for invalid input."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("invalid") is None
+        assert mod._parse_git_age("") is None
+
+    def test_decompose_minutes_only_minutes(self, make_render_context):
+        """_decompose_minutes returns only minutes for small values."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(5) == (0, 0, 5)
+        assert mod._decompose_minutes(59) == (0, 0, 59)
+
+    def test_decompose_minutes_hours_and_minutes(self, make_render_context):
+        """_decompose_minutes breaks into hours and minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(69) == (0, 1, 9)
+        assert mod._decompose_minutes(120) == (0, 2, 0)
+        assert mod._decompose_minutes(150) == (0, 2, 30)
+
+    def test_decompose_minutes_days_hours_minutes(self, make_render_context):
+        """_decompose_minutes breaks into days, hours, minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(1501) == (1, 1, 1)  # 1d 1h 1m
+        assert mod._decompose_minutes(1560) == (1, 2, 0)  # 26h = 1d 2h
+        assert mod._decompose_minutes(4320) == (3, 0, 0)  # 3 days
+
+    def test_decompose_minutes_zero(self, make_render_context):
+        """_decompose_minutes returns zeros for zero input."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._decompose_minutes(0) == (0, 0, 0)
 
     def test_get_location_regular_repo_root(self, make_render_context):
         """_get_location returns project name for regular repo at root."""
