@@ -303,7 +303,10 @@ class UsageCache:
                 f.write(json.dumps(cache_data))
                 temp_path = Path(f.name)
 
-            temp_path.replace(self.cache_file)
+            try:
+                temp_path.replace(self.cache_file)
+            except OSError:
+                temp_path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -395,9 +398,12 @@ class UsageLimitsModule(BaseModule):
             self._debug_messages.append("No token, using cache")
             return cached
 
-        if self.cache and not self.cache.can_fetch():
-            self._debug_messages.append("Rate limited, using cache")
-            return cached
+        # Check rate limit using cached data (avoids second file read)
+        if cached and self.cache:
+            age = (datetime.now(UTC) - cached.fetched_at).total_seconds()
+            if age < self.cache.rate_limit:
+                self._debug_messages.append("Rate limited, using cache")
+                return cached
 
         # Try to fetch fresh data
         new_data = fetch_usage_api(token)
