@@ -352,6 +352,26 @@ class TestUsageCache:
         # Second fetch blocked
         assert cache.can_fetch() is False
 
+    def test_load_stale_returns_expired_data(self, tmp_path):
+        """load_stale returns data even when TTL expired."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=0)  # 0 TTL = always expired
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        cache.save(data)
+
+        # Regular load returns None (TTL expired)
+        assert cache.load() is None
+
+        # load_stale returns data anyway
+        loaded = cache.load_stale()
+        assert loaded is not None
+        assert loaded.session.utilization == 45.0
+
 
 class TestUsageLimitsModule:
     """Tests for UsageLimitsModule rendering."""

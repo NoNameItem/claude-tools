@@ -275,6 +275,36 @@ class UsageCache:
         except (json.JSONDecodeError, KeyError, OSError):
             return None
 
+    def load_stale(self) -> UsageData | None:
+        """Load cached data ignoring TTL.
+
+        Returns:
+            UsageData or None if cache doesn't exist or is corrupted
+        """
+        try:
+            if not self.cache_file.exists():
+                return None
+
+            data = json.loads(self.cache_file.read_text())
+            fetched_at = datetime.fromisoformat(data["fetched_at"])
+
+            def parse_limit(d: dict | None) -> UsageLimit | None:
+                if d is None:
+                    return None
+                return UsageLimit(
+                    utilization=d["utilization"],
+                    resets_at=datetime.fromisoformat(d["resets_at"]),
+                )
+
+            return UsageData(
+                session=parse_limit(data["data"].get("session")),
+                weekly=parse_limit(data["data"].get("weekly")),
+                sonnet=parse_limit(data["data"].get("sonnet")),
+                fetched_at=fetched_at,
+            )
+        except (json.JSONDecodeError, KeyError, OSError):
+            return None
+
     def save(self, data: UsageData) -> None:
         """Save data to cache.
 
