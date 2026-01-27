@@ -569,7 +569,7 @@ class TestGetUsageDataRateLimited:
             fetched_at=datetime.now(UTC),
         )
         module.cache.save(stale_data)
-        module.cache.mark_fetched()  # Activate rate limit
+        # save() sets fetched_at which activates rate limit
 
         # Verify setup: TTL expired, rate limit active
         assert module.cache.load() is None  # TTL expired

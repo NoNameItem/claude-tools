@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import subprocess
 import tempfile
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +25,6 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
 CACHE_FILENAME = "usage_limits.json"
-LOCK_FILENAME = "usage_limits.lock"
 
 
 @dataclass
@@ -238,7 +236,6 @@ class UsageCache:
         self.ttl = ttl
         self.rate_limit = rate_limit
         self.cache_file = cache_dir / CACHE_FILENAME
-        self.lock_file = cache_dir / LOCK_FILENAME
 
     def load(self) -> UsageData | None:
         """Load cached data if valid.
@@ -368,14 +365,6 @@ class UsageCache:
         except (json.JSONDecodeError, KeyError, OSError):
             return True
 
-    def mark_fetched(self) -> None:
-        """Mark that an API fetch was performed."""
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self.lock_file.write_text(str(time.time()))
-        except OSError:
-            pass
-
 
 # Window sizes in hours
 FIVE_HOUR_WINDOW = 5.0
@@ -440,9 +429,13 @@ class UsageLimitsModule(BaseModule):
 
         data = fetch_usage_api(token)
         if self.cache:
-            self.cache.mark_fetched()
             if data:
                 self.cache.save(data)
+            else:
+                # Update fetched_at even on failed fetch to prevent retry spam
+                stale = self.cache.load_stale()
+                if stale:
+                    self.cache.save(stale)
         return data
 
     def _render_multiline(self, data: UsageData) -> str:
