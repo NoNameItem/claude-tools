@@ -276,6 +276,76 @@ M  staged_modified.py
         assert mod._format_commit_age("1 year ago") == "1y"
         assert mod._format_commit_age("10 seconds ago") == "10s"
 
+    def test_parse_git_age_seconds(self, make_render_context):
+        """_parse_git_age returns 0 for seconds."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("30 seconds ago") == 0
+        assert mod._parse_git_age("1 second ago") == 0
+
+    def test_parse_git_age_minutes(self, make_render_context):
+        """_parse_git_age converts minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("5 minutes ago") == 5
+        assert mod._parse_git_age("1 minute ago") == 1
+        assert mod._parse_git_age("69 minutes ago") == 69
+
+    def test_parse_git_age_hours(self, make_render_context):
+        """_parse_git_age converts hours to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 hours ago") == 120
+        assert mod._parse_git_age("1 hour ago") == 60
+
+    def test_parse_git_age_days(self, make_render_context):
+        """_parse_git_age converts days to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("3 days ago") == 4320  # 3 * 1440
+        assert mod._parse_git_age("1 day ago") == 1440
+
+    def test_parse_git_age_weeks(self, make_render_context):
+        """_parse_git_age converts weeks to minutes."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 weeks ago") == 20160  # 2 * 7 * 1440
+
+    def test_parse_git_age_months(self, make_render_context):
+        """_parse_git_age converts months to minutes (30 days)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("2 months ago") == 86400  # 2 * 30 * 1440
+
+    def test_parse_git_age_years(self, make_render_context):
+        """_parse_git_age converts years to minutes (365 days)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("1 year ago") == 525600  # 365 * 1440
+
+    def test_parse_git_age_invalid(self, make_render_context):
+        """_parse_git_age returns None for invalid input."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        assert mod._parse_git_age("invalid") is None
+        assert mod._parse_git_age("") is None
+
     def test_get_location_regular_repo_root(self, make_render_context):
         """_get_location returns project name for regular repo at root."""
         data = make_input_data(

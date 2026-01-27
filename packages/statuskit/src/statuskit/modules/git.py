@@ -11,6 +11,31 @@ _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
 
+# Time conversion constants
+_MINUTES_PER_HOUR = 60
+_MINUTES_PER_DAY = 1440  # 24 * 60
+_MINUTES_PER_WEEK = 10080  # 7 * 1440
+_MINUTES_PER_MONTH = 43200  # 30 * 1440
+_MINUTES_PER_YEAR = 525600  # 365 * 1440
+
+# Git age unit to minutes mapping
+_UNIT_TO_MINUTES: dict[str, int] = {
+    "second": 0,
+    "seconds": 0,
+    "minute": 1,
+    "minutes": 1,
+    "hour": _MINUTES_PER_HOUR,
+    "hours": _MINUTES_PER_HOUR,
+    "day": _MINUTES_PER_DAY,
+    "days": _MINUTES_PER_DAY,
+    "week": _MINUTES_PER_WEEK,
+    "weeks": _MINUTES_PER_WEEK,
+    "month": _MINUTES_PER_MONTH,
+    "months": _MINUTES_PER_MONTH,
+    "year": _MINUTES_PER_YEAR,
+    "years": _MINUTES_PER_YEAR,
+}
+
 
 class GitModule(BaseModule):
     """Display git branch, status, and location."""
@@ -188,6 +213,30 @@ class GitModule(BaseModule):
             return None
 
         return (parts[0], parts[1])
+
+    def _parse_git_age(self, age_str: str) -> int | None:
+        """Parse git relative age string to total minutes.
+
+        Args:
+            age_str: Relative age string from git (e.g., "2 hours ago")
+
+        Returns:
+            Total minutes, or None if parsing fails
+        """
+        parts = age_str.split()
+        if len(parts) < _EXPECTED_COUNT_PARTS:
+            return None
+
+        try:
+            num = int(parts[0])
+        except ValueError:
+            return None
+
+        unit = parts[1]
+        if unit not in _UNIT_TO_MINUTES:
+            return None
+
+        return num * _UNIT_TO_MINUTES[unit]
 
     def _format_commit_age(self, age_str: str) -> str:
         """Format commit age according to config.
