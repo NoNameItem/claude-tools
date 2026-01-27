@@ -61,12 +61,20 @@ def test_main_invalid_json_silent(capsys, monkeypatch):
 
 
 def test_main_empty_json_no_output(capsys, monkeypatch):
-    """main produces no output for empty JSON."""
+    """main produces no output for empty JSON when using JSON-dependent modules only."""
+    from statuskit.core.config import Config
+
     monkeypatch.setattr(sys, "argv", ["statuskit"])
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = False
 
-    with patch("sys.stdin", mock_stdin), patch("json.load", return_value={}):
+    # Only test model module (JSON-dependent) - git module runs without JSON
+    mock_config = Config(modules=["model"])
+    with (
+        patch("sys.stdin", mock_stdin),
+        patch("json.load", return_value={}),
+        patch("statuskit.load_config", return_value=mock_config),
+    ):
         main()
 
     captured = capsys.readouterr()

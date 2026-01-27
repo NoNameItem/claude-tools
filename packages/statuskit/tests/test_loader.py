@@ -1,9 +1,16 @@
 """Tests for statuskit.core.loader."""
 
 from statuskit.core.config import Config
-from statuskit.core.loader import load_modules
+from statuskit.core.loader import BUILTIN_MODULES, load_modules
+from statuskit.modules.git import GitModule
 from statuskit.modules.model import ModelModule
 from statuskit.modules.usage_limits import UsageLimitsModule
+
+
+def test_git_module_registered():
+    """Git module is registered in BUILTIN_MODULES."""
+    assert "git" in BUILTIN_MODULES
+    assert BUILTIN_MODULES["git"] is GitModule
 
 
 def test_load_modules_builtin(make_render_context, minimal_input_data):

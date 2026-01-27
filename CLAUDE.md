@@ -131,10 +131,18 @@ The pre-commit hooks will then verify:
 3. `single-package-commit` — validates commit scope
 4. `beads` — syncs beads state
 
-**Type checking** (only for packages, run manually or in CI):
+**Type checking** (required for packages before every commit):
 ```bash
 uv run ty check
 ```
+
+**Running checks via subagent:** Use haiku subagent to filter verbose output:
+
+| Check | Return format |
+|-------|---------------|
+| Tests | Pass/fail count. If failures: test name + one-line error |
+| Lint/Format | Only errors not auto-fixed. If clean: "No issues" |
+| Type check | Only type errors. If clean: "All checks passed" |
 
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 
@@ -143,7 +151,8 @@ uv run ty check
 When writing plans that modify Python files, each commit step MUST include:
 1. `uv run ruff format <files>`
 2. `uv run ruff check --fix <files>`
-3. Then `git add` and `git commit`
+3. `uv run ty check` (for packages)
+4. Then `git add` and `git commit`
 
 This applies to ALL Python files in the repo, including `.github/scripts/`.
 

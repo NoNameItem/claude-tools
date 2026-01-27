@@ -98,6 +98,9 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 testpaths = ["packages/*/tests"]
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
 
 [tool.ty.src]
 # Only type-check Python packages
