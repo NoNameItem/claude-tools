@@ -389,10 +389,10 @@ class UsageLimitsModule(BaseModule):
             return self.cache.load()
 
         data = fetch_usage_api(token)
-        if data and self.cache:
-            self.cache.save(data)
+        if self.cache:
             self.cache.mark_fetched()
-
+            if data:
+                self.cache.save(data)
         return data
 
     def _render_multiline(self, data: UsageData) -> str:
