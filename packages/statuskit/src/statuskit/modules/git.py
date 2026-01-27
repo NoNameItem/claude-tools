@@ -262,35 +262,49 @@ class GitModule(BaseModule):
         Returns:
             Formatted age string
         """
-        if self.commit_age_format == "relative":
+        # Raw format: return as-is
+        if self.commit_age_format == "raw":
             return age_str
 
-        if self.commit_age_format == "compact":
-            # Parse "N unit ago" format
-            parts = age_str.split()
-            if len(parts) >= _EXPECTED_COUNT_PARTS:
-                num = parts[0]
-                unit = parts[1]
-                unit_map = {
-                    "second": "s",
-                    "seconds": "s",
-                    "minute": "m",
-                    "minutes": "m",
-                    "hour": "h",
-                    "hours": "h",
-                    "day": "d",
-                    "days": "d",
-                    "week": "w",
-                    "weeks": "w",
-                    "month": "mo",
-                    "months": "mo",
-                    "year": "y",
-                    "years": "y",
-                }
-                suffix = unit_map.get(unit, unit[0])
-                return f"{num}{suffix}"
+        # Parse git output to minutes
+        total_minutes = self._parse_git_age(age_str)
+        if total_minutes is None:
+            return age_str  # Fallback for invalid input
 
-        return age_str
+        # Less than 1 minute
+        if total_minutes == 0:
+            return "just now"
+
+        # Decompose into d/h/m
+        days, hours, minutes = self._decompose_minutes(total_minutes)
+
+        # Format based on config
+        if self.commit_age_format == "compact":
+            return self._format_compact(days, hours, minutes)
+        # relative (default)
+        return self._format_relative(days, hours, minutes)
+
+    def _format_compact(self, days: int, hours: int, minutes: int) -> str:
+        """Format time as compact string (e.g., '1d 2h 30m')."""
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        return " ".join(parts) if parts else "just now"
+
+    def _format_relative(self, days: int, hours: int, minutes: int) -> str:
+        """Format time as relative string (e.g., '1 day 2 hours ago')."""
+        parts = []
+        if days > 0:
+            parts.append(f"{days} day" if days == 1 else f"{days} days")
+        if hours > 0:
+            parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
+        if minutes > 0:
+            parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
+        return " ".join(parts) + " ago" if parts else "just now"
 
     def _get_location(self) -> dict[str, str | None] | None:
         """Get project, worktree, and subfolder info.

@@ -253,28 +253,76 @@ M  staged_modified.py
 
         assert result is None
 
-    def test_format_commit_age_relative(self, make_render_context):
-        """_format_commit_age keeps relative format as-is."""
+    def test_format_commit_age_raw(self, make_render_context):
+        """_format_commit_age returns git output as-is for raw format."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "raw"})
+
+        assert mod._format_commit_age("2 hours ago") == "2 hours ago"
+        assert mod._format_commit_age("69 minutes ago") == "69 minutes ago"
+
+    def test_format_commit_age_relative_decomposed(self, make_render_context):
+        """_format_commit_age decomposes and uses full names for relative format."""
         data = make_input_data(model=make_model_data())
         ctx = make_render_context(data)
         mod = GitModule(ctx, {"commit_age_format": "relative"})
 
-        result = mod._format_commit_age("2 hours ago")
-        assert result == "2 hours ago"
+        assert mod._format_commit_age("5 minutes ago") == "5 minutes ago"
+        assert mod._format_commit_age("69 minutes ago") == "1 hour 9 minutes ago"
+        assert mod._format_commit_age("120 minutes ago") == "2 hours ago"
+        assert mod._format_commit_age("26 hours ago") == "1 day 2 hours ago"
+        assert mod._format_commit_age("3 days ago") == "3 days ago"
 
-    def test_format_commit_age_compact(self, make_render_context):
-        """_format_commit_age converts to compact format."""
+    def test_format_commit_age_relative_singular(self, make_render_context):
+        """_format_commit_age uses singular forms correctly."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "relative"})
+
+        assert mod._format_commit_age("60 minutes ago") == "1 hour ago"
+        assert mod._format_commit_age("1 day ago") == "1 day ago"
+
+    def test_format_commit_age_compact_decomposed(self, make_render_context):
+        """_format_commit_age decomposes and uses short names for compact format."""
         data = make_input_data(model=make_model_data())
         ctx = make_render_context(data)
         mod = GitModule(ctx, {"commit_age_format": "compact"})
 
-        assert mod._format_commit_age("2 hours ago") == "2h"
         assert mod._format_commit_age("5 minutes ago") == "5m"
+        assert mod._format_commit_age("69 minutes ago") == "1h 9m"
+        assert mod._format_commit_age("120 minutes ago") == "2h"
+        assert mod._format_commit_age("26 hours ago") == "1d 2h"
         assert mod._format_commit_age("3 days ago") == "3d"
-        assert mod._format_commit_age("2 weeks ago") == "2w"
-        assert mod._format_commit_age("4 months ago") == "4mo"
-        assert mod._format_commit_age("1 year ago") == "1y"
-        assert mod._format_commit_age("10 seconds ago") == "10s"
+        assert mod._format_commit_age("1501 minutes ago") == "1d 1h 1m"
+
+    def test_format_commit_age_just_now(self, make_render_context):
+        """_format_commit_age returns 'just now' for < 1 minute."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+
+        mod_relative = GitModule(ctx, {"commit_age_format": "relative"})
+        mod_compact = GitModule(ctx, {"commit_age_format": "compact"})
+
+        assert mod_relative._format_commit_age("30 seconds ago") == "just now"
+        assert mod_compact._format_commit_age("30 seconds ago") == "just now"
+
+    def test_format_commit_age_default_is_relative(self, make_render_context):
+        """_format_commit_age defaults to relative format."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})  # No format specified
+
+        assert mod._format_commit_age("69 minutes ago") == "1 hour 9 minutes ago"
+
+    def test_format_commit_age_invalid_fallback(self, make_render_context):
+        """_format_commit_age returns input as-is for invalid strings."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {"commit_age_format": "compact"})
+
+        assert mod._format_commit_age("invalid") == "invalid"
+        assert mod._format_commit_age("") == ""
 
     def test_parse_git_age_seconds(self, make_render_context):
         """_parse_git_age returns 0 for seconds."""
