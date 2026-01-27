@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from statuskit.modules.base import BaseModule
+
 if TYPE_CHECKING:
     from statuskit.core.models import RenderContext
 
@@ -325,7 +327,7 @@ FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY
 
 
-class UsageLimitsModule:
+class UsageLimitsModule(BaseModule):
     """Module for displaying API usage limits."""
 
     name = "usage_limits"
@@ -333,7 +335,7 @@ class UsageLimitsModule:
 
     def __init__(self, ctx: RenderContext, config: dict):
         """Initialize module with context and config."""
-        self.debug = ctx.debug
+        super().__init__(ctx, config)
         self.ctx = ctx
         self.show_session = config.get("show_session", True)
         self.show_weekly = config.get("show_weekly", True)
