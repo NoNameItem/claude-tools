@@ -51,25 +51,35 @@ jobs:
         id: metadata
         working-directory: ${{ inputs.project-path }}
         run: |
-          # Extract PyPI package name from pyproject.toml
-          PYPI_NAME=$(python -c "
-          import tomllib
-          with open('pyproject.toml', 'rb') as f:
-              data = tomllib.load(f)
-          print(data['project']['name'])
-          ")
-          echo "pypi-name=$PYPI_NAME" >> "$GITHUB_OUTPUT"
-
-          # Extract CLI scripts for smoke test
-          SCRIPTS=$(python -c "
+          # Extract metadata from pyproject.toml
+          python -c "
           import tomllib
           import json
+          import os
+
           with open('pyproject.toml', 'rb') as f:
               data = tomllib.load(f)
+
+          # PyPI package name
+          pypi_name = data['project']['name']
+
+          # Python module name (from hatch packages or derive from pypi name)
+          packages = data.get('tool', {}).get('hatch', {}).get('build', {}).get('targets', {}).get('wheel', {}).get('packages', [])
+          if packages:
+              # Extract module name from 'src/statuskit' -> 'statuskit'
+              module_name = os.path.basename(packages[0])
+          else:
+              # Fallback: convert pypi name to module name
+              module_name = pypi_name.replace('-', '_')
+
+          # CLI scripts
           scripts = list(data.get('project', {}).get('scripts', {}).keys())
-          print(json.dumps(scripts))
-          ")
-          echo "scripts=$SCRIPTS" >> "$GITHUB_OUTPUT"
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'pypi-name={pypi_name}\n')
+              f.write(f'module-name={module_name}\n')
+              f.write(f'scripts={json.dumps(scripts)}\n')
+          "
 
       - name: Build package
         working-directory: ${{ inputs.project-path }}
@@ -79,6 +89,7 @@ jobs:
         working-directory: ${{ inputs.project-path }}
         env:
           PYPI_NAME: ${{ steps.metadata.outputs.pypi-name }}
+          MODULE_NAME: ${{ steps.metadata.outputs.module-name }}
           EXPECTED_VERSION: ${{ inputs.version }}
           CLI_SCRIPTS: ${{ steps.metadata.outputs.scripts }}
         run: |
@@ -93,7 +104,7 @@ jobs:
           pip install "$WHEEL"
 
           echo "=== Checking import ==="
-          python -c "import ${PYPI_NAME//-/_}"
+          python -c "import $MODULE_NAME"
 
           echo "=== Checking version ==="
           INSTALLED_VERSION=$(python -c "
