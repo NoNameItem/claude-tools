@@ -370,6 +370,79 @@ M  staged_modified.py
 
         assert result is None
 
+    def test_get_location_relative_git_common_dir_root(self, make_render_context, tmp_path, monkeypatch):
+        """_get_location handles relative .git path when at repo root.
+
+        Bug: git rev-parse --git-common-dir returns relative path ".git"
+        when running from repo root. Path(".git").parent.name returns "."
+        instead of the project name.
+        """
+        # Create a fake project structure
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        git_dir = project_dir / ".git"
+        git_dir.mkdir()
+
+        # Change to project directory so relative path works
+        monkeypatch.chdir(project_dir)
+
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": str(project_dir), "project_dir": str(project_dir)},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            # Git returns relative path ".git" when at repo root
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): ".git",
+                ("rev-parse", "--show-toplevel"): str(project_dir),
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=False):
+                result = mod._get_location()
+
+        assert result is not None
+        assert result["project"] == "myproject"
+
+    def test_get_location_relative_git_common_dir_subfolder(self, make_render_context, tmp_path, monkeypatch):
+        """_get_location handles relative ../.git path when in subfolder.
+
+        Bug: git rev-parse --git-common-dir returns relative path "../.git"
+        when running from a subfolder. Path("../.git").parent.name returns ".."
+        instead of the project name.
+        """
+        # Create a fake project structure
+        project_dir = tmp_path / "myproject"
+        project_dir.mkdir()
+        git_dir = project_dir / ".git"
+        git_dir.mkdir()
+        src_dir = project_dir / "src"
+        src_dir.mkdir()
+
+        # Change to subfolder so relative path works
+        monkeypatch.chdir(src_dir)
+
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": str(src_dir), "project_dir": str(project_dir)},
+        )
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            # Git returns relative path "../.git" when in subfolder
+            mock_git.side_effect = lambda *args: {
+                ("rev-parse", "--git-common-dir"): "../.git",
+                ("rev-parse", "--show-toplevel"): str(project_dir),
+            }.get(tuple(args))
+            with patch("pathlib.Path.is_file", return_value=False):
+                result = mod._get_location()
+
+        assert result is not None
+        assert result["project"] == "myproject"
+        assert result["subfolder"] == "src"
+
     def test_render_location_line_project_only(self, make_render_context):
         """_render_location_line shows just project name."""
         data = make_input_data(model=make_model_data())
