@@ -1,3 +1,18 @@
+# Statuskit README Design
+
+## Overview
+
+README for statuskit package to be published on PyPI.
+
+**Target audience:** Users who want to install and use statuskit with Claude Code.
+
+**Language:** English
+
+## Content
+
+### Header + Badges + Description
+
+```markdown
 # statuskit
 
 [![PyPI version](https://img.shields.io/pypi/v/claude-statuskit)](https://pypi.org/project/claude-statuskit/)
@@ -19,10 +34,14 @@ Statuskit displays contextual information below Claude's responses: current mode
 - **Coming soon:**
   - `beads` — display active beads tasks
   - External modules support — load custom modules from separate packages
+```
 
+### Installation
+
+```markdown
 ## Installation
 
-```bash
+\`\`\`bash
 # Using uv (recommended)
 uv tool install claude-statuskit
 
@@ -31,22 +50,22 @@ pipx install claude-statuskit
 
 # Using pip
 pip install claude-statuskit
-```
+\`\`\`
 
 ## Quick Start
 
 Run the setup command to configure Claude Code:
 
-```bash
+\`\`\`bash
 # User-level setup (recommended for personal use)
 statuskit setup
 
 # Project-level setup (shared config for team)
-statuskit setup --scope project
+statuskit setup --project
 
 # Local setup (personal overrides, gitignored)
-statuskit setup --scope local
-```
+statuskit setup --local
+\`\`\`
 
 Setup will:
 1. Add the statusline hook to Claude Code settings
@@ -54,7 +73,11 @@ Setup will:
 3. Update gitignore for local configs (if applicable)
 
 After setup, restart Claude Code to see the statusline.
+```
 
+### Configuration
+
+```markdown
 ## Configuration
 
 Configuration files are loaded in priority order (first found wins):
@@ -67,19 +90,19 @@ Configuration files are loaded in priority order (first found wins):
 
 ### Basic Configuration
 
-```toml
+\`\`\`toml
 # Modules to display (in order)
 modules = ["model", "git", "usage_limits"]
 
 # Enable debug output
 debug = false
-```
+\`\`\`
 
 ### Module Configuration
 
 Each module can be configured in its own section:
 
-```toml
+\`\`\`toml
 [git]
 show_branch = true
 commit_age_format = "compact"
@@ -88,10 +111,12 @@ commit_age_format = "compact"
 show_session = true
 show_weekly = true
 multiline = false
+\`\`\`
 ```
 
-## Module Reference
+### Module Parameters — model
 
+```markdown
 ### `model` Module
 
 Displays model name, session duration, and context window usage.
@@ -112,8 +137,12 @@ Displays model name, session duration, and context window usage.
 | `"free"` | `150,000 free (75.0%)` |
 | `"used"` | `50,000 used (25.0%)` |
 | `"ratio"` | `50,000/200,000 (25.0%)` |
-| `"bar"` | `[███████░░░] 70%` |
+| `"bar"` | `[███████░░░] 75%` |
+```
 
+### Module Parameters — git
+
+```markdown
 ### `git` Module
 
 Displays git branch, remote status, changes, last commit, and project/worktree location.
@@ -135,7 +164,11 @@ Displays git branch, remote status, changes, last commit, and project/worktree l
 |-------|----------------|
 | `"relative"` | `2 hours ago` |
 | `"compact"` | `2h` |
+```
 
+### Module Parameters — usage_limits
+
+```markdown
 ### `usage_limits` Module
 
 Displays API usage limits with color-coded warnings based on consumption rate.
@@ -165,7 +198,12 @@ Displays API usage limits with color-coded warnings based on consumption rate.
 - 🟢 Green — on track or under
 - 🟡 Yellow — approaching the limit trajectory
 - 🔴 Red — ahead of pace, may hit limit
+```
 
+### License
+
+```markdown
 ## License
 
 MIT — see [LICENSE](https://github.com/NoNameItem/claude-tools/blob/master/LICENSE) for details.
+```
