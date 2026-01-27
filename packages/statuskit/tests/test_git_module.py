@@ -379,6 +379,7 @@ M  staged_modified.py
         location = {"project": "myproject", "worktree": None, "subfolder": None}
         result = mod._render_location_line(location)
 
+        assert result is not None
         assert "myproject" in result
         # Should not have separator when only project
         assert "→" not in result
@@ -392,6 +393,7 @@ M  staged_modified.py
         location = {"project": "myproject", "worktree": "feature-x", "subfolder": None}
         result = mod._render_location_line(location)
 
+        assert result is not None
         assert "myproject" in result
         assert "→" in result
         assert "feature-x" in result
@@ -405,6 +407,7 @@ M  staged_modified.py
         location = {"project": "myproject", "worktree": None, "subfolder": "src/utils"}
         result = mod._render_location_line(location)
 
+        assert result is not None
         assert "myproject" in result
         assert "→" in result
         assert "src/utils" in result
@@ -418,6 +421,7 @@ M  staged_modified.py
         location = {"project": "myproject", "worktree": "feature-x", "subfolder": "src"}
         result = mod._render_location_line(location)
 
+        assert result is not None
         assert "myproject" in result
         assert "feature-x" in result
         assert "src" in result
@@ -433,6 +437,7 @@ M  staged_modified.py
         location = {"project": "myproject", "worktree": "feature-x", "subfolder": "src"}
         result = mod._render_location_line(location)
 
+        assert result is not None
         assert "myproject" not in result
         assert "feature-x" in result
         assert "src" in result
@@ -461,6 +466,7 @@ M  staged_modified.py
             commit=("abc1234", "2h"),
         )
 
+        assert result is not None
         assert "main" in result
 
     def test_render_status_line_remote_ahead(self, make_render_context):
@@ -476,6 +482,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "↑2" in result
 
     def test_render_status_line_remote_behind(self, make_render_context):
@@ -491,6 +498,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "↓3" in result
 
     def test_render_status_line_remote_diverged(self, make_render_context):
@@ -506,6 +514,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "⇅5" in result
 
     def test_render_status_line_remote_synced(self, make_render_context):
@@ -521,6 +530,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "✓" in result
 
     def test_render_status_line_no_upstream(self, make_render_context):
@@ -536,6 +546,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "☁✗" in result
 
     def test_render_status_line_changes(self, make_render_context):
@@ -551,6 +562,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "+3" in result
         assert "~2" in result
         assert "?1" in result
@@ -570,6 +582,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "+0" not in result
         assert "~2" in result
         assert "?0" not in result
@@ -587,6 +600,7 @@ M  staged_modified.py
             commit=None,
         )
 
+        assert result is not None
         assert "[" not in result
 
     def test_render_status_line_commit(self, make_render_context):
@@ -602,6 +616,7 @@ M  staged_modified.py
             commit=("abc1234", "2h"),
         )
 
+        assert result is not None
         assert "abc1234" in result
         assert "2h" in result
 
@@ -618,6 +633,7 @@ M  staged_modified.py
             commit=("abc1234", "2h"),
         )
 
+        assert result is not None
         assert "feature/test" in result
         assert "↑2" in result
         assert "+1" in result
