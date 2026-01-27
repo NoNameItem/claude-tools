@@ -179,11 +179,15 @@ def test_render_statusline_respects_colors_false(monkeypatch):
 def test_main_outputs_ansi_codes_when_colors_enabled(capsys, monkeypatch):
     """main outputs ANSI escape codes when colors=true."""
     from statuskit.core.config import Config
+    from termcolor.termcolor import can_colorize
 
     monkeypatch.setattr(sys, "argv", ["statuskit"])
 
-    # Ensure FORCE_COLOR is not pre-set
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
+    # Set FORCE_COLOR before calling main() and clear termcolor's cache
+    # termcolor uses @cache on can_colorize(), so we must clear it
+    # after setting the env var for the new value to be detected
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    can_colorize.cache_clear()
 
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = False
