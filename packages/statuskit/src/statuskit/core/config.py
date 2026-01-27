@@ -66,6 +66,7 @@ def load_config() -> Config:
 
             return Config(
                 debug=data.get("debug", False),
+                colors=data.get("colors", True),
                 modules=data.get("modules", Config().modules),
                 module_configs=module_configs,
                 cache_dir=cache_dir,
