@@ -94,6 +94,7 @@ quote-style = "double"
     "PLC0415",  # late imports - common test isolation pattern
 ]
 ".github/scripts/*.py" = ["PLC0415", "S603"]  # Late imports and subprocess security warnings
+"packages/statuskit/src/statuskit/__init__.py" = ["PLC0415"]  # Lazy imports for faster CLI startup
 
 [tool.pytest.ini_options]
 testpaths = ["packages/*/tests"]
