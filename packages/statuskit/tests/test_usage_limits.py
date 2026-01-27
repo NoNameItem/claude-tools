@@ -282,6 +282,7 @@ class TestFetchUsageApi:
             data = fetch_usage_api("test-token")
 
             assert data is not None
+            assert data.session is not None
             assert data.session.utilization == 45.0
 
     def test_fetch_timeout(self):
@@ -316,6 +317,7 @@ class TestUsageCache:
         loaded = cache.load()
 
         assert loaded is not None
+        assert loaded.session is not None
         assert loaded.session.utilization == 45.0
 
     def test_load_returns_none_when_expired(self, tmp_path):
