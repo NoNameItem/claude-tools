@@ -1,7 +1,9 @@
 """Tests for usage_limits module."""
 
 import json
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -371,6 +373,33 @@ class TestUsageCache:
         loaded = cache.load_stale()
         assert loaded is not None
         assert loaded.session.utilization == 45.0
+
+    def test_save_is_atomic(self, tmp_path):
+        """Save uses atomic write (temp file + rename)."""
+        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        with patch.object(tempfile, "NamedTemporaryFile") as mock_tmp:
+            # Setup mock temp file
+            mock_file = mock_tmp.return_value.__enter__.return_value
+            mock_file.name = str(tmp_path / "temp_file.tmp")
+
+            with patch.object(Path, "replace") as mock_replace:
+                cache.save(data)
+
+                # Verify temp file was used
+                mock_tmp.assert_called_once()
+                call_kwargs = mock_tmp.call_args[1]
+                assert call_kwargs["dir"] == tmp_path
+                assert call_kwargs["delete"] is False
+
+                # Verify atomic rename was called
+                mock_replace.assert_called_once()
 
 
 class TestUsageLimitsModule:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -306,7 +307,10 @@ class UsageCache:
             return None
 
     def save(self, data: UsageData) -> None:
-        """Save data to cache.
+        """Save data to cache atomically.
+
+        Uses temp file + rename for atomic writes to prevent
+        race conditions with concurrent reads.
 
         Args:
             data: UsageData to cache
@@ -330,7 +334,18 @@ class UsageCache:
                 },
                 "fetched_at": data.fetched_at.isoformat(),
             }
-            self.cache_file.write_text(json.dumps(cache_data))
+
+            # Atomic write: temp file + rename
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=self.cache_dir,
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                f.write(json.dumps(cache_data))
+                temp_path = Path(f.name)
+
+            temp_path.replace(self.cache_file)
         except OSError:
             pass
 
