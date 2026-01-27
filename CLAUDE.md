@@ -6,19 +6,23 @@ Custom tools and plugins for Claude Code. Monorepo with uv workspaces.
 
 This repository contains two types of tools for Claude Code:
 
-**Statuskit** - Python package for customizable statusline display. Modular architecture with plugins for model info, git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statusline hook and renders formatted output.
+**Statuskit** - Python package for customizable statusline display. Modular architecture with plugins for model info,
+git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statusline hook and renders formatted output.
 
-**Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`, `/flow:after-design`, `/flow:after-plan`, `/flow:done`) that guide you through task selection, branch management, design linking, and completion workflow.
+**Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`,
+`/flow:after-design`, `/flow:after-plan`, `/flow:done`) that guide you through task selection, branch management, design
+linking, and completion workflow.
 
 ## Terminology
 
-| Term | Meaning | Location | Example |
-|------|---------|----------|---------|
-| **Project** | Generic term for any releasable unit in the monorepo | `packages/` or `plugins/` | statuskit, flow |
-| **Package** | Python package with pyproject.toml, published to PyPI | `packages/` | statuskit |
-| **Plugin** | Claude Code plugin with plugin.json | `plugins/` | flow |
+| Term        | Meaning                                               | Location                  | Example         |
+|-------------|-------------------------------------------------------|---------------------------|-----------------|
+| **Project** | Generic term for any releasable unit in the monorepo  | `packages/` or `plugins/` | statuskit, flow |
+| **Package** | Python package with pyproject.toml, published to PyPI | `packages/`               | statuskit       |
+| **Plugin**  | Claude Code plugin with plugin.json                   | `plugins/`                | flow            |
 
 **In code and CI:**
+
 - "project" = package OR plugin (generic)
 - "package" = only Python packages
 - "plugin" = only Claude Code plugins
@@ -27,11 +31,11 @@ This repository contains two types of tools for Claude Code:
 
 **Scope and label rules:**
 
-| Changes in | Title scope | PR label |
-|------------|-------------|----------|
-| `packages/statuskit/` | `(statuskit)` | `statuskit` |
-| `plugins/flow/` | `(flow)` | `flow` |
-| `.github/`, `docs/`, root configs | no scope | `repo` |
+| Changes in                        | Title scope   | PR label    |
+|-----------------------------------|---------------|-------------|
+| `packages/statuskit/`             | `(statuskit)` | `statuskit` |
+| `plugins/flow/`                   | `(flow)`      | `flow`      |
+| `.github/`, `docs/`, root configs | no scope      | `repo`      |
 
 ```
 ✅ feat(statuskit): add git module      # label: statuskit
@@ -88,12 +92,14 @@ modules = ["model", "git", "beads", "quota"]  # Default modules
 ```
 
 **Available modules:**
+
 - `model` - Display current Claude model name
 - `git` - Show git branch and status
 - `beads` - Display active beads tasks
 - `quota` - Track token usage and limits
 
 **Key files:**
+
 - `~/.claude/statuskit.toml` - User configuration
 - `~/.cache/statuskit/` - Quota cache, session state
 
@@ -121,34 +127,40 @@ git diff --name-only '*.py' | xargs uv run ruff check --fix
 ```
 
 This is required because:
+
 - Pre-commit hooks only **check** code, they don't auto-fix
 - `ruff --fix` can sometimes break code (e.g., moving imports to TYPE_CHECKING block, adding return to generators)
 - Running checks manually allows reviewing and fixing issues before commit
 
 The pre-commit hooks will then verify:
+
 1. `ruff-format` — auto-formats code (safe)
 2. `ruff` — checks for remaining lint errors
 3. `single-package-commit` — validates commit scope
 4. `beads` — syncs beads state
 
 **Type checking** (required for packages before every commit):
+
 ```bash
 uv run ty check
 ```
 
+**Do not ignore ty warnings.** Warnings like `possibly-missing-attribute` indicate potential None access bugs. Either fix them (add assert for type narrowing) or explicitly justify why they're safe to ignore.
+
 **Running checks via subagent:** Use haiku subagent to filter verbose output:
 
-| Check | Return format |
-|-------|---------------|
-| Tests | Pass/fail count. If failures: test name + one-line error |
-| Lint/Format | Only errors not auto-fixed. If clean: "No issues" |
-| Type check | Only type errors. If clean: "All checks passed" |
+| Check       | Return format                                                |
+|-------------|--------------------------------------------------------------|
+| Tests       | Pass/fail count. If failures: test name + one-line error     |
+| Lint/Format | Only errors not auto-fixed. If clean: "No issues"            |
+| Type check  | Only type errors and warnings. If clean: "All checks passed" |
 
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 
 ## Writing Implementation Plans
 
 When writing plans that modify Python files, each commit step MUST include:
+
 1. `uv run ruff format <files>`
 2. `uv run ruff check --fix <files>`
 3. `uv run ty check` (for packages)
@@ -181,12 +193,14 @@ This repository is also a Claude Code plugin marketplace containing workflow aut
 ### Installation
 
 **Local development:**
+
 ```bash
 /plugin marketplace add /Users/artem.vasin/Coding/claude-tools
 /plugin install flow@nonameitem-toolkit
 ```
 
 **From GitHub:**
+
 ```bash
 /plugin marketplace add NoNameItem/claude-tools
 /plugin install flow@nonameitem-toolkit
@@ -197,12 +211,14 @@ This repository is also a Claude Code plugin marketplace containing workflow aut
 Automated beads workflow commands for task management.
 
 **Available commands:**
+
 - `/flow:start` - Start working on a beads task (task selection, branch management, context display)
 - `/flow:after-design` - After brainstorming/design phase (links design doc, parses subtasks, previews before creating)
 - `/flow:after-plan` - After planning phase (links implementation plan document to task)
 - `/flow:done` - Complete and verify task (checks git branch, closes task, handles parent tasks, syncs)
 
 **Usage example:**
+
 ```bash
 /flow:start              # Begin work session
 # ... do your work ...
@@ -216,6 +232,7 @@ Automated beads workflow commands for task management.
 **Adding a new skill to existing plugin:**
 
 Use the `superpowers:writing-skills` skill for creating or editing skills:
+
 ```bash
 /superpowers:writing-skills
 ```
