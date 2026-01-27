@@ -324,7 +324,8 @@ class GitModule(BaseModule):
             return None
 
         # Extract project name from main repo path
-        git_path = Path(git_common_dir)
+        # resolve() converts relative paths (like ".git" or "../.git") to absolute
+        git_path = Path(git_common_dir).resolve()
         if git_path.name == ".git":
             project_name = git_path.parent.name
         else:
