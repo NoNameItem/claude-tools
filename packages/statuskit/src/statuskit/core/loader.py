@@ -2,14 +2,14 @@
 
 from statuskit.core.config import Config
 from statuskit.core.models import RenderContext
-from statuskit.modules import git, model
+from statuskit.modules import git, model, usage_limits
 from statuskit.modules.base import BaseModule
 
 BUILTIN_MODULES: dict[str, type[BaseModule]] = {
     "model": model.ModelModule,
+    "usage_limits": usage_limits.UsageLimitsModule,
     "git": git.GitModule,
     # "beads": ...,  # v0.3
-    # "quota": ...,  # v0.4
 }
 
 

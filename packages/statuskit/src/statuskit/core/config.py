@@ -8,6 +8,7 @@ from termcolor import colored
 
 # Kept for backward compatibility in tests
 CONFIG_PATH = Path.home() / ".claude" / "statuskit.toml"
+DEFAULT_CACHE_DIR = Path.home() / ".cache" / "statuskit"
 
 
 def _get_config_paths() -> list[Path]:
@@ -26,6 +27,7 @@ class Config:
     debug: bool = False
     modules: list[str] = field(default_factory=lambda: ["model", "git", "beads", "quota"])
     module_configs: dict[str, dict] = field(default_factory=dict)
+    cache_dir: Path = field(default_factory=lambda: DEFAULT_CACHE_DIR)
 
     def get_module_config(self, name: str) -> dict:
         """Get configuration for a specific module."""
@@ -53,12 +55,19 @@ def load_config() -> Config:
                 return Config()
 
             # Extract module configs
-            module_configs = {k: v for k, v in data.items() if isinstance(v, dict) and k not in ("debug", "modules")}
+            module_configs = {
+                k: v for k, v in data.items() if isinstance(v, dict) and k not in ("debug", "modules", "cache_dir")
+            }
+
+            # Parse cache_dir
+            cache_dir_str = data.get("cache_dir")
+            cache_dir = Path(cache_dir_str).expanduser() if cache_dir_str else DEFAULT_CACHE_DIR
 
             return Config(
                 debug=data.get("debug", False),
                 modules=data.get("modules", Config().modules),
                 module_configs=module_configs,
+                cache_dir=cache_dir,
             )
 
     return Config()

@@ -4,6 +4,8 @@ Fixtures use factories from tests.factories package.
 Keep this file lean - only pytest-specific code.
 """
 
+from pathlib import Path
+
 import pytest
 from statuskit.core.models import RenderContext, StatusInput
 
@@ -87,7 +89,7 @@ def make_status_input():
 def make_render_context(make_status_input):
     """Factory fixture to create RenderContext."""
 
-    def _make(data: dict, debug: bool = False) -> RenderContext:
-        return RenderContext(debug=debug, data=make_status_input(data))
+    def _make(data: dict, debug: bool = False, cache_dir: Path | None = None) -> RenderContext:
+        return RenderContext(debug=debug, data=make_status_input(data), cache_dir=cache_dir)
 
     return _make

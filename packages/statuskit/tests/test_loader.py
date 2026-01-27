@@ -4,6 +4,7 @@ from statuskit.core.config import Config
 from statuskit.core.loader import BUILTIN_MODULES, load_modules
 from statuskit.modules.git import GitModule
 from statuskit.modules.model import ModelModule
+from statuskit.modules.usage_limits import UsageLimitsModule
 
 
 def test_git_module_registered():
@@ -56,3 +57,14 @@ def test_load_modules_with_config(make_render_context, minimal_input_data):
     modules = load_modules(config, ctx)
 
     assert modules[0].config == {"show_duration": False}
+
+
+def test_loads_usage_limits_module(make_render_context, minimal_input_data):
+    """Loader includes usage_limits module."""
+    config = Config(modules=["usage_limits"])
+    ctx = make_render_context(minimal_input_data)
+
+    modules = load_modules(config, ctx)
+
+    assert len(modules) == 1
+    assert isinstance(modules[0], UsageLimitsModule)
