@@ -55,6 +55,19 @@ Setup will:
 
 After setup, restart Claude Code to see the statusline.
 
+## Example Output
+
+```
+Opus 4.5 · 47m · 120k free (60%)
+claude-tools master ↑1 +2 ~1 ?3 · a1b2c3d 2h
+Session: 45% (2h 30m) · Weekly: 12%
+```
+
+This shows:
+- **Line 1 (model):** Model name, session duration, context window
+- **Line 2 (git):** Project, branch, remote status, changes, last commit
+- **Line 3 (usage_limits):** API quota for session and weekly limits
+
 ## Configuration
 
 Configuration files are loaded in priority order (first found wins):
