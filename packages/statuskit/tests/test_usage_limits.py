@@ -307,7 +307,7 @@ class TestUsageCache:
 
     def test_save_and_load(self, tmp_path):
         """Cache saves and loads data."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        cache = UsageCache(cache_dir=tmp_path)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
@@ -340,13 +340,13 @@ class TestUsageCache:
 
     def test_load_returns_none_when_no_cache(self, tmp_path):
         """Cache returns None when file doesn't exist."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        cache = UsageCache(cache_dir=tmp_path)
         loaded = cache.load()
         assert loaded is None
 
     def test_can_fetch_respects_rate_limit(self, tmp_path):
         """Rate limit prevents fetching too frequently."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=30)
 
         # First fetch allowed (no cache file)
         assert cache.can_fetch() is True
@@ -363,29 +363,9 @@ class TestUsageCache:
         # Second fetch blocked (within rate limit)
         assert cache.can_fetch() is False
 
-    def test_load_stale_returns_expired_data(self, tmp_path):
-        """load_stale returns data even when TTL expired."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=0)  # 0 TTL = always expired
-        data = UsageData(
-            session=UsageLimit(45.0, datetime.now(UTC)),
-            weekly=None,
-            sonnet=None,
-            fetched_at=datetime.now(UTC),
-        )
-
-        cache.save(data)
-
-        # Regular load returns None (TTL expired)
-        assert cache.load() is None
-
-        # load_stale returns data anyway
-        loaded = cache.load_stale()
-        assert loaded is not None
-        assert loaded.session.utilization == 45.0
-
     def test_save_is_atomic(self, tmp_path):
         """Save uses atomic write (temp file + rename)."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        cache = UsageCache(cache_dir=tmp_path)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
@@ -412,7 +392,7 @@ class TestUsageCache:
 
     def test_can_fetch_reads_from_cache_file(self, tmp_path):
         """can_fetch uses fetched_at from cache file, not lock file."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=30)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
@@ -555,28 +535,26 @@ class TestUsageLimitsIntegration:
 class TestGetUsageDataRateLimited:
     """Tests for _get_usage_data when rate limited."""
 
-    def test_returns_stale_data_when_rate_limited(self, make_render_context, minimal_input_data, tmp_path):
-        """Returns stale cache when rate limited and TTL expired."""
+    def test_returns_cached_data_when_rate_limited(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns cached data when rate limited."""
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
-        config = {"cache_ttl": 0}  # TTL=0 means cache always "expired"
+        config = {}
 
         module = UsageLimitsModule(ctx, config)
 
-        # Prepare stale cache with rate limit active
-        stale_data = UsageData(
+        # Prepare cache with rate limit active
+        cached_data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
             weekly=None,
             sonnet=None,
             fetched_at=datetime.now(UTC),
         )
-        module.cache.save(stale_data)
-        # save() sets fetched_at which activates rate limit
+        module.cache.save(cached_data)
 
-        # Verify setup: TTL expired, rate limit active
-        assert module.cache.load() is None  # TTL expired
-        assert module.cache.can_fetch() is False  # Rate limited
+        # Verify: rate limit active
+        assert module.cache.can_fetch() is False
 
-        # _get_usage_data should return stale data, not None
+        # _get_usage_data should return cached data
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             result = module._get_usage_data()
