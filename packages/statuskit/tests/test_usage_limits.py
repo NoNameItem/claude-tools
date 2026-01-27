@@ -500,7 +500,7 @@ class TestUsageLimitsIntegration:
     def test_full_flow_with_mock_api(self, make_render_context, minimal_input_data, tmp_path):
         """Full flow: API fetch -> cache -> render."""
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
-        config = {"cache_ttl": 60}
+        config = {}
 
         # Mock token and API
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
@@ -561,3 +561,78 @@ class TestGetUsageDataRateLimited:
 
         assert result is not None
         assert result.session.utilization == 45.0
+
+    def test_fetches_first_when_allowed(self, make_render_context, minimal_input_data, tmp_path):
+        """Fetches from API first when rate limit allows, even if cache exists."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+
+        # Prepare old cache (will be overwritten)
+        old_data = UsageData(
+            session=UsageLimit(10.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(minutes=5),  # Old enough to allow fetch
+        )
+        module.cache.save(old_data)
+
+        # Mock API to return new data
+        new_data = UsageData(
+            session=UsageLimit(50.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = new_data
+                result = module._get_usage_data()
+
+        # Should return NEW data, not cached
+        assert result is not None
+        assert result.session.utilization == 50.0  # New value, not 10.0
+
+    def test_returns_cached_on_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns cached data when API fetch fails."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+
+        # Prepare cache
+        cached_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(minutes=5),  # Old enough to allow fetch
+        )
+        module.cache.save(cached_data)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = None  # API fails
+                result = module._get_usage_data()
+
+        # Should return cached data
+        assert result is not None
+        assert result.session.utilization == 45.0
+
+    def test_debug_output_in_render(self, make_render_context, minimal_input_data, tmp_path):
+        """Debug messages appear in render output."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = None
+            output = module.render()
+
+        # Debug message should be in render output, not stdout
+        assert output is not None
+        assert "[usage_limits] No token" in output

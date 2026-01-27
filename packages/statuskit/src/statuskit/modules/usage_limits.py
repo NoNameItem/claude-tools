@@ -351,52 +351,70 @@ class UsageLimitsModule(BaseModule):
         self.session_time_format = config.get("session_time_format", "remaining")
         self.weekly_time_format = config.get("weekly_time_format", "reset_at")
         self.sonnet_time_format = config.get("sonnet_time_format", "reset_at")
-        self.cache_ttl = config.get("cache_ttl", 60)
 
         # Initialize cache if cache_dir available
         self.cache = None
         if ctx.cache_dir:
-            self.cache = UsageCache(
-                cache_dir=ctx.cache_dir,
-                ttl=self.cache_ttl,
-            )
+            self.cache = UsageCache(cache_dir=ctx.cache_dir)
 
     def render(self) -> str | None:
         """Render usage limits display."""
         data = self._get_usage_data()
-        if data is None:
-            return None
 
-        if self.multiline:
-            return self._render_multiline(data)
-        return self._render_single_line(data)
+        parts: list[str] = []
+
+        # Main output
+        if data:
+            if self.multiline:
+                parts.append(self._render_multiline(data))
+            else:
+                parts.append(self._render_single_line(data))
+
+        # Debug output (appended to statusline)
+        if self.debug and hasattr(self, "_debug_messages"):
+            parts.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
+
+        return "\n".join(parts) if parts else None
 
     def _get_usage_data(self) -> UsageData | None:
-        """Get usage data from cache or API."""
-        # Try cache first
-        if self.cache:
-            cached = self.cache.load()
-            if cached:
-                return cached
+        """Get usage data using refresh-first pattern.
 
-        # Fetch from API
+        Logic:
+        1. Load existing cache (for fallback)
+        2. If can fetch: try API, save result, return data
+        3. Otherwise: return cached data
+        """
+        self._debug_messages: list[str] = []
+
+        # Load cache for potential fallback
+        cached = self.cache.load() if self.cache else None
+
+        # Check if we can fetch
         token = get_token()
         if not token:
-            return None
+            self._debug_messages.append("No token, using cache")
+            return cached
 
         if self.cache and not self.cache.can_fetch():
-            # Rate limited, return stale cache or None
-            return self.cache.load_stale()
+            self._debug_messages.append("Rate limited, using cache")
+            return cached
 
-        data = fetch_usage_api(token)
-        if self.cache:
-            if data:
-                self.cache.save(data)
-            else:
-                # Update fetched_at even on failed fetch to prevent retry spam
-                stale = self.cache.load_stale()
-                if stale:
-                    self.cache.save(stale)
+        # Try to fetch fresh data
+        new_data = fetch_usage_api(token)
+
+        if not new_data:
+            self._debug_messages.append("API failed, using cache")
+
+        # Determine what to save and return
+        data = new_data if new_data else cached
+
+        # Save (updates fetched_at even on failure)
+        if self.cache and data:
+            self.cache.save(data)
+
+        if not data:
+            self._debug_messages.append("No data available")
+
         return data
 
     def _render_multiline(self, data: UsageData) -> str:
