@@ -88,6 +88,15 @@ def main() -> int:
             f.write(summary)
             f.write("\n")
 
+    # Write to GITHUB_OUTPUT for use in other jobs
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with Path(output_path).open("a") as f:
+            # Use heredoc-style delimiter for multiline output
+            f.write("telegram-message<<EOF\n")
+            f.write(summary)
+            f.write("\nEOF\n")
+
     # Also print to stdout for debugging
     print(summary)
 

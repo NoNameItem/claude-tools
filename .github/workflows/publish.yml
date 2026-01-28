@@ -194,6 +194,8 @@ jobs:
     needs: [resolve, publish-pypi]
     if: always()
     runs-on: ubuntu-latest
+    outputs:
+      telegram-message: ${{ steps.summary.outputs.telegram-message }}
     steps:
       - uses: actions/checkout@v4
 
@@ -203,23 +205,24 @@ jobs:
           python-version: '3.11'
 
       - name: Generate Summary
+        id: summary
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
         run: python .github/scripts/publish_summary.py
 
   notify-finish:
     name: Notify Finish
-    needs: [resolve, publish-pypi]
+    needs: [resolve, publish-pypi, summary]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/telegram-notify
         with:
-          status: ${{ needs.publish-pypi.result == 'success' && 'success' || 'failure' }}
+          status: ${{ (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && 'success' || 'failure' }}
           event-type: release
           title: "${{ needs.resolve.outputs.project-name }} ${{ needs.resolve.outputs.version }}"
           event-url: ${{ github.event.release.html_url }}
-          message: ${{ needs.publish-pypi.result == 'success' && needs.publish-pypi.outputs.summary-message || 'Publish failed' }}
+          message: ${{ needs.summary.outputs.telegram-message }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}

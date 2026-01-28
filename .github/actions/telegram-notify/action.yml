@@ -46,6 +46,19 @@ runs:
       run: |
         set -euo pipefail
 
+        # Escape Markdown special characters for Telegram
+        escape_markdown() {
+          local text="$1"
+          # Escape: _ * ` [ ]
+          text="${text//\\/\\\\}"  # Escape backslash first
+          text="${text//_/\\_}"
+          text="${text//\*/\\*}"
+          text="${text//\`/\\\`}"
+          text="${text//\[/\\[}"
+          text="${text//\]/\\]}"
+          echo "$text"
+        }
+
         # 1. Icon by status
         case "$STATUS" in
           started)   ICON="🚀" ;;
@@ -55,8 +68,9 @@ runs:
           *)         ICON="❓" ;;
         esac
 
-        # 2. Header
-        HEADER="${ICON} ${GITHUB_REPOSITORY} | ${TITLE}"
+        # 2. Header (escape title for Markdown)
+        ESCAPED_TITLE=$(escape_markdown "$TITLE")
+        HEADER="${ICON} ${GITHUB_REPOSITORY} | ${ESCAPED_TITLE}"
 
         # 3. Links
         RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -77,12 +91,18 @@ runs:
             | head -20) || true
         fi
 
-        # 5. Build message
+        # 5. Build message (escape user content, keep links as-is)
         TEXT="${HEADER}"
-        [ -n "$MESSAGE" ] && TEXT="${TEXT}
-        ${MESSAGE}"
-        [ -n "$FAILED_SUMMARY" ] && TEXT="${TEXT}
-        ${FAILED_SUMMARY}"
+        if [ -n "$MESSAGE" ]; then
+          ESCAPED_MESSAGE=$(escape_markdown "$MESSAGE")
+          TEXT="${TEXT}
+        ${ESCAPED_MESSAGE}"
+        fi
+        if [ -n "$FAILED_SUMMARY" ]; then
+          ESCAPED_FAILED_SUMMARY=$(escape_markdown "$FAILED_SUMMARY")
+          TEXT="${TEXT}
+        ${ESCAPED_FAILED_SUMMARY}"
+        fi
         TEXT="${TEXT}
         ${LINKS}"
 
