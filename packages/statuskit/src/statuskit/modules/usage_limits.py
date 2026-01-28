@@ -449,67 +449,64 @@ class UsageLimitsModule(BaseModule):
 
     def _format_line(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single line for multiline output."""
-        # Handle missing resets_at (not yet used or API issue)
+        # Calculate color and time based on resets_at availability
         if limit.resets_at is None:
-            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
-            bar = ""
-            if self.show_progress_bar:
-                bar = f" {format_progress_bar(limit.utilization, self.bar_width)}"
+            # No reset time: dim color, placeholder for time
+            color = None  # Will use attrs=["dark"]
             time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
-            label_str = colored(f"{label:8}", attrs=["dark"])
-            return f"{label_str}{bar} {util_str}{time_str}"
+        else:
+            # Normal case: color based on utilization vs time
+            now = datetime.now(UTC)
+            remaining = max(0, (limit.resets_at - now).total_seconds() / 3600)
+            color = calculate_color(limit.utilization, remaining, window)
+            time_str = ""
+            if self.show_reset_time:
+                if time_fmt == "remaining":
+                    time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
+                else:
+                    time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
-        now = datetime.now(UTC)
-        remaining = (limit.resets_at - now).total_seconds() / 3600
-        remaining = max(0, remaining)
-
-        color = calculate_color(limit.utilization, remaining, window)
-        util_str = colored(f"{limit.utilization:.0f}%", color)
+        # Format utilization with appropriate color
+        if color is None:
+            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
+        else:
+            util_str = colored(f"{limit.utilization:.0f}%", color)
 
         bar = ""
         if self.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, self.bar_width)}"
-
-        time_str = ""
-        if self.show_reset_time:
-            if time_fmt == "remaining":
-                time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
-            else:
-                time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
         label_str = colored(f"{label:8}", attrs=["dark"])
         return f"{label_str}{bar} {util_str}{time_str}"
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
-        # Handle missing resets_at (not yet used or API issue)
+        # Calculate color and time based on resets_at availability
         if limit.resets_at is None:
-            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
-            bar = ""
-            if self.show_progress_bar:
-                bar = f" {format_progress_bar(limit.utilization, self.bar_width // 2)}"
+            # No reset time: dim color, placeholder for time
+            color = None  # Will use attrs=["dark"]
             time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
-            label_str = colored(label, attrs=["dark"])
-            return f"{label_str}{bar} {util_str}{time_str}"
+        else:
+            # Normal case: color based on utilization vs time
+            now = datetime.now(UTC)
+            remaining = max(0, (limit.resets_at - now).total_seconds() / 3600)
+            color = calculate_color(limit.utilization, remaining, window)
+            time_str = ""
+            if self.show_reset_time:
+                if time_fmt == "remaining":
+                    time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
+                else:
+                    time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
-        now = datetime.now(UTC)
-        remaining = (limit.resets_at - now).total_seconds() / 3600
-        remaining = max(0, remaining)
-
-        color = calculate_color(limit.utilization, remaining, window)
+        # Format utilization with appropriate color
+        if color is None:
+            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
+        else:
+            util_str = colored(f"{limit.utilization:.0f}%", color)
 
         bar = ""
         if self.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, self.bar_width // 2)}"
-
-        util_str = colored(f"{limit.utilization:.0f}%", color)
-
-        time_str = ""
-        if self.show_reset_time:
-            if time_fmt == "remaining":
-                time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
-            else:
-                time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
 
         label_str = colored(label, attrs=["dark"])
         return f"{label_str}{bar} {util_str}{time_str}"
