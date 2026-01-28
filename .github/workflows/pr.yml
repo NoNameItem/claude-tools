@@ -11,6 +11,7 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
+  actions: read  # For fetching failed jobs in notifications
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.action }}
@@ -19,6 +20,21 @@ concurrency:
   # so they don't cancel each other (needed for release-please PRs)
 
 jobs:
+  notify-start:
+    name: Notify Start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: started
+          event-type: pr
+          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          event-url: ${{ github.event.pull_request.html_url }}
+          message: "Checks started"
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
   detect:
     uses: ./.github/workflows/_reusable-detect.yml
     with:
@@ -113,3 +129,23 @@ jobs:
           echo "Claude Code Plugin CI result: $RESULT"
           [[ "$RESULT" == "failure" ]] && exit 1
           exit 0
+
+  notify-finish:
+    name: Notify Finish
+    needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || (contains(needs.*.result, 'cancelled') && 'cancelled') || 'success' }}
+          event-type: pr
+          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          event-url: ${{ github.event.pull_request.html_url }}
+          message: ${{ contains(needs.*.result, 'failure') && 'Finished with errors:' || 'All checks passed' }}
+          collect-failed-jobs: ${{ contains(needs.*.result, 'failure') }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
