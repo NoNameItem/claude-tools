@@ -1,0 +1,35 @@
+# .github/workflows/coderabbit-notify.yml
+name: CodeRabbit Notify
+
+on:
+  check_run:
+    types: [created, completed]
+
+jobs:
+  notify:
+    name: Notify CodeRabbit Status
+    if: github.event.check_run.app.slug == 'coderabbitai' && github.event.check_run.pull_requests[0]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get PR details
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.check_run.pull_requests[0].number }}"
+          PR_DATA=$(gh pr view "$PR_NUMBER" --json title,url)
+          echo "number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "title=$(echo "$PR_DATA" | jq -r '.title')" >> "$GITHUB_OUTPUT"
+          echo "url=$(echo "$PR_DATA" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: ${{ github.event.action == 'created' && 'started' || (github.event.check_run.conclusion == 'success' && 'success' || (github.event.check_run.conclusion == 'neutral' && 'success' || 'failure')) }}
+          event-type: pr
+          title: "CodeRabbit | PR #${{ steps.pr.outputs.number }}: ${{ steps.pr.outputs.title }}"
+          event-url: ${{ steps.pr.outputs.url }}
+          message: ${{ github.event.action == 'created' && 'Review started' || 'Review completed' }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
