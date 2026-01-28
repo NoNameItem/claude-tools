@@ -62,7 +62,12 @@ def parse_api_response(response: dict) -> UsageData:
         if utilization is None:
             return None
         resets_at_str = data.get("resets_at")
-        resets_at = datetime.fromisoformat(resets_at_str) if resets_at_str else None
+        resets_at = None
+        if resets_at_str:
+            try:
+                resets_at = datetime.fromisoformat(resets_at_str)
+            except (ValueError, TypeError):
+                pass  # Malformed date string, treat as no reset time
         return UsageLimit(utilization=utilization, resets_at=resets_at)
 
     return UsageData(
@@ -253,7 +258,12 @@ class UsageCache:
                 if utilization is None:
                     return None
                 resets_at_str = d.get("resets_at")
-                resets_at = datetime.fromisoformat(resets_at_str) if resets_at_str else None
+                resets_at = None
+                if resets_at_str:
+                    try:
+                        resets_at = datetime.fromisoformat(resets_at_str)
+                    except (ValueError, TypeError):
+                        pass  # Malformed date string, treat as no reset time
                 return UsageLimit(utilization=utilization, resets_at=resets_at)
 
             return UsageData(
