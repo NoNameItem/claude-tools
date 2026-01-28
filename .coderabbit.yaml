@@ -27,6 +27,7 @@ reviews:
       mode: "off"
     description:
       mode: "off"
+  fail_commit_status: true
   tools:
     ruff:
       enabled: false
