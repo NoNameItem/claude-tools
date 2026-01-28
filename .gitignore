@@ -27,5 +27,8 @@ uv.lock
 # macOS
 .DS_Store
 
+# Git worktrees
+.worktrees/
+
 # Local config (keep template, ignore actual)
 *.local
