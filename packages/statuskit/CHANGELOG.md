@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.3.0...statuskit-0.3.1) (2026-01-28)
+
+
+### Bug Fixes
+
+* **statuskit:** decompose commit age into d/h/m units ([#39](https://github.com/NoNameItem/claude-tools/issues/39)) ([52d83f8](https://github.com/NoNameItem/claude-tools/commit/52d83f8444a97c8ed73f45d10fb4af8b2a2d21f3))
+* **statuskit:** enable ANSI colors in Claude Code statusline ([#35](https://github.com/NoNameItem/claude-tools/issues/35)) ([e2d265c](https://github.com/NoNameItem/claude-tools/commit/e2d265c29362d8ffbb49bcc276bce620e55df7b7))
+* **statuskit:** resolve relative git path for project name ([#37](https://github.com/NoNameItem/claude-tools/issues/37)) ([9caf51d](https://github.com/NoNameItem/claude-tools/commit/9caf51d4dfd6b4548833c30a3d485041b68f0a3b))
+* **statuskit:** return stale cache when rate-limited ([#41](https://github.com/NoNameItem/claude-tools/issues/41)) ([9772f05](https://github.com/NoNameItem/claude-tools/commit/9772f050d952e729ff18842703f5f34dc9606ce1))
+* **statuskit:** update default config as documentation template ([#36](https://github.com/NoNameItem/claude-tools/issues/36)) ([07ed745](https://github.com/NoNameItem/claude-tools/commit/07ed745f3cd14b9e1375f5bc628ceaedb2e40d51))
+
 ## [0.3.0](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.2.1...statuskit-0.3.0) (2026-01-27)
 
 
