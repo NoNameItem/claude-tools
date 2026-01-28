@@ -79,41 +79,36 @@ class ModelModule(BaseModule):
         pct_free = (free / total) * 100
         pct_used = (used / total) * 100
 
-        # Determine color based on free percentage
-        if pct_free > self.threshold_green:
-            color = "green"
-        elif pct_free > self.threshold_yellow:
-            color = "yellow"
-        else:
-            color = "red"
-
-        # Format numbers
-        if self.context_compact:
-            free_fmt = self._compact_number(free)
-            used_fmt = self._compact_number(used)
-            total_fmt = self._compact_number(total)
-            pct_fmt = f"{pct_free:.0f}%" if self.context_format == "free" else f"{pct_used:.0f}%"
-        else:
-            free_fmt = f"{free:,}"
-            used_fmt = f"{used:,}"
-            total_fmt = f"{total:,}"
-            pct_fmt = f"{pct_free:.1f}%" if self.context_format == "free" else f"{pct_used:.1f}%"
-
-        # Format output based on style
-        if self.context_format == "free":
-            text = f"{free_fmt} free ({pct_fmt})"
-        elif self.context_format == "used":
-            text = f"{used_fmt} used ({pct_fmt})"
-        elif self.context_format == "ratio":
-            pct_fmt = f"{pct_used:.0f}%" if self.context_compact else f"{pct_used:.1f}%"
-            text = f"{used_fmt}/{total_fmt} ({pct_fmt})"
-        elif self.context_format == "bar":
-            bar = self._make_bar(pct_free)
-            text = f"{bar} {pct_free:.0f}%"
-        else:
-            text = f"{free_fmt} free ({pct_fmt})"
-
+        color = self._determine_color(pct_free)
+        text = self._format_context_text(free, used, total, pct_free, pct_used)
         return colored(text, color)
+
+    def _determine_color(self, pct_free: float) -> str:
+        if pct_free > self.threshold_green:
+            return "green"
+        if pct_free > self.threshold_yellow:
+            return "yellow"
+        return "red"
+
+    def _format_context_text(self, free: int, used: int, total: int, pct_free: float, pct_used: float) -> str:
+        fmt = self._get_number_formatter()
+        free_fmt, used_fmt, total_fmt = fmt(free), fmt(used), fmt(total)
+        pct_precision = 0 if self.context_compact else 1
+
+        if self.context_format == "used":
+            return f"{used_fmt} used ({pct_used:.{pct_precision}f}%)"
+        if self.context_format == "ratio":
+            return f"{used_fmt}/{total_fmt} ({pct_used:.{pct_precision}f}%)"
+        if self.context_format == "bar":
+            bar = self._make_bar(pct_free)
+            return f"{bar} {pct_free:.0f}%"
+        # "free" or default
+        return f"{free_fmt} free ({pct_free:.{pct_precision}f}%)"
+
+    def _get_number_formatter(self):
+        if self.context_compact:
+            return self._compact_number
+        return lambda n: f"{n:,}"
 
     def _compact_number(self, n: int) -> str:
         if n >= _MILLION:

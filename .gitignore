@@ -27,5 +27,11 @@ uv.lock
 # macOS
 .DS_Store
 
+# Git worktrees
+.worktrees/
+
+# Beads daemon logs
+.beads/*.log.gz
+
 # Local config (keep template, ignore actual)
 *.local
