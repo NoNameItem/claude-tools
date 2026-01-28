@@ -18,6 +18,9 @@ _MINUTES_PER_WEEK = 10080  # 7 * 1440
 _MINUTES_PER_MONTH = 43200  # 30 * 1440
 _MINUTES_PER_YEAR = 525600  # 365 * 1440
 
+# Age format constant
+_JUST_NOW = "just now"
+
 # Git age unit to minutes mapping
 _UNIT_TO_MINUTES: dict[str, int] = {
     "second": 0,
@@ -273,7 +276,7 @@ class GitModule(BaseModule):
 
         # Less than 1 minute
         if total_minutes == 0:
-            return "just now"
+            return _JUST_NOW
 
         # Decompose into d/h/m
         days, hours, minutes = self._decompose_minutes(total_minutes)
@@ -293,7 +296,7 @@ class GitModule(BaseModule):
             parts.append(f"{hours}h")
         if minutes > 0:
             parts.append(f"{minutes}m")
-        return " ".join(parts) if parts else "just now"
+        return " ".join(parts) if parts else _JUST_NOW
 
     def _format_relative(self, days: int, hours: int, minutes: int) -> str:
         """Format time as relative string (e.g., '1 day 2 hours ago')."""
@@ -304,7 +307,7 @@ class GitModule(BaseModule):
             parts.append(f"{hours} hour" if hours == 1 else f"{hours} hours")
         if minutes > 0:
             parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
-        return " ".join(parts) + " ago" if parts else "just now"
+        return " ".join(parts) + " ago" if parts else _JUST_NOW
 
     def _get_location(self) -> dict[str, str | None] | None:
         """Get project, worktree, and subfolder info.
