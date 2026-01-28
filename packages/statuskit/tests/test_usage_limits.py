@@ -21,7 +21,7 @@ from statuskit.modules.usage_limits import (
     parse_api_response,
 )
 
-from tests.factories.usage_limits import make_api_response
+from tests.factories.usage_limits import make_api_response, make_api_response_with_null_reset
 
 
 class TestUsageLimit:
@@ -34,6 +34,13 @@ class TestUsageLimit:
 
         assert limit.utilization == 45.0
         assert limit.resets_at == reset_time
+
+    def test_create_usage_limit_with_null_resets_at(self):
+        """UsageLimit allows None for resets_at (not yet used scenario)."""
+        limit = UsageLimit(utilization=0.0, resets_at=None)
+
+        assert limit.utilization == 0.0
+        assert limit.resets_at is None
 
 
 class TestUsageData:
@@ -110,6 +117,44 @@ class TestParseApiResponse:
         after = datetime.now(UTC)
 
         assert before <= data.fetched_at <= after
+
+    def test_parse_response_with_null_resets_at(self):
+        """Parse response where resets_at is null (not yet used)."""
+        response = make_api_response_with_null_reset(sonnet_util=0.0)
+        data = parse_api_response(response)
+
+        assert data.session is not None
+        assert data.session.resets_at is not None
+        assert data.weekly is not None
+        assert data.weekly.resets_at is not None
+        # Sonnet has utilization but null resets_at
+        assert data.sonnet is not None
+        assert data.sonnet.utilization == 0.0
+        assert data.sonnet.resets_at is None
+
+    def test_parse_response_with_null_resets_at_nonzero_utilization(self):
+        """Parse response where resets_at is null but utilization is non-zero (API issue)."""
+        response = make_api_response_with_null_reset(sonnet_util=45.0)
+        data = parse_api_response(response)
+
+        # Should still parse correctly even with non-zero utilization and null reset
+        assert data.sonnet is not None
+        assert data.sonnet.utilization == 45.0
+        assert data.sonnet.resets_at is None
+
+    def test_parse_response_with_null_utilization(self):
+        """Parse response where utilization is null (limit not available)."""
+        response = {
+            "five_hour": {"utilization": 45.0, "resets_at": "2026-01-27T18:00:00+00:00"},
+            "seven_day": {"utilization": 32.0, "resets_at": "2026-01-30T17:00:00+00:00"},
+            "seven_day_sonnet": {"utilization": None, "resets_at": None},
+        }
+        data = parse_api_response(response)
+
+        # Sonnet should be None since utilization is None
+        assert data.session is not None
+        assert data.weekly is not None
+        assert data.sonnet is None
 
 
 class TestCalculateColor:
@@ -372,6 +417,50 @@ class TestUsageCache:
                 # Verify atomic rename was called
                 mock_replace.assert_called_once()
 
+    def test_save_and_load_with_null_resets_at(self, tmp_path):
+        """Cache saves and loads data with null resets_at."""
+        cache = UsageCache(cache_dir=tmp_path)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=UsageLimit(32.0, datetime.now(UTC)),
+            sonnet=UsageLimit(0.0, None),  # Not yet used - null resets_at
+            fetched_at=datetime.now(UTC),
+        )
+
+        cache.save(data)
+        loaded = cache.load()
+
+        assert loaded is not None
+        assert loaded.session is not None
+        assert loaded.session.resets_at is not None
+        assert loaded.weekly is not None
+        assert loaded.sonnet is not None
+        assert loaded.sonnet.utilization == 0.0
+        assert loaded.sonnet.resets_at is None
+
+    def test_load_cached_data_with_null_resets_at(self, tmp_path):
+        """Cache loads correctly when cached file has null resets_at."""
+        cache = UsageCache(cache_dir=tmp_path)
+        cache_file = tmp_path / "usage_limits.json"
+
+        # Manually create cache file with null resets_at
+        cache_data = {
+            "data": {
+                "session": {"utilization": 45.0, "resets_at": "2026-01-27T18:00:00+00:00"},
+                "weekly": {"utilization": 32.0, "resets_at": "2026-01-30T17:00:00+00:00"},
+                "sonnet": {"utilization": 0.0, "resets_at": None},
+            },
+            "fetched_at": "2026-01-27T12:00:00+00:00",
+        }
+        cache_file.write_text(json.dumps(cache_data))
+
+        loaded = cache.load()
+
+        assert loaded is not None
+        assert loaded.sonnet is not None
+        assert loaded.sonnet.utilization == 0.0
+        assert loaded.sonnet.resets_at is None
+
 
 class TestUsageLimitsModule:
     """Tests for UsageLimitsModule rendering."""
@@ -453,6 +542,72 @@ class TestUsageLimitsModule:
             assert output is not None
             assert "[" in output  # Progress bar brackets
             assert "]" in output
+
+    def test_render_multiline_with_null_resets_at(self, make_render_context, minimal_input_data, tmp_path):
+        """Renders multiline format with null resets_at (shows dim color and dash)."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"show_sonnet": True}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                sonnet=UsageLimit(0.0, None),  # Not yet used
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert "Sonnet:" in output
+            assert "0%" in output
+            assert "(—)" in output  # Dash placeholder for missing reset time
+
+    def test_render_single_line_with_null_resets_at(self, make_render_context, minimal_input_data, tmp_path):
+        """Renders single-line format with null resets_at."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"multiline": False, "show_sonnet": True}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                sonnet=UsageLimit(0.0, None),  # Not yet used
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert output.count("\n") == 0  # Single line
+            assert "Sonnet" in output
+            assert "0%" in output
+            assert "(—)" in output
+
+    def test_render_with_nonzero_utilization_and_null_resets_at(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """Renders correctly when utilization is non-zero but resets_at is null (API issue)."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {"show_sonnet": True}
+
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                weekly=UsageLimit(32.0, datetime.now(UTC) + timedelta(days=3)),
+                sonnet=UsageLimit(45.0, None),  # API issue - has utilization but no reset
+                fetched_at=datetime.now(UTC),
+            )
+
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+
+            assert output is not None
+            assert "Sonnet:" in output
+            assert "45%" in output
+            assert "(—)" in output
 
 
 class TestUsageLimitsIntegration:
