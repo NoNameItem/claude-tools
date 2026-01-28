@@ -480,16 +480,21 @@ class UsageLimitsModule(BaseModule):
             color = None  # Will use attrs=["dark"]
             time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
         else:
+            # Normalize naive datetime to UTC to avoid TypeError on subtraction
+            resets_at = limit.resets_at
+            if resets_at.tzinfo is None:
+                resets_at = resets_at.replace(tzinfo=UTC)
+
             # Normal case: color based on utilization vs time
             now = datetime.now(UTC)
-            remaining = max(0, (limit.resets_at - now).total_seconds() / 3600)
+            remaining = max(0, (resets_at - now).total_seconds() / 3600)
             color = calculate_color(limit.utilization, remaining, window)
             time_str = ""
             if self.show_reset_time:
                 if time_fmt == "remaining":
                     time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
                 else:
-                    time_str = colored(f" ({format_reset_at(limit.resets_at)})", attrs=["dark"])
+                    time_str = colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
 
         # Format utilization with appropriate color
         if color is None:
