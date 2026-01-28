@@ -6,17 +6,21 @@ from pathlib import Path
 
 from termcolor import colored
 
+from statuskit.core.constants import CLAUDE_DIR, CONFIG_FILENAME
+
 # Kept for backward compatibility in tests
-CONFIG_PATH = Path.home() / ".claude" / "statuskit.toml"
+CONFIG_PATH = Path.home() / CLAUDE_DIR / CONFIG_FILENAME
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "statuskit"
+
+CONFIG_LOCAL_FILENAME = CONFIG_FILENAME.replace(".toml", ".local.toml")
 
 
 def _get_config_paths() -> list[Path]:
     """Get config paths in priority order (highest first)."""
     return [
-        Path(".claude") / "statuskit.local.toml",  # Local (highest)
-        Path(".claude") / "statuskit.toml",  # Project
-        Path.home() / ".claude" / "statuskit.toml",  # User (lowest)
+        Path(CLAUDE_DIR) / CONFIG_LOCAL_FILENAME,  # Local (highest)
+        Path(CLAUDE_DIR) / CONFIG_FILENAME,  # Project
+        Path.home() / CLAUDE_DIR / CONFIG_FILENAME,  # User (lowest)
     ]
 
 
