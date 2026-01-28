@@ -1,7 +1,9 @@
 """Tests for usage_limits module."""
 
 import json
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -305,7 +307,7 @@ class TestUsageCache:
 
     def test_save_and_load(self, tmp_path):
         """Cache saves and loads data."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60)
+        cache = UsageCache(cache_dir=tmp_path)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
@@ -320,9 +322,32 @@ class TestUsageCache:
         assert loaded.session is not None
         assert loaded.session.utilization == 45.0
 
-    def test_load_returns_none_when_expired(self, tmp_path):
-        """Cache returns None when TTL expired."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=0)  # 0 TTL = always expired
+    def test_load_returns_data_regardless_of_age(self, tmp_path):
+        """Cache load returns data regardless of age (no TTL)."""
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=30)
+        data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(hours=1),  # Old data
+        )
+
+        cache.save(data)
+        loaded = cache.load()
+
+        assert loaded is not None
+        assert loaded.session is not None
+        assert loaded.session.utilization == 45.0
+
+    def test_load_returns_none_when_no_cache(self, tmp_path):
+        """Cache returns None when file doesn't exist."""
+        cache = UsageCache(cache_dir=tmp_path)
+        loaded = cache.load()
+        assert loaded is None
+
+    def test_save_is_atomic(self, tmp_path):
+        """Save uses atomic write (temp file + rename)."""
+        cache = UsageCache(cache_dir=tmp_path)
         data = UsageData(
             session=UsageLimit(45.0, datetime.now(UTC)),
             weekly=None,
@@ -330,27 +355,22 @@ class TestUsageCache:
             fetched_at=datetime.now(UTC),
         )
 
-        cache.save(data)
-        loaded = cache.load()
+        with patch.object(tempfile, "NamedTemporaryFile") as mock_tmp:
+            # Setup mock temp file
+            mock_file = mock_tmp.return_value.__enter__.return_value
+            mock_file.name = str(tmp_path / "temp_file.tmp")
 
-        assert loaded is None
+            with patch.object(Path, "replace") as mock_replace:
+                cache.save(data)
 
-    def test_load_returns_none_when_no_cache(self, tmp_path):
-        """Cache returns None when file doesn't exist."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60)
-        loaded = cache.load()
-        assert loaded is None
+                # Verify temp file was used
+                mock_tmp.assert_called_once()
+                call_kwargs = mock_tmp.call_args[1]
+                assert call_kwargs["dir"] == tmp_path
+                assert call_kwargs["delete"] is False
 
-    def test_can_fetch_respects_rate_limit(self, tmp_path):
-        """Rate limit prevents fetching too frequently."""
-        cache = UsageCache(cache_dir=tmp_path, ttl=60, rate_limit=30)
-
-        # First fetch allowed
-        assert cache.can_fetch() is True
-        cache.mark_fetched()
-
-        # Second fetch blocked
-        assert cache.can_fetch() is False
+                # Verify atomic rename was called
+                mock_replace.assert_called_once()
 
 
 class TestUsageLimitsModule:
@@ -441,7 +461,7 @@ class TestUsageLimitsIntegration:
     def test_full_flow_with_mock_api(self, make_render_context, minimal_input_data, tmp_path):
         """Full flow: API fetch -> cache -> render."""
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
-        config = {"cache_ttl": 60}
+        config = {}
 
         # Mock token and API
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
@@ -471,3 +491,113 @@ class TestUsageLimitsIntegration:
                 output2 = module.render()
                 mock_fetch.assert_not_called()  # Used cache
                 assert output2 is not None
+
+
+class TestGetUsageDataRateLimited:
+    """Tests for _get_usage_data when rate limited."""
+
+    def test_returns_cached_data_when_rate_limited(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns cached data when rate limited."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
+
+        # Prepare cache with rate limit active
+        cached_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2.5)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+        module.cache.save(cached_data)
+        # fetched_at=now means rate limit is active (< 30 sec passed)
+
+        # _get_usage_data should return cached data
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            result = module._get_usage_data()
+
+        assert result is not None
+        assert result.session is not None
+        assert result.session.utilization == 45.0
+
+    def test_fetches_first_when_allowed(self, make_render_context, minimal_input_data, tmp_path):
+        """Fetches from API first when rate limit allows, even if cache exists."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
+
+        # Prepare old cache (will be overwritten)
+        old_data = UsageData(
+            session=UsageLimit(10.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(minutes=5),  # Old enough to allow fetch
+        )
+        module.cache.save(old_data)
+
+        # Mock API to return new data
+        new_data = UsageData(
+            session=UsageLimit(50.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC),
+        )
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = new_data
+                result = module._get_usage_data()
+
+        # Should return NEW data, not cached
+        assert result is not None
+        assert result.session is not None
+        assert result.session.utilization == 50.0  # New value, not 10.0
+
+    def test_returns_cached_on_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
+        """Returns cached data when API fetch fails."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+        assert module.cache is not None
+
+        # Prepare cache
+        cached_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(minutes=5),  # Old enough to allow fetch
+        )
+        module.cache.save(cached_data)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = None  # API fails
+                result = module._get_usage_data()
+
+        # Should return cached data
+        assert result is not None
+        assert result.session is not None
+        assert result.session.utilization == 45.0
+
+    def test_debug_output_in_render(self, make_render_context, minimal_input_data, tmp_path):
+        """Debug messages appear in render output."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
+        config = {}
+
+        module = UsageLimitsModule(ctx, config)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = None
+            output = module.render()
+
+        # Debug message should be in render output, not stdout
+        assert output is not None
+        assert "[usage_limits] No token" in output

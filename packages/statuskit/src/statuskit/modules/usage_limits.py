@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-import time
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,7 +25,6 @@ KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
 CACHE_FILENAME = "usage_limits.json"
-LOCK_FILENAME = "usage_limits.lock"
 
 
 @dataclass
@@ -218,32 +217,28 @@ def fetch_usage_api(token: str) -> UsageData | None:
 
 
 class UsageCache:
-    """Cache for usage data with TTL and rate limiting."""
+    """Cache for usage data with rate limiting."""
 
     def __init__(
         self,
         cache_dir: Path,
-        ttl: int = 60,
         rate_limit: int = 30,
     ):
         """Initialize cache.
 
         Args:
             cache_dir: Directory for cache files
-            ttl: Time-to-live in seconds
             rate_limit: Minimum seconds between API fetches
         """
         self.cache_dir = cache_dir
-        self.ttl = ttl
         self.rate_limit = rate_limit
         self.cache_file = cache_dir / CACHE_FILENAME
-        self.lock_file = cache_dir / LOCK_FILENAME
 
     def load(self) -> UsageData | None:
-        """Load cached data if valid.
+        """Load cached data.
 
         Returns:
-            UsageData or None if cache invalid/expired
+            UsageData or None if cache doesn't exist or is corrupted
         """
         try:
             if not self.cache_file.exists():
@@ -252,12 +247,6 @@ class UsageCache:
             data = json.loads(self.cache_file.read_text())
             fetched_at = datetime.fromisoformat(data["fetched_at"])
 
-            # Check TTL
-            age = (datetime.now(UTC) - fetched_at).total_seconds()
-            if age > self.ttl:
-                return None
-
-            # Parse cached data
             def parse_limit(d: dict | None) -> UsageLimit | None:
                 if d is None:
                     return None
@@ -276,7 +265,10 @@ class UsageCache:
             return None
 
     def save(self, data: UsageData) -> None:
-        """Save data to cache.
+        """Save data to cache atomically.
+
+        Uses temp file + rename for atomic writes to prevent
+        race conditions with concurrent reads.
 
         Args:
             data: UsageData to cache
@@ -300,29 +292,21 @@ class UsageCache:
                 },
                 "fetched_at": data.fetched_at.isoformat(),
             }
-            self.cache_file.write_text(json.dumps(cache_data))
-        except OSError:
-            pass
 
-    def can_fetch(self) -> bool:
-        """Check if API fetch is allowed (rate limiting).
+            # Atomic write: temp file + rename
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=self.cache_dir,
+                suffix=".tmp",
+                delete=False,
+            ) as f:
+                f.write(json.dumps(cache_data))
+                temp_path = Path(f.name)
 
-        Returns:
-            True if fetch allowed
-        """
-        try:
-            if not self.lock_file.exists():
-                return True
-            last_fetch = float(self.lock_file.read_text())
-            return (time.time() - last_fetch) >= self.rate_limit
-        except (ValueError, OSError):
-            return True
-
-    def mark_fetched(self) -> None:
-        """Mark that an API fetch was performed."""
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            self.lock_file.write_text(str(time.time()))
+            try:
+                temp_path.replace(self.cache_file)
+            except OSError:
+                temp_path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -351,48 +335,73 @@ class UsageLimitsModule(BaseModule):
         self.session_time_format = config.get("session_time_format", "remaining")
         self.weekly_time_format = config.get("weekly_time_format", "reset_at")
         self.sonnet_time_format = config.get("sonnet_time_format", "reset_at")
-        self.cache_ttl = config.get("cache_ttl", 60)
 
         # Initialize cache if cache_dir available
         self.cache = None
         if ctx.cache_dir:
-            self.cache = UsageCache(
-                cache_dir=ctx.cache_dir,
-                ttl=self.cache_ttl,
-            )
+            self.cache = UsageCache(cache_dir=ctx.cache_dir)
 
     def render(self) -> str | None:
         """Render usage limits display."""
         data = self._get_usage_data()
-        if data is None:
-            return None
 
-        if self.multiline:
-            return self._render_multiline(data)
-        return self._render_single_line(data)
+        parts: list[str] = []
+
+        # Main output
+        if data:
+            if self.multiline:
+                parts.append(self._render_multiline(data))
+            else:
+                parts.append(self._render_single_line(data))
+
+        # Debug output (appended to statusline)
+        if self.debug and hasattr(self, "_debug_messages"):
+            parts.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
+
+        return "\n".join(parts) if parts else None
 
     def _get_usage_data(self) -> UsageData | None:
-        """Get usage data from cache or API."""
-        # Try cache first
-        if self.cache:
-            cached = self.cache.load()
-            if cached:
-                return cached
+        """Get usage data using refresh-first pattern.
 
-        # Fetch from API
+        Logic:
+        1. Load existing cache (for fallback)
+        2. If can fetch: try API, save result, return data
+        3. Otherwise: return cached data
+        """
+        self._debug_messages: list[str] = []
+
+        # Load cache for potential fallback
+        cached = self.cache.load() if self.cache else None
+
+        # Check if we can fetch
         token = get_token()
         if not token:
-            return None
+            self._debug_messages.append("No token, using cache")
+            return cached
 
-        if self.cache and not self.cache.can_fetch():
-            # Rate limited, return stale cache or None
-            return self.cache.load()
+        # Check rate limit using cached data (avoids second file read)
+        if cached and self.cache:
+            age = (datetime.now(UTC) - cached.fetched_at).total_seconds()
+            if age < self.cache.rate_limit:
+                self._debug_messages.append("Rate limited, using cache")
+                return cached
 
-        data = fetch_usage_api(token)
-        if self.cache:
-            self.cache.mark_fetched()
-            if data:
-                self.cache.save(data)
+        # Try to fetch fresh data
+        new_data = fetch_usage_api(token)
+
+        if not new_data:
+            self._debug_messages.append("API failed, using cache")
+
+        # Determine what to save and return
+        data = new_data if new_data else cached
+
+        # Save (updates fetched_at even on failure)
+        if self.cache and data:
+            self.cache.save(data)
+
+        if not data:
+            self._debug_messages.append("No data available")
+
         return data
 
     def _render_multiline(self, data: UsageData) -> str:
