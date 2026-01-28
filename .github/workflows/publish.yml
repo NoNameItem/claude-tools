@@ -8,8 +8,24 @@ on:
 permissions:
   contents: read
   id-token: write  # For PyPI Trusted Publisher
+  actions: read    # For fetching failed jobs in notifications
 
 jobs:
+  notify-start:
+    name: Notify Start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: started
+          event-type: release
+          title: ${{ github.event.release.tag_name }}
+          event-url: ${{ github.event.release.html_url }}
+          message: "Publishing..."
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
   resolve:
     name: Resolve publish targets
     runs-on: ubuntu-latest
@@ -190,3 +206,20 @@ jobs:
         env:
           NEEDS_JSON: ${{ toJson(needs) }}
         run: python .github/scripts/publish_summary.py
+
+  notify-finish:
+    name: Notify Finish
+    needs: [resolve, publish-pypi]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: ${{ needs.publish-pypi.result == 'success' && 'success' || 'failure' }}
+          event-type: release
+          title: "${{ needs.resolve.outputs.project-name }} ${{ needs.resolve.outputs.version }}"
+          event-url: ${{ github.event.release.html_url }}
+          message: ${{ needs.publish-pypi.result == 'success' && needs.publish-pypi.outputs.summary-message || 'Publish failed' }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
