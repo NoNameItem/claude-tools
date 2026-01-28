@@ -32,7 +32,7 @@ class UsageLimit:
     """Single usage limit with utilization percentage and reset time."""
 
     utilization: float  # 0-100
-    resets_at: datetime
+    resets_at: datetime | None  # None when limit not yet used or API issue
 
 
 @dataclass
@@ -58,13 +58,12 @@ def parse_api_response(response: dict) -> UsageData:
     def parse_limit(data: dict | None) -> UsageLimit | None:
         if data is None:
             return None
-        try:
-            return UsageLimit(
-                utilization=data["utilization"],
-                resets_at=datetime.fromisoformat(data["resets_at"]),
-            )
-        except (KeyError, ValueError):
+        utilization = data.get("utilization")
+        if utilization is None:
             return None
+        resets_at_str = data.get("resets_at")
+        resets_at = datetime.fromisoformat(resets_at_str) if resets_at_str else None
+        return UsageLimit(utilization=utilization, resets_at=resets_at)
 
     return UsageData(
         session=parse_limit(response.get("five_hour")),
@@ -250,10 +249,12 @@ class UsageCache:
             def parse_limit(d: dict | None) -> UsageLimit | None:
                 if d is None:
                     return None
-                return UsageLimit(
-                    utilization=d["utilization"],
-                    resets_at=datetime.fromisoformat(d["resets_at"]),
-                )
+                utilization = d.get("utilization")
+                if utilization is None:
+                    return None
+                resets_at_str = d.get("resets_at")
+                resets_at = datetime.fromisoformat(resets_at_str) if resets_at_str else None
+                return UsageLimit(utilization=utilization, resets_at=resets_at)
 
             return UsageData(
                 session=parse_limit(data["data"].get("session")),
@@ -281,7 +282,7 @@ class UsageCache:
                     return None
                 return {
                     "utilization": limit.utilization,
-                    "resets_at": limit.resets_at.isoformat(),
+                    "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
             cache_data = {
@@ -448,6 +449,16 @@ class UsageLimitsModule(BaseModule):
 
     def _format_line(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single line for multiline output."""
+        # Handle missing resets_at (not yet used or API issue)
+        if limit.resets_at is None:
+            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
+            bar = ""
+            if self.show_progress_bar:
+                bar = f" {format_progress_bar(limit.utilization, self.bar_width)}"
+            time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
+            label_str = colored(f"{label:8}", attrs=["dark"])
+            return f"{label_str}{bar} {util_str}{time_str}"
+
         now = datetime.now(UTC)
         remaining = (limit.resets_at - now).total_seconds() / 3600
         remaining = max(0, remaining)
@@ -471,6 +482,16 @@ class UsageLimitsModule(BaseModule):
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
+        # Handle missing resets_at (not yet used or API issue)
+        if limit.resets_at is None:
+            util_str = colored(f"{limit.utilization:.0f}%", attrs=["dark"])
+            bar = ""
+            if self.show_progress_bar:
+                bar = f" {format_progress_bar(limit.utilization, self.bar_width // 2)}"
+            time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
+            label_str = colored(label, attrs=["dark"])
+            return f"{label_str}{bar} {util_str}{time_str}"
+
         now = datetime.now(UTC)
         remaining = (limit.resets_at - now).total_seconds() / 3600
         remaining = max(0, remaining)
