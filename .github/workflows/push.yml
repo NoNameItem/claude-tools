@@ -9,12 +9,34 @@ permissions:
   contents: read
   checks: write
   pull-requests: write
+  actions: read  # For fetching failed jobs in notifications
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  notify-start:
+    name: Notify Start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: commit-info
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "message=${MSG:0:50}" >> "$GITHUB_OUTPUT"
+          echo "short-sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: started
+          event-type: push
+          title: "Push ${{ steps.commit-info.outputs.short-sha }}: ${{ steps.commit-info.outputs.message }}"
+          event-url: ${{ github.event.head_commit.url }}
+          message: "Checks started"
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
   detect:
     uses: ./.github/workflows/_reusable-detect.yml
     with:
@@ -84,3 +106,29 @@ jobs:
     with:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
+
+  notify-finish:
+    name: Notify Finish
+    needs: [validate-commits, python-ci, claude-code-plugin-ci]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: commit-info
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          echo "message=${MSG:0:50}" >> "$GITHUB_OUTPUT"
+          echo "short-sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+      - uses: ./.github/actions/telegram-notify
+        with:
+          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || (contains(needs.*.result, 'cancelled') && 'cancelled') || 'success' }}
+          event-type: push
+          title: "Push ${{ steps.commit-info.outputs.short-sha }}: ${{ steps.commit-info.outputs.message }}"
+          event-url: ${{ github.event.head_commit.url }}
+          message: ${{ contains(needs.*.result, 'failure') && 'Finished with errors:' || 'All checks passed' }}
+          collect-failed-jobs: ${{ contains(needs.*.result, 'failure') }}
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
