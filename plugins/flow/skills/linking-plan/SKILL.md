@@ -20,7 +20,8 @@ This is a SIMPLE task. Find plan document, save link to task description. Done.
 | 1. Find Task | Get in_progress leaf task | Ask if multiple |
 | 2. Find Plan | Newest plan in docs/plans/ | Recent file |
 | 3. **Save Link** | Add `Plan: path` to description | **PRIMARY GOAL** |
-| 4. Done | Verify link saved | That's it |
+| 4. Sync | `bd sync` | Persist to git |
+| 5. Done | Verify link saved | That's it |
 
 **Total actions:** 1 (save link)
 **Total scope:** Save Plan link only
@@ -93,11 +94,20 @@ bd update {task-id} --description="{current-description}\n\nPlan: docs/plans/{pl
 **If Plan link already exists:**
 Ask: "Task already has Plan link: {old-link}. Update to {new-link}? (yes/no)"
 
-### 4. Done
+### 4. Sync Changes
+
+```bash
+bd sync
+```
+
+Persist the plan link to git.
+
+### 5. Done
 
 Verify:
 - [ ] Plan link in description?
 - [ ] Design link still there (if was there)?
+- [ ] bd sync completed?
 - [ ] Did nothing else?
 
 If all checked: Done.

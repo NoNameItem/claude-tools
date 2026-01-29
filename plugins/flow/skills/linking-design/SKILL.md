@@ -23,6 +23,7 @@ This skill handles the post-design workflow: linking design documents, extractin
 | 6. Merge | Check existing subtasks | Skip duplicates |
 | 7. Create | Only new subtasks | After confirmation |
 | 8. Link | Save design path | To description |
+| 9. Sync | `bd sync` | Persist all changes |
 
 **Scope:** This skill ONLY handles design linking and subtask creation. Does NOT create branches, commit files, or update statuses - those are separate workflows.
 
@@ -195,6 +196,14 @@ bd update {parent-id} --description="{existing-description}\n\nDesign: docs/plan
 **If design link already exists:**
 Ask: "Task already has design link: {old-link}. Update to new design {new-link}? (yes/no)"
 
+### 9. Sync Changes
+
+```bash
+bd sync
+```
+
+Persist all created subtasks and design link to git.
+
 ## Scope Boundaries
 
 ### This Skill DOES:
@@ -206,6 +215,7 @@ Ask: "Task already has design link: {old-link}. Update to new design {new-link}?
 ✅ Check existing subtasks (merge)
 ✅ Create new subtasks only
 ✅ Link design path to description
+✅ Sync changes to git
 
 ### This Skill Does NOT:
 ❌ Create git branches (use `flow:start`)
