@@ -1,7 +1,11 @@
 {
   "name": "flow",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Automated beads workflow commands for Claude Code",
   "repository": "https://github.com/NoNameItem/claude-tools",
-  "keywords": ["beads", "workflow", "task-management"]
+  "keywords": [
+    "beads",
+    "workflow",
+    "task-management"
+  ]
 }
