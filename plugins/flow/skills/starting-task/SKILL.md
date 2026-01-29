@@ -70,6 +70,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 | 6. Ask | RECOMMEND or NEUTRAL | Tone matters |
 | 6.5. Worktree | Ask: here OR worktree | Parallel work option |
 | 7. Update | `bd update` | Only after confirmation |
+| 7.1. Sync | `bd sync` | Persist status change |
 | 8. Create | `git checkout -b` | If requested (skip if worktree) |
 
 **Branch Tone Guide:**
@@ -363,6 +364,14 @@ Or if user is claiming:
 ```bash
 bd update <task-id> --claim
 ```
+
+### 7.1. Sync Changes
+
+```bash
+bd sync
+```
+
+Persist the status change to git immediately.
 
 ### 8. Create or Checkout Branch (if requested)
 
