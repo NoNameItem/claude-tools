@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1](https://github.com/NoNameItem/claude-tools/compare/flow-1.5.0...flow-1.5.1) (2026-01-29)
+
+
+### Bug Fixes
+
+* **flow:** add subtask selection to flow:start ([#49](https://github.com/NoNameItem/claude-tools/issues/49)) ([7488f1d](https://github.com/NoNameItem/claude-tools/commit/7488f1d9f93eb29c04e6936c44af55a28175caed))
+
 ## [1.5.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.4.1...flow-1.5.0) (2026-01-29)
 
 
