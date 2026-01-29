@@ -37,8 +37,17 @@ This skill guides starting work on beads tasks through explicit consultation ste
 
 **Step 1 - Run the tree builder script:**
 ```bash
+# Without argument — full tree
 bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+
+# With task ID argument — subtree rooted at that task
+bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
 ```
+
+**If a task ID argument was provided** (e.g., user invoked `/flow:start 5dl`), pass it with `--root`. The script will:
+- Find the task by exact ID or suffix match (e.g., `5dl` matches `claude-tools-5dl`)
+- Show only its subtree with the found task as root `1.`
+- If not found, show a warning and fall back to the full tree
 
 The script outputs a properly formatted hierarchical tree. Example output:
 ```
@@ -52,6 +61,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 - `-s "term"` — filter by search term
 - `-n 10` — limit to first N root tasks
 - `--collapse` — show only roots with child count `[+N]`
+- `--root <id>` — show subtree rooted at task (exact ID or suffix match)
 
 **For task selection:**
 - ✅ Use plain text output (allows user to type `1.2` or `1.1.1`)
@@ -62,7 +72,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
-| 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` | Script builds tree |
+| 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
@@ -99,8 +109,14 @@ pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=fal
 
 **Run the tree builder script:**
 ```bash
+# Without argument — full tree
 bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+
+# With task ID argument (from /flow:start <id>) — subtree
+bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
 ```
+
+**If a task ID argument was provided**, always use `--root`. The script finds the task by exact ID or suffix (e.g., `5dl` matches `claude-tools-5dl`). If not found, it shows a warning and the full tree.
 
 The script handles:
 - Parsing JSON and building parent-child relationships
@@ -108,10 +124,12 @@ The script handles:
 - Sorting (in_progress → open → deferred, then by priority)
 - Hierarchical numbering (`1.`, `1.1`, `1.2`)
 - Tree connectors (`├─`, `└─`)
+- Subtree extraction with `--root` (found task becomes root `1.`)
 
 **Script options:**
 - `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py -s "search"` — filter by term
 - `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --collapse` — show roots only with `[+N]`
+- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <id>` — subtree rooted at task
 
 **If script shows no tasks:**
 ```
@@ -140,6 +158,10 @@ User can select by:
 - **Create new:** `new` or `create`
 
 Map selection to task ID and proceed.
+
+**After selection, check for open children:**
+- If selected task **has open children** → re-run script with `--root <selected-task-id>` to show subtree, let user pick again
+- If selected task **has no open children** → proceed to Step 3 (Show Task Description)
 
 ### 3. Show Task Description FIRST
 

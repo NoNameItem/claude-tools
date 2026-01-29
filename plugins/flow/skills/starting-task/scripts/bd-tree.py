@@ -7,6 +7,7 @@ Usage:
     bd graph --all --json | python3 bd-tree.py -s "search term"
     bd graph --all --json | python3 bd-tree.py -n 10
     bd graph --all --json | python3 bd-tree.py --collapse
+    bd graph --all --json | python3 bd-tree.py --root 5dl
 """
 
 import argparse
@@ -144,6 +145,26 @@ def collect_matching_ids(tasks: dict[str, Task], search: str) -> set[str]:
     return matching
 
 
+def find_task_by_id(tasks: dict[str, Task], task_id: str) -> Task | None:
+    """Find a task by exact ID or suffix match.
+
+    Exact match is tried first. If not found, looks for a key ending with
+    ``-{task_id}`` (dash-prefixed suffix) to avoid partial matches like
+    'a5dl' when searching for '5dl'.
+    """
+    # Exact match
+    if task_id in tasks:
+        return tasks[task_id]
+
+    # Suffix match (must be preceded by dash)
+    suffix = f"-{task_id}"
+    for key, task in tasks.items():
+        if key.endswith(suffix):
+            return task
+
+    return None
+
+
 def format_task_line(task: Task, prefix: str, number: str, is_root: bool = False) -> str:
     """Format a single task line."""
     type_letter = TYPE_LETTERS.get(task.issue_type, "T")
@@ -160,7 +181,7 @@ def format_task_line(task: Task, prefix: str, number: str, is_root: bool = False
     return line
 
 
-def print_tree(  # noqa: PLR0913
+def print_tree(
     task: Task,
     prefix: str = "",
     connector: str = "",
@@ -225,8 +246,28 @@ def build_tree(
     search: str | None = None,
     limit: int | None = None,
     collapse: bool = False,
+    root_id: str | None = None,
 ) -> list[str]:
     """Build the full tree output."""
+    # Handle --root: show only the subtree rooted at the given task
+    root_not_found_warning: list[str] = []
+    if root_id is not None:
+        found = find_task_by_id(tasks, root_id)
+        if found is not None:
+            return print_tree(
+                found,
+                prefix="",
+                number="1",
+                is_last=True,
+                is_root=True,
+                collapse=collapse,
+            )
+        # Task not found — fall through to full tree with warning
+        root_not_found_warning = [
+            f'Task "{root_id}" not found. Showing full tree.',
+            "",
+        ]
+
     # Find root tasks (no parent)
     roots = [t for t in tasks.values() if t.parent_id is None]
     roots = sort_tasks(roots)
@@ -267,6 +308,10 @@ def build_tree(
         header = [f'Search "{search}" found no tasks.', "", "All available tasks:", ""]
         lines = header + lines
 
+    # Prepend root-not-found warning
+    if root_not_found_warning and lines:
+        lines = root_not_found_warning + lines
+
     return lines
 
 
@@ -275,6 +320,7 @@ def main() -> None:
     parser.add_argument("-s", "--search", help="Filter tasks by search term")
     parser.add_argument("-n", "--limit", type=int, help="Limit number of root tasks")
     parser.add_argument("--collapse", action="store_true", help="Collapse children, show count")
+    parser.add_argument("--root", help="Show subtree rooted at task ID (exact or suffix match)")
     args = parser.parse_args()
 
     # Read JSON from stdin
@@ -300,6 +346,7 @@ def main() -> None:
         search=args.search,
         limit=args.limit,
         collapse=args.collapse,
+        root_id=args.root,
     )
 
     if not lines:
