@@ -23,8 +23,8 @@ This is a SIMPLE task. Find plan document, save link to task description. Done.
 | 4. Sync | `bd sync` | Persist to git |
 | 5. Done | Verify link saved | That's it |
 
-**Total actions:** 1 (save link)
-**Total scope:** Save Plan link only
+**Total actions:** 2 (save link + sync)
+**Total scope:** Save Plan link + sync
 
 ## THE PRIMARY TASK
 
@@ -114,11 +114,12 @@ If all checked: Done.
 
 ## Scope Boundaries - READ THIS CAREFULLY
 
-### This Skill DOES (4 things total):
+### This Skill DOES (5 things total):
 ✅ Find in_progress leaf task
 ✅ Find newest plan document
 ✅ **Save Plan link to task description**
 ✅ Preserve existing Design link
+✅ Sync changes to git
 
 ### This Skill Does NOT (Long list - READ IT):
 ❌ Create todo lists (use TodoWrite separately if needed)
@@ -295,7 +296,8 @@ Both links preserved ✓
 1. Find task
 2. Find plan
 3. Save link
-4. Done
+4. Sync
+5. Done
 
 Don't add "helpful extras". Don't create todos. Don't commit files. Don't parse content.
 

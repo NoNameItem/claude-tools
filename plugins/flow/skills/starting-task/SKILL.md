@@ -367,6 +367,8 @@ bd update <task-id> --claim
 
 ### 7.1. Sync Changes
 
+**Run only if `bd update` or `bd claim` was executed in Step 7** (skip if task was already in_progress).
+
 ```bash
 bd sync
 ```
