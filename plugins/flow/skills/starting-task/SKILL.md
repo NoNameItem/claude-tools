@@ -81,6 +81,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 | 6.5. Worktree | Ask: here OR worktree | Parallel work option |
 | 7. Update | `bd update` | Only after confirmation |
 | 7.1. Sync | `bd sync` | Persist status change |
+| 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` | If requested (skip if worktree) |
 
 **Branch Tone Guide:**
@@ -397,6 +398,44 @@ bd sync
 
 Persist the status change to git immediately.
 
+### 7.2. Initialize Project Environment (worktree only)
+
+**Skip this step if user chose regular checkout (Option 1 in Step 6.5).**
+
+After creating a worktree, the new working directory has no installed dependencies. Detect the project type and offer to run initialization.
+
+**Detection logic:**
+
+1. **Read project docs** — check `CLAUDE.md` and/or `README.md` for installation/setup instructions. Docs take priority over guessing.
+2. **Inspect config files** — look at the worktree root for typical files (`pyproject.toml`, `package.json`, `docker-compose.yml`, `Gemfile`, `Cargo.toml`, etc.)
+3. **Decide on commands** — use what docs say. If `package.json` exists but docs say `pnpm install`, propose `pnpm install`, not `npm install`. Same for Docker projects — if docs say `docker compose up -d`, propose that.
+4. **If ambiguous** — use best judgment; confirmation step protects against mistakes
+
+**If project type recognized**, ask for confirmation:
+
+```
+Обнаружен Python-проект (pyproject.toml). Предлагаю выполнить инициализацию:
+  → uv sync
+
+Выполнить? (да/нет)
+```
+
+Multiple project types:
+
+```
+Обнаружены конфигурации проектов:
+  → uv sync (pyproject.toml)
+  → npm install (package.json)
+
+Выполнить? (да/нет)
+```
+
+**If nothing recognized** — skip silently, no question asked.
+
+**If user confirms** — run the commands. If initialization fails, show the error and continue. The task is already claimed, branch is created — init failure does not block work.
+
+**If user declines** — skip and continue.
+
 ### 8. Create or Checkout Branch (if requested)
 
 **If user chose existing branch:**
@@ -451,6 +490,12 @@ If you're thinking any of these, STOP and follow the workflow:
 - "User said yes to branch, going straight to checkout"
 - "Already in worktree, I'll create nested worktree"
 
+**Init violations:**
+- "I'll run uv sync without asking" → Always confirm first
+- "No need to check docs, I know the project type" → Docs take priority
+- "Init failed, I should stop the workflow" → Show error, continue
+- "Step 7.2 applies to regular checkout too" → Worktree only
+
 **All of these mean: Go back to CRITICAL section. Follow exact process.**
 
 ## Common Rationalizations
@@ -472,6 +517,10 @@ If you're thinking any of these, STOP and follow the workflow:
 | "User didn't ask for worktree" | Step 6.5 OFFERS the option. User doesn't need to ask first. |
 | "User said yes to branch, proceed to checkout" | Stop at 6.5. Offer worktree option BEFORE checkout. |
 | "I'll create worktree inside worktree" | Never nest worktrees. Check IN_WORKTREE first. |
+| "I'll run init without asking" | Always confirm. User might not want it now. |
+| "I know the project type, skip docs" | Docs take priority. `package.json` could be npm, pnpm, yarn, or bun. |
+| "Init failed, abort workflow" | Show error, continue. Init failure is non-blocking. |
+| "Step 7.2 for regular checkout too" | No. Regular checkout already has deps installed. Worktree only. |
 
 ## Examples
 
