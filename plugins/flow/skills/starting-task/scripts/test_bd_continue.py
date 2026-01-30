@@ -7,6 +7,9 @@ from pathlib import Path
 
 # Import bd-continue.py as module (hyphenated filename)
 _spec = importlib.util.spec_from_file_location("bd_continue", Path(__file__).parent / "bd-continue.py")
+if _spec is None or _spec.loader is None:
+    msg = "Unable to load bd-continue.py for tests"
+    raise ImportError(msg)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 

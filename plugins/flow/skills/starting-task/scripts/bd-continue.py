@@ -87,15 +87,16 @@ def format_task_line(task: Task) -> str:
     return f"{task.id}|{task.issue_type}|{task.title}|P{task.priority}|{label}"
 
 
-def get_git_user() -> str:
-    """Get current git user.name."""
+def get_git_user() -> str | None:
+    """Get current git user.name. Returns None if unavailable."""
     try:
-        return subprocess.check_output(
+        name = subprocess.check_output(
             ["git", "config", "user.name"],
             text=True,
         ).strip()
-    except subprocess.CalledProcessError:
-        return ""
+        return name or None
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
 
 
 def main() -> None:
