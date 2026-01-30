@@ -93,6 +93,7 @@ quote-style = "double"
     "SLF001",   # private member access
     "PLC0415",  # late imports - common test isolation pattern
 ]
+"plugins/**/scripts/*.py" = ["S603", "S607"]  # CLI scripts calling git/bd
 ".github/scripts/*.py" = ["PLC0415", "S603"]  # Late imports and subprocess security warnings
 "packages/statuskit/src/statuskit/__init__.py" = ["PLC0415"]  # Lazy imports for faster CLI startup
 
