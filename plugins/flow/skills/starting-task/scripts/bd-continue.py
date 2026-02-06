@@ -9,7 +9,7 @@ Usage:
     bd graph --all --json | python3 bd-continue.py --all
 
 Output (one task per line, pipe-delimited):
-    task-id|issue_type|title|priority|first_label
+    task-id|issue_type|title|P<priority>|first_label
 """
 
 import argparse
