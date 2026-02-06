@@ -78,13 +78,18 @@ def find_leaf_in_progress(tasks: dict[str, Task], *, owner: str | None) -> list[
         if not has_in_progress_child:
             result.append(task)
 
-    return sorted(result, key=lambda t: t.priority)
+    return sorted(result, key=lambda t: (t.priority, t.id))
+
+
+def _sanitize(value: str) -> str:
+    """Escape characters that break pipe-delimited output."""
+    return value.replace("|", "\\|").replace("\n", " ").replace("\r", "")
 
 
 def format_task_line(task: Task) -> str:
     """Format task as pipe-delimited line."""
     label = task.labels[0] if task.labels else ""
-    return f"{task.id}|{task.issue_type}|{task.title}|P{task.priority}|{label}"
+    return f"{task.id}|{task.issue_type}|{_sanitize(task.title)}|P{task.priority}|{_sanitize(label)}"
 
 
 def get_git_user() -> str | None:
