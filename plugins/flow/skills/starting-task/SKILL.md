@@ -83,6 +83,7 @@ The script outputs a properly formatted hierarchical tree. Example output:
 | 7.1. Sync | `bd sync` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` | If requested (skip if worktree) |
+| 8.1. Git Info | `bd update` + `bd sync` | Save branch name for flow:continue |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -402,39 +403,15 @@ Persist the status change to git immediately.
 
 **Skip this step if user chose regular checkout (Option 1 in Step 6.5).**
 
-After creating a worktree, the new working directory has no installed dependencies. Detect the project type and offer to run initialization.
+After creating a worktree, invoke the `flow:init-worktree` skill using the Skill tool.
 
-**Detection logic:**
+This skill will:
+1. Read CLAUDE.md/README.md for setup instructions
+2. Detect project type from config files
+3. Propose initialization commands with confirmation
+4. Run commands if user confirms
 
-1. **Read project docs** — check `CLAUDE.md` and/or `README.md` for installation/setup instructions. Docs take priority over guessing.
-2. **Inspect config files** — look at the worktree root for typical files (`pyproject.toml`, `package.json`, `docker-compose.yml`, `Gemfile`, `Cargo.toml`, etc.)
-3. **Decide on commands** — use what docs say. If `package.json` exists but docs say `pnpm install`, propose `pnpm install`, not `npm install`. Same for Docker projects — if docs say `docker compose up -d`, propose that.
-4. **If ambiguous** — use best judgment; confirmation step protects against mistakes
-
-**If project type recognized**, ask for confirmation:
-
-```
-Обнаружен Python-проект (pyproject.toml). Предлагаю выполнить инициализацию:
-  → uv sync
-
-Выполнить? (да/нет)
-```
-
-Multiple project types:
-
-```
-Обнаружены конфигурации проектов:
-  → uv sync (pyproject.toml)
-  → npm install (package.json)
-
-Выполнить? (да/нет)
-```
-
-**If nothing recognized** — skip silently, no question asked.
-
-**If user confirms** — run the commands. If initialization fails, show the error and continue. The task is already claimed, branch is created — init failure does not block work.
-
-**If user declines** — skip and continue.
+See `flow:init-worktree` skill for full algorithm.
 
 ### 8. Create or Checkout Branch (if requested)
 
@@ -454,6 +431,41 @@ git checkout -b <prefix><task-id>-<brief-name>
 ```
 
 Follow user's preference from step 6.
+
+### 8.1. Save Branch Info
+
+**After branch is created or checked out**, save the branch name in the task description so `flow:continue` can find it later.
+
+**Read current description:**
+```bash
+bd show <task-id> --json
+```
+
+Extract the `description` field. Then append or update the `Git:` line:
+
+- If description already has a `Git:` line → replace it
+- If no `Git:` line → append to end of description
+
+**Update description:**
+```bash
+bd update <task-id> --description "<full-description-with-git-line>"
+```
+
+The `Git:` line format:
+```
+Git: feature/claude-tools-elf.3-task-selection-optimization
+```
+
+Same pattern as existing `Design:` and `Plan:` links in descriptions.
+
+**Then sync to propagate:**
+```bash
+bd sync
+```
+
+**Skip this step if:**
+- User chose to continue on existing branch without creating a new one (branch was already in the description from a previous `/flow:start`)
+- Check if the branch in the description matches the current branch — if so, no update needed
 
 ## Red Flags - STOP
 
@@ -491,9 +503,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Already in worktree, I'll create nested worktree"
 
 **Init violations:**
-- "I'll run uv sync without asking" → Always confirm first
-- "No need to check docs, I know the project type" → Docs take priority
-- "Init failed, I should stop the workflow" → Show error, continue
+- "I'll run init inline instead of calling the skill" → Always use flow:init-worktree
 - "Step 7.2 applies to regular checkout too" → Worktree only
 
 **All of these mean: Go back to CRITICAL section. Follow exact process.**
@@ -517,9 +527,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "User didn't ask for worktree" | Step 6.5 OFFERS the option. User doesn't need to ask first. |
 | "User said yes to branch, proceed to checkout" | Stop at 6.5. Offer worktree option BEFORE checkout. |
 | "I'll create worktree inside worktree" | Never nest worktrees. Check IN_WORKTREE first. |
-| "I'll run init without asking" | Always confirm. User might not want it now. |
-| "I know the project type, skip docs" | Docs take priority. `package.json` could be npm, pnpm, yarn, or bun. |
-| "Init failed, abort workflow" | Show error, continue. Init failure is non-blocking. |
+| "I'll handle init inline" | Use the flow:init-worktree skill. Don't duplicate logic. |
 | "Step 7.2 for regular checkout too" | No. Regular checkout already has deps installed. Worktree only. |
 
 ## Examples
