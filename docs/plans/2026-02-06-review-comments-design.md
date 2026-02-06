@@ -222,3 +222,42 @@ Processed: 7 comments
   Rejected: 1 (C2 — false positive, code is safe)
   Already fixed: 1 (U3 — outdated)
 ```
+
+## Context Economy
+
+Raw API responses and file contents must not enter the main context. Use subagents to process data and return only
+concise results.
+
+### Phase 2 — Collection subagent (haiku)
+
+A single haiku subagent:
+
+1. Calls `gh api` for inline comments and reviews
+2. Parses responses, builds threads, detects outdated comments
+3. Checks CodeRabbit summary for uncovered items
+4. Returns only the structured table (as shown in Phase 3) plus a JSON map of comment metadata (id, file, lines,
+   thread texts) for later use
+
+The main context receives only the formatted table and compact metadata — not raw API output.
+
+### Phase 4 — Analysis subagents (haiku, parallel)
+
+For each comment (or group of related comments in the same file), launch a haiku subagent that:
+
+1. Reads the file at the relevant line range
+2. Reads the full thread (root comment + replies)
+3. Analyzes the problem
+4. Returns a short verdict:
+   - `agree_obvious` — obvious fix, describe what to change in one line
+   - `agree_unclear` — agrees but multiple approaches, list 2-3 options briefly
+   - `disagree` — argues against with reasoning (2-3 sentences)
+   - `outdated_fixed` — problem already resolved in current code
+
+Independent comments can be analyzed in parallel. The main context receives only verdicts, not file contents.
+
+### Phase 5 — Implementation subagents
+
+Group accepted fixes by file. For each file (or group of related files), a subagent applies changes, runs
+ruff format/check. The main context receives only pass/fail status.
+
+Final lint/test run in the main context to verify everything.
