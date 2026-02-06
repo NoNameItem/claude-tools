@@ -246,7 +246,7 @@ Present grouped verdicts for user approval:
 **Obvious fixes:**
 
 ```
-Obvious fixes (will be applied automatically):
+Obvious fixes (batch apply after confirmation):
 - U1: remove unused import in utils.py
 - C1: add error handling in workflow.yml:15-20
 
@@ -418,6 +418,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Process comments without user confirmation"
 - "I know this fix is right, skip clarification"
 - "Commit all changes in one go regardless of scope"
+- "User already said 'yes' in Phase 3, skip Phase 5 confirmation"
 
 **All of these mean: Follow the workflow. Analyze before acting. User decides.**
 
@@ -435,6 +436,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Group all comments together" | Group by file for applying, but present individually for unclear/disagree. |
 | "CodeRabbit summary is noise" | Summary may contain valid points not in inline comments. Check it. |
 | "I'll auto-reject bot nitpicks" | Bots catch real issues too. Analyze each comment on merit. |
+| "User approved in Phase 3, skip Phase 5 confirm" | Phase 3 = approve processing. Phase 5 = approve specific fixes. Different decisions. |
 
 ## Examples
 
