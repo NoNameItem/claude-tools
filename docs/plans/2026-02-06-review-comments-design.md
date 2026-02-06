@@ -158,6 +158,12 @@ Confirm?
 
 Show context, thread, propose solution options via AskUserQuestion.
 
+### Nitpick comments — higher skepticism
+
+Nitpick comments (stylistic, minor naming, optional suggestions) deserve extra scrutiny. CC should evaluate whether the
+change genuinely improves the code or just adds churn. If the nitpick doesn't improve readability, correctness, or
+maintainability — argue against it rather than blindly accepting.
+
 ### CC disagrees with the comment
 
 Show context, thread, argue why the comment is invalid or irrelevant. Ask via AskUserQuestion:
