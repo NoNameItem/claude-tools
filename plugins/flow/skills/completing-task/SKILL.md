@@ -1,6 +1,6 @@
 ---
 name: completing-task
-description: Use after completing and verifying a task. Checks git branch (feature → suggests finishing-a-development-branch), closes task, recursively checks parents with confirmation, runs bd sync. Handles task completion workflow for beads.
+description: Use after completing and verifying a task. Checks git branch (feature → suggests finishing-a-development-branch), closes task, cleans up implementation plan files, recursively checks parents with confirmation, runs bd sync. Handles task completion workflow for beads.
 ---
 
 # Flow: Done
@@ -9,7 +9,7 @@ description: Use after completing and verifying a task. Checks git branch (featu
 
 **Core principle:** Ask before cascading.
 
-This skill handles task completion: close task, check parents recursively, sync. Always asks before closing parent tasks - even when "obviously" all children are closed.
+This skill handles task completion: close task, clean up plan files, check parents recursively, sync. Always asks before closing parent tasks - even when "obviously" all children are closed.
 
 ## Quick Reference
 
@@ -18,12 +18,13 @@ This skill handles task completion: close task, check parents recursively, sync.
 | 1. **Branch Check** | Validate git branch + PR | Feature + no PR → stop; Feature + PR → ask |
 | 2. Find Task | Get in_progress leaf | Ask if multiple |
 | 3. Close | `bd close {task-id}` | Use bd, not SQL |
-| 4. **Check Parent** | Recursive parent check | With confirmation |
-| 5. **Ask** | Before closing parent | Even if "obvious" |
-| 6. **Sync** | `bd sync` | Always, at end |
-| 7. **Cleanup** | Delete branch/worktree | Only if branch matches task; ask first |
+| 4. **Plan Cleanup** | Find and remove plan file | Ask: delete / archive / keep |
+| 5. **Check Parent** | Recursive parent check | With confirmation |
+| 6. **Ask** | Before closing parent | Even if "obvious" |
+| 7. **Sync** | `bd sync` | Always, at end |
+| 8. **Cleanup** | Delete branch/worktree | Only if branch matches task; ask first |
 
-**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always run bd sync. Offer cleanup after sync.
+**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always clean up plan files. Always run bd sync. Offer cleanup after sync.
 
 ## Workflow
 
@@ -90,7 +91,73 @@ bd close {task-id}
 
 Confirm task closed.
 
-### 4. Check Parent Recursively (with Confirmation)
+### 4. Plan Cleanup
+
+After closing the task, check if an implementation plan file exists and offer to clean it up.
+
+#### 4.1. Find Plan File
+
+**Two sources, check in order:**
+
+**Source A — task description link:**
+```bash
+bd show {task-id}
+```
+Look for `Plan:` line in description. If found, extract the file path.
+
+**Source B — untracked/modified files in `docs/plans/`:**
+
+If no `Plan:` link in description, search for untracked or unstaged plan files:
+```bash
+git ls-files --others --modified -- 'docs/plans/'
+```
+
+Filter results:
+- File name contains "impl" or "plan" (case-insensitive)
+- File name semantically matches the task title (shared keywords)
+
+**If multiple candidates found:** Show the list and ask user which file (or "none").
+
+**If no plan file found (neither source):** Skip to step 5. Do NOT inform — silent skip.
+
+#### 4.2. Ask User: Delete / Archive / Keep
+
+**Always ask. Never auto-delete.**
+
+> Plan file found: `{path}`
+>
+> What to do with it?
+> 1. Delete
+> 2. Archive (move to `docs/archive/`)
+> 3. Keep as is
+
+#### 4.3. Execute User's Choice
+
+**If delete:**
+```bash
+rm {path}
+```
+
+**If archive:**
+```bash
+mkdir -p docs/archive
+mv {path} docs/archive/
+```
+
+**If keep:** Do nothing, proceed to step 5.
+
+#### 4.4. Remove Plan Link from Description
+
+**Only if** task description contained a `Plan:` line AND user chose delete or archive:
+
+Get current description, remove the `Plan:` line, update:
+```bash
+bd update {task-id} --description="{description-without-plan-line}"
+```
+
+**Do NOT commit the file deletion/move.** The branch cleanup in step 8 or the user's next workflow will handle git state.
+
+### 5. Check Parent Recursively (with Confirmation)
 
 After closing task, check if it has a parent:
 
@@ -119,20 +186,20 @@ Count open children.
 **If user says yes:**
 - Close parent with `bd close {parent-id}`
 - Set current task to parent
-- Repeat step 4 (recurse up)
+- Repeat step 5 (recurse up)
 
 **If user says no:**
 - Stop recursion
-- Proceed to step 6
+- Proceed to step 7
 
 **If parent has open children:**
 - Stop recursion (parent cannot be closed yet)
-- Proceed to step 6
+- Proceed to step 7
 
 **If task has no parent:**
-- Proceed to step 6
+- Proceed to step 7
 
-### 5. Repeat Recursion
+### 6. Repeat Recursion
 
 Continue checking grandparents, great-grandparents, etc. until:
 - User says "no" to closing a parent, OR
@@ -141,7 +208,7 @@ Continue checking grandparents, great-grandparents, etc. until:
 
 **Always ask at each level.** Do NOT auto-close parents.
 
-### 6. Run bd sync (MANDATORY)
+### 7. Run bd sync (MANDATORY)
 
 ```bash
 bd sync
@@ -151,11 +218,11 @@ Always run at end, regardless of how many tasks closed.
 
 Confirm sync completed.
 
-### 7. Cleanup Branch and Worktree
+### 8. Cleanup Branch and Worktree
 
 **Non-blocking:** If cleanup fails, the task is already closed and synced. Cleanup failure is not critical.
 
-#### 7.1. Validate current branch matches the task
+#### 8.1. Validate current branch matches the task
 
 ```bash
 CURRENT_BRANCH=$(git branch --show-current)
@@ -163,7 +230,7 @@ CURRENT_BRANCH=$(git branch --show-current)
 
 Check if `$CURRENT_BRANCH` contains the closed task's ID. **If not — skip cleanup silently.** The user ran `flow:done` from an unrelated branch (e.g. master).
 
-#### 7.2. Detect what exists
+#### 8.2. Detect what exists
 
 Gather cleanup targets:
 
@@ -171,7 +238,7 @@ Gather cleanup targets:
 - **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"` — does remote branch exist?
 - Local branch is always present (we're on it).
 
-#### 7.3. Show branch name and ask once
+#### 8.3. Show branch name and ask once
 
 Display the current branch explicitly and list what will be deleted:
 
@@ -188,7 +255,7 @@ Delete branch and associated resources?
 
 Show only items that exist. If no worktree, omit the worktree line. If no remote branch, omit the remote line.
 
-#### 7.4. If yes — execute in order
+#### 8.4. If yes — execute in order
 
 1. **If in worktree:** `cd` to the main repo root (parent of `.worktrees/`)
 2. **Remove worktree:** `git worktree remove <path>` (if in worktree)
@@ -207,7 +274,7 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 - Remote branch already deleted (GitHub auto-delete): Catch the error and continue.
 - Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED.
 
-#### 7.5. If no — skip, done
+#### 8.5. If no — skip, done
 
 No cleanup performed. User can clean up manually later.
 
@@ -217,10 +284,13 @@ No cleanup performed. User can clean up manually later.
 ✅ Check git branch
 ✅ Find in_progress leaf task
 ✅ Close task with bd close
+✅ Find plan file (linked in description OR untracked in `docs/plans/`)
+✅ Ask user: delete / archive / keep plan file
+✅ Remove `Plan:` link from description after delete/archive
 ✅ Check parents recursively
 ✅ Ask before closing each parent
 ✅ Run bd sync at end
-✅ Offer to clean up branch and worktree (Step 7)
+✅ Offer to clean up branch and worktree (Step 8)
 ✅ Delete local branch, remote branch, worktree (after confirmation)
 ✅ Switch to default branch and pull after cleanup
 
@@ -237,7 +307,7 @@ No cleanup performed. User can clean up manually later.
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
 
-**Scope note:** On feature branches without PR, this skill STOPS and refers to finishing-a-development-branch. On feature branches WITH PR, it asks user before proceeding. Cleanup (Step 7) is non-blocking and only applies when the current branch matches the closed task.
+**Scope note:** On feature branches without PR, this skill STOPS and refers to finishing-a-development-branch. On feature branches WITH PR, it asks user before proceeding. Cleanup (Step 8) is non-blocking and only applies when the current branch matches the closed task.
 
 ## Red Flags - STOP
 
@@ -255,8 +325,12 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Skip cleanup, user can do it manually"
 - "Branch doesn't match but I'll clean up anyway"
 - "Force-delete is fine, PR was merged"
+- "Plan cleanup is not part of the workflow"
+- "No Plan: link → no plan to clean up"
+- "Auto-delete the plan, user obviously doesn't need it"
+- "Plan file is outside my scope"
 
-**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Run bd sync. Offer cleanup only if branch matches task.**
+**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Always check for plan files (linked AND unlinked). Run bd sync. Offer cleanup only if branch matches task.**
 
 ## Common Rationalizations
 
@@ -271,7 +345,11 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Feature branch → always block" | Check for PR first. If PR exists, ask user. |
 | "PR exists → auto-proceed" | Still ask user. PR exists ≠ user wants to close here. |
 | "Cleanup is obvious, just delete" | Ask first. User might want to keep the branch. |
-| "Skip cleanup, not my job" | Step 7 is part of the workflow. Offer it. |
+| "Skip cleanup, not my job" | Step 8 is part of the workflow. Offer it. |
+| "Plan cleanup is not part of completing" | Step 4 IS part of the workflow. Plan files are task artifacts. |
+| "No Plan: link → skip plan search" | Always search `docs/plans/` for untracked files too. Plans aren't always linked. |
+| "Auto-delete the plan, it's obvious" | Always ask. User might want to archive or keep for reference. |
+| "Plan file is outside my scope" | Plan files are task artifacts. Cleaning them up IS in scope (Step 4). |
 | "Branch doesn't match, clean up anyway" | Only clean up if branch contains the closed task's ID. |
 | "Force-delete, PR was merged" | Use safe delete (`-d`) first. Only offer `-D` if `-d` fails AND PR is MERGED. |
 
@@ -319,6 +397,102 @@ Agent: [Closes parent]
 - Asked before closing parent
 - Ran bd sync
 - Clear confirmation
+
+### ❌ BAD: Auto-delete plan without asking
+
+```
+User: "flow:done"
+Agent: [Closes task]
+       [Sees Plan: link in description]
+       [Deletes plan file automatically]
+       [Removes Plan: link from description]
+       Done!
+```
+
+**Problems:**
+- Didn't ask user what to do with plan
+- No archive option offered
+- Violated consultation principle
+
+### ❌ BAD: Ignores untracked plan file
+
+```
+User: "flow:done"
+Agent: [Closes task]
+       [No Plan: link in description → skips plan cleanup entirely]
+       [Doesn't check docs/plans/ for untracked files]
+       Done!
+```
+
+**Problem:** Plan file exists as untracked in `docs/plans/` but agent only checked description.
+
+### ✅ GOOD: Plan cleanup with linked plan
+
+```
+User: "flow:done"
+Agent: [Checks branch: master, OK]
+       [Closes task claude-tools-abc]
+
+       Plan file found: `docs/plans/2026-02-06-abc-impl-plan.md`
+
+       What to do with it?
+       1. Delete
+       2. Archive (move to docs/archive/)
+       3. Keep as is
+
+User: 2
+Agent: [Moves to docs/archive/]
+       [Removes Plan: link from description]
+       [Checks parent, has open children]
+       [Runs bd sync]
+
+       ✓ Closed claude-tools-abc
+       ✓ Plan archived to docs/archive/
+       ✓ Synced with remote
+
+       Done.
+```
+
+**Correct because:**
+- Found plan via description link
+- Asked user before acting
+- Offered all three options
+- Updated description after archive
+
+### ✅ GOOD: Plan cleanup with unlinked plan
+
+```
+User: "flow:done"
+Agent: [Checks branch: master, OK]
+       [Closes task claude-tools-xyz "Quota module"]
+       [No Plan: link in description]
+       [Checks docs/plans/ for untracked files]
+       [Finds: quota-module-impl-plan.md (untracked, matches task title)]
+
+       Plan file found: `docs/plans/quota-module-impl-plan.md`
+
+       What to do with it?
+       1. Delete
+       2. Archive (move to docs/archive/)
+       3. Keep as is
+
+User: 1
+Agent: [Deletes file]
+       [Checks parent, has open children]
+       [Runs bd sync]
+
+       ✓ Closed claude-tools-xyz
+       ✓ Plan deleted
+       ✓ Synced with remote
+
+       Done.
+```
+
+**Correct because:**
+- No link in description but still searched docs/plans/
+- Found untracked file matching task title
+- Asked user before deleting
+- No description update needed (wasn't linked)
 
 ### ❌ BAD: Feature branch proceed without checking PR
 
@@ -494,6 +668,28 @@ No in_progress leaf tasks found.
 
 Check task status with:
   bd list --status=in_progress
+```
+
+### Plan File Linked but Already Deleted
+
+```
+Task description has Plan: docs/plans/old-plan.md
+File does not exist on disk.
+
+Plan file referenced in description not found: docs/plans/old-plan.md
+(already deleted or moved)
+
+Removing stale Plan: link from description.
+```
+
+### Multiple Untracked Plan Files Match
+
+```
+Found multiple plan file candidates in docs/plans/:
+1. quota-module-impl-plan.md (untracked)
+2. quota-implementation-plan.md (untracked)
+
+Which file is the implementation plan for this task? (1, 2, or "none")
 ```
 
 ### Deep Hierarchy (3 levels)
