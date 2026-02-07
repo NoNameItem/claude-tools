@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.5.0...flow-1.6.0) (2026-02-07)
+
+
+### Features
+
+* **flow:** add /flow:continue command for fast task return ([#54](https://github.com/NoNameItem/claude-tools/issues/54)) ([a5c09f5](https://github.com/NoNameItem/claude-tools/commit/a5c09f5c6e79792420501c2f3edbdc821c9abd8d))
+* **flow:** add bd sync after task mutations in all flow skills ([#51](https://github.com/NoNameItem/claude-tools/issues/51)) ([5e04ef0](https://github.com/NoNameItem/claude-tools/commit/5e04ef0642252434d82a12e0c71290a2469fe0b8))
+* **flow:** add branch/worktree cleanup to completing-task skill ([#52](https://github.com/NoNameItem/claude-tools/issues/52)) ([2c9a215](https://github.com/NoNameItem/claude-tools/commit/2c9a2151a5529d8f7da00402143fc93452ee44dd))
+* **flow:** add plan cleanup step to completing-task skill ([#56](https://github.com/NoNameItem/claude-tools/issues/56)) ([2a9cb5f](https://github.com/NoNameItem/claude-tools/commit/2a9cb5f920396a868f7081cb718a29dc3d5be2a1))
+* **flow:** add project initialization after worktree creation ([#53](https://github.com/NoNameItem/claude-tools/issues/53)) ([5947e4a](https://github.com/NoNameItem/claude-tools/commit/5947e4a87d7da4e359e967778d35221c91aa915e))
+* **flow:** add review-comments skill ([#58](https://github.com/NoNameItem/claude-tools/issues/58)) ([3d9cf95](https://github.com/NoNameItem/claude-tools/commit/3d9cf9530da56d10604949678534efa791623886))
+* **flow:** add sonar-sync skill ([#57](https://github.com/NoNameItem/claude-tools/issues/57)) ([92f724e](https://github.com/NoNameItem/claude-tools/commit/92f724ebc77ca42e65088b14f8ee9b5a4943ab1f))
+
+
+### Bug Fixes
+
+* **flow:** add subtask selection to flow:start ([#49](https://github.com/NoNameItem/claude-tools/issues/49)) ([7488f1d](https://github.com/NoNameItem/claude-tools/commit/7488f1d9f93eb29c04e6936c44af55a28175caed))
+
 ## [1.5.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.4.1...flow-1.5.0) (2026-01-29)
 
 
