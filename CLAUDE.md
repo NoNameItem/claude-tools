@@ -147,13 +147,13 @@ uv run ty check
 
 **Do not ignore ty warnings.** Warnings like `possibly-missing-attribute` indicate potential None access bugs. Either fix them (add assert for type narrowing) or explicitly justify why they're safe to ignore.
 
-**Running checks via subagent:** Use haiku subagent to filter verbose output:
+**Running checks via subagent:** Use haiku subagent only for tests (verbose output benefits from filtering). Run lint/format/type check directly via Bash — output is short and subagents cause repeated permission prompts.
 
-| Check       | Return format                                                |
+| Check       | How to run                                                   |
 |-------------|--------------------------------------------------------------|
-| Tests       | Pass/fail count. If failures: test name + one-line error     |
-| Lint/Format | Only errors not auto-fixed. If clean: "No issues"            |
-| Type check  | Only type errors and warnings. If clean: "All checks passed" |
+| Tests       | Haiku subagent. Return: pass/fail count + failures only      |
+| Lint/Format | Direct Bash. Output is short, no filtering needed            |
+| Type check  | Direct Bash. Output is short, no filtering needed            |
 
 **If lint error is unclear:** `ruff rule <CODE>` (e.g., `ruff rule E711`)
 

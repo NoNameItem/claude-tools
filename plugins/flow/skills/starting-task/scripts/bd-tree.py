@@ -38,6 +38,20 @@ TYPE_LETTERS = {
     "chore": "C",
 }
 
+TASK_TYPE_EMOJI = {
+    "epic": "📦",
+    "feature": "🚀",
+    "bug": "❌",
+    "task": "📋",
+    "chore": "⚙️",
+}
+
+
+def get_type_emoji(issue_type: str) -> str:
+    """Get emoji for task type, ❔ if unknown."""
+    return TASK_TYPE_EMOJI.get(issue_type.lower(), "❔")
+
+
 STATUS_ORDER = {"in_progress": 0, "open": 1, "deferred": 2}
 VISIBLE_STATUSES = {"open", "in_progress", "deferred"}
 
@@ -97,6 +111,20 @@ def should_show(task: Task, show_blocked: bool = False) -> bool:
     if task.is_blocked and not show_blocked:
         return False
     return task.status in VISIBLE_STATUSES
+
+
+def find_min_priority(tasks: dict[str, Task]) -> int | None:
+    """Find minimum priority among visible tasks. None if no visible tasks."""
+    priorities = [t.priority for t in tasks.values() if should_show(t)]
+    return min(priorities) if priorities else None
+
+
+def collect_subtree_tasks(root: Task) -> dict[str, Task]:
+    """Collect root task and all its descendants into a dict."""
+    result = {root.id: root}
+    for child in root.children:
+        result.update(collect_subtree_tasks(child))
+    return result
 
 
 def has_visible_descendants(task: Task) -> bool:
@@ -165,20 +193,31 @@ def find_task_by_id(tasks: dict[str, Task], task_id: str) -> Task | None:
     return None
 
 
-def format_task_line(task: Task, prefix: str, number: str, is_root: bool = False) -> str:
-    """Format a single task line."""
+def format_task_line(
+    task: Task,
+    prefix: str,
+    number: str,
+    is_root: bool = False,
+    min_priority: int | None = None,
+) -> str:
+    """Format a single task line with emoji and optional bold for min priority."""
     type_letter = TYPE_LETTERS.get(task.issue_type, "T")
+    emoji = get_type_emoji(task.issue_type)
     status = task.status
     priority = f"P{task.priority}"
     labels = " ".join(f"#{lbl}" for lbl in task.labels) if task.labels else ""
 
     # Root items get trailing dot: "1." Children don't: "1.1"
     num_display = f"{number}." if is_root else number
-    line = f"{prefix}{num_display} [{type_letter}] {task.title} ({task.id}) | {priority} · {status}"
+    content = f"{num_display} {emoji} [{type_letter}] {task.title} ({task.id}) | {priority} · {status}"
     if labels:
-        line += f" | {labels}"
+        content += f" | {labels}"
 
-    return line
+    # Bold for tasks with minimum priority (highest urgency)
+    if min_priority is not None and task.priority == min_priority:
+        content = f"**{content}**"
+
+    return f"{prefix}{content}"
 
 
 def print_tree(
@@ -190,6 +229,7 @@ def print_tree(
     is_root: bool = False,
     search_ids: set[str] | None = None,
     collapse: bool = False,
+    min_priority: int | None = None,
 ) -> list[str]:
     """Recursively build tree lines."""
     lines: list[str] = []
@@ -204,7 +244,7 @@ def print_tree(
 
     # Format current task - display prefix includes connector for this line only
     display_prefix = prefix + connector
-    lines.append(format_task_line(task, display_prefix, number, is_root=is_root))
+    lines.append(format_task_line(task, display_prefix, number, is_root=is_root, min_priority=min_priority))
 
     # Handle collapse mode
     visible_children = [c for c in task.children if should_show(c) or has_visible_descendants(c)]
@@ -234,6 +274,7 @@ def print_tree(
             is_last=is_child_last,
             search_ids=search_ids,
             collapse=collapse,
+            min_priority=min_priority,
         )
         if child_lines:
             lines.extend(child_lines)
@@ -261,6 +302,7 @@ def build_tree(
                 is_last=True,
                 is_root=True,
                 collapse=collapse,
+                min_priority=find_min_priority(collect_subtree_tasks(found)),
             )
         # Task not found — fall through to full tree with warning
         root_not_found_warning = [
@@ -285,6 +327,9 @@ def build_tree(
     if limit:
         roots = roots[:limit]
 
+    # Calculate min priority for bold formatting
+    min_priority = find_min_priority(tasks)
+
     # Build output
     lines: list[str] = []
     for i, root in enumerate(roots):
@@ -298,6 +343,7 @@ def build_tree(
             is_root=True,
             search_ids=search_ids,
             collapse=collapse,
+            min_priority=min_priority,
         )
         lines.extend(root_lines)
         if not is_last and root_lines:
