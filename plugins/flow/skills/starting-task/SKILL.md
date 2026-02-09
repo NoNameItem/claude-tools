@@ -151,7 +151,7 @@ The script handles:
 - [ ] I ran the script (not bd ready/list/show directly)
 - [ ] I'm asking for selection with PLAIN TEXT (not AskUserQuestion tool)
 
-**Display the tree output as plain markdown text, NOT in a code block.** Code blocks (`` ```text ... ``` ``) don't render markdown — `**bold**` shows as literal asterisks and emoji lose color. Plain text in Claude Code renders as monospace, so tree connector alignment is preserved.
+**Display the tree output as plain Markdown text, NOT in a code block.** Code blocks (`` ```text ... ``` ``) don't render Markdown — `**bold**` shows as literal asterisks and emoji lose color. Plain text in Claude Code renders as monospace, so tree connector alignment is preserved.
 
 ### 2. Get User's Task Selection
 
