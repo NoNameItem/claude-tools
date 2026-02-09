@@ -49,13 +49,12 @@ bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task
 - Show only its subtree with the found task as root `1.`
 - If not found, show a warning and fall back to the full tree
 
-The script outputs a properly formatted hierarchical tree. Example output:
-```
-1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
-   ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
-   ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
-   └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
-```
+The script outputs a properly formatted hierarchical tree with emoji type indicators and bold formatting for highest-priority tasks. Example output:
+
+**1. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
+├─ 1.1 📋 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
+├─ 1.2 🚀 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
+└─ 1.3 🚀 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
 
 **Script options:**
 - `-s "term"` — filter by search term
@@ -151,6 +150,8 @@ The script handles:
 **✓ Validation Checkpoint:**
 - [ ] I ran the script (not bd ready/list/show directly)
 - [ ] I'm asking for selection with PLAIN TEXT (not AskUserQuestion tool)
+
+**Display the tree output as plain markdown text, NOT in a code block.** Code blocks (`` ```text ... ``` ``) don't render markdown — `**bold**` shows as literal asterisks and emoji lose color. Plain text in Claude Code renders as monospace, so tree connector alignment is preserved.
 
 ### 2. Get User's Task Selection
 
@@ -552,12 +553,12 @@ Agent: I've created branch claude-tools-c7b and marked the task in_progress.
 User: "start the git module task"
 Agent: Доступные задачи:
 
-       1. [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit
-          ├─ 1.1 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
-          ├─ 1.2 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
-          └─ 1.3 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
+       **1. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
+          ├─ 1.1 📋 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
+          ├─ 1.2 🚀 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
+          └─ 1.3 🚀 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
 
-       2. [F] External feature (claude-tools-xyz) | P2 · open
+       2. 🚀 [F] External feature (claude-tools-xyz) | P2 · open
 
        Выберите задачу (по номеру или ID), или введите 'new' для создания новой:
 
