@@ -1,35 +1,50 @@
 ---
 name: linking-design
-description: Use after completing brainstorming/design phase. Links design document to task, parses subtasks, shows preview for approval, implements smart merge with existing subtasks. Handles post-design workflow for beads tasks.
+description: Use after completing brainstorming/design phase. Links design document to task. Simple operation — save the link, nothing else. Suggests /flow:decompose for subtask creation.
 ---
 
 # Flow: After Design
 
 ## Overview
 
-**Core principle:** Preview before creating.
+**Core principle:** Save the link. That's all.
 
-This skill handles the post-design workflow: linking design documents, extracting subtasks, and creating task hierarchy. Always shows what will be created and asks for confirmation - even when structure is clear and user seems in a hurry.
+This is a SIMPLE task. Find design document, save link to task description. Done.
+
+**Do NOT add "helpful extras".** This skill does exactly one thing: save Design link. Nothing more.
+
+**Subtask creation moved to `/flow:decompose`.** If user wants to break task into subtasks, suggest running that command after this one.
 
 ## Quick Reference
 
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Find Task | Get in_progress leaf task | Ask if multiple |
-| 2. Find Design | Newest in docs/plans/ | Heuristic search |
-| 3. Parse | Extract subtasks from design | Multiple formats |
-| 4. **Preview** | Show what will be created | Format + dependencies |
-| 5. **Confirm** | Get explicit approval | Even under pressure |
-| 6. Merge | Check existing subtasks | Skip duplicates |
-| 7. Create | Only new subtasks | After confirmation |
-| 8. Link | Save design path | To description |
-| 9. Sync | `bd sync` | Persist all changes |
+| 2. Find Design | Newest in docs/plans/ | Recent file |
+| 3. **Save Link** | Add `Design: path` to description | **PRIMARY GOAL** |
+| 4. Sync | `bd sync` | Persist to git |
+| 5. Suggest | Offer `/flow:decompose` | If task needs subtasks |
 
-**Scope:** This skill ONLY handles design linking and subtask creation. Does NOT create branches, commit files, or update statuses - those are separate workflows.
+**Total actions:** 2 (save link + sync)
+**Total scope:** Save Design link + sync
+
+## THE PRIMARY TASK
+
+```
++--------------------------------------------------+
+|                                                  |
+|  SAVE THIS TO TASK DESCRIPTION:                  |
+|                                                  |
+|  Design: docs/plans/{design-filename}            |
+|                                                  |
+|  That's the ENTIRE task. Nothing else.           |
+|                                                  |
++--------------------------------------------------+
+```
 
 ## Workflow
 
-Follow these steps **in order**. Do not skip steps.
+Follow these steps **in order**. Do not add steps.
 
 ### 1. Find In-Progress Leaf Task
 
@@ -37,7 +52,7 @@ Follow these steps **in order**. Do not skip steps.
 bd list --status=in_progress
 ```
 
-Filter for leaf tasks (tasks without children or where all children are closed).
+Filter for leaf tasks (no open children).
 
 **If multiple found:** Ask user which task this design is for.
 **If none found:** Suggest running `flow:start` first.
@@ -48,293 +63,148 @@ Filter for leaf tasks (tasks without children or where all children are closed).
 ls -t docs/plans/*.md | head -1
 ```
 
-Look in `docs/plans/` for newest markdown file (by modification time).
+Look for newest markdown file in `docs/plans/`.
 
-**Heuristics for "design" vs other docs:**
-- Recent (within last hour is good signal)
-- Contains sections like "Requirements", "Architecture", "Tasks", "Implementation"
+**Heuristics:**
+- Recent (within last hour)
+- Contains "Requirements", "Architecture", "Design"
 - User just mentioned finishing design
 
-**If multiple candidates:** Show list, let user choose.
+**If multiple candidates:** Ask user which file.
 **If none found:** Ask user for design file path.
 
-### 3. Parse Subtasks from Design
+### 3. Save Design Link to Description
 
-**Heuristically detect multiple formats:**
-- Numbered lists: `1. Do X`, `2. Do Y`
-- Bullet lists: `- Do X`, `* Do Y`
-- Checkboxes: `- [ ] Do X`, `- [x] Do Y`
-- Headers: `## Task: Do X`, `### Do X`
-- Sections: Look for "Implementation", "Tasks", "Subtasks", "Steps"
+**This is THE task. The only action.**
 
-**Extract for each subtask:**
-- Title (required)
-- Description (if multi-line)
-- Priority (inherit from parent if not specified)
-
-**If no subtasks found:**
-Ask: "No clear subtasks found in design. Should I:
-1. Look in a specific section (which one?)
-2. Treat this as atomic task (no subtasks needed)
-3. Let you manually specify subtasks"
-
-### 4. Show Preview (MANDATORY)
-
-**Before creating anything**, display preview:
-
-```
-Found 5 subtasks in design docs/plans/2026-01-16-feature-x.md:
-
-1. {parent-id}.1: Implement input component
-   Description: Create React component for user input, add form validation, handle submission
-   Priority: P3 (inherits from parent)
-
-2. {parent-id}.2: Add data validation
-   Description: Implement validation rules, add error handling, write validation tests
-   Priority: P3
-
-3. {parent-id}.3: Create storage layer
-   Description: Database schema, CRUD operations, migration scripts
-   Priority: P3
-
-4. {parent-id}.4: Write integration tests
-   Description: Test full flow end-to-end, mock external dependencies, cover edge cases
-   Priority: P3
-
-5. {parent-id}.5: Update documentation
-   Description: API docs, user guide, architecture diagram
-   Priority: P3
-
-All subtasks will depend on parent task {parent-id}.
-Design will be linked in task description as: Design: docs/plans/2026-01-16-feature-x.md
-```
-
-**Preview must include:**
-- Count of subtasks
-- Full task IDs
-- Titles and descriptions
-- Priority levels
-- Dependencies
-- Design link that will be added
-
-### 5. Ask for Confirmation (MANDATORY)
-
-**Always ask explicitly:**
-
-> "Should I create these {N} subtasks? (yes/no)"
-
-**Wait for user response.**
-
-If user says no: Ask what they want to adjust.
-If user says yes: Proceed to step 6.
-
-**Do NOT:**
-- Assume yes because "structure is clear"
-- Skip because user said "asap"
-- Create immediately because "being helpful"
-
-### 6. Check Existing Subtasks (Merge Logic)
-
+Get current description:
 ```bash
-bd show {parent-id}
+bd show {task-id}
 ```
 
-Check if parent task already has children.
-
-**If existing subtasks found:**
-
-```
-Checking existing subtasks...
-
-Found 2 existing:
-- {parent-id}.1: Implement input component (exists)
-- {parent-id}.2: Add data validation (exists)
-
-From design (5 total):
-✓ Skip: Implement input component (already exists)
-✓ Skip: Add data validation (already exists)
-+ New: Create storage layer
-+ New: Write integration tests
-+ New: Update documentation
-
-Should I create these 3 NEW subtasks? (yes/no)
-```
-
-**Merge rules:**
-- **Exact match** (title identical) → Skip
-- **Close match** (title similar, >80% match) → Ask user
-- **New** → Include in creation
-
-### 7. Create Subtasks
-
-**Only after confirmation**, create subtasks:
-
+Add Design link:
 ```bash
-bd create --title="Subtask title" --description="..." --priority=P3 --parent={parent-id}
+bd update {task-id} --description="{current-description}\n\nDesign: docs/plans/{design-filename}"
 ```
 
-Create each new subtask in order.
+**IMPORTANT:**
+- Preserve existing content
+- **Preserve existing Plan link** (if present)
+- Add newline before Design link
+- Format: `Design: docs/plans/...`
 
-**Output progress:**
-```
-Creating subtasks...
-✓ Created {parent-id}.3: Create storage layer
-✓ Created {parent-id}.4: Write integration tests
-✓ Created {parent-id}.5: Update documentation
+**If Design link already exists:**
+Ask: "Task already has Design link: {old-link}. Update to {new-link}? (yes/no)"
 
-Created 3 new subtasks under {parent-id}.
-```
-
-### 8. Link Design to Task
-
-Update parent task description with design link:
-
-```bash
-bd update {parent-id} --description="{existing-description}\n\nDesign: docs/plans/{design-filename}"
-```
-
-**If design link already exists:**
-Ask: "Task already has design link: {old-link}. Update to new design {new-link}? (yes/no)"
-
-### 9. Sync Changes
+### 4. Sync Changes
 
 ```bash
 bd sync
 ```
 
-Persist all created subtasks and design link to git.
+Persist the design link to git.
 
-## Scope Boundaries
+### 5. Suggest Decomposition
 
-### This Skill DOES:
-✅ Find in_progress leaf task
-✅ Find newest design document
-✅ Parse subtasks heuristically
-✅ Show preview with details
-✅ Ask for confirmation
-✅ Check existing subtasks (merge)
-✅ Create new subtasks only
-✅ Link design path to description
-✅ Sync changes to git
+After saving the link:
 
-### This Skill Does NOT:
-❌ Create git branches (use `flow:start`)
-❌ Commit design document (separate workflow)
-❌ Update task status (use `flow:start` or manual `bd update`)
-❌ Run tests or builds
-❌ Implement code
-❌ Make coffee
+> "Design linked. Want to decompose this task into subtasks? Run `/flow:decompose`."
 
-**One skill, one job.** Stay in scope.
+**Do NOT start decomposition yourself.** Just suggest the command.
+
+## Scope Boundaries - READ THIS CAREFULLY
+
+### This Skill DOES (5 things total):
+- Find in_progress leaf task
+- Find newest design document
+- **Save Design link to task description**
+- Preserve existing Plan link
+- Sync changes to git
+
+### This Skill Does NOT (Long list - READ IT):
+- Create subtasks (use `/flow:decompose`)
+- Parse design document for subtasks
+- Show subtask previews
+- Commit design file to git (separate workflow)
+- Create branches (use `flow:start`)
+- Update task status (use `flow:start`)
+- Create todo lists
+- Run builds or tests
+- Start implementation
+
+**If user says "also create subtasks":**
+Save Design link first. Then suggest: "Run `/flow:decompose` for subtask creation."
 
 ## Red Flags - STOP
 
-If you're thinking any of these, STOP and follow the workflow:
+If you're thinking any of these, STOP and just save the link:
 
-- "User said asap"
-- "I'll complete the setup"
-- "Structure is clear from design"
-- "No need to show preview"
-- "Confirmation is overhead"
-- "I'll just do it"
-- "I'll create the branch too"
-- "Let me commit the design"
+- "Let me parse the design for subtasks"
+- "I'll create subtasks while I'm here"
+- "User wants to start coding"
+- "Let me set everything up"
+- "I should commit the design file"
+- "This task is too simple"
+- "I'll add extra value"
+- "Being maximally helpful"
 
-**All of these mean: Follow the workflow. Show preview. Ask confirmation. Stay in scope.**
+**All of these mean: Save the link. Nothing else. Done.**
 
 ## Common Rationalizations
 
 | Excuse | Reality |
 |--------|---------|
-| "User wants to start asap" | Preview takes 5 seconds. Fixing wrong subtasks takes 5 minutes. |
-| "I'll complete the setup" | Scope creep. One skill, one job. |
-| "Structure is clear from design" | User might want to adjust. Always show preview. |
-| "No existing subtasks" | Check anyway. Merge logic prevents duplicates. |
-| "Confirmation slows things down" | Creating wrong things is slower than confirming right things. |
-| "This is being helpful" | Assuming isn't helpful - consulting is. |
-| "I'll create the branch too" | Out of scope. Use flow:start for branches. |
+| "User wants subtasks too" | That's `/flow:decompose`. Not this skill. |
+| "Design clearly has subtasks" | Not your job. Save link, suggest decompose. |
+| "Task is too simple" | Simple is good. Do it simply. |
+| "I'll create todos to help" | Out of scope. Save link only. |
+| "Committing design is good practice" | Git workflow is separate. Out of scope. |
+| "Being maximally helpful" | Maximal help = doing THE task, not extras. |
 
 ## Examples
 
-### ❌ BAD: Skip preview and confirmation
+### BAD: Parse subtasks (old behavior)
 
 ```
-User: "I finished design, run after-design please, need to implement asap"
-Agent: [Reads design, creates 5 subtasks immediately]
-       Created 5 subtasks under claude-tools-abc. Also created feature branch.
+User: "I finished the design"
+Agent: Found 5 subtasks in the design:
+       1. claude-tools-abc.1: Implement X
+       ...
+       Create them?
 ```
 
-**Problems:**
-- No preview shown
-- No confirmation requested
-- Out of scope (branch creation)
-- Time pressure bypassed workflow
+**Problem:** Subtask creation is now `/flow:decompose`. This skill only saves the link.
 
-### ✅ GOOD: Always preview and confirm
+### GOOD: Save link, suggest decompose
 
 ```
-User: "I finished design, run after-design please, need to implement asap"
-Agent: Found 5 subtasks in docs/plans/2026-01-16-feature-x.md:
+User: "I finished the design"
+Agent: Saved Design link to task claude-tools-abc:
 
-       1. claude-tools-abc.1: Implement input component
-          Description: React component, form validation, submission handling
-          Priority: P3
+       Design: docs/plans/2026-02-09-feature-design.md
 
-       2. claude-tools-abc.2: Add data validation
-          ...
-
-       [shows all 5 with details]
-
-       Should I create these 5 subtasks? (yes/no)
-
-User: yes
-Agent: Creating subtasks...
-       ✓ Created 5 subtasks
-       ✓ Linked design to task description
-
-       Ready to start implementation! Use flow:start to choose a subtask.
+       Done. Want to decompose into subtasks? Run `/flow:decompose`.
 ```
 
-**Correct because:**
-- Showed full preview
-- Asked for confirmation despite "asap"
-- Stayed in scope (no branch)
-- Guided to next step
-
-### ❌ BAD: Ignore existing subtasks
+### BAD: Do both at once
 
 ```
-User: "after-design" [task already has 2 subtasks]
-Agent: [Creates all 5 subtasks from design, including 2 duplicates]
+User: "After design, also create subtasks"
+Agent: [Saves link, then creates 4 subtasks]
 ```
 
-**Problem:** No merge logic, created duplicates.
+**Problem:** Out of scope. Save link, redirect to decompose.
 
-### ✅ GOOD: Smart merge
+### GOOD: Redirect
 
 ```
-User: "after-design" [task already has 2 subtasks]
-Agent: Checking existing subtasks...
+User: "After design, also create subtasks"
+Agent: Saved Design link to task claude-tools-abc:
 
-       Found 2 existing:
-       - claude-tools-abc.1: Implement input component (exists)
-       - claude-tools-abc.2: Add data validation (exists)
+       Design: docs/plans/2026-02-09-feature-design.md
 
-       From design (5 total):
-       ✓ Skip: Implement input component (exists)
-       ✓ Skip: Add data validation (exists)
-       + New: Create storage layer
-       + New: Write integration tests
-       + New: Update documentation
-
-       Should I create these 3 NEW subtasks? (yes/no)
+       For subtasks, run `/flow:decompose` next.
 ```
-
-**Correct because:**
-- Checked existing
-- Showed merge logic
-- Only proposes new subtasks
-- Still asks confirmation
 
 ## Edge Cases
 
@@ -348,31 +218,41 @@ Found 2 in_progress leaf tasks:
 Which task is this design for? (enter 1 or 2, or task ID)
 ```
 
-### No Subtasks in Design
-
-```
-No clear subtasks found in docs/plans/2026-01-16-design.md.
-
-Should I:
-1. Look in a specific section (which one?)
-2. Treat this as atomic task (no subtasks needed)
-3. Let you manually specify subtasks
-
-What would you like to do?
-```
-
 ### Design Link Already Exists
 
 ```
-Task already has design link: docs/plans/old-design.md
+Task already has Design link: docs/plans/old-design.md
 
-Update to new design docs/plans/2026-01-16-new-design.md? (yes/no)
+Update to new design docs/plans/2026-02-09-new-design.md? (yes/no)
+```
+
+### Has Plan, Adding Design
+
+```
+Task description before:
+  Plan: docs/plans/2026-01-17-plan.md
+
+Task description after:
+  Design: docs/plans/2026-02-09-design.md
+  Plan: docs/plans/2026-01-17-plan.md
+
+Both links preserved.
 ```
 
 ## The Bottom Line
 
-Always follow the workflow. Preview before creating. Confirmation is not overhead - it's the service.
+**This is a simple task. Do it simply.**
 
-Parse heuristically, show clearly, ask explicitly, then act.
+1. Find task
+2. Find design
+3. Save link
+4. Sync
+5. Suggest `/flow:decompose`
 
-Stay in scope. One skill, one job, done well.
+Don't parse subtasks. Don't create tasks. Don't commit files.
+
+Just save the link. That's the entire job.
+
+**Paradox of simple tasks:** They invite complexity. Resist it.
+
+Simple task -> Do it simply -> Be done.

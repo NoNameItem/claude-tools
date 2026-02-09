@@ -10,8 +10,8 @@ This repository contains two types of tools for Claude Code:
 git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statusline hook and renders formatted output.
 
 **Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`,
-`/flow:after-design`, `/flow:after-plan`, `/flow:done`) that guide you through task selection, branch management, design
-linking, and completion workflow.
+`/flow:after-design`, `/flow:after-plan`, `/flow:decompose`, `/flow:done`) that guide you through task selection, branch
+management, design linking, task decomposition, and completion workflow.
 
 ## Terminology
 
@@ -213,8 +213,9 @@ Automated beads workflow commands for task management.
 **Available commands:**
 
 - `/flow:start` - Start working on a beads task (task selection, branch management, context display)
-- `/flow:after-design` - After brainstorming/design phase (links design doc, parses subtasks, previews before creating)
+- `/flow:after-design` - After brainstorming/design phase (links design doc to task)
 - `/flow:after-plan` - After planning phase (links implementation plan document to task)
+- `/flow:decompose` - Decompose task into subtasks based on design document (approach discussion, preview, merge, create)
 - `/flow:done` - Complete and verify task (checks git branch, closes task, handles parent tasks, syncs)
 
 **Usage example:**
@@ -224,6 +225,7 @@ Automated beads workflow commands for task management.
 # ... do your work ...
 /flow:after-design       # After design is complete
 /flow:after-plan         # After creating implementation plan
+/flow:decompose          # Break task into subtasks
 /flow:done               # Mark task complete
 ```
 
