@@ -38,6 +38,20 @@ TYPE_LETTERS = {
     "chore": "C",
 }
 
+TASK_TYPE_EMOJI = {
+    "epic": "📦",
+    "feature": "🚀",
+    "bug": "❌",
+    "task": "📋",
+    "chore": "⚙️",
+}
+
+
+def get_type_emoji(issue_type: str) -> str:
+    """Get emoji for task type, ❔ if unknown."""
+    return TASK_TYPE_EMOJI.get(issue_type.lower(), "❔")
+
+
 STATUS_ORDER = {"in_progress": 0, "open": 1, "deferred": 2}
 VISIBLE_STATUSES = {"open", "in_progress", "deferred"}
 

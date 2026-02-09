@@ -14,6 +14,7 @@ Task = _mod.Task
 parse_graphs = _mod.parse_graphs
 build_tree = _mod.build_tree
 find_task_by_id = _mod.find_task_by_id
+get_type_emoji = _mod.get_type_emoji
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,35 @@ def dep(child_id: str, parent_id: str) -> dict:
 def make_graph(issues: list[dict], deps: list[dict] | None = None) -> list[dict]:
     """Create a graph JSON structure (list with one graph entry)."""
     return [{"Issues": issues, "Dependencies": deps or []}]
+
+
+# ===========================================================================
+# get_type_emoji tests
+# ===========================================================================
+
+
+class TestGetTypeEmoji:
+    def test_epic(self):
+        assert get_type_emoji("epic") == "📦"
+
+    def test_feature(self):
+        assert get_type_emoji("feature") == "🚀"
+
+    def test_bug(self):
+        assert get_type_emoji("bug") == "❌"
+
+    def test_task(self):
+        assert get_type_emoji("task") == "📋"
+
+    def test_chore(self):
+        assert get_type_emoji("chore") == "⚙️"
+
+    def test_unknown_type_fallback(self):
+        assert get_type_emoji("milestone") == "❔"
+
+    def test_case_insensitive(self):
+        assert get_type_emoji("Epic") == "📦"
+        assert get_type_emoji("BUG") == "❌"
 
 
 # ===========================================================================
