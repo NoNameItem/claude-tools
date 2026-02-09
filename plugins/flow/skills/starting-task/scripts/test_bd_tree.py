@@ -16,6 +16,7 @@ build_tree = _mod.build_tree
 find_task_by_id = _mod.find_task_by_id
 get_type_emoji = _mod.get_type_emoji
 find_min_priority = _mod.find_min_priority
+format_task_line = _mod.format_task_line
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +152,75 @@ class TestFindMinPriority:
     def test_empty_dict(self):
         """Empty tasks dict → return None."""
         assert find_min_priority({}) is None
+
+
+# ===========================================================================
+# format_task_line tests
+# ===========================================================================
+
+
+class TestFormatTaskLine:
+    def test_emoji_prepended(self):
+        """Emoji appears before type letter bracket."""
+        task = make_task("test-1", issue_type="bug", priority=2, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert "❌ [B]" in line
+
+    def test_feature_emoji(self):
+        task = make_task("test-1", issue_type="feature", priority=2, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert "🚀 [F]" in line
+
+    def test_epic_emoji(self):
+        task = make_task("test-1", issue_type="epic", priority=1, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert "📦 [E]" in line
+
+    def test_bold_when_min_priority(self):
+        """Task with min priority gets **bold** wrapping."""
+        task = make_task("test-1", issue_type="feature", priority=1, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert line.startswith("**")
+        assert line.endswith("**")
+
+    def test_no_bold_when_not_min_priority(self):
+        """Task above min priority has no bold."""
+        task = make_task("test-1", issue_type="feature", priority=2, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert not line.startswith("**")
+
+    def test_bold_with_labels(self):
+        """Bold wraps entire line including labels."""
+        task = make_task("test-1", issue_type="epic", priority=1, status="open", labels=["flow"])
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert line.startswith("**")
+        assert line.endswith("**")
+        assert "#flow" in line
+
+    def test_no_bold_when_min_priority_none(self):
+        """When min_priority is None, nothing is bolded."""
+        task = make_task("test-1", issue_type="feature", priority=1, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=None)
+        assert not line.startswith("**")
+
+    def test_unknown_type_gets_fallback_emoji(self):
+        """Unknown type gets ❔ emoji."""
+        task = make_task("test-1", issue_type="milestone", priority=2, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=1)
+        assert "❔" in line
+
+    def test_child_numbering_preserved(self):
+        """Child tasks (non-root) don't get trailing dot."""
+        task = make_task("test-1", issue_type="task", priority=2, status="open")
+        line = format_task_line(task, prefix="├─ ", number="1.1", is_root=False, min_priority=1)
+        assert "├─ 1.1 📋 [T]" in line
+
+    def test_prefix_with_bold(self):
+        """Bold wrapping does NOT include the tree prefix."""
+        task = make_task("test-1", issue_type="bug", priority=1, status="open")
+        line = format_task_line(task, prefix="├─ ", number="1.1", is_root=False, min_priority=1)
+        # Prefix should be outside bold: "├─ **1.1 ❌ [B] ...**"
+        assert line.startswith("├─ **")
 
 
 # ===========================================================================

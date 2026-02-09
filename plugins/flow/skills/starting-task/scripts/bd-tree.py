@@ -185,20 +185,31 @@ def find_task_by_id(tasks: dict[str, Task], task_id: str) -> Task | None:
     return None
 
 
-def format_task_line(task: Task, prefix: str, number: str, is_root: bool = False) -> str:
-    """Format a single task line."""
+def format_task_line(
+    task: Task,
+    prefix: str,
+    number: str,
+    is_root: bool = False,
+    min_priority: int | None = None,
+) -> str:
+    """Format a single task line with emoji and optional bold for min priority."""
     type_letter = TYPE_LETTERS.get(task.issue_type, "T")
+    emoji = get_type_emoji(task.issue_type)
     status = task.status
     priority = f"P{task.priority}"
     labels = " ".join(f"#{lbl}" for lbl in task.labels) if task.labels else ""
 
     # Root items get trailing dot: "1." Children don't: "1.1"
     num_display = f"{number}." if is_root else number
-    line = f"{prefix}{num_display} [{type_letter}] {task.title} ({task.id}) | {priority} · {status}"
+    content = f"{num_display} {emoji} [{type_letter}] {task.title} ({task.id}) | {priority} · {status}"
     if labels:
-        line += f" | {labels}"
+        content += f" | {labels}"
 
-    return line
+    # Bold for tasks with minimum priority (highest urgency)
+    if min_priority is not None and task.priority == min_priority:
+        content = f"**{content}**"
+
+    return f"{prefix}{content}"
 
 
 def print_tree(
