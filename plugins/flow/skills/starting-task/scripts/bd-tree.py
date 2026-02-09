@@ -119,6 +119,14 @@ def find_min_priority(tasks: dict[str, Task]) -> int | None:
     return min(priorities) if priorities else None
 
 
+def collect_subtree_tasks(root: Task) -> dict[str, Task]:
+    """Collect root task and all its descendants into a dict."""
+    result = {root.id: root}
+    for child in root.children:
+        result.update(collect_subtree_tasks(child))
+    return result
+
+
 def has_visible_descendants(task: Task) -> bool:
     """Check if task has any visible descendants."""
     return any(should_show(child) or has_visible_descendants(child) for child in task.children)
@@ -294,7 +302,7 @@ def build_tree(
                 is_last=True,
                 is_root=True,
                 collapse=collapse,
-                min_priority=find_min_priority(tasks),
+                min_priority=find_min_priority(collect_subtree_tasks(found)),
             )
         # Task not found — fall through to full tree with warning
         root_not_found_warning = [

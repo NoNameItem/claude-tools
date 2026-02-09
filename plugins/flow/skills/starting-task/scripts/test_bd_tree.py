@@ -7,6 +7,8 @@ from pathlib import Path
 
 # Import bd-tree.py as module (hyphenated filename)
 _spec = importlib.util.spec_from_file_location("bd_tree", Path(__file__).parent / "bd-tree.py")
+assert _spec is not None
+assert _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
@@ -100,20 +102,20 @@ class TestGetTypeEmoji:
 
 
 class TestFindMinPriority:
-    """Test constants for priority values."""
+    """Priority constants: lower number = higher urgency."""
 
-    LOWEST_PRIORITY = 1
-    MIN_PRIORITY = 2
-    HIGH_PRIORITY = 3
+    P1 = 1
+    P2 = 2
+    P3 = 3
 
     def test_mixed_priorities(self):
         """Min priority among visible tasks."""
         tasks = {
-            "t1": make_task("t1", priority=self.LOWEST_PRIORITY, status="open"),
-            "t2": make_task("t2", priority=self.MIN_PRIORITY, status="open"),
-            "t3": make_task("t3", priority=self.HIGH_PRIORITY, status="open"),
+            "t1": make_task("t1", priority=self.P1, status="open"),
+            "t2": make_task("t2", priority=self.P2, status="open"),
+            "t3": make_task("t3", priority=self.P3, status="open"),
         }
-        assert find_min_priority(tasks) == self.LOWEST_PRIORITY
+        assert find_min_priority(tasks) == self.P1
 
     def test_ignores_closed(self):
         """Closed tasks don't count."""
@@ -122,7 +124,7 @@ class TestFindMinPriority:
             "t2": make_task("t2", priority=2, status="open"),
             "t3": make_task("t3", priority=3, status="open"),
         }
-        assert find_min_priority(tasks) == self.MIN_PRIORITY
+        assert find_min_priority(tasks) == self.P2
 
     def test_ignores_blocked(self):
         """Blocked tasks don't count."""
@@ -132,7 +134,7 @@ class TestFindMinPriority:
             "t1": blocked,
             "t2": make_task("t2", priority=3, status="open"),
         }
-        assert find_min_priority(tasks) == self.HIGH_PRIORITY
+        assert find_min_priority(tasks) == self.P3
 
     def test_all_same_priority(self):
         """All tasks same priority → that priority is min."""
@@ -140,7 +142,7 @@ class TestFindMinPriority:
             "t1": make_task("t1", priority=2, status="open"),
             "t2": make_task("t2", priority=2, status="open"),
         }
-        assert find_min_priority(tasks) == self.MIN_PRIORITY
+        assert find_min_priority(tasks) == self.P2
 
     def test_no_visible_tasks(self):
         """No visible tasks → return None (no bolding)."""
@@ -408,22 +410,23 @@ class TestTreeEmojiAndBold:
         assert child_line.startswith(("└─ **", "├─ **"))
 
     def test_root_subtree_uses_own_min_priority(self):
-        """When --root is used, min_priority is calculated from visible subtree."""
+        """When --root is used, min_priority is calculated from subtree only, not globally."""
         tasks = self._parse(
             [
                 issue("proj-parent", title="Parent", issue_type="epic", priority=1),
                 issue("proj-child1", title="Child1", issue_type="feature", priority=2),
                 issue("proj-child2", title="Child2", issue_type="bug", priority=3),
-                issue("proj-other", title="Other", issue_type="task", priority=1),
+                # P0 task outside subtree — must NOT affect subtree bolding
+                issue("proj-other", title="Other", issue_type="task", priority=0),
             ],
             [
                 dep("proj-child1", "proj-parent"),
                 dep("proj-child2", "proj-parent"),
             ],
         )
-        # When viewing subtree of parent, min_priority should be 1 (parent itself)
+        # Subtree min is P1 (parent), not P0 (proj-other outside subtree)
         lines = build_tree(tasks, root_id="proj-parent")
         parent_line = next(line for line in lines if "Parent" in line)
         child1_line = next(line for line in lines if "Child1" in line)
-        assert "**" in parent_line  # P1 is min
-        assert "**" not in child1_line  # P2 is not min
+        assert "**" in parent_line  # P1 is subtree min → bold
+        assert "**" not in child1_line  # P2 is not subtree min
