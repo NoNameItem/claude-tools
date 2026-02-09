@@ -221,6 +221,7 @@ def print_tree(
     is_root: bool = False,
     search_ids: set[str] | None = None,
     collapse: bool = False,
+    min_priority: int | None = None,
 ) -> list[str]:
     """Recursively build tree lines."""
     lines: list[str] = []
@@ -235,7 +236,7 @@ def print_tree(
 
     # Format current task - display prefix includes connector for this line only
     display_prefix = prefix + connector
-    lines.append(format_task_line(task, display_prefix, number, is_root=is_root))
+    lines.append(format_task_line(task, display_prefix, number, is_root=is_root, min_priority=min_priority))
 
     # Handle collapse mode
     visible_children = [c for c in task.children if should_show(c) or has_visible_descendants(c)]
@@ -265,6 +266,7 @@ def print_tree(
             is_last=is_child_last,
             search_ids=search_ids,
             collapse=collapse,
+            min_priority=min_priority,
         )
         if child_lines:
             lines.extend(child_lines)
@@ -292,6 +294,7 @@ def build_tree(
                 is_last=True,
                 is_root=True,
                 collapse=collapse,
+                min_priority=find_min_priority(tasks),
             )
         # Task not found — fall through to full tree with warning
         root_not_found_warning = [
@@ -316,6 +319,9 @@ def build_tree(
     if limit:
         roots = roots[:limit]
 
+    # Calculate min priority for bold formatting
+    min_priority = find_min_priority(tasks)
+
     # Build output
     lines: list[str] = []
     for i, root in enumerate(roots):
@@ -329,6 +335,7 @@ def build_tree(
             is_root=True,
             search_ids=search_ids,
             collapse=collapse,
+            min_priority=min_priority,
         )
         lines.extend(root_lines)
         if not is_last and root_lines:

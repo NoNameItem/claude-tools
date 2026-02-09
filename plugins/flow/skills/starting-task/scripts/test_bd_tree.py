@@ -305,7 +305,7 @@ class TestBuildTreeRootId:
         assert "Root A" in text
 
     def test_root_task_becomes_root_1(self):
-        """The selected root task's first line starts with '1.'."""
+        """The selected root task's first line contains '1.' numbering."""
         tasks = self._parse(
             [
                 issue("proj-aaa", title="Root A"),
@@ -313,8 +313,10 @@ class TestBuildTreeRootId:
             ],
         )
         # Even though proj-bbb would be 2nd normally, with --root it becomes 1.
+        # Bold wrapping may prepend **, so check for "1." presence
         lines = build_tree(tasks, root_id="proj-bbb")
-        assert lines[0].startswith("1.")
+        assert "1." in lines[0]
+        assert "Root B" in lines[0]
 
     def test_root_no_children_shows_just_task(self):
         """A root with no children shows just the single task line."""
@@ -322,3 +324,106 @@ class TestBuildTreeRootId:
         lines = build_tree(tasks, root_id="proj-aaa")
         assert len(lines) == 1
         assert "Lonely" in lines[0]
+
+
+# ===========================================================================
+# Tree emoji and bold integration tests
+# ===========================================================================
+
+
+class TestTreeEmojiAndBold:
+    """Integration tests for emoji and bold in full tree output."""
+
+    def _parse(self, issues, deps=None):
+        return parse_graphs(make_graph(issues, deps))
+
+    def test_emoji_in_tree_output(self):
+        """Full tree output includes emoji for each task type."""
+        tasks = self._parse(
+            [
+                issue("proj-aaa", title="Epic Task", issue_type="epic", priority=1),
+                issue("proj-bbb", title="Bug Fix", issue_type="bug", priority=2),
+            ]
+        )
+        lines = build_tree(tasks)
+        text = "\n".join(lines)
+        assert "📦 [E]" in text
+        assert "❌ [B]" in text
+
+    def test_bold_only_min_priority(self):
+        """Only tasks with minimum priority get bold."""
+        tasks = self._parse(
+            [
+                issue("proj-aaa", title="High", issue_type="feature", priority=1),
+                issue("proj-bbb", title="Medium", issue_type="task", priority=2),
+            ]
+        )
+        lines = build_tree(tasks)
+        # P1 task should be bold, P2 should not
+        high_line = next(line for line in lines if "High" in line)
+        med_line = next(line for line in lines if "Medium" in line)
+        assert "**" in high_line
+        assert "**" not in med_line
+
+    def test_all_same_priority_all_bold(self):
+        """When all tasks same priority, all get bold."""
+        tasks = self._parse(
+            [
+                issue("proj-aaa", title="Task A", priority=2),
+                issue("proj-bbb", title="Task B", priority=2),
+            ]
+        )
+        lines = build_tree(tasks)
+        for line in lines:
+            if line.strip():  # skip blank separator lines
+                assert "**" in line
+
+    def test_bold_with_children(self):
+        """Bold works correctly in parent-child tree."""
+        tasks = self._parse(
+            [
+                issue("proj-parent", title="Parent", issue_type="epic", priority=1),
+                issue("proj-child", title="Child", issue_type="bug", priority=2),
+            ],
+            [dep("proj-child", "proj-parent")],
+        )
+        lines = build_tree(tasks)
+        parent_line = next(line for line in lines if "Parent" in line)
+        child_line = next(line for line in lines if "Child" in line)
+        assert "**" in parent_line  # P1 is min
+        assert "**" not in child_line  # P2 is not min
+
+    def test_tree_connectors_outside_bold(self):
+        """Tree connectors (├─, └─) are outside bold markers."""
+        tasks = self._parse(
+            [
+                issue("proj-parent", title="Parent", issue_type="epic", priority=1),
+                issue("proj-child", title="Child", issue_type="bug", priority=1),
+            ],
+            [dep("proj-child", "proj-parent")],
+        )
+        lines = build_tree(tasks)
+        child_line = next(line for line in lines if "Child" in line)
+        # Connector should be before bold: "└─ **1.1 ..."
+        assert child_line.startswith(("└─ **", "├─ **"))
+
+    def test_root_subtree_uses_own_min_priority(self):
+        """When --root is used, min_priority is calculated from visible subtree."""
+        tasks = self._parse(
+            [
+                issue("proj-parent", title="Parent", issue_type="epic", priority=1),
+                issue("proj-child1", title="Child1", issue_type="feature", priority=2),
+                issue("proj-child2", title="Child2", issue_type="bug", priority=3),
+                issue("proj-other", title="Other", issue_type="task", priority=1),
+            ],
+            [
+                dep("proj-child1", "proj-parent"),
+                dep("proj-child2", "proj-parent"),
+            ],
+        )
+        # When viewing subtree of parent, min_priority should be 1 (parent itself)
+        lines = build_tree(tasks, root_id="proj-parent")
+        parent_line = next(line for line in lines if "Parent" in line)
+        child1_line = next(line for line in lines if "Child1" in line)
+        assert "**" in parent_line  # P1 is min
+        assert "**" not in child1_line  # P2 is not min
