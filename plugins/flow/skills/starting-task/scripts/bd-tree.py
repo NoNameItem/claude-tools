@@ -113,6 +113,12 @@ def should_show(task: Task, show_blocked: bool = False) -> bool:
     return task.status in VISIBLE_STATUSES
 
 
+def find_min_priority(tasks: dict[str, Task]) -> int | None:
+    """Find minimum priority among visible tasks. None if no visible tasks."""
+    priorities = [t.priority for t in tasks.values() if should_show(t)]
+    return min(priorities) if priorities else None
+
+
 def has_visible_descendants(task: Task) -> bool:
     """Check if task has any visible descendants."""
     return any(should_show(child) or has_visible_descendants(child) for child in task.children)

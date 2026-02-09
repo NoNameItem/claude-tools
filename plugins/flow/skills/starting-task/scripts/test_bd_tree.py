@@ -15,6 +15,7 @@ parse_graphs = _mod.parse_graphs
 build_tree = _mod.build_tree
 find_task_by_id = _mod.find_task_by_id
 get_type_emoji = _mod.get_type_emoji
+find_min_priority = _mod.find_min_priority
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +91,66 @@ class TestGetTypeEmoji:
     def test_case_insensitive(self):
         assert get_type_emoji("Epic") == "📦"
         assert get_type_emoji("BUG") == "❌"
+
+
+# ===========================================================================
+# find_min_priority tests
+# ===========================================================================
+
+
+class TestFindMinPriority:
+    """Test constants for priority values."""
+
+    LOWEST_PRIORITY = 1
+    MIN_PRIORITY = 2
+    HIGH_PRIORITY = 3
+
+    def test_mixed_priorities(self):
+        """Min priority among visible tasks."""
+        tasks = {
+            "t1": make_task("t1", priority=self.LOWEST_PRIORITY, status="open"),
+            "t2": make_task("t2", priority=self.MIN_PRIORITY, status="open"),
+            "t3": make_task("t3", priority=self.HIGH_PRIORITY, status="open"),
+        }
+        assert find_min_priority(tasks) == self.LOWEST_PRIORITY
+
+    def test_ignores_closed(self):
+        """Closed tasks don't count."""
+        tasks = {
+            "t1": make_task("t1", priority=1, status="closed"),
+            "t2": make_task("t2", priority=2, status="open"),
+            "t3": make_task("t3", priority=3, status="open"),
+        }
+        assert find_min_priority(tasks) == self.MIN_PRIORITY
+
+    def test_ignores_blocked(self):
+        """Blocked tasks don't count."""
+        blocked = make_task("t1", priority=1, status="open")
+        blocked.is_blocked = True
+        tasks = {
+            "t1": blocked,
+            "t2": make_task("t2", priority=3, status="open"),
+        }
+        assert find_min_priority(tasks) == self.HIGH_PRIORITY
+
+    def test_all_same_priority(self):
+        """All tasks same priority → that priority is min."""
+        tasks = {
+            "t1": make_task("t1", priority=2, status="open"),
+            "t2": make_task("t2", priority=2, status="open"),
+        }
+        assert find_min_priority(tasks) == self.MIN_PRIORITY
+
+    def test_no_visible_tasks(self):
+        """No visible tasks → return None (no bolding)."""
+        tasks = {
+            "t1": make_task("t1", priority=1, status="closed"),
+        }
+        assert find_min_priority(tasks) is None
+
+    def test_empty_dict(self):
+        """Empty tasks dict → return None."""
+        assert find_min_priority({}) is None
 
 
 # ===========================================================================
