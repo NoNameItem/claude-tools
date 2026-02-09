@@ -283,7 +283,7 @@ Check if any worktree uses a branch matching the task ID:
 git worktree list | grep -E "(fix|feature|chore)/{task-id}"
 ```
 
-If matched: extract worktree path, `cd` into it, skip to Step 7, report:
+If matched: extract the worktree path (first column of `git worktree list` output), `cd` into it, skip to Step 7, report:
 > "Переключился в worktree `{worktree-path}`."
 
 These two cases are mutually exclusive (git doesn't allow a branch to be checked out in both main directory and a worktree simultaneously).
