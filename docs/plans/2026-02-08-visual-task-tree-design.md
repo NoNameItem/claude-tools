@@ -8,16 +8,16 @@
 
 **Проблема:** Список задач в `flow:start` — чёрно-белый текст. Тип и приоритет видны только при чтении, визуально ничего не выделяется. Чтобы найти баги или высокоприоритетные задачи, приходится читать каждую строку.
 
-**Решение:** Визуальное кодирование через emoji (тип задачи) и markdown bold (приоритет). Баги, фичи, эпики мгновенно различимы по иконке. Задачи с минимальным приоритетом выделены жирным шрифтом.
+**Решение:** Визуальное кодирование через emoji перед буквой типа `[E]`/`[F]`/`[B]`/`[T]`/`[C]` и markdown bold для приоритета. Emoji дают цветовое различие, буква в скобках — текстовое. Задачи с минимальным приоритетом выделены жирным шрифтом.
 
 **Пример вывода:**
 
 ```
-1. **📦 StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
-   ├─ 1.1 **🚀 Декларативная конфигурация модулей | P1 · open**
-   ├─ 1.2 ❌ statuskit --version always shows 0.1.0 | P2 · open
-   ├─ 1.3 📋 CLI review fixes | P2 · open
-   └─ 1.4 ⚙️ Update dependencies | P4 · open
+1. **📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
+   ├─ 1.1 **🚀 [F] Декларативная конфигурация модулей | P1 · open**
+   ├─ 1.2 ❌ [B] statuskit --version always shows 0.1.0 | P2 · open
+   ├─ 1.3 📋 [T] CLI review fixes | P2 · open
+   └─ 1.4 ⚙️ [C] Update dependencies | P4 · open
 ```
 
 **Почему это работает:**
@@ -35,7 +35,7 @@
 | Task | 📋 | Клипборд, список дел |
 | Chore | ⚙️ | Механика, техническая работа |
 
-**Fallback:** Если тип неизвестен → `[X]` (первая буква типа в квадратных скобках).
+**Fallback:** Если тип неизвестен → `❔ [X]` (белый вопрос + первая буква типа).
 
 ## Приоритетное выделение
 
@@ -65,8 +65,8 @@ TASK_TYPE_EMOJI = {
 }
 
 def get_type_emoji(issue_type: str) -> str:
-    """Get emoji for task type, fallback to original letter if unknown."""
-    return TASK_TYPE_EMOJI.get(issue_type.lower(), f"[{issue_type[0].upper()}]")
+    """Get emoji for task type, ❔ if unknown."""
+    return TASK_TYPE_EMOJI.get(issue_type.lower(), "❔")
 ```
 
 **2. Функция поиска минимального приоритета:**
@@ -86,7 +86,8 @@ def format_task_line(task: Task, number: str, min_priority: int) -> str:
     emoji = get_type_emoji(task.issue_type)
     labels_str = f" | {' '.join(f'#{l}' for l in task.labels)}" if task.labels else ""
 
-    line = f"{number} {emoji} {task.title} ({task.id}) | P{task.priority} · {task.status}{labels_str}"
+    type_letter = task.issue_type[0].upper()
+    line = f"{number} {emoji} [{type_letter}] {task.title} ({task.id}) | P{task.priority} · {task.status}{labels_str}"
 
     # Bold for tasks with minimum priority (highest urgency)
     if task.priority == min_priority:
@@ -133,7 +134,7 @@ def test_get_type_emoji():
     assert get_type_emoji("bug") == "❌"
     assert get_type_emoji("task") == "📋"
     assert get_type_emoji("chore") == "⚙️"
-    assert get_type_emoji("unknown") == "[U]"  # fallback
+    assert get_type_emoji("unknown") == "❔"  # fallback
 
 
 def test_format_task_line_with_min_priority():
@@ -178,8 +179,8 @@ bd graph --all --json | python3 bd-tree.py
 ## Edge Cases
 
 ### 1. Неизвестный тип задачи
-- Fallback на `[X]` формат (первая буква типа в квадратных скобках)
-- Пример: тип "milestone" → `[M]`
+- Используется ❔ как fallback emoji
+- Пример: тип "milestone" → `❔ [M] Title`
 
 ### 2. Задачи без приоритета или с некорректным значением
 - Если `task.priority` отсутствует или невалиден → считать как P4
