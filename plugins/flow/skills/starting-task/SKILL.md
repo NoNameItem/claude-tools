@@ -76,12 +76,12 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 3. Show | Display in box format | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
-| 6. Ask | RECOMMEND or NEUTRAL | Tone matters |
-| 6.5. Worktree | Ask: here OR worktree | Parallel work option |
+| 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
+| 6. Ask | `AskUserQuestion` with options matrix | Branch + worktree in one question |
 | 7. Update | `bd update` | Only after confirmation |
 | 7.1. Sync | `bd sync` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
-| 8. Create | `git checkout -b` | If requested (skip if worktree) |
+| 8. Create | `git checkout -b` or `git worktree add` | Based on user's choice |
 | 8.1. Git Info | `bd update` + `bd sync` | Save branch name for flow:continue |
 
 **Branch Tone Guide:**
@@ -104,7 +104,7 @@ bd sync
 pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
-`bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.5.
+`bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.
 
 ### 1. Build and Display Task Tree
 
@@ -264,119 +264,90 @@ Examples:
 - feature task `claude-tools-xyz` "Add dark mode" → `feature/claude-tools-xyz-dark-mode`
 - chore task `claude-tools-123` "Update dependencies" → `chore/claude-tools-123-update-dependencies`
 
-### 6. Ask About Branch (with appropriate tone)
+### 5.5. Auto-Resolve Check
 
-**Three scenarios to handle:**
+**Before showing the question**, check two auto-resolve cases. If either matches, skip Steps 6-8 entirely and go to Step 7.
 
-#### Scenario A: Existing Branches Found
-
-**If one branch found:**
-
-> "Found existing branch for this task: `{branch-name}` (local/remote)
->
-> Would you like to:
-> 1. Checkout existing branch: `{branch-name}`
-> 2. Create new branch: `{prefix}{task-id}-{brief-name}`"
-
-**If multiple branches found:**
-
-> "Found multiple branches for this task:
-> - `{branch-1}` (local)
-> - `{branch-2}` (remote)
->
-> Would you like to:
-> 1. Checkout: `{branch-1}` (most recent/local preferred)
-> 2. Checkout: `{branch-2}`
-> 3. Create new branch: `{prefix}{task-id}-{brief-name}`"
-
-**Why prioritize existing:** Avoid duplicate branches, continue existing work.
-
-**Priority for multiple branches:**
-- Prefer local over remote (faster checkout)
-- Prefer branches matching current task type prefix
-- Show most recent first (by commit date)
-
-#### Scenario B: No Existing Branches + Generic Branch → RECOMMEND
-
-Use strong, specific recommendation:
-
-> "You're currently on `{branch}` (main development branch). **I recommend creating a separate branch** for this work to keep main clean and make it easier to create PRs later.
->
-> Would you like me to create branch `{prefix}{task-id}-{brief-name}`?"
-
-**Why recommend:** Generic branches should stay stable.
-
-#### Scenario C: No Existing Branches + Feature Branch → NEUTRAL
-
-Use neutral, informational tone:
-
-> "You're currently on feature branch `{branch}`.
->
-> Would you like to continue work on this branch, or create a new branch `{prefix}{task-id}-{brief-name}`?"
-
-**Why neutral:** User might be working on related features, or might want isolation - don't assume.
-
-### 6.5. Ask About Worktree (Parallel Work Option)
-
-**After user confirms branch choice, ask how to open it:**
-
-**Skip this step if:**
-- `IN_WORKTREE=true` (already in worktree, don't nest)
-- User explicitly said "checkout here" or similar
-
-**Check if worktree already exists:**
+**Case 1: Current branch matches task branch.**
+Check if current branch name matches pattern `(fix|feature|chore)/{task-id}`:
 ```bash
-git worktree list | grep "{branch-name}"
+git branch --show-current | grep -qE "(fix|feature|chore)/{task-id}" && echo "AUTO_RESOLVE=current_branch"
 ```
 
-#### If Worktree Already Exists
+If matched: skip to Step 7, report:
+> "Вы уже на ветке `{current-branch}`, продолжаем."
 
-Extract worktree path from `git worktree list` output, cd into it, and continue:
-
+**Case 2: Worktree exists for a task branch.**
+Check if any worktree uses a branch matching the task ID:
 ```bash
-cd {worktree-path}
+git worktree list | grep -E "(fix|feature|chore)/{task-id}"
 ```
 
-> "Worktree для этой ветки уже существует. Перешёл в `{worktree-path}`."
+If matched: extract the worktree path (first column of `git worktree list` output), `cd` into it, skip to Step 7, report:
+> "Переключился в worktree `{worktree-path}`."
 
-Skip to Step 7 (update task status only, no branch operations needed).
+These two cases are mutually exclusive (git doesn't allow a branch to be checked out in both main directory and a worktree simultaneously).
 
-#### If No Existing Worktree
+**If neither case matches**, proceed to Step 6.
 
-> "Как открыть ветку `{branch-name}`?
->
-> 1. Здесь (обычный checkout)
-> 2. В worktree (для параллельной работы)"
+### 6. Ask About Branch and Worktree (single AskUserQuestion)
 
-#### Execution Based on Choice
+**Use `AskUserQuestion` tool** to present branch and worktree options in one question. The options depend on context (existing branches, IN_WORKTREE, branch type).
 
-**Option 1 (checkout here):**
-- Proceed to Step 7, then Step 8 (normal checkout)
+#### Option Matrix
 
-**Option 2 (worktree):**
+**IN_WORKTREE=false, 0 existing branches:**
 
-Create worktree with the branch and cd into it:
-```bash
-# Sanitize branch name for directory (replace / with -)
-WORKTREE_DIR=".worktrees/$(echo '{branch-name}' | tr '/' '-')"
+| # | Label | Description (generic branch) | Description (feature branch) |
+|---|-------|------------------------------|------------------------------|
+| 1 | Создать ветку (checkout) | `{branch-name}` — checkout в текущем каталоге (Recommended) | `{branch-name}` — checkout в текущем каталоге |
+| 2 | Создать ветку (worktree) | `{branch-name}` — в отдельном worktree для параллельной работы | `{branch-name}` — в отдельном worktree для параллельной работы |
+| 3 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
 
-# Create worktree with the branch
-git worktree add "$WORKTREE_DIR" -b {branch-name}
+**IN_WORKTREE=false, 1+ existing branches:**
 
-# Switch to worktree
-cd "$WORKTREE_DIR"
+Use the most probable existing branch (prefer local over remote). If 2+ branches found, mention others in option descriptions: "Также найдены: `branch-2`, `branch-3`".
+
+| # | Label | Description (generic branch) | Description (feature branch) |
+|---|-------|------------------------------|------------------------------|
+| 1 | Checkout здесь | `{existing-branch}` — checkout в текущем каталоге (Recommended) | `{existing-branch}` — checkout в текущем каталоге |
+| 2 | Checkout в worktree | `{existing-branch}` — в отдельном worktree для параллельной работы | `{existing-branch}` — в отдельном worktree для параллельной работы |
+| 3 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
+
+**IN_WORKTREE=true (no worktree options):**
+
+| # | Label | Description (generic branch) | Description (feature branch) |
+|---|-------|------------------------------|------------------------------|
+| 1 | Создать ветку / Checkout | `{branch-name}` — checkout в текущем worktree (Recommended) | `{branch-name}` — checkout в текущем worktree |
+| 2 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
+
+#### Option Ordering
+
+- **Recommended option is always first** (add "(Recommended)" to label on generic branches).
+- **"Остаться на текущей" is always last.**
+- On generic branches: creating/checking out a branch is recommended, staying is marked as not recommended.
+- On feature branches: neutral tone, no explicit recommendation.
+
+#### AskUserQuestion Format
+
+```
+AskUserQuestion(
+  questions=[{
+    "question": "Как продолжить работу с веткой для задачи {task-id}?",
+    "header": "Branch",
+    "options": [<options from matrix above>],
+    "multiSelect": false
+  }]
+)
 ```
 
-If branch already exists (from remote or previous work):
-```bash
-git worktree add "$WORKTREE_DIR" {branch-name}
-cd "$WORKTREE_DIR"
-```
+#### Other (Free-Form Input)
 
-- Proceed to Step 7 (update beads status)
-- **Skip Step 8** (branch created with worktree)
+User can type arbitrary text via the automatic "Other" option. The LLM interprets user intent, extracting:
+- Branch name (if specified)
+- Method: checkout here / worktree
 
-> "Worktree создан. Перешёл в `{worktree-path}`."
+If the method is not clear from the text, ask a follow-up `AskUserQuestion` with 2 options: "Checkout здесь" / "В worktree".
 
 ### 7. Update Task Status
 
@@ -402,7 +373,7 @@ Persist the status change to git immediately.
 
 ### 7.2. Initialize Project Environment (worktree only)
 
-**Skip this step if user chose regular checkout (Option 1 in Step 6.5).**
+**Skip this step if user did NOT choose a worktree option in Step 6.**
 
 After creating a worktree, invoke the `flow:init-worktree` skill using the Skill tool.
 
@@ -414,24 +385,38 @@ This skill will:
 
 See `flow:init-worktree` skill for full algorithm.
 
-### 8. Create or Checkout Branch (if requested)
+### 8. Create or Checkout Branch (based on Step 6 choice)
 
-**If user chose existing branch:**
+**Create branch (checkout here):**
+```bash
+git checkout -b <prefix><task-id>-<brief-name>
+```
+
+**Create branch (worktree):**
+```bash
+WORKTREE_DIR=".worktrees/$(echo '<branch-name>' | tr '/' '-')"
+git worktree add "$WORKTREE_DIR" -b <branch-name>
+cd "$WORKTREE_DIR"
+```
+
+**Checkout existing (here):**
 ```bash
 git checkout <existing-branch-name>
 ```
-
 Or if remote branch:
 ```bash
 git checkout -b <local-branch-name> origin/<remote-branch-name>
 ```
 
-**If user chose to create new branch:**
+**Checkout existing (worktree):**
 ```bash
-git checkout -b <prefix><task-id>-<brief-name>
+WORKTREE_DIR=".worktrees/$(echo '<existing-branch>' | tr '/' '-')"
+git worktree add "$WORKTREE_DIR" <existing-branch>
+cd "$WORKTREE_DIR"
 ```
 
-Follow user's preference from step 6.
+**Stay on current branch:**
+No branch action, proceed to Step 8.1.
 
 ### 8.1. Save Branch Info
 
@@ -483,8 +468,8 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll format differently" → Script output is the correct format
 
 **Tool violations:**
-- "AskUserQuestion is more user-friendly"
-- "Structured UI is better than plain text"
+- "AskUserQuestion for task selection" → Use plain text for TASK selection (hierarchical numbers). Use AskUserQuestion for BRANCH selection only.
+- "Plain text for branch selection" → Use AskUserQuestion for branch selection. Plain text was the old way.
 
 **Workflow violations:**
 - "Creating a feature branch is obviously right"
@@ -498,10 +483,12 @@ If you're thinking any of these, STOP and follow the workflow:
 - "feature/ works for all task types"
 
 **Worktree violations:**
-- "Step 6.5 is optional, I'll skip it"
-- "User didn't mention worktree so skip Step 6.5"
-- "User said yes to branch, going straight to checkout"
-- "Already in worktree, I'll create nested worktree"
+- "I'll ask about worktree separately after branch choice" → Worktree is embedded in Step 6 options. One question, not two.
+- "Already in worktree, I'll offer worktree option" → Never offer worktree when IN_WORKTREE=true.
+
+**Auto-resolve violations:**
+- "I'll skip auto-resolve and always ask" → Check Step 5.5 first. Don't ask when answer is obvious.
+- "I'll auto-resolve without telling the user" → Always report what was auto-resolved.
 
 **Init violations:**
 - "I'll run init inline instead of calling the skill" → Always use flow:init-worktree
@@ -517,17 +504,16 @@ If you're thinking any of these, STOP and follow the workflow:
 | "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
 | "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
-| "AskUserQuestion is more user-friendly" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text. |
+| "AskUserQuestion for task selection" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text for TASKS, AskUserQuestion for BRANCHES. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
 | "User said they're in a hurry" | Consultation is part of the service, not overhead. |
 | "I'll choose a good task for them" | User agency matters. Show options, let them choose. |
 | "No existing branches to search" | Always search. Prevents duplicate branches. |
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
-| "Step 6.5 is optional" | "Optional" means conditional on context, not skippable. Always evaluate. |
-| "User didn't ask for worktree" | Step 6.5 OFFERS the option. User doesn't need to ask first. |
-| "User said yes to branch, proceed to checkout" | Stop at 6.5. Offer worktree option BEFORE checkout. |
-| "I'll create worktree inside worktree" | Never nest worktrees. Check IN_WORKTREE first. |
+| "I'll ask about worktree separately" | Worktree is an option in Step 6 AskUserQuestion. One question, not two. |
+| "I'll offer worktree in a worktree" | Never offer worktree when IN_WORKTREE=true. Show only 2 options. |
+| "I'll skip auto-resolve" | Always check Step 5.5. Don't ask when the answer is obvious. |
 | "I'll handle init inline" | Use the flow:init-worktree skill. Don't duplicate logic. |
 | "Step 7.2 for regular checkout too" | No. Regular checkout already has deps installed. Worktree only. |
 
@@ -581,23 +567,23 @@ Agent: ┌─ [F] Git module ─────────────────
        │   → claude-tools-5dl: StatusKit (in_progress)             │
        └───────────────────────────────────────────────────────────┘
 
-       You're currently on `master` (main development branch).
-       I recommend creating a feature branch for this work to keep
-       master clean and make it easier to create PRs later.
-
-       Would you like me to create branch `feature/claude-tools-c7b-git-module`?
+       [Calls AskUserQuestion with:]
+       Question: "Как продолжить работу с веткой для задачи claude-tools-c7b?"
+       Options:
+         1. "Создать ветку (checkout) (Recommended)" — feature/claude-tools-c7b-git-module — checkout в текущем каталоге
+         2. "Создать ветку (worktree)" — feature/claude-tools-c7b-git-module — в отдельном worktree
+         3. "Остаться на master" — Не рекомендуется — master лучше держать чистым
 ```
 
 **Correct because:**
-- Shows hierarchical tree first
-- Lets user select by number
+- Shows hierarchical tree first (plain text, not AskUserQuestion)
+- Lets user select task by number
 - Shows full context in box format
-- Searches for existing branches first
-- Uses correct prefix (feature/ for feature type)
-- Uses full format: prefix + task-id + brief-name
-- Recommends (not creates) for generic branch
-- Gives user choice
-- Uses appropriate tone
+- Uses AskUserQuestion for branch selection (not free text)
+- Recommended option is first with "(Recommended)" on generic branch
+- "Остаться" is last with warning tone
+- Worktree option included (not in worktree)
+- Uses correct prefix and full format
 
 ### ✅ GOOD: Existing branch found
 
@@ -605,23 +591,21 @@ Agent: ┌─ [F] Git module ─────────────────
 User: "start bug task claude-tools-abc"
 Agent: [shows task description box for bug task]
 
-       Found multiple branches for this task:
-       - `fix/claude-tools-abc-login-error` (local)
-       - `fix/claude-tools-abc-auth-fix` (remote)
-
-       Would you like to:
-       1. Checkout: `fix/claude-tools-abc-login-error` (local preferred)
-       2. Checkout: `fix/claude-tools-abc-auth-fix`
-       3. Create new branch: `fix/claude-tools-abc-authentication-timeout`
+       [Calls AskUserQuestion with:]
+       Question: "Как продолжить работу с веткой для задачи claude-tools-abc?"
+       Options:
+         1. "Checkout здесь (Recommended)" — fix/claude-tools-abc-login-error — checkout в текущем каталоге. Также найдена: fix/claude-tools-abc-auth-fix (remote)
+         2. "Checkout в worktree" — fix/claude-tools-abc-login-error — в отдельном worktree. Также найдена: fix/claude-tools-abc-auth-fix (remote)
+         3. "Остаться на master" — Не рекомендуется — master лучше держать чистым
 ```
 
 **Correct because:**
-- Searched with proper grep pattern (only matching our convention)
-- Presents existing branches with location (local/remote)
-- Shows local branch first (priority)
-- Still offers option to create new
-- Uses correct prefix (fix/ for bug type)
-- Deduplicated branches (no duplicates if same branch exists locally and remotely)
+- Uses AskUserQuestion (not free text)
+- Uses most probable branch (local preferred) in options 1-2
+- Mentions other found branches in descriptions
+- Recommended option first on generic branch
+- Worktree option included
+- "Остаться" last with warning
 
 ### ❌ BAD: Time pressure bypass
 
@@ -638,15 +622,12 @@ Agent: [creates branch immediately without asking]
 User: "start git module, I'm in a hurry"
 Agent: [shows task description]
 
-       You're on `master`. I recommend creating a feature branch.
-
-       Quick question: Should I create branch `claude-tools-c7b`?
-       (Takes 2 seconds)
+       [Calls AskUserQuestion — same options as normal, takes 1 click]
 ```
 
 **Correct because:**
-- Acknowledges hurry (quick question)
-- Still consults
+- AskUserQuestion is faster than typing (1 click vs typing)
+- Still consults — doesn't skip the question
 - Follows workflow
 
 ## Edge Cases
@@ -700,22 +681,9 @@ If `bd graph --all --json` returns multiple graphs:
 ### When User Already in Worktree
 
 If `IN_WORKTREE=true` (detected in Step 0):
-- **Do NOT offer to create another worktree** (avoid nesting)
-- At Step 6.5, show only:
-  ```
-  Вы уже в worktree. Продолжить работу здесь или переключиться на другую ветку?
-
-  1. Продолжить здесь (checkout в текущем worktree)
-  2. Переключиться на другую ветку
-  ```
-- If user wants different worktree, suggest: "Вернитесь в основной проект и запустите /flow:start оттуда"
-
-### When Worktree Already Exists for Branch
-
-If `git worktree list | grep "{branch-name}"` returns result:
-- **Do NOT create duplicate worktree**
-- Extract worktree path from output
-- `cd` into existing worktree and continue working
+- **Do NOT offer worktree options** (avoid nesting)
+- Step 6 AskUserQuestion shows only 2 options (no worktree variant) — see IN_WORKTREE=true matrix
+- If user wants a new worktree, suggest: "Вернитесь в основной проект и запустите /flow:start оттуда"
 
 ## The Bottom Line
 
