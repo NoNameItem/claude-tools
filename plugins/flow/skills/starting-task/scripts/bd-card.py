@@ -6,6 +6,8 @@ Usage:
     bd show <task-id> --json | python3 bd-card.py
 """
 
+import json
+import sys
 import unicodedata
 
 
@@ -195,3 +197,62 @@ def render_dependencies_section(deps: list[dict]) -> list[str]:
             lines.extend(content_line(w) for w in wrap_text(dep_line, CONTENT_WIDTH))
 
     return lines
+
+
+def render_card(task: dict) -> str:
+    """Render a full task card from a task dict."""
+    lines: list[str] = []
+
+    # Title section (always)
+    lines.extend(render_title_section(task["title"], task.get("issue_type", "task")))
+
+    # Labels (if present)
+    lines.extend(render_labels_section(task.get("labels", [])))
+
+    # Metadata (always)
+    lines.extend(
+        render_metadata_section(
+            task["id"],
+            task.get("priority", 2),
+            task["status"],
+            task.get("issue_type", "task"),
+        )
+    )
+
+    # Extract links from description
+    raw_desc = task.get("description", "")
+    clean_desc, links = extract_links(raw_desc)
+
+    # Description (if non-empty after link removal)
+    lines.extend(render_description_section(clean_desc))
+
+    # Links (if any Design:/Plan: found)
+    lines.extend(render_links_section(links))
+
+    # Dependencies (if any)
+    lines.extend(render_dependencies_section(task.get("dependencies", [])))
+
+    # Bottom border
+    lines.append(bottom_border())
+
+    return "\n".join(lines)
+
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if not data:
+        print("No task data.", file=sys.stderr)
+        sys.exit(1)
+
+    # bd show --json returns an array, use first element
+    task = data[0] if isinstance(data, list) else data
+    print(render_card(task))
+
+
+if __name__ == "__main__":
+    main()

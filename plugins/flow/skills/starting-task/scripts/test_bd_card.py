@@ -1,6 +1,6 @@
 """Tests for bd-card.py."""
 
-# ruff: noqa: INP001, S101, PLR2004, RUF003
+# ruff: noqa: INP001, S101, PLR2004, RUF003, RUF012
 
 import importlib.util
 from pathlib import Path
@@ -30,6 +30,7 @@ render_dependencies_section = _mod.render_dependencies_section
 extract_links = _mod.extract_links
 
 TYPE_WORDS = _mod.TYPE_WORDS
+render_card = _mod.render_card
 
 
 class TestCharWidth:
@@ -263,3 +264,104 @@ class TestRenderDependenciesSection:
         text = "\n".join(lines)
         assert "Parent:" in text
         assert "Depends on:" in text
+
+
+class TestRenderCard:
+    """Integration tests for full card rendering."""
+
+    FULL_TASK = {
+        "id": "claude-tools-xhz",
+        "title": "Улучшить отображение текущей задачи в flow:starting-task",
+        "description": (
+            "Сейчас текущая задача выводится в рамке, которая выглядит непонятно.\n"
+            "Нужно продумать более удачный формат отображения.\n"
+            "\n"
+            "TODO:\n"
+            "- Проанализировать текущий вывод\n"
+            "- Продумать альтернативные варианты отображения\n"
+            "- Реализовать выбранный вариант\n"
+            "\n"
+            "Design: docs/plans/2026-02-10-task-card-script-design.md"
+        ),
+        "status": "in_progress",
+        "priority": 4,
+        "issue_type": "task",
+        "labels": ["flow"],
+        "dependencies": [
+            {
+                "id": "claude-tools-elf",
+                "title": "Flow Improvements",
+                "status": "open",
+                "dependency_type": "parent-child",
+            }
+        ],
+    }
+
+    MINIMAL_TASK = {
+        "id": "claude-tools-abc",
+        "title": "Add dark mode support",
+        "description": "",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "feature",
+        "labels": [],
+        "dependencies": [],
+    }
+
+    def test_all_lines_same_width(self):
+        """Every line in the card must have the same visual width."""
+        output = render_card(self.FULL_TASK)
+        lines = output.split("\n")
+        for line in lines:
+            assert str_width(line) == CARD_WIDTH, f"Line width {str_width(line)} != {CARD_WIDTH}: {line!r}"
+
+    def test_minimal_card_all_lines_same_width(self):
+        output = render_card(self.MINIMAL_TASK)
+        lines = output.split("\n")
+        for line in lines:
+            assert str_width(line) == CARD_WIDTH, f"Line width {str_width(line)} != {CARD_WIDTH}: {line!r}"
+
+    def test_full_card_has_all_sections(self):
+        output = render_card(self.FULL_TASK)
+        assert "Task" in output  # type word in border
+        assert "claude-tools-xhz" in output  # ID
+        assert "#flow" in output  # label
+        assert "DESCRIPTION" in output
+        assert "LINKS" in output
+        assert "Design:" in output
+        assert "DEPENDENCIES" in output
+        assert "Parent:" in output
+
+    def test_minimal_card_omits_optional_sections(self):
+        output = render_card(self.MINIMAL_TASK)
+        assert "DESCRIPTION" not in output
+        assert "LINKS" not in output
+        assert "DEPENDENCIES" not in output
+
+    def test_design_line_removed_from_description(self):
+        output = render_card(self.FULL_TASK)
+        # Design line should be in LINKS, not in DESCRIPTION
+        lines = output.split("\n")
+        in_desc = False
+        for line in lines:
+            if "DESCRIPTION" in line:
+                in_desc = True
+            if "LINKS" in line:
+                in_desc = False
+            if in_desc and "Design:" in line:
+                msg = "Design: line found in DESCRIPTION section"
+                raise AssertionError(msg)
+
+    def test_git_line_not_shown(self):
+        task = dict(self.FULL_TASK)
+        task["description"] = "Text\nGit: feature/branch\nMore text"
+        output = render_card(task)
+        assert "Git:" not in output
+
+    def test_starts_with_top_border(self):
+        output = render_card(self.FULL_TASK)
+        assert output.startswith("┌─")
+
+    def test_ends_with_bottom_border(self):
+        output = render_card(self.FULL_TASK)
+        assert output.strip().endswith("┘")
