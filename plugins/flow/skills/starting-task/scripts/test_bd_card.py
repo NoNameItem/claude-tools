@@ -18,9 +18,11 @@ pad_right = _mod.pad_right
 content_line = _mod.content_line
 separator_line = _mod.separator_line
 
-CARD_WIDTH = _mod.CARD_WIDTH  # 80
-CONTENT_WIDTH = _mod.CONTENT_WIDTH  # 76
+CARD_WIDTH = _mod.CARD_WIDTH  # 120
+CONTENT_WIDTH = _mod.CONTENT_WIDTH  # 116
 wrap_text = _mod.wrap_text
+max_word_width = _mod.max_word_width
+compute_card_width = _mod.compute_card_width
 render_title_section = _mod.render_title_section
 render_labels_section = _mod.render_labels_section
 render_metadata_section = _mod.render_metadata_section
@@ -266,6 +268,71 @@ class TestRenderDependenciesSection:
         assert "Depends on:" in text
 
 
+class TestMaxWordWidth:
+    def test_simple(self):
+        assert max_word_width("hello world") == 5
+
+    def test_long_url(self):
+        url = "https://example.com/very/long/path/to/resource"
+        assert max_word_width(f"Link: {url}") == str_width(url)
+
+    def test_empty(self):
+        assert max_word_width("") == 0
+
+    def test_single_word(self):
+        assert max_word_width("superlongword") == 13
+
+
+class TestComputeCardWidth:
+    def test_normal_task_returns_default(self):
+        task = {
+            "id": "proj-abc",
+            "title": "Short title",
+            "description": "Short description",
+            "status": "open",
+            "labels": [],
+            "dependencies": [],
+        }
+        assert compute_card_width(task) == CARD_WIDTH
+
+    def test_long_word_expands_width(self):
+        long_word = "a" * 200
+        task = {
+            "id": "proj-abc",
+            "title": f"Title with {long_word} inside",
+            "description": "",
+            "status": "open",
+            "labels": [],
+            "dependencies": [],
+        }
+        assert compute_card_width(task) == 200 + 4  # word + borders
+
+    def test_long_description_word_expands(self):
+        long_url = "https://example.com/" + "x" * 150
+        task = {
+            "id": "proj-abc",
+            "title": "Short",
+            "description": f"See {long_url} for details",
+            "status": "open",
+            "labels": [],
+            "dependencies": [],
+        }
+        assert compute_card_width(task) == str_width(long_url) + 4
+
+    def test_metadata_line_expands(self):
+        long_status = "s" * 200
+        task = {
+            "id": "proj-abc",
+            "title": "Short",
+            "description": "",
+            "status": long_status,
+            "labels": [],
+            "dependencies": [],
+        }
+        meta = f"Priority: P2  Status: {long_status}  Type: task"
+        assert compute_card_width(task) == str_width(meta) + 4
+
+
 class TestRenderCard:
     """Integration tests for full card rendering."""
 
@@ -365,3 +432,22 @@ class TestRenderCard:
     def test_ends_with_bottom_border(self):
         output = render_card(self.FULL_TASK)
         assert output.strip().endswith("┘")
+
+    def test_dynamic_width_all_lines_same_width(self):
+        """Card with overlong word expands — all lines must still align."""
+        long_url = "https://example.com/" + "x" * 150
+        task = {
+            "id": "proj-abc",
+            "title": "Short title",
+            "description": f"See {long_url} for details",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "feature",
+            "labels": [],
+            "dependencies": [],
+        }
+        output = render_card(task)
+        lines = output.split("\n")
+        expected_width = str_width(long_url) + 4
+        for line in lines:
+            assert str_width(line) == expected_width, f"Line width {str_width(line)} != {expected_width}: {line!r}"

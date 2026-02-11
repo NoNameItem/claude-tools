@@ -73,7 +73,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
 | 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | `bd show <id> --json \| python3 bd-card.py` | Context BEFORE commitment |
+| 3. Show | `bd show <id> --json \| python3 <skill-base-dir>/scripts/bd-card.py` | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |

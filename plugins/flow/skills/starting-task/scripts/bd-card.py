@@ -22,8 +22,8 @@ def str_width(s: str) -> int:
     return sum(char_width(ch) for ch in s)
 
 
-CARD_WIDTH = 80
-CONTENT_WIDTH = 76  # 80 - len("│ ") - len(" │")
+CARD_WIDTH = 120
+CONTENT_WIDTH = 116  # 120 - len("│ ") - len(" │")
 
 
 def pad_right(s: str, width: int) -> str:
@@ -34,14 +34,15 @@ def pad_right(s: str, width: int) -> str:
     return s + " " * (width - current)
 
 
-def content_line(text: str) -> str:
-    """Build a content line: │ <text padded to CONTENT_WIDTH> │"""
-    return "│ " + pad_right(text, CONTENT_WIDTH) + " │"
+def content_line(text: str, card_width: int = CARD_WIDTH) -> str:
+    """Build a content line: │ <text padded to content_width> │"""
+    content_width = card_width - 4
+    return "│ " + pad_right(text, content_width) + " │"
 
 
-def separator_line() -> str:
+def separator_line(card_width: int = CARD_WIDTH) -> str:
     """Build a separator: ├──...──┤"""
-    return "├" + "─" * (CARD_WIDTH - 2) + "┤"
+    return "├" + "─" * (card_width - 2) + "┤"
 
 
 def wrap_text(text: str, width: int) -> list[str]:
@@ -91,16 +92,16 @@ DEP_TYPE_HEADERS = {
 }
 
 
-def top_border(type_word: str) -> str:
+def top_border(type_word: str, card_width: int = CARD_WIDTH) -> str:
     """Build top border: ┌─ Type ──...──┐"""
     label = f" {type_word} "
-    fill_width = CARD_WIDTH - 2 - str_width(label) - 1  # 2 for ┌ ┐, 1 for ─ before label
+    fill_width = card_width - 2 - str_width(label) - 1  # 2 for ┌ ┐, 1 for ─ before label
     return "┌─" + label + "─" * fill_width + "┐"
 
 
-def bottom_border() -> str:
+def bottom_border(card_width: int = CARD_WIDTH) -> str:
     """Build bottom border: └──...──┘"""
-    return "└" + "─" * (CARD_WIDTH - 2) + "┘"
+    return "└" + "─" * (card_width - 2) + "┘"
 
 
 def extract_links(description: str) -> tuple[str, list[str]]:
@@ -128,57 +129,64 @@ def extract_links(description: str) -> tuple[str, list[str]]:
     return "\n".join(clean_lines), links
 
 
-def render_title_section(title: str, issue_type: str) -> list[str]:
+def render_title_section(title: str, issue_type: str, card_width: int = CARD_WIDTH) -> list[str]:
     """Render title section: top border with type word + title line(s)."""
+    content_width = card_width - 4
     type_word = TYPE_WORDS.get(issue_type, issue_type.capitalize())
-    lines = [top_border(type_word)]
-    lines.extend(content_line(w) for w in wrap_text(title, CONTENT_WIDTH))
+    lines = [top_border(type_word, card_width)]
+    lines.extend(content_line(w, card_width) for w in wrap_text(title, content_width))
     return lines
 
 
-def render_labels_section(labels: list[str]) -> list[str]:
+def render_labels_section(labels: list[str], card_width: int = CARD_WIDTH) -> list[str]:
     """Render labels as '#label1 #label2' with blank line before."""
+    content_width = card_width - 4
     if not labels:
         return []
     label_text = " ".join(f"#{lbl}" for lbl in labels)
-    lines = [content_line("")]  # blank line before labels
-    lines.extend(content_line(w) for w in wrap_text(label_text, CONTENT_WIDTH))
+    lines = [content_line("", card_width)]  # blank line before labels
+    lines.extend(content_line(w, card_width) for w in wrap_text(label_text, content_width))
     return lines
 
 
-def render_metadata_section(task_id: str, priority: int, status: str, issue_type: str) -> list[str]:
+def render_metadata_section(
+    task_id: str, priority: int, status: str, issue_type: str, card_width: int = CARD_WIDTH
+) -> list[str]:
     """Render metadata: ID, Priority, Status, Type."""
     return [
-        separator_line(),
-        content_line(f"ID: {task_id}"),
-        content_line(f"Priority: P{priority}  Status: {status}  Type: {issue_type}"),
+        separator_line(card_width),
+        content_line(f"ID: {task_id}", card_width),
+        content_line(f"Priority: P{priority}  Status: {status}  Type: {issue_type}", card_width),
     ]
 
 
-def render_description_section(description: str) -> list[str]:
+def render_description_section(description: str, card_width: int = CARD_WIDTH) -> list[str]:
     """Render description section. Returns [] if description is empty."""
+    content_width = card_width - 4
     if not description or not description.strip():
         return []
 
-    lines = [separator_line(), content_line("DESCRIPTION")]
+    lines = [separator_line(card_width), content_line("DESCRIPTION", card_width)]
     for text_line in description.split("\n"):
-        lines.extend(content_line(w) for w in wrap_text(text_line, CONTENT_WIDTH))
+        lines.extend(content_line(w, card_width) for w in wrap_text(text_line, content_width))
     return lines
 
 
-def render_links_section(links: list[str]) -> list[str]:
+def render_links_section(links: list[str], card_width: int = CARD_WIDTH) -> list[str]:
     """Render links section. Returns [] if no links."""
+    content_width = card_width - 4
     if not links:
         return []
 
-    lines = [separator_line(), content_line("LINKS")]
+    lines = [separator_line(card_width), content_line("LINKS", card_width)]
     for link in links:
-        lines.extend(content_line(w) for w in wrap_text(link, CONTENT_WIDTH))
+        lines.extend(content_line(w, card_width) for w in wrap_text(link, content_width))
     return lines
 
 
-def render_dependencies_section(deps: list[dict]) -> list[str]:
+def render_dependencies_section(deps: list[dict], card_width: int = CARD_WIDTH) -> list[str]:
     """Render dependencies grouped by type. Returns [] if no deps."""
+    content_width = card_width - 4
     if not deps:
         return []
 
@@ -188,26 +196,76 @@ def render_dependencies_section(deps: list[dict]) -> list[str]:
         dt = dep.get("dependency_type", "dependency")
         groups.setdefault(dt, []).append(dep)
 
-    lines = [separator_line(), content_line("DEPENDENCIES")]
+    lines = [separator_line(card_width), content_line("DEPENDENCIES", card_width)]
     for dep_type, group in groups.items():
         header = DEP_TYPE_HEADERS.get(dep_type, f"{dep_type}:")
-        lines.append(content_line(header))
+        lines.append(content_line(header, card_width))
         for dep in group:
             dep_line = f"  → {dep['id']}: {dep['title']} ({dep['status']})"
-            lines.extend(content_line(w) for w in wrap_text(dep_line, CONTENT_WIDTH))
+            lines.extend(content_line(w, card_width) for w in wrap_text(dep_line, content_width))
 
     return lines
 
 
+def max_word_width(text: str) -> int:
+    """Return display width of the longest space-delimited word."""
+    if not text:
+        return 0
+    return max((str_width(w) for w in text.split()), default=0)
+
+
+def compute_card_width(task: dict) -> int:
+    """Compute minimum card width to fit all content without breaking words.
+
+    Scans all text in the task and returns max(CARD_WIDTH, longest_word + 4).
+    The +4 accounts for border characters: "│ " (2) + " │" (2).
+    """
+    max_w = 0
+
+    # Title
+    max_w = max(max_w, max_word_width(task.get("title", "")))
+
+    # Labels
+    for lbl in task.get("labels", []):
+        max_w = max(max_w, str_width(f"#{lbl}"))
+
+    # Metadata (not wrapped, check full line widths)
+    task_id = task.get("id", "")
+    max_w = max(max_w, str_width(f"ID: {task_id}"))
+    priority = task.get("priority", 2)
+    status = task.get("status", "")
+    issue_type = task.get("issue_type", "task")
+    meta = f"Priority: P{priority}  Status: {status}  Type: {issue_type}"
+    max_w = max(max_w, str_width(meta))
+
+    # Description (after link extraction)
+    raw_desc = task.get("description", "")
+    clean_desc, links = extract_links(raw_desc)
+    for line in clean_desc.split("\n"):
+        max_w = max(max_w, max_word_width(line))
+
+    # Links
+    for link in links:
+        max_w = max(max_w, max_word_width(link))
+
+    # Dependencies
+    for dep in task.get("dependencies", []):
+        dep_line = f"  → {dep['id']}: {dep['title']} ({dep['status']})"
+        max_w = max(max_w, max_word_width(dep_line))
+
+    return max(CARD_WIDTH, max_w + 4)
+
+
 def render_card(task: dict) -> str:
     """Render a full task card from a task dict."""
+    card_width = compute_card_width(task)
     lines: list[str] = []
 
     # Title section (always)
-    lines.extend(render_title_section(task["title"], task.get("issue_type", "task")))
+    lines.extend(render_title_section(task["title"], task.get("issue_type", "task"), card_width))
 
     # Labels (if present)
-    lines.extend(render_labels_section(task.get("labels", [])))
+    lines.extend(render_labels_section(task.get("labels", []), card_width))
 
     # Metadata (always)
     lines.extend(
@@ -216,6 +274,7 @@ def render_card(task: dict) -> str:
             task.get("priority", 2),
             task["status"],
             task.get("issue_type", "task"),
+            card_width,
         )
     )
 
@@ -224,16 +283,16 @@ def render_card(task: dict) -> str:
     clean_desc, links = extract_links(raw_desc)
 
     # Description (if non-empty after link removal)
-    lines.extend(render_description_section(clean_desc))
+    lines.extend(render_description_section(clean_desc, card_width))
 
     # Links (if any Design:/Plan: found)
-    lines.extend(render_links_section(links))
+    lines.extend(render_links_section(links, card_width))
 
     # Dependencies (if any)
-    lines.extend(render_dependencies_section(task.get("dependencies", [])))
+    lines.extend(render_dependencies_section(task.get("dependencies", []), card_width))
 
     # Bottom border
-    lines.append(bottom_border())
+    lines.append(bottom_border(card_width))
 
     return "\n".join(lines)
 
