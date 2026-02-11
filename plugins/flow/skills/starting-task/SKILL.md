@@ -73,7 +73,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
 | 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | Display in box format | Context BEFORE commitment |
+| 3. Show | `bd show <id> --json \| python3 <skill-base-dir>/scripts/bd-card.py` | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
@@ -168,46 +168,13 @@ Map selection to task ID and proceed.
 
 ### 3. Show Task Description FIRST
 
-**Before any actions**, display task in detailed box format:
+**Before any actions**, display task details using the card script:
 
-```
-┌─ [Type] Title ────────────────────────────────────────────┐
-│ ID: <task-id>                                             │
-│ Priority: <priority>  Status: <status>  Type: <type>      │
-│ Labels: #label1 #label2                                   │
-├───────────────────────────────────────────────────────────┤
-│ DESCRIPTION                                               │
-│ <full task description>                                   │
-│                                                            │
-├───────────────────────────────────────────────────────────┤
-│ LINKS                                                      │
-│ Design: docs/plans/...                                    │
-│ Plan: docs/plans/...                                      │
-│                                                            │
-├───────────────────────────────────────────────────────────┤
-│ DEPENDENCIES                                              │
-│ Depends on:                                               │
-│   → claude-tools-xxx: Some task (closed)                  │
-│                                                            │
-│ Blocks:                                                   │
-│   → claude-tools-yyy: Another task (open)                 │
-└───────────────────────────────────────────────────────────┘
+```bash
+bd show <task-id> --json | python3 <skill-base-dir>/scripts/bd-card.py
 ```
 
-**Include sections only if present:**
-- Metadata (always)
-- Description (if present)
-- Links (if description contains `Design:` or `Plan:` lines)
-- Dependencies (if present)
-
-**If task is already in_progress:**
-```
-┌─ [F] Git module ──────────────────────────────────────────┐
-│ ⚠️  Задача уже в работе (in_progress)                     │
-│                                                            │
-│ ID: claude-tools-c7b                                      │
-...
-```
+Output the script result in a ``` code block to preserve monospace alignment.
 
 **User needs context BEFORE committing to task.**
 
@@ -550,22 +517,14 @@ Agent: Доступные задачи:
 
 User: 1.2
 
-Agent: ┌─ [F] Git module ──────────────────────────────────────────┐
-       │ ID: claude-tools-c7b                                      │
-       │ Priority: P2  Status: open  Type: feature                 │
-       │ Labels: #statuskit #python                                │
-       ├───────────────────────────────────────────────────────────┤
-       │ DESCRIPTION                                               │
-       │ Create module that displays:                             │
-       │ - Current directory (project name)                        │
-       │ - Branch and its status                                   │
-       │ - Number of changes (staged/unstaged)                     │
-       │ - Hash and age of last commit                             │
-       ├───────────────────────────────────────────────────────────┤
-       │ DEPENDENCIES                                              │
-       │ Depends on:                                               │
-       │   → claude-tools-5dl: StatusKit (in_progress)             │
-       └───────────────────────────────────────────────────────────┘
+Agent: [runs bd show claude-tools-c7b --json | python3 <skill-base-dir>/scripts/bd-card.py]
+
+       ```
+       ┌─ Feature ──────────────────────────────────────────────────────────────────┐
+       │ Git module                                                                 │
+       ...
+       └────────────────────────────────────────────────────────────────────────────┘
+       ```
 
        [Calls AskUserQuestion with:]
        Question: "Как продолжить работу с веткой для задачи claude-tools-c7b?"
@@ -635,10 +594,9 @@ Agent: [shows task description]
 ### When Task Already in_progress
 
 If task status is already `in_progress`:
-1. Show warning in task display box: `⚠️  Задача уже в работе (in_progress)`
-2. Still show full description (user might not remember)
-3. Still check branch and ask
-4. Don't update status (already correct)
+1. Still show full description via script (user might not remember)
+2. Still check branch and ask
+3. Don't update status (already correct)
 
 ### When No Tasks Available
 
