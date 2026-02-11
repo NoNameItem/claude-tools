@@ -40,3 +40,36 @@ def content_line(text: str) -> str:
 def separator_line() -> str:
     """Build a separator: ├──...──┤"""
     return "├" + "─" * (CARD_WIDTH - 2) + "┤"
+
+
+def wrap_text(text: str, width: int) -> list[str]:
+    """Wrap text to fit within width, respecting bullet and dependency indents."""
+    if not text:
+        return [""]
+
+    # Detect indent for continuation lines
+    indent = ""
+    if text.startswith("- "):
+        indent = "  "
+    elif text.lstrip().startswith("→ "):
+        # Indent to align after "→ " (preserve leading spaces + 2 more)
+        leading = len(text) - len(text.lstrip())
+        indent = " " * (leading + len("→ "))
+
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = words[0]
+
+    for word in words[1:]:
+        test = current + " " + word
+        if str_width(test) <= width:
+            current = test
+        else:
+            lines.append(current)
+            current = indent + word
+
+    lines.append(current)
+    return lines

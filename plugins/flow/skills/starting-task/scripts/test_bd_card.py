@@ -20,6 +20,7 @@ separator_line = _mod.separator_line
 
 CARD_WIDTH = _mod.CARD_WIDTH  # 80
 CONTENT_WIDTH = _mod.CONTENT_WIDTH  # 76
+wrap_text = _mod.wrap_text
 
 
 class TestCharWidth:
@@ -93,3 +94,41 @@ class TestSeparatorLine:
         assert str_width(line) == CARD_WIDTH
         assert line.startswith("├")
         assert line.endswith("┤")
+
+
+class TestWrapText:
+    def test_short_line_no_wrap(self):
+        lines = wrap_text("short text", CONTENT_WIDTH)
+        assert lines == ["short text"]
+
+    def test_wrap_at_word_boundary(self):
+        long = "word " * 20  # 100 chars
+        lines = wrap_text(long.strip(), CONTENT_WIDTH)
+        for line in lines:
+            assert str_width(line) <= CONTENT_WIDTH
+
+    def test_bullet_continuation_indent(self):
+        """Lines starting with '- ' wrap with indent aligned to text after marker."""
+        long_bullet = "- " + "word " * 20
+        lines = wrap_text(long_bullet.strip(), CONTENT_WIDTH)
+        assert lines[0].startswith("- ")
+        for continuation in lines[1:]:
+            assert continuation.startswith("  ")  # 2 spaces indent
+
+    def test_dependency_continuation_indent(self):
+        """Lines starting with '  → ' wrap with indent aligned to text after arrow."""
+        long_dep = "  → claude-tools-lmr: " + "word " * 15
+        lines = wrap_text(long_dep.rstrip(), CONTENT_WIDTH)
+        # Continuation should indent to align after "→ "
+        for continuation in lines[1:]:
+            assert continuation.startswith("    ")  # 4 spaces
+
+    def test_empty_string(self):
+        assert wrap_text("", CONTENT_WIDTH) == [""]
+
+    def test_cyrillic_wrap(self):
+        long_cyrillic = "Слово " * 20
+        lines = wrap_text(long_cyrillic.strip(), CONTENT_WIDTH)
+        for line in lines:
+            assert str_width(line) <= CONTENT_WIDTH
+        assert len(lines) > 1
