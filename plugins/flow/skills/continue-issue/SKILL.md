@@ -270,33 +270,13 @@ Invoke the `flow:init-worktree` skill using the Skill tool.
 
 ### 8. Show Task Card
 
-Display the task in detailed box format (same as `flow:start`):
+Display the task card using the script:
 
 ```bash
-bd show <task-id>
+bd show <task-id> --json | python3 <skill-base-dir>/../starting-task/scripts/bd-card.py
 ```
 
-Format as:
-
-```
-┌─ [Type] Title ────────────────────────────────────────────┐
-│ ID: <task-id>                                             │
-│ Priority: <priority>  Status: <status>  Type: <type>      │
-│ Labels: #label1 #label2                                   │
-├───────────────────────────────────────────────────────────┤
-│ DESCRIPTION                                               │
-│ <description without Git:/Design:/Plan: lines>            │
-├───────────────────────────────────────────────────────────┤
-│ LINKS                                                      │
-│ Git: <branch-name>                                        │
-│ Design: docs/plans/...                                    │
-│ Plan: docs/plans/...                                      │
-├───────────────────────────────────────────────────────────┤
-│ DEPENDENCIES                                              │
-│ Depends on:                                               │
-│   → claude-tools-xxx: Some task (status)                  │
-└───────────────────────────────────────────────────────────┘
-```
+Output in a ``` code block to preserve alignment.
 
 This is the final output. The user sees it and starts working.
 
@@ -345,18 +325,14 @@ Agent: [reads Git: from description → feature/claude-tools-elf.3-task-selectio
 
        Перешёл в worktree `.worktrees/feature-claude-tools-elf.3-task-selection-optimization`.
 
-       ┌─ [F] Оптимизация выбора задачи ───────────────────────┐
-       │ ID: claude-tools-elf.3                                 │
-       │ Priority: P2  Status: in_progress  Type: feature       │
-       │ Labels: #flow                                          │
-       ├────────────────────────────────────────────────────────┤
-       │ DESCRIPTION                                            │
-       │ Упростить выбор задачи в flow:starting-task.           │
-       ├────────────────────────────────────────────────────────┤
-       │ LINKS                                                  │
-       │ Git: feature/claude-tools-elf.3-task-selection-...     │
-       │ Design: docs/plans/2026-01-30-flow-continue-design.md  │
-       └────────────────────────────────────────────────────────┘
+       [runs bd show claude-tools-elf.3 --json | python3 <skill-base-dir>/../starting-task/scripts/bd-card.py]
+
+       ```
+       ┌─ Feature ──────────────────────────────────────────────────────────────────┐
+       │ Оптимизация выбора задачи                                                 │
+       ...
+       └────────────────────────────────────────────────────────────────────────────┘
+       ```
 ```
 
 ### ✅ GOOD: Direct task-id argument
