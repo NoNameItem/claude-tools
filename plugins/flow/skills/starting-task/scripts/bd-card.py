@@ -73,3 +73,125 @@ def wrap_text(text: str, width: int) -> list[str]:
 
     lines.append(current)
     return lines
+
+
+TYPE_WORDS = {
+    "epic": "Epic",
+    "feature": "Feature",
+    "bug": "Bug",
+    "task": "Task",
+    "chore": "Chore",
+}
+
+DEP_TYPE_HEADERS = {
+    "parent-child": "Parent:",
+    "dependency": "Depends on:",
+}
+
+
+def top_border(type_word: str) -> str:
+    """Build top border: ┌─ Type ──...──┐"""
+    label = f" {type_word} "
+    fill_width = CARD_WIDTH - 2 - str_width(label) - 1  # 2 for ┌ ┐, 1 for ─ before label
+    return "┌─" + label + "─" * fill_width + "┐"
+
+
+def bottom_border() -> str:
+    """Build bottom border: └──...──┘"""
+    return "└" + "─" * (CARD_WIDTH - 2) + "┘"
+
+
+def extract_links(description: str) -> tuple[str, list[str]]:
+    """Extract Design:/Plan:/Git: lines from description.
+
+    Returns (cleaned_description, link_lines).
+    Design: and Plan: go to links. Git: is removed but not shown.
+    """
+    links: list[str] = []
+    clean_lines: list[str] = []
+
+    for line in description.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith(("Design:", "Plan:")):
+            links.append(stripped)
+        elif stripped.startswith("Git:"):
+            pass  # Remove from description, don't add to links
+        else:
+            clean_lines.append(line)
+
+    # Remove trailing empty lines from cleaned description
+    while clean_lines and not clean_lines[-1].strip():
+        clean_lines.pop()
+
+    return "\n".join(clean_lines), links
+
+
+def render_title_section(title: str, issue_type: str) -> list[str]:
+    """Render title section: top border with type word + title line(s)."""
+    type_word = TYPE_WORDS.get(issue_type, issue_type.capitalize())
+    lines = [top_border(type_word)]
+    lines.extend(content_line(w) for w in wrap_text(title, CONTENT_WIDTH))
+    return lines
+
+
+def render_labels_section(labels: list[str]) -> list[str]:
+    """Render labels as '#label1 #label2' with blank line before."""
+    if not labels:
+        return []
+    label_text = " ".join(f"#{lbl}" for lbl in labels)
+    lines = [content_line("")]  # blank line before labels
+    lines.extend(content_line(w) for w in wrap_text(label_text, CONTENT_WIDTH))
+    return lines
+
+
+def render_metadata_section(task_id: str, priority: int, status: str, issue_type: str) -> list[str]:
+    """Render metadata: ID, Priority, Status, Type."""
+    return [
+        separator_line(),
+        content_line(f"ID: {task_id}"),
+        content_line(f"Priority: P{priority}  Status: {status}  Type: {issue_type}"),
+    ]
+
+
+def render_description_section(description: str) -> list[str]:
+    """Render description section. Returns [] if description is empty."""
+    if not description or not description.strip():
+        return []
+
+    lines = [separator_line(), content_line("DESCRIPTION")]
+    for text_line in description.split("\n"):
+        lines.extend(content_line(w) for w in wrap_text(text_line, CONTENT_WIDTH))
+    return lines
+
+
+def render_links_section(links: list[str]) -> list[str]:
+    """Render links section. Returns [] if no links."""
+    if not links:
+        return []
+
+    lines = [separator_line(), content_line("LINKS")]
+    for link in links:
+        lines.extend(content_line(w) for w in wrap_text(link, CONTENT_WIDTH))
+    return lines
+
+
+def render_dependencies_section(deps: list[dict]) -> list[str]:
+    """Render dependencies grouped by type. Returns [] if no deps."""
+    if not deps:
+        return []
+
+    # Group by dependency_type
+    groups: dict[str, list[dict]] = {}
+    for dep in deps:
+        dt = dep.get("dependency_type", "dependency")
+        groups.setdefault(dt, []).append(dep)
+
+    lines = [separator_line(), content_line("DEPENDENCIES")]
+    for dep_type, group in groups.items():
+        header = DEP_TYPE_HEADERS.get(dep_type, f"{dep_type}:")
+        lines.append(content_line(header))
+        for dep in group:
+            dep_line = f"  → {dep['id']}: {dep['title']} ({dep['status']})"
+            lines.extend(content_line(w) for w in wrap_text(dep_line, CONTENT_WIDTH))
+
+    return lines

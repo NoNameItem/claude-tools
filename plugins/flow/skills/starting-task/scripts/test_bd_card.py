@@ -21,6 +21,15 @@ separator_line = _mod.separator_line
 CARD_WIDTH = _mod.CARD_WIDTH  # 80
 CONTENT_WIDTH = _mod.CONTENT_WIDTH  # 76
 wrap_text = _mod.wrap_text
+render_title_section = _mod.render_title_section
+render_labels_section = _mod.render_labels_section
+render_metadata_section = _mod.render_metadata_section
+render_description_section = _mod.render_description_section
+render_links_section = _mod.render_links_section
+render_dependencies_section = _mod.render_dependencies_section
+extract_links = _mod.extract_links
+
+TYPE_WORDS = _mod.TYPE_WORDS
 
 
 class TestCharWidth:
@@ -132,3 +141,125 @@ class TestWrapText:
         for line in lines:
             assert str_width(line) <= CONTENT_WIDTH
         assert len(lines) > 1
+
+
+class TestTypeWords:
+    def test_known_types(self):
+        assert TYPE_WORDS["epic"] == "Epic"
+        assert TYPE_WORDS["feature"] == "Feature"
+        assert TYPE_WORDS["bug"] == "Bug"
+        assert TYPE_WORDS["task"] == "Task"
+        assert TYPE_WORDS["chore"] == "Chore"
+
+
+class TestExtractLinks:
+    def test_extracts_design_and_plan(self):
+        desc = "Some text\nDesign: docs/plans/foo.md\nPlan: docs/plans/bar.md\nMore text"
+        clean, links = extract_links(desc)
+        assert "Design:" not in clean
+        assert "Plan:" not in clean
+        assert "More text" in clean
+        assert len(links) == 2
+
+    def test_removes_git_line_from_description(self):
+        desc = "Some text\nGit: feature/branch-name\nMore text"
+        clean, links = extract_links(desc)
+        assert "Git:" not in clean
+        assert len(links) == 0  # Git lines not shown in links
+
+    def test_no_links(self):
+        desc = "Simple description"
+        clean, links = extract_links(desc)
+        assert clean == "Simple description"
+        assert links == []
+
+    def test_multiple_design_lines(self):
+        desc = "Design: foo.md\nDesign: bar.md"
+        _clean, links = extract_links(desc)
+        assert len(links) == 2
+
+
+class TestRenderTitleSection:
+    def test_top_border_contains_type_word(self):
+        lines = render_title_section("Add dark mode", "feature")
+        assert "Feature" in lines[0]
+        assert lines[0].startswith("┌─")
+        assert lines[0].endswith("┐")
+        assert str_width(lines[0]) == CARD_WIDTH
+
+    def test_title_line(self):
+        lines = render_title_section("Add dark mode", "feature")
+        assert any("Add dark mode" in line for line in lines)
+
+    def test_unknown_type_fallback(self):
+        lines = render_title_section("Some task", "milestone")
+        # Should not crash, use type as-is capitalized
+        assert lines[0].startswith("┌─")
+
+
+class TestRenderMetadataSection:
+    def test_contains_id_priority_status_type(self):
+        lines = render_metadata_section("claude-tools-abc", 2, "open", "feature")
+        text = "\n".join(lines)
+        assert "claude-tools-abc" in text
+        assert "P2" in text
+        assert "open" in text
+        assert "feature" in text
+
+
+class TestRenderDescriptionSection:
+    def test_includes_header_and_text(self):
+        lines = render_description_section("Some description text")
+        text = "\n".join(lines)
+        assert "DESCRIPTION" in text
+        assert "Some description" in text
+
+    def test_empty_returns_empty(self):
+        lines = render_description_section("")
+        assert lines == []
+
+    def test_whitespace_only_returns_empty(self):
+        lines = render_description_section("   \n  \n  ")
+        assert lines == []
+
+
+class TestRenderLinksSection:
+    def test_includes_header_and_links(self):
+        links = ["Design: docs/plans/foo.md", "Plan: docs/plans/bar.md"]
+        lines = render_links_section(links)
+        text = "\n".join(lines)
+        assert "LINKS" in text
+        assert "Design:" in text
+        assert "Plan:" in text
+
+    def test_empty_returns_empty(self):
+        assert render_links_section([]) == []
+
+
+class TestRenderDependenciesSection:
+    def test_parent_child(self):
+        deps = [{"id": "proj-elf", "title": "Flow Improvements", "status": "open", "dependency_type": "parent-child"}]
+        lines = render_dependencies_section(deps)
+        text = "\n".join(lines)
+        assert "DEPENDENCIES" in text
+        assert "Parent:" in text
+        assert "proj-elf" in text
+
+    def test_dependency_type(self):
+        deps = [{"id": "proj-abc", "title": "Some task", "status": "closed", "dependency_type": "dependency"}]
+        lines = render_dependencies_section(deps)
+        text = "\n".join(lines)
+        assert "Depends on:" in text
+
+    def test_empty_returns_empty(self):
+        assert render_dependencies_section([]) == []
+
+    def test_multiple_groups(self):
+        deps = [
+            {"id": "proj-a", "title": "Parent", "status": "open", "dependency_type": "parent-child"},
+            {"id": "proj-b", "title": "Blocker", "status": "open", "dependency_type": "dependency"},
+        ]
+        lines = render_dependencies_section(deps)
+        text = "\n".join(lines)
+        assert "Parent:" in text
+        assert "Depends on:" in text
