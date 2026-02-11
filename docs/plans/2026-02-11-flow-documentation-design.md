@@ -7,27 +7,29 @@
 - **Detail level:** Concise — 2-3 sentences per command, when to use, one example
 - **Language:** English
 - **Prerequisites:** Brief with explicit links. beads required, superpowers recommended.
+- **Badges:** Version (from plugin.json), License (MIT), Platform (Claude Code). CI badge deferred — see `claude-tools-wm2`.
 
 ## Structure
 
-1. **Flow Plugin** — one-paragraph overview
-2. **Prerequisites** — [Claude Code](https://claude.com/claude-code), [beads](https://github.com/steveyegge/beads) (required), [superpowers](https://github.com/obra/superpowers) (recommended)
-3. **Installation** — from GitHub + local development
-4. **How Flow Stores State** — Git/Design/Plan lines in task description, table of who writes/reads each, chain with superpowers
-5. **Why Multiple Sessions?** — context window limits, focused sessions, state preserved in beads
-6. **Typical Workflow** — 5 sessions demonstrating full lifecycle:
+1. **Badges** — version, license, platform (shields.io static badges)
+2. **Flow Plugin** — one-paragraph overview
+3. **Prerequisites** — [Claude Code](https://claude.com/claude-code), [beads](https://github.com/steveyegge/beads) (required), [superpowers](https://github.com/obra/superpowers) (recommended)
+4. **Installation** — from GitHub + local development
+5. **How Flow Stores State** — Git/Design/Plan lines in task description, table of who writes/reads each, chain with superpowers
+6. **Why Multiple Sessions?** — context window limits, focused sessions, state preserved in beads
+7. **Typical Workflow** — 5 sessions demonstrating full lifecycle:
    - Session 1: `/flow:start` → brainstorm → `/flow:after-design` → `/flow:decompose`
    - Session 2: `/flow:continue` → write plan → `/flow:after-plan`
    - Session 3: `/flow:continue` → implement → create PR
    - Session 4: `/flow:continue` → `/flow:review-comments` → `/flow:sonar-sync`
    - Session 5: `/flow:continue` → `/flow:done`
    - Note: not every task needs all phases
-7. **Commands** — grouped by lifecycle phase:
+8. **Commands** — grouped by lifecycle phase:
    - **Starting Work:** `/flow:start`, `/flow:continue`
    - **Design & Planning:** `/flow:after-design`, `/flow:decompose`, `/flow:after-plan`
    - **Code Review & Quality:** `/flow:review-comments`, `/flow:sonar-sync`
    - **Completing Work:** `/flow:done`
-8. **Command Reference** — quick-reference table
+9. **Command Reference** — quick-reference table
 
 ## Command Descriptions
 
