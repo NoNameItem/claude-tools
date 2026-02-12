@@ -48,10 +48,10 @@ Each line is written by one command and read by others:
 
 With superpowers, the typical chain looks like this:
 
-1. `/superpowers:brainstorming` writes a **design document** — problem analysis, proposed approaches, architecture decisions
+1. `/superpowers:brainstorm` writes a **design document** — problem analysis, proposed approaches, architecture decisions
 2. `/flow:after-design` finds it and saves `Design:` to the task
 3. `/flow:decompose` reads `Design:`, opens the doc, creates subtasks
-4. `/superpowers:writing-plans` writes an **implementation plan** — step-by-step commits, files to change, tests to add
+4. `/superpowers:write-plan` writes an **implementation plan** — step-by-step commits, files to change, tests to add
 5. `/flow:after-plan` finds it and saves `Plan:` to the task
 6. `/flow:done` reads `Plan:`, offers to delete or archive the file
 
@@ -73,7 +73,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ```
 /flow:start                       # choose task, create branch
-/superpowers:brainstorming        # explore the problem, write design doc
+/superpowers:brainstorm        # explore the problem, write design doc
 /flow:after-design                # link design to task
 /flow:decompose                   # break into subtasks (if needed)
 ```
@@ -82,7 +82,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ```
 /flow:continue                    # resume active task
-/superpowers:writing-plans        # create implementation plan
+/superpowers:write-plan        # create implementation plan
 /flow:after-plan                  # link plan to task
 ```
 
@@ -90,7 +90,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ```
 /flow:continue                    # resume active task
-/superpowers:executing-plans      # implement the plan
+/superpowers:execute-plan      # implement the plan
 # create PR when ready
 ```
 
@@ -143,7 +143,7 @@ When to use: after `/clear`, new session, or Claude Code restart.
 
 Links a design document to the current task. Finds the most recent design file in `docs/plans/`, saves a `Design:` reference in the task description. Run this after completing the brainstorming phase.
 
-When to use: after `/superpowers:brainstorming` (or your own design process) produces a design document.
+When to use: after `/superpowers:brainstorm` (or your own design process) produces a design document.
 
 ```
 /flow:after-design
@@ -163,7 +163,7 @@ When to use: after design is linked, when the task is too large to implement in 
 
 Links an implementation plan to the current task. Finds the most recent plan file in `docs/plans/`, saves a `Plan:` reference in the task description. Run this after the planning phase.
 
-When to use: after `/superpowers:writing-plans` (or your own planning process) produces an implementation plan.
+When to use: after `/superpowers:write-plan` (or your own planning process) produces an implementation plan.
 
 ```
 /flow:after-plan
