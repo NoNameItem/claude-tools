@@ -4,11 +4,11 @@
 
 # Flow Plugin
 
-Automated workflow commands for [Claude Code](https://claude.com/claude-code) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
+Automated workflow commands for [Claude Code](https://code.claude.com) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
 
 ## Prerequisites
 
-- [Claude Code](https://claude.com/claude-code) — flow runs as a Claude Code plugin
+- [Claude Code](https://code.claude.com) — flow runs as a Claude Code plugin
 - [beads](https://github.com/steveyegge/beads) — required. Flow commands use `bd` to select, update, and close tasks.
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
 
@@ -32,7 +32,7 @@ Local development:
 
 Flow saves task state as special lines in the beads task description:
 
-```
+```text
 Git: feature/claude-tools-abc-login-error
 Design: docs/plans/2026-02-10-login-error-design.md
 Plan: docs/plans/2026-02-10-login-error-impl-plan.md
@@ -71,7 +71,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ### Session 1: Pick a task and design
 
-```
+```bash
 /flow:start                       # choose task, create branch
 /superpowers:brainstorm        # explore the problem, write design doc
 /flow:after-design                # link design to task
@@ -80,7 +80,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ### Session 2: Plan implementation
 
-```
+```bash
 /flow:continue                    # resume active task
 /superpowers:write-plan        # create implementation plan
 /flow:after-plan                  # link plan to task
@@ -88,7 +88,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ### Session 3: Implement
 
-```
+```bash
 /flow:continue                    # resume active task
 /superpowers:execute-plan      # implement the plan
 # create PR when ready
@@ -96,7 +96,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ### Session 4: Address review feedback
 
-```
+```bash
 /flow:continue                    # resume active task
 /flow:review-comments             # process PR comments, fix, push
 /flow:sonar-sync                  # import SonarCloud issues as subtasks
@@ -104,7 +104,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ### Session 5: Close
 
-```
+```bash
 /flow:continue                    # resume active task
 /flow:done                        # close task, clean up branch
 ```
@@ -121,7 +121,7 @@ Begins a work session. Shows a hierarchical task tree, lets you pick a task by n
 
 When to use: at the start of a new work session, or when switching to a different task.
 
-```
+```bash
 /flow:start           # show all tasks
 /flow:start 5dl       # show subtree rooted at task 5dl
 ```
@@ -132,7 +132,7 @@ Fast return to an active task after `/clear` or Claude Code restart. Finds your 
 
 When to use: after `/clear`, new session, or Claude Code restart.
 
-```
+```bash
 /flow:continue          # find and resume active task(s)
 /flow:continue elf.3    # resume specific task directly
 ```
@@ -145,7 +145,7 @@ Links a design document to the current task. Finds the most recent design file i
 
 When to use: after `/superpowers:brainstorm` (or your own design process) produces a design document.
 
-```
+```bash
 /flow:after-design
 ```
 
@@ -155,7 +155,7 @@ Breaks a task into subtasks based on its design document. Proposes 2-3 decomposi
 
 When to use: after design is linked, when the task is too large to implement in one go.
 
-```
+```bash
 /flow:decompose
 ```
 
@@ -165,7 +165,7 @@ Links an implementation plan to the current task. Finds the most recent plan fil
 
 When to use: after `/superpowers:write-plan` (or your own planning process) produces an implementation plan.
 
-```
+```bash
 /flow:after-plan
 ```
 
@@ -177,7 +177,7 @@ Processes unresolved GitHub PR review comments. Collects comments, categorizes t
 
 When to use: after pushing a PR and receiving review comments.
 
-```
+```bash
 /flow:review-comments
 ```
 
@@ -187,7 +187,7 @@ Syncs SonarQube/SonarCloud issues with beads tasks. Two modes: on main branch �
 
 When to use: during tech debt review or after SonarCloud analysis flags new issues.
 
-```
+```bash
 /flow:sonar-sync
 ```
 
@@ -199,7 +199,7 @@ Completes the current task. Checks git branch and PR status, closes the task, of
 
 When to use: when implementation is complete, PR is merged, and you're ready to close the task.
 
-```
+```bash
 /flow:done
 ```
 
