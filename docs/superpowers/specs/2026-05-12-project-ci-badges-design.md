@@ -270,16 +270,16 @@ Independent of PR 2; order between PR 2 and PR 3 doesn't matter.
 
 `claude-tools-wm2` decomposes into three sub-tasks, one per PR. Created via `/flow:decompose` after the spec is approved.
 
-### Sub-task 1: Badge publishing infrastructure
+### Sub-task 1: Badge publishing infrastructure (`claude-tools-wm2.1`)
 
 - **Title:** Publish per-project CI badges from push.yml
 - **Parent:** `claude-tools-wm2`
-- **Type:** `task`
+- **Type:** `chore`
 - **Priority:** P3
 - **Label:** `repo`
-- **Branch:** `feature/<id>-publish-badges`
+- **Branch:** `chore/claude-tools-wm2.1-publish-badges`
 - **PR label:** `repo`
-- **Blocks:** Sub-task 2, Sub-task 3
+- **Blocks:** `claude-tools-wm2.2`, `claude-tools-wm2.3`
 
 **Scope:**
 - Create orphan branch `badges-data` with initial placeholder JSONs (`statuskit.json`, `flow.json`, both `"message": "unknown"` / `"color": "lightgrey"`). This step is performed manually as part of the sub-task — it doesn't go through a PR.
@@ -293,16 +293,16 @@ Independent of PR 2; order between PR 2 and PR 3 doesn't matter.
 - After PR merges, the next master push triggers `publish-badges`; the job succeeds; commits to `badges-data` contain updated JSON for any project whose CI ran in that push.
 - shields.io endpoint URLs resolve and render a valid badge (verified by opening `https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/statuskit.json` in a browser).
 
-### Sub-task 2: statuskit README CI badge
+### Sub-task 2: statuskit README CI badge (`claude-tools-wm2.2`)
 
 - **Title:** Add CI status badge to statuskit README
 - **Parent:** `claude-tools-wm2`
 - **Type:** `task`
 - **Priority:** P3
 - **Label:** `statuskit`
-- **Branch:** `feature/<id>-statuskit-ci-badge`
+- **Branch:** `feature/claude-tools-wm2.2-statuskit-ci-badge`
 - **PR label:** `statuskit`
-- **Depends on:** Sub-task 1
+- **Depends on:** `claude-tools-wm2.1`
 
 **Scope:**
 - Modify `packages/statuskit/README.md`: add CI badge as the first item in the existing badge row (above title), before the PyPI badges. URL:
@@ -316,16 +316,16 @@ Independent of PR 2; order between PR 2 and PR 3 doesn't matter.
 - Badge reflects current statuskit CI status (either "unknown" pre-first-run, or a real status post-run).
 - No other badges in the file were touched.
 
-### Sub-task 3: flow README CI badge
+### Sub-task 3: flow README CI badge (`claude-tools-wm2.3`)
 
 - **Title:** Add CI status badge to flow README
 - **Parent:** `claude-tools-wm2`
 - **Type:** `task`
 - **Priority:** P3
 - **Label:** `flow`
-- **Branch:** `feature/<id>-flow-ci-badge`
+- **Branch:** `feature/claude-tools-wm2.3-flow-ci-badge`
 - **PR label:** `flow`
-- **Depends on:** Sub-task 1
+- **Depends on:** `claude-tools-wm2.1`
 
 **Scope:**
 - Modify `plugins/flow/README.md`: add CI badge as the first item in the existing badge row (currently Version/License/Platform). URL:
