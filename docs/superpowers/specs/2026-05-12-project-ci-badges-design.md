@@ -266,9 +266,86 @@ Commit/PR title: `docs(flow): add CI status badge`
 
 Independent of PR 2; order between PR 2 and PR 3 doesn't matter.
 
-### Beads decomposition
+## Decomposition
 
-The current task `claude-tools-wm2` will be decomposed into three sub-tasks (via `/flow:decompose`), one per PR. Each sub-task carries its own branch/PR/label. The infrastructure sub-task (PR 1) should be done first; the README sub-tasks can be done in parallel after.
+`claude-tools-wm2` decomposes into three sub-tasks, one per PR. Created via `/flow:decompose` after the spec is approved.
+
+### Sub-task 1: Badge publishing infrastructure
+
+- **Title:** Publish per-project CI badges from push.yml
+- **Parent:** `claude-tools-wm2`
+- **Type:** `task`
+- **Priority:** P3
+- **Label:** `repo`
+- **Branch:** `feature/<id>-publish-badges`
+- **PR label:** `repo`
+- **Blocks:** Sub-task 2, Sub-task 3
+
+**Scope:**
+- Create orphan branch `badges-data` with initial placeholder JSONs (`statuskit.json`, `flow.json`, both `"message": "unknown"` / `"color": "lightgrey"`). This step is performed manually as part of the sub-task — it doesn't go through a PR.
+- Add `.github/scripts/publish_badges.py` implementing the algorithm described in the Design section.
+- Add `.github/scripts/tests/test_publish_badges.py` covering regex extraction, status filtering, aggregation, output JSON, and pagination.
+- Modify `.github/workflows/push.yml` to add the `publish-badges` job.
+
+**Acceptance:**
+- `badges-data` branch exists on remote with two placeholder JSONs.
+- Tests pass locally (`uv run pytest .github/scripts/tests/test_publish_badges.py`).
+- After PR merges, the next master push triggers `publish-badges`; the job succeeds; commits to `badges-data` contain updated JSON for any project whose CI ran in that push.
+- shields.io endpoint URLs resolve and render a valid badge (verified by opening `https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/statuskit.json` in a browser).
+
+### Sub-task 2: statuskit README CI badge
+
+- **Title:** Add CI status badge to statuskit README
+- **Parent:** `claude-tools-wm2`
+- **Type:** `task`
+- **Priority:** P3
+- **Label:** `statuskit`
+- **Branch:** `feature/<id>-statuskit-ci-badge`
+- **PR label:** `statuskit`
+- **Depends on:** Sub-task 1
+
+**Scope:**
+- Modify `packages/statuskit/README.md`: add CI badge as the first item in the existing badge row (above title), before the PyPI badges. URL:
+  ```
+  https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/statuskit.json
+  ```
+  Link target: the Push workflow page (`https://github.com/NoNameItem/claude-tools/actions/workflows/push.yml`).
+
+**Acceptance:**
+- README renders the badge correctly on GitHub (preview in PR).
+- Badge reflects current statuskit CI status (either "unknown" pre-first-run, or a real status post-run).
+- No other badges in the file were touched.
+
+### Sub-task 3: flow README CI badge
+
+- **Title:** Add CI status badge to flow README
+- **Parent:** `claude-tools-wm2`
+- **Type:** `task`
+- **Priority:** P3
+- **Label:** `flow`
+- **Branch:** `feature/<id>-flow-ci-badge`
+- **PR label:** `flow`
+- **Depends on:** Sub-task 1
+
+**Scope:**
+- Modify `plugins/flow/README.md`: add CI badge as the first item in the existing badge row (currently Version/License/Platform). URL:
+  ```
+  https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/flow.json
+  ```
+  Link target: the Push workflow page.
+
+**Acceptance:**
+- README renders the badge correctly on GitHub.
+- Existing static Version/License/Platform badges are preserved unchanged. (Their cleanup is out of scope here — see "Out of scope".)
+- No other files touched.
+
+### Execution order
+
+Sub-task 1 must merge first because:
+1. The `badges-data` branch must exist before README badge URLs can resolve.
+2. Without the publishing job, the placeholder "unknown" badges will never be replaced with real status.
+
+Sub-task 2 and Sub-task 3 are independent and can be executed in parallel (separate branches, separate PRs, separate scopes).
 
 ## Files NOT modified
 
