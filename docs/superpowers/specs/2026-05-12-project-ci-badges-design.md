@@ -211,19 +211,67 @@ Placement: as the first badge, before the existing PyPI badges.
 - PR-level badges (latest open PR status).
 - A `badges-data` history retention policy. The branch will accumulate small commits; if this becomes a concern later, periodic squash is an option.
 
-## Implementation summary
+## Delivery structure
+
+CONTRIBUTING.md enforces "one PR — one package (or only repo-level files)". Touching both `packages/statuskit/README.md` and `plugins/flow/README.md` in the same PR violates the single-package rule. Delivery is therefore split into three sequential PRs (plus a one-time branch bootstrap that doesn't go through a PR).
+
+### Pre-step: Bootstrap `badges-data` branch (no PR)
+
+Manual one-time setup before PR 1 merges:
+```bash
+git switch --orphan badges-data
+git rm -rf .
+# Add statuskit.json and flow.json with {"schemaVersion": 1, "label": "CI", "message": "unknown", "color": "lightgrey"}
+git add statuskit.json flow.json
+git commit -m "chore: bootstrap badges-data branch"
+git push -u origin badges-data
+```
+
+This is a separate orphan branch, not a PR against master.
+
+### PR 1 (label: `repo`) — Infrastructure
+
+Scope: `.github/` + `docs/`. Adds the publishing pipeline.
 
 Files added:
-- `badges-data` branch with `statuskit.json`, `flow.json` (orphan branch, bootstrapped manually)
 - `.github/scripts/publish_badges.py`
 - `.github/scripts/tests/test_publish_badges.py`
 
 Files modified:
 - `.github/workflows/push.yml` — add `publish-badges` job
-- `packages/statuskit/README.md` — add CI badge
-- `plugins/flow/README.md` — add CI badge
 
-Files NOT modified:
+Commit/PR title example: `feat: publish per-project CI badges to badges-data branch`
+
+This PR can land independently. Once merged, the next master push will start writing real badge values to `statuskit.json` and `flow.json`. The badges aren't visible to README readers yet (no badge markdown), but the data is being produced and is verifiable in the `badges-data` branch.
+
+### PR 2 (label: `statuskit`) — statuskit README badge
+
+Scope: `packages/statuskit/`.
+
+Files modified:
+- `packages/statuskit/README.md` — add CI badge to the existing badge row (above title), placed as the first badge before the existing PyPI badges.
+
+Commit/PR title: `docs(statuskit): add CI status badge`
+
+Can land any time after PR 1 — even before PR 1's first run completes, since the lightgrey "unknown" bootstrap badge is harmless.
+
+### PR 3 (label: `flow`) — flow README badge
+
+Scope: `plugins/flow/`.
+
+Files modified:
+- `plugins/flow/README.md` — add CI badge as the first item in the existing badge row. Existing static Version/License/Platform badges remain (cleanup of those is out of scope).
+
+Commit/PR title: `docs(flow): add CI status badge`
+
+Independent of PR 2; order between PR 2 and PR 3 doesn't matter.
+
+### Beads decomposition
+
+The current task `claude-tools-wm2` will be decomposed into three sub-tasks (via `/flow:decompose`), one per PR. Each sub-task carries its own branch/PR/label. The infrastructure sub-task (PR 1) should be done first; the README sub-tasks can be done in parallel after.
+
+## Files NOT modified
+
 - `.github/workflows/pr.yml` (badges are master-only)
 - `.github/workflows/_reusable-*.yml` (job-name convention already provides what we need)
 - Top-level `README.md`
