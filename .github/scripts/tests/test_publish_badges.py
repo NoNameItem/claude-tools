@@ -290,3 +290,110 @@ class TestFetchJobs:
 
         assert captured["auth"] == "token TKN"
         assert captured["accept"] == "application/vnd.github+json"
+
+
+class TestPublishBadges:
+    """Integration tests for publish_badges with mocked HTTP."""
+
+    def _install_mock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        jobs: list[dict],
+    ) -> None:
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return _FakeResponse(_make_jobs_page(jobs))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+    def test_two_projects_all_success(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Test (statuskit, py3.11)", "status": "completed", "conclusion": "success"},
+                {"name": "Validate (flow)", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "passing", "flow": "passing"}
+        import json as _json
+
+        for project in ("statuskit", "flow"):
+            data = _json.loads((tmp_path / f"{project}.json").read_text())
+            assert data["message"] == "passing"
+            assert data["color"] == "brightgreen"
+
+    def test_only_skipped_project_is_not_written(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "skipped"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "passing", "flow": "skipped (no write)"}
+        assert (tmp_path / "statuskit.json").exists()
+        assert not (tmp_path / "flow.json").exists()
+
+    def test_no_matching_projects(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Detect changes", "status": "completed", "conclusion": "success"},
+                {"name": "Notify Start", "status": "completed", "conclusion": "success"},
+                {"name": "Publish badges", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {}
+        assert list(tmp_path.iterdir()) == []
+
+    def test_mixed_failing_and_passing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "failure"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "failing", "flow": "passing"}
+        import json as _json
+
+        statuskit = _json.loads((tmp_path / "statuskit.json").read_text())
+        flow = _json.loads((tmp_path / "flow.json").read_text())
+        assert statuskit["message"] == "failing"
+        assert statuskit["color"] == "red"
+        assert flow["message"] == "passing"
+        assert flow["color"] == "brightgreen"
+
+    def test_in_flight_jobs_excluded(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                # In-flight job: status != completed, conclusion is null.
+                {"name": "Test (statuskit, py3.12)", "status": "in_progress", "conclusion": None},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        # Only the completed job is counted; aggregation is "passing".
+        assert result == {"statuskit": "passing"}

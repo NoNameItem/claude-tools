@@ -192,3 +192,47 @@ def fetch_jobs(repo: str, run_id: str, token: str) -> list[dict]:
             url = _get_next_url(response)
 
     return jobs
+
+
+def publish_badges(
+    repo: str,
+    run_id: str,
+    token: str,
+    output_dir: Path,
+) -> dict[str, str]:
+    """Fetch jobs, aggregate per project, write badge files.
+
+    Args:
+        repo: ``"owner/name"`` from ``$GITHUB_REPOSITORY``.
+        run_id: Workflow run ID (``$GITHUB_RUN_ID``).
+        token: GitHub token with ``actions:read``.
+        output_dir: Existing checkout of the ``badges-data`` branch.
+
+    Returns:
+        Map of project slug to a human label: ``"passing"``, ``"failing"``,
+        or ``"skipped (no write)"``. Projects whose names never appeared in
+        a job (or whose only jobs were in-flight) are absent from the map.
+    """
+    jobs = fetch_jobs(repo, run_id, token)
+
+    # Group conclusions by project, filtered to completed jobs only.
+    grouped: dict[str, list[str | None]] = {}
+    for job in jobs:
+        if job.get("status") != "completed":
+            continue
+        project = extract_project_name(job.get("name", ""))
+        if project is None:
+            continue
+        grouped.setdefault(project, []).append(job.get("conclusion"))
+
+    summary: dict[str, str] = {}
+    for project, conclusions in grouped.items():
+        aggregate = aggregate_status(conclusions)
+        if aggregate is None:
+            summary[project] = "skipped (no write)"
+            continue
+        message, color = aggregate
+        write_badge_file(output_dir, project, build_badge_json(message, color))
+        summary[project] = message
+
+    return summary
