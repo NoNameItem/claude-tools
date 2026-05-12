@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -126,3 +129,66 @@ def write_badge_file(output_dir: Path, project: str, badge: dict) -> None:
         raise FileNotFoundError(msg)
     path = output_dir / f"{project}.json"
     path.write_text(json.dumps(badge, indent=2) + "\n")
+
+
+# Hard cap on pagination: 10 pages * 100 jobs = 1000 jobs/run.
+# Real runs are well under 100 jobs total; the cap exists only to bound a
+# misbehaving API or pagination loop.
+_MAX_PAGES = 10
+
+# Single-request timeout (seconds). Keeps a hung TLS handshake from stalling
+# the workflow indefinitely.
+_REQUEST_TIMEOUT = 30.0
+
+_LINK_NEXT_PATTERN = re.compile(r'<([^>]+)>;\s*rel="next"')
+
+
+def _get_next_url(response: object) -> str | None:
+    """Parse the next-page URL from a Link header, or return None."""
+    header = response.getheader("Link") if hasattr(response, "getheader") else None
+    if not header:
+        return None
+    match = _LINK_NEXT_PATTERN.search(header)
+    return match.group(1) if match else None
+
+
+def fetch_jobs(repo: str, run_id: str, token: str) -> list[dict]:
+    """Fetch every job for a workflow run, following pagination.
+
+    Args:
+        repo: ``"owner/name"`` from ``$GITHUB_REPOSITORY``.
+        run_id: Workflow run ID (``$GITHUB_RUN_ID``).
+        token: GitHub token with ``actions:read`` permission.
+
+    Returns:
+        List of job dicts as returned by the GitHub REST API.
+
+    Raises:
+        RuntimeError: If the response advertises more than ``_MAX_PAGES`` pages.
+        urllib.error.HTTPError: Propagated unchanged on non-2xx responses.
+    """
+    base = f"https://api.github.com/repos/{repo}/actions/runs/{run_id}/jobs"
+    query = urllib.parse.urlencode({"per_page": 100})
+    url: str | None = f"{base}?{query}"
+    jobs: list[dict] = []
+    pages = 0
+
+    while url is not None:
+        pages += 1
+        if pages > _MAX_PAGES:
+            msg = f"pagination cap exceeded ({_MAX_PAGES} pages)"
+            raise RuntimeError(msg)
+        request = urllib.request.Request(  # noqa: S310
+            url,
+            headers={
+                "Authorization": f"token {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "publish-badges",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
+            payload = json.loads(response.read())
+            jobs.extend(payload.get("jobs", []))
+            url = _get_next_url(response)
+
+    return jobs
