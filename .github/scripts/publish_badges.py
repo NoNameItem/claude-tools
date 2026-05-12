@@ -20,7 +20,12 @@ Exit codes:
 
 from __future__ import annotations
 
+import json
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # Anchored at end. Group 1 is the project; an optional ", suffix" (e.g.
 # python version in the test matrix) is allowed but discarded.
@@ -100,3 +105,24 @@ def build_badge_json(message: str, color: str) -> dict:
         "message": message,
         "color": color,
     }
+
+
+def write_badge_file(output_dir: Path, project: str, badge: dict) -> None:
+    """Write ``{output_dir}/{project}.json`` with indent=2 and trailing newline.
+
+    The output directory must already exist. The caller (the workflow)
+    supplies a checkout of the ``badges-data`` branch.
+
+    Args:
+        output_dir: Existing directory (the ``badges-data`` checkout).
+        project: Project slug; becomes the basename of the file.
+        badge: A dict in shields.io endpoint shape.
+
+    Raises:
+        FileNotFoundError: If ``output_dir`` does not exist.
+    """
+    if not output_dir.is_dir():
+        msg = f"Output directory does not exist: {output_dir}"
+        raise FileNotFoundError(msg)
+    path = output_dir / f"{project}.json"
+    path.write_text(json.dumps(badge, indent=2) + "\n")

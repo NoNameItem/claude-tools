@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from ..publish_badges import extract_project_name
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestExtractProjectName:
@@ -109,3 +114,55 @@ class TestBuildBadgeJson:
             "message": "failing",
             "color": "red",
         }
+
+
+class TestWriteBadgeFile:
+    """Tests for write_badge_file function."""
+
+    def test_writes_indented_json_with_trailing_newline(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        badge = {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "passing",
+            "color": "brightgreen",
+        }
+        write_badge_file(tmp_path, "statuskit", badge)
+
+        path = tmp_path / "statuskit.json"
+        content = path.read_text()
+        assert content.endswith("\n")
+        # Round-trip equals the input.
+        import json as _json
+
+        assert _json.loads(content) == badge
+        # Indented (multi-line) output, not a single compact line.
+        assert "\n" in content.rstrip("\n")
+
+    def test_overwrites_existing_file(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        target = tmp_path / "flow.json"
+        target.write_text('{"old": "value"}\n')
+
+        write_badge_file(
+            tmp_path,
+            "flow",
+            {"schemaVersion": 1, "label": "CI", "message": "failing", "color": "red"},
+        )
+
+        import json as _json
+
+        assert _json.loads(target.read_text())["message"] == "failing"
+
+    def test_missing_dir_raises(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(FileNotFoundError):
+            write_badge_file(
+                missing,
+                "statuskit",
+                {"schemaVersion": 1, "label": "CI", "message": "passing", "color": "brightgreen"},
+            )
