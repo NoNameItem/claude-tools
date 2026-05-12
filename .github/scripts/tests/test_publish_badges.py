@@ -42,3 +42,46 @@ class TestExtractProjectName:
     def test_no_match(self, job_name: str) -> None:
         """Should return None when no recognizable project name in parens."""
         assert extract_project_name(job_name) is None
+
+
+class TestAggregateStatus:
+    """Tests for aggregate_status function."""
+
+    def test_all_success(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "success"]) == ("passing", "brightgreen")
+
+    def test_success_and_skipped(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "skipped"]) == ("passing", "brightgreen")
+
+    def test_success_and_failure(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "failure"]) == ("failing", "red")
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        ["failure", "cancelled", "timed_out", "neutral", "action_required", "stale"],
+    )
+    def test_single_failing_class(self, conclusion: str) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status([conclusion]) == ("failing", "red")
+
+    def test_unknown_conclusion_is_failing(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["surprise"]) == ("failing", "red")
+
+    def test_all_skipped(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["skipped", "skipped"]) is None
+
+    def test_empty(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status([]) is None

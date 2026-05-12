@@ -43,3 +43,42 @@ def extract_project_name(job_name: str) -> str | None:
     """
     match = _PROJECT_PATTERN.search(job_name)
     return match.group("project") if match else None
+
+
+# Conclusions that count as a real positive signal.
+_SUCCESS_CONCLUSIONS = frozenset({"success"})
+
+# Conclusions that contribute no signal (don't downgrade, don't upgrade).
+_NEUTRAL_CONCLUSIONS = frozenset({"skipped"})
+
+
+def aggregate_status(conclusions: list[str | None]) -> tuple[str, str] | None:
+    """Aggregate per-job conclusions into a single (message, color) tuple.
+
+    Rules:
+        * All success (optionally mixed with skipped) -> ("passing", "brightgreen")
+        * Any non-success / non-skipped conclusion       -> ("failing", "red")
+        * All skipped, or empty input                    -> None (caller skips write)
+
+    Args:
+        conclusions: A list of GitHub ``conclusion`` strings for one project.
+            ``None`` and unknown values are treated conservatively as failing.
+
+    Returns:
+        ``(message, color)`` for shields.io, or ``None`` if there is no
+        signal (caller MUST NOT touch the badge file in that case).
+    """
+    saw_signal = False
+    for c in conclusions:
+        if c in _NEUTRAL_CONCLUSIONS:
+            continue
+        if c in _SUCCESS_CONCLUSIONS:
+            saw_signal = True
+            continue
+        # Anything else (failure, cancelled, timed_out, neutral, action_required,
+        # stale, unexpected strings, or None) is conservatively a failure.
+        return ("failing", "red")
+
+    if not saw_signal:
+        return None
+    return ("passing", "brightgreen")
