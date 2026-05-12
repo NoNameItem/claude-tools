@@ -107,6 +107,45 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
 
+  publish-badges:
+    name: Publish badges
+    needs: [detect, python-ci, claude-code-plugin-ci, python-ci-info, claude-code-plugin-ci-info]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/master' &&
+      github.event.repository.fork == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          path: main
+      - name: Checkout badges-data
+        uses: actions/checkout@v4
+        with:
+          ref: badges-data
+          path: badges-data
+      - name: Update badge files
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python main/.github/scripts/publish_badges.py --output-dir badges-data
+      - name: Commit and push
+        working-directory: badges-data
+        run: |
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "No badge changes"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "chore(badges): update CI status [skip ci]"
+          git push
+
   notify-finish:
     name: Notify Finish
     needs: [validate-commits, python-ci, claude-code-plugin-ci]
