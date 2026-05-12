@@ -20,15 +20,15 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import re
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pathlib import Path
 
 # Anchored at end. Group 1 is the project; an optional ", suffix" (e.g.
 # python version in the test matrix) is allowed but discarded.
@@ -236,3 +236,68 @@ def publish_badges(
         summary[project] = message
 
     return summary
+
+
+def _print_summary(summary: dict[str, str]) -> None:
+    """Print a fixed-width table for the workflow log."""
+    project_w = max([len("Project"), *[len(p) for p in summary]])
+    status_w = max([len("Status"), *[len(s) for s in summary.values()]])
+    header = f"{'Project':<{project_w}}  {'Status':<{status_w}}  Color"
+    separator = "-" * len(header)
+    print(header)
+    print(separator)
+    for project, status in sorted(summary.items()):
+        color = {
+            "passing": "brightgreen",
+            "failing": "red",
+            "skipped (no write)": "-",
+        }.get(status, "-")
+        print(f"{project:<{project_w}}  {status:<{status_w}}  {color}")
+
+
+def main() -> int:
+    """CLI entrypoint. Returns 0 on success, 1 on failure."""
+    parser = argparse.ArgumentParser(description="Publish per-project CI badges to the badges-data branch.")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        type=Path,
+        help="Path to a checkout of the badges-data branch.",
+    )
+    parser.add_argument(
+        "--repo",
+        default=os.environ.get("GITHUB_REPOSITORY"),
+        help="owner/name (default: $GITHUB_REPOSITORY).",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=os.environ.get("GITHUB_RUN_ID"),
+        help="Workflow run ID (default: $GITHUB_RUN_ID).",
+    )
+    args = parser.parse_args()
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("Error: GITHUB_TOKEN env var is required", file=sys.stderr)
+        return 1
+    if not args.repo:
+        print("Error: --repo or $GITHUB_REPOSITORY is required", file=sys.stderr)
+        return 1
+    if not args.run_id:
+        print("Error: --run-id or $GITHUB_RUN_ID is required", file=sys.stderr)
+        return 1
+
+    try:
+        summary = publish_badges(args.repo, args.run_id, token, args.output_dir)
+    except Exception as exc:
+        # Script-level catch-all: translate any Python exception into
+        # exit 1 with a one-line stderr message for the workflow log.
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    _print_summary(summary)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

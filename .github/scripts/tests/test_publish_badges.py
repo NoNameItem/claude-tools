@@ -397,3 +397,118 @@ class TestPublishBadges:
 
         # Only the completed job is counted; aggregation is "passing".
         assert result == {"statuskit": "passing"}
+
+
+class TestMain:
+    """Smoke tests for the main() CLI entrypoint."""
+
+    def _install_mock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        jobs: list[dict],
+    ) -> None:
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return _FakeResponse(_make_jobs_page(jobs))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+    def test_happy_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from ..publish_badges import main
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "skipped"},
+            ],
+        )
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+
+        exit_code = main()
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # Header line and at least the two projects appear in the table.
+        assert "Project" in out
+        assert "statuskit" in out
+        assert "passing" in out
+        assert "flow" in out
+        assert "skipped (no write)" in out
+
+    def test_missing_token_returns_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from ..publish_badges import main
+
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+
+        assert main() == 1
+
+    def test_explicit_args_override_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from ..publish_badges import main
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            captured["url"] = request.full_url
+            return _FakeResponse(_make_jobs_page([]))
+
+        from .. import publish_badges as mod
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        # Env says one thing; CLI overrides.
+        monkeypatch.setenv("GITHUB_REPOSITORY", "env/repo")
+        monkeypatch.setenv("GITHUB_RUN_ID", "111")
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "publish_badges.py",
+                "--output-dir",
+                str(tmp_path),
+                "--repo",
+                "cli/repo",
+                "--run-id",
+                "222",
+            ],
+        )
+        assert main() == 0
+        assert "/repos/cli/repo/actions/runs/222/jobs" in captured["url"]
+
+    def test_api_error_returns_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import urllib.error
+
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            raise urllib.error.HTTPError(request.full_url, 500, "boom", hdrs=None, fp=None)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+        assert mod.main() == 1
