@@ -85,3 +85,27 @@ class TestAggregateStatus:
         from ..publish_badges import aggregate_status
 
         assert aggregate_status([]) is None
+
+
+class TestBuildBadgeJson:
+    """Tests for build_badge_json function."""
+
+    def test_passing(self) -> None:
+        from ..publish_badges import build_badge_json
+
+        assert build_badge_json("passing", "brightgreen") == {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "passing",
+            "color": "brightgreen",
+        }
+
+    def test_failing(self) -> None:
+        from ..publish_badges import build_badge_json
+
+        assert build_badge_json("failing", "red") == {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "failing",
+            "color": "red",
+        }

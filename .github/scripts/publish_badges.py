@@ -82,3 +82,21 @@ def aggregate_status(conclusions: list[str | None]) -> tuple[str, str] | None:
     if not saw_signal:
         return None
     return ("passing", "brightgreen")
+
+
+def build_badge_json(message: str, color: str) -> dict:
+    """Build the shields.io endpoint dict for a project's CI status.
+
+    Args:
+        message: The badge value (e.g. ``"passing"`` or ``"failing"``).
+        color: A shields.io color name (e.g. ``"brightgreen"``, ``"red"``).
+
+    Returns:
+        A dict matching the shields.io endpoint schema v1.
+    """
+    return {
+        "schemaVersion": 1,
+        "label": "CI",
+        "message": message,
+        "color": color,
+    }
