@@ -178,6 +178,13 @@ def fetch_jobs(repo: str, run_id: str, token: str) -> list[dict]:
         if pages > _MAX_PAGES:
             msg = f"pagination cap exceeded ({_MAX_PAGES} pages)"
             raise RuntimeError(msg)
+        # Validate scheme + host before reusing the auth header on the
+        # URL pulled from GitHub's Link pagination header. Defense-in-depth:
+        # if the Link ever points off api.github.com, refuse to leak the token.
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https" or parsed.netloc != "api.github.com":
+            msg = f"refusing to follow URL outside api.github.com: {url}"
+            raise RuntimeError(msg)
         request = urllib.request.Request(  # noqa: S310
             url,
             headers={

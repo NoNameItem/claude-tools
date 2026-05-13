@@ -291,6 +291,26 @@ class TestFetchJobs:
         assert captured["auth"] == "token TKN"
         assert captured["accept"] == "application/vnd.github+json"
 
+    def test_rejects_off_host_link_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Refuse to follow a Link URL that points off api.github.com."""
+        from .. import publish_badges as mod
+
+        page1 = _make_jobs_page([{"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"}])
+
+        responses = [
+            _FakeResponse(
+                page1,
+                headers={"Link": '<https://evil.example.com/next?page=2>; rel="next"'},
+            ),
+        ]
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return responses.pop(0)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(RuntimeError, match=r"refusing to follow URL outside api\.github\.com"):
+            mod.fetch_jobs("octo/widget", "999", "TKN")
+
 
 class TestPublishBadges:
     """Integration tests for publish_badges with mocked HTTP."""
