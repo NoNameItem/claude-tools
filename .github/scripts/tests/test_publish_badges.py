@@ -1,0 +1,534 @@
+"""Tests for publish_badges.py script."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import pytest
+
+from ..publish_badges import extract_project_name
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+class TestExtractProjectName:
+    """Tests for extract_project_name function."""
+
+    @pytest.mark.parametrize(
+        ("job_name", "expected"),
+        [
+            ("Lint (statuskit)", "statuskit"),
+            ("Test (statuskit, py3.10)", "statuskit"),
+            ("Test (statuskit, py3.11)", "statuskit"),
+            ("Test (statuskit, py3.12)", "statuskit"),
+            ("SonarCloud (statuskit)", "statuskit"),
+            ("Validate (flow)", "flow"),
+            ("Lint (flow)", "flow"),
+            ("Bar (baz_qux-123)", "baz_qux-123"),
+        ],
+    )
+    def test_matches(self, job_name: str, expected: str) -> None:
+        """Should extract project name from job name with trailing parens."""
+        assert extract_project_name(job_name) == expected
+
+    @pytest.mark.parametrize(
+        "job_name",
+        [
+            "Detect changes",
+            "Validate commits",
+            "Notify Start",
+            "Notify Finish",
+            "Publish badges",
+            "Foo ()",
+            "",
+        ],
+    )
+    def test_no_match(self, job_name: str) -> None:
+        """Should return None when no recognizable project name in parens."""
+        assert extract_project_name(job_name) is None
+
+
+class TestAggregateStatus:
+    """Tests for aggregate_status function."""
+
+    def test_all_success(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "success"]) == ("passing", "brightgreen")
+
+    def test_success_and_skipped(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "skipped"]) == ("passing", "brightgreen")
+
+    def test_success_and_failure(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["success", "failure"]) == ("failing", "red")
+
+    @pytest.mark.parametrize(
+        "conclusion",
+        ["failure", "cancelled", "timed_out", "neutral", "action_required", "stale"],
+    )
+    def test_single_failing_class(self, conclusion: str) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status([conclusion]) == ("failing", "red")
+
+    def test_unknown_conclusion_is_failing(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["surprise"]) == ("failing", "red")
+
+    def test_all_skipped(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status(["skipped", "skipped"]) is None
+
+    def test_empty(self) -> None:
+        from ..publish_badges import aggregate_status
+
+        assert aggregate_status([]) is None
+
+
+class TestBuildBadgeJson:
+    """Tests for build_badge_json function."""
+
+    def test_passing(self) -> None:
+        from ..publish_badges import build_badge_json
+
+        assert build_badge_json("passing", "brightgreen") == {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "passing",
+            "color": "brightgreen",
+        }
+
+    def test_failing(self) -> None:
+        from ..publish_badges import build_badge_json
+
+        assert build_badge_json("failing", "red") == {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "failing",
+            "color": "red",
+        }
+
+
+class TestWriteBadgeFile:
+    """Tests for write_badge_file function."""
+
+    def test_writes_indented_json_with_trailing_newline(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        badge = {
+            "schemaVersion": 1,
+            "label": "CI",
+            "message": "passing",
+            "color": "brightgreen",
+        }
+        write_badge_file(tmp_path, "statuskit", badge)
+
+        path = tmp_path / "statuskit.json"
+        content = path.read_text()
+        assert content.endswith("\n")
+        # Round-trip equals the input.
+        import json as _json
+
+        assert _json.loads(content) == badge
+        # Indented (multi-line) output, not a single compact line.
+        assert "\n" in content.rstrip("\n")
+
+    def test_overwrites_existing_file(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        target = tmp_path / "flow.json"
+        target.write_text('{"old": "value"}\n')
+
+        write_badge_file(
+            tmp_path,
+            "flow",
+            {"schemaVersion": 1, "label": "CI", "message": "failing", "color": "red"},
+        )
+
+        import json as _json
+
+        assert _json.loads(target.read_text())["message"] == "failing"
+
+    def test_missing_dir_raises(self, tmp_path: Path) -> None:
+        from ..publish_badges import write_badge_file
+
+        missing = tmp_path / "does-not-exist"
+        with pytest.raises(FileNotFoundError):
+            write_badge_file(
+                missing,
+                "statuskit",
+                {"schemaVersion": 1, "label": "CI", "message": "passing", "color": "brightgreen"},
+            )
+
+
+class _FakeResponse:
+    """Context-manager-compatible stand-in for an HTTP response."""
+
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        # urllib's Response exposes headers via ``.headers`` (Message-like)
+        # AND ``.getheader(name)``. We replicate both.
+        self.headers = headers or {}
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._body
+
+    def getheader(self, name: str, default: str | None = None) -> str | None:
+        # Match urllib's case-insensitive header lookup.
+        for k, v in self.headers.items():
+            if k.lower() == name.lower():
+                return v
+        return default
+
+
+def _make_jobs_page(jobs: list[dict]) -> bytes:
+    import json as _json
+
+    return _json.dumps({"total_count": len(jobs), "jobs": jobs}).encode()
+
+
+class TestFetchJobs:
+    """Tests for fetch_jobs function."""
+
+    def test_single_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import publish_badges as mod
+
+        page = _make_jobs_page([{"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"}] * 5)
+        calls: list[str] = []
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            calls.append(request.full_url)
+            return _FakeResponse(page)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        result = mod.fetch_jobs("octo/widget", "999", "TKN")
+
+        assert len(result) == 5
+        assert len(calls) == 1
+        assert "/repos/octo/widget/actions/runs/999/jobs" in calls[0]
+        assert "per_page=100" in calls[0]
+
+    def test_two_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import publish_badges as mod
+
+        page1 = _make_jobs_page([{"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"}])
+        page2 = _make_jobs_page([{"name": "Lint (flow)", "status": "completed", "conclusion": "success"}])
+
+        responses = [
+            _FakeResponse(
+                page1,
+                headers={"Link": '<https://api.github.com/next?page=2>; rel="next"'},
+            ),
+            _FakeResponse(page2),
+        ]
+        calls: list[str] = []
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            calls.append(request.full_url)
+            return responses.pop(0)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        result = mod.fetch_jobs("octo/widget", "999", "TKN")
+
+        assert [j["name"] for j in result] == ["Lint (statuskit)", "Lint (flow)"]
+        assert len(calls) == 2
+        assert calls[1] == "https://api.github.com/next?page=2"
+
+    def test_pagination_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import publish_badges as mod
+
+        page = _make_jobs_page([{"name": "Lint (x)", "status": "completed", "conclusion": "success"}])
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return _FakeResponse(
+                page,
+                headers={"Link": '<https://api.github.com/next?page=N>; rel="next"'},
+            )
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(RuntimeError, match="pagination"):
+            mod.fetch_jobs("octo/widget", "999", "TKN")
+
+    def test_http_error_propagates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", hdrs=None, fp=None)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(urllib.error.HTTPError):
+            mod.fetch_jobs("octo/widget", "999", "TKN")
+
+    def test_sends_auth_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import publish_badges as mod
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            # urllib's Request stores headers title-cased.
+            captured["auth"] = request.get_header("Authorization")
+            captured["accept"] = request.get_header("Accept")
+            return _FakeResponse(_make_jobs_page([]))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        mod.fetch_jobs("octo/widget", "999", "TKN")
+
+        assert captured["auth"] == "token TKN"
+        assert captured["accept"] == "application/vnd.github+json"
+
+    def test_rejects_off_host_link_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Refuse to follow a Link URL that points off api.github.com."""
+        from .. import publish_badges as mod
+
+        page1 = _make_jobs_page([{"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"}])
+
+        responses = [
+            _FakeResponse(
+                page1,
+                headers={"Link": '<https://evil.example.com/next?page=2>; rel="next"'},
+            ),
+        ]
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return responses.pop(0)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        with pytest.raises(RuntimeError, match=r"refusing to follow URL outside api\.github\.com"):
+            mod.fetch_jobs("octo/widget", "999", "TKN")
+
+
+class TestPublishBadges:
+    """Integration tests for publish_badges with mocked HTTP."""
+
+    def _install_mock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        jobs: list[dict],
+    ) -> None:
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return _FakeResponse(_make_jobs_page(jobs))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+    def test_two_projects_all_success(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Test (statuskit, py3.11)", "status": "completed", "conclusion": "success"},
+                {"name": "Validate (flow)", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "passing", "flow": "passing"}
+        import json as _json
+
+        for project in ("statuskit", "flow"):
+            data = _json.loads((tmp_path / f"{project}.json").read_text())
+            assert data["message"] == "passing"
+            assert data["color"] == "brightgreen"
+
+    def test_only_skipped_project_is_not_written(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "skipped"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "passing", "flow": "skipped (no write)"}
+        assert (tmp_path / "statuskit.json").exists()
+        assert not (tmp_path / "flow.json").exists()
+
+    def test_no_matching_projects(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Detect changes", "status": "completed", "conclusion": "success"},
+                {"name": "Notify Start", "status": "completed", "conclusion": "success"},
+                {"name": "Publish badges", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {}
+        assert list(tmp_path.iterdir()) == []
+
+    def test_mixed_failing_and_passing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "failure"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "success"},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        assert result == {"statuskit": "failing", "flow": "passing"}
+        import json as _json
+
+        statuskit = _json.loads((tmp_path / "statuskit.json").read_text())
+        flow = _json.loads((tmp_path / "flow.json").read_text())
+        assert statuskit["message"] == "failing"
+        assert statuskit["color"] == "red"
+        assert flow["message"] == "passing"
+        assert flow["color"] == "brightgreen"
+
+    def test_in_flight_jobs_excluded(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from ..publish_badges import publish_badges
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                # In-flight job: status != completed, conclusion is null.
+                {"name": "Test (statuskit, py3.12)", "status": "in_progress", "conclusion": None},
+            ],
+        )
+        result = publish_badges("octo/widget", "999", "TKN", tmp_path)
+
+        # Only the completed job is counted; aggregation is "passing".
+        assert result == {"statuskit": "passing"}
+
+
+class TestMain:
+    """Smoke tests for the main() CLI entrypoint."""
+
+    def _install_mock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        jobs: list[dict],
+    ) -> None:
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            return _FakeResponse(_make_jobs_page(jobs))
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+    def test_happy_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from ..publish_badges import main
+
+        self._install_mock(
+            monkeypatch,
+            [
+                {"name": "Lint (statuskit)", "status": "completed", "conclusion": "success"},
+                {"name": "Lint (flow)", "status": "completed", "conclusion": "skipped"},
+            ],
+        )
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+
+        exit_code = main()
+
+        assert exit_code == 0
+        out = capsys.readouterr().out
+        # Header line and at least the two projects appear in the table.
+        assert "Project" in out
+        assert "statuskit" in out
+        assert "passing" in out
+        assert "flow" in out
+        assert "skipped (no write)" in out
+
+    def test_missing_token_returns_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from ..publish_badges import main
+
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+
+        assert main() == 1
+
+    def test_explicit_args_override_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from ..publish_badges import main
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            captured["url"] = request.full_url
+            return _FakeResponse(_make_jobs_page([]))
+
+        from .. import publish_badges as mod
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        # Env says one thing; CLI overrides.
+        monkeypatch.setenv("GITHUB_REPOSITORY", "env/repo")
+        monkeypatch.setenv("GITHUB_RUN_ID", "111")
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "publish_badges.py",
+                "--output-dir",
+                str(tmp_path),
+                "--repo",
+                "cli/repo",
+                "--run-id",
+                "222",
+            ],
+        )
+        assert main() == 0
+        assert "/repos/cli/repo/actions/runs/222/jobs" in captured["url"]
+
+    def test_api_error_returns_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import urllib.error
+
+        from .. import publish_badges as mod
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            raise urllib.error.HTTPError(request.full_url, 500, "boom", hdrs=None, fp=None)
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("GITHUB_TOKEN", "TKN")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "octo/widget")
+        monkeypatch.setenv("GITHUB_RUN_ID", "42")
+        monkeypatch.setattr("sys.argv", ["publish_badges.py", "--output-dir", str(tmp_path)])
+        assert mod.main() == 1
