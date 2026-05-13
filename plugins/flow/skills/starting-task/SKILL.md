@@ -46,12 +46,12 @@ bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task
 
 **If a task ID argument was provided** (e.g., user invoked `/flow:start 5dl`), pass it with `--root`. The script will:
 - Find the task by exact ID or suffix match (e.g., `5dl` matches `claude-tools-5dl`)
-- Show only its subtree with the found task as root `1.`
+- Show only its subtree with the found task as root `1\.`
 - If not found, show a warning and fall back to the full tree
 
 The script outputs a properly formatted hierarchical tree with emoji type indicators and bold formatting for highest-priority tasks. Example output:
 
-**1. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
+**1\. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
 ├─ 1.1 📋 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
 ├─ 1.2 🚀 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
 └─ 1.3 🚀 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
@@ -123,9 +123,9 @@ The script handles:
 - Parsing JSON and building parent-child relationships
 - Filtering (shows open/in_progress, hides closed/blocked)
 - Sorting (in_progress → open → deferred, then by priority)
-- Hierarchical numbering (`1.`, `1.1`, `1.2`)
+- Hierarchical numbering (`1\.`, `1.1`, `1.2`)
 - Tree connectors (`├─`, `└─`)
-- Subtree extraction with `--root` (found task becomes root `1.`)
+- Subtree extraction with `--root` (found task becomes root `1\.`)
 
 **Script options:**
 - `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py -s "search"` — filter by term
@@ -506,7 +506,7 @@ Agent: I've created branch claude-tools-c7b and marked the task in_progress.
 User: "start the git module task"
 Agent: Доступные задачи:
 
-       **1. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
+       **1\. 📦 [E] StatusKit (claude-tools-5dl) | P1 · in_progress | #statuskit**
           ├─ 1.1 📋 [T] Distribution (claude-tools-5dl.1) | P2 · open | #statuskit
           ├─ 1.2 🚀 [F] Git module (claude-tools-c7b) | P2 · open | #statuskit
           └─ 1.3 🚀 [F] Beads module (claude-tools-5d1) | P2 · open | #statuskit
@@ -634,7 +634,7 @@ If search argument provided but no matches found:
 If `bd graph --all --json` returns multiple graphs:
 - Merge all graphs into one tree
 - Use sequential root numbering across all graphs
-- Example: Graph 1 roots = `1.`, `2.`, Graph 2 roots = `3.`, `4.`
+- Example: Graph 1 roots = `1\.`, `2\.`, Graph 2 roots = `3\.`, `4\.`
 
 ### When User Already in Worktree
 
