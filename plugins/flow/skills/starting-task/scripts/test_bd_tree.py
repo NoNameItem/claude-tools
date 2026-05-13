@@ -217,6 +217,21 @@ class TestFormatTaskLine:
         line = format_task_line(task, prefix="├─ ", number="1.1", is_root=False, min_priority=1)
         assert "├─ 1.1 📋 [T]" in line
 
+    def test_root_number_dot_escaped(self):
+        """Root number renders with backslash-escaped dot to disable Markdown list parsing."""
+        task = make_task("test-1", issue_type="task", priority=2, status="open")
+        line = format_task_line(task, prefix="", number="1", is_root=True, min_priority=None)
+        assert "1\\." in line
+        # The literal "1. " (digit, dot, space) must NOT appear at root level.
+        assert "1. " not in line
+
+    def test_child_number_dot_not_escaped(self):
+        """Child numbers keep their dot unescaped; only roots are escaped."""
+        task = make_task("test-1", issue_type="task", priority=2, status="open")
+        line = format_task_line(task, prefix="├─ ", number="1.1", is_root=False, min_priority=None)
+        assert "1.1 " in line
+        assert "1\\." not in line
+
     def test_prefix_with_bold(self):
         """Bold wrapping does NOT include the tree prefix."""
         task = make_task("test-1", issue_type="bug", priority=1, status="open")
@@ -307,7 +322,7 @@ class TestBuildTreeRootId:
         assert "Root A" in text
 
     def test_root_task_becomes_root_1(self):
-        """The selected root task's first line contains '1.' numbering."""
+        """The selected root task's first line contains '1\\.' numbering."""
         tasks = self._parse(
             [
                 issue("proj-aaa", title="Root A"),
@@ -315,9 +330,9 @@ class TestBuildTreeRootId:
             ],
         )
         # Even though proj-bbb would be 2nd normally, with --root it becomes 1.
-        # Bold wrapping may prepend **, so check for "1." presence
+        # Bold wrapping may prepend **, so check for "1\." presence (escaped dot).
         lines = build_tree(tasks, root_id="proj-bbb")
-        assert "1." in lines[0]
+        assert "1\\." in lines[0]
         assert "Root B" in lines[0]
 
     def test_root_no_children_shows_just_task(self):

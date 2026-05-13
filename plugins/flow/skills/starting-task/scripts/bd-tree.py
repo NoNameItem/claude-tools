@@ -207,8 +207,11 @@ def format_task_line(
     priority = f"P{task.priority}"
     labels = " ".join(f"#{lbl}" for lbl in task.labels) if task.labels else ""
 
-    # Root items get trailing dot: "1." Children don't: "1.1"
-    num_display = f"{number}." if is_root else number
+    # Root items get backslash-escaped dot ("1\.") to prevent Markdown
+    # renderers from treating consecutive roots as a single ordered list,
+    # which would collapse the blank separator line between them.
+    # Children keep the dot unescaped because it's internal to nested numbers ("1.1").
+    num_display = f"{number}\\." if is_root else number
     content = f"{num_display} {emoji} [{type_letter}] {task.title} ({task.id}) | {priority} · {status}"
     if labels:
         content += f" | {labels}"
