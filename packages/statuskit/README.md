@@ -1,5 +1,6 @@
 # statuskit
 
+[![CI](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/statuskit.json)](https://github.com/NoNameItem/claude-tools/actions/workflows/push.yml)
 [![PyPI version](https://img.shields.io/pypi/v/claude-statuskit)](https://pypi.org/project/claude-statuskit/)
 [![Python versions](https://img.shields.io/pypi/pyversions/claude-statuskit)](https://pypi.org/project/claude-statuskit/)
 [![License](https://img.shields.io/pypi/l/claude-statuskit)](https://github.com/NoNameItem/claude-tools/blob/master/LICENSE)
