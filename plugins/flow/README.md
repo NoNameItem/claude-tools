@@ -1,3 +1,4 @@
+[![CI](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/NoNameItem/claude-tools/badges-data/flow.json)](https://github.com/NoNameItem/claude-tools/actions/workflows/push.yml)
 ![Version](https://img.shields.io/badge/version-1.5.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Platform](https://img.shields.io/badge/platform-Claude%20Code-orange)
