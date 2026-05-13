@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1](https://github.com/NoNameItem/claude-tools/compare/flow-1.6.0...flow-1.6.1) (2026-05-13)
+
+
+### Bug Fixes
+
+* **flow:** preserve blank-line separator between bd-tree roots ([#69](https://github.com/NoNameItem/claude-tools/issues/69)) ([a8df914](https://github.com/NoNameItem/claude-tools/commit/a8df914eaab05260508d9c15d175abfb2875a27b))
+
+
+### Documentation
+
+* **flow:** add CI status badge ([#65](https://github.com/NoNameItem/claude-tools/issues/65)) ([782ad90](https://github.com/NoNameItem/claude-tools/commit/782ad90ae25e8fbede06d048e03e07d8aef437de))
+
 ## [1.6.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.5.0...flow-1.6.0) (2026-02-12)
 
 
