@@ -35,3 +35,7 @@ uv.lock
 
 # Local config (keep template, ignore actual)
 *.local
+
+# Implementation plans (superpowers:writing-plans output) — local-only workflow
+# scaffolding. Design specs in docs/superpowers/specs/ are tracked; plans are not.
+docs/superpowers/plans/
