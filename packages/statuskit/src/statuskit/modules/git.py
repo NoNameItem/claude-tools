@@ -1,6 +1,7 @@
 """Git module for statuskit."""
 
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from termcolor import colored
@@ -355,7 +356,7 @@ class GitModule(BaseModule):
 
         return {"project": project_name, "worktree": worktree_name, "subfolder": subfolder}
 
-    def _render_location_line(self, location: dict[str, str | None]) -> str | None:
+    def _render_location_line(self, location: Mapping[str, str | None]) -> str | None:
         """Render the location line (Line 1).
 
         Args:
