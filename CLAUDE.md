@@ -210,7 +210,7 @@ This repository is also a Claude Code plugin marketplace containing workflow aut
 
 Automated beads workflow skills for task management.
 
-**Available skills** (typed as slash commands):
+**Available skills** (invoked as slash commands):
 
 - `/flow:start` - Start working on a beads task (task selection, branch management, context display)
 - `/flow:after-design` - After brainstorming/design phase (links design doc to task)
