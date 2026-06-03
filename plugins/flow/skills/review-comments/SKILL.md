@@ -1,5 +1,5 @@
 ---
-name: reviewing-comments
+name: review-comments
 description: Use when processing GitHub PR review comments. Collects all unresolved comments, categorizes by source, analyzes each with subagents, applies accepted fixes, argues against invalid ones, and replies on GitHub. Invoked via /flow:review-comments.
 ---
 

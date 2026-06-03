@@ -1,5 +1,5 @@
 ---
-name: linking-design
+name: after-design
 description: Use after completing brainstorming/design phase. Links design document to task. Simple operation — save the link, nothing else. Suggests /flow:decompose for subtask creation.
 ---
 

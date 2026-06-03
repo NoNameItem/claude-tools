@@ -1,5 +1,5 @@
 ---
-name: decomposing-task
+name: decompose
 description: Use when user wants to break down a beads task into subtasks based on a design document. Triggered by /flow:decompose or when user says "decompose", "break down task", "create subtasks from design".
 ---
 

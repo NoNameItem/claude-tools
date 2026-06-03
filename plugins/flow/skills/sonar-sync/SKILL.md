@@ -1,5 +1,5 @@
 ---
-name: syncing-sonarcloud
+name: sonar-sync
 description: Use when syncing SonarQube/SonarCloud issues with beads tasks, during tech debt review, or when user invokes /flow:sonar-sync. Handles project selection, issue loading, deduplication, classification, and bulk task creation.
 ---
 
