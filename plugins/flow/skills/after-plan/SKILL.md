@@ -1,6 +1,7 @@
 ---
 name: after-plan
-description: Use after completing planning phase (superpowers:writing-plans). Links implementation plan document to task. Simple task - just save the link, nothing else. Handles post-planning workflow for beads tasks.
+description: Link an implementation plan document to the current beads task after the planning phase (superpowers:writing-plans). Use right after writing a plan; it records the link, nothing else.
+allowed-tools: Bash(bd:*)
 ---
 
 # Flow: After Plan

@@ -1,6 +1,7 @@
 ---
 name: start
-description: Use when starting a work session or when user asks to begin working on a beads task. Handles task selection, branch management, and context display. Use after /clear, at session start, or when switching tasks.
+description: Start working on a beads task — select from the ready tree, create or switch the branch, init a worktree, and show the task card. Use when beginning a work session, after /clear, at session start, or when switching tasks. To resume an already in-progress task, use flow:continue.
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion TodoWrite
 ---
 
 # Flow: Start Task

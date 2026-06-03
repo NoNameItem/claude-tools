@@ -1,6 +1,7 @@
 ---
 name: review-comments
-description: Use when processing GitHub PR review comments. Collects all unresolved comments, categorizes by source, analyzes each with subagents, applies accepted fixes, argues against invalid ones, and replies on GitHub. Invoked via /flow:review-comments.
+description: Process unresolved GitHub PR review comments — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on GitHub. Use when addressing PR review feedback. Pass a PR number to target a specific PR.
+allowed-tools: Bash(git:*) Bash(gh:*) Agent AskUserQuestion Read
 ---
 
 # Flow: Review Comments

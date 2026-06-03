@@ -1,6 +1,7 @@
 ---
 name: done
-description: Use after completing and verifying a task. Checks git branch (feature → suggests finishing-a-development-branch), closes task, cleans up implementation plan files, recursively checks parents with confirmation, runs bd sync. Handles task completion workflow for beads.
+description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*)
 ---
 
 # Flow: Done
