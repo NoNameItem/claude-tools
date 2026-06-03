@@ -14,7 +14,6 @@ Output (one task per line, pipe-delimited):
 
 import argparse
 import json
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -95,12 +94,9 @@ def format_task_line(task: Task) -> str:
 
 def get_git_user() -> str | None:
     """Get current git user.name. Returns None if unavailable."""
-    git = shutil.which("git")
-    if git is None:
-        return None
     try:
-        name = subprocess.check_output(  # noqa: S603
-            [git, "config", "user.name"],
+        name = subprocess.check_output(
+            ["git", "config", "user.name"],
             text=True,
         ).strip()
         return name or None
