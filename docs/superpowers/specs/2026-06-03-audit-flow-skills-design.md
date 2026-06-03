@@ -118,3 +118,12 @@ Split the 4 oversized skills into `references/` sibling files (current line coun
 - Root `CLAUDE.md` and `plugins/flow/README.md` accurately describe flow as skills.
 - Follow-up task filed for splitting oversized skills.
 - Smoke test passes.
+
+## Correction (during planning, 2026-06-03)
+
+Verifying the Claude Code skills spec while writing the implementation plan surfaced corrections to the decisions above. These supersede the conflicting points (notably Part B item 3 and the `disable-model-invocation` references in "Verification" / "Done when"):
+
+- **`init-worktree` does NOT get `disable-model-invocation: true`.** That field blocks Skill-tool invocation from *other* skills (not just autonomous auto-fire), which would break the calls `start`/`continue` make to `init-worktree` and silently disable worktree initialization. Instead, `init-worktree`'s description is reworded to mark it an internal sub-step ("not for direct use; called by flow:start/continue") — this discourages auto-fire without breaking sub-invocation. Confirmed with the user.
+- **`allowed-tools` is pre-authorization, not restriction.** Listing a subset never blocks a skill; it only avoids permission prompts. The subagent-dispatch tool is named `Agent` (formerly `Task`).
+- **Part C (port arg logic) was a no-op.** All four arg-taking skills (`start`, `continue`, `review-comments`, `sonar-sync`) already handle their arguments in-body, so deleting `commands/` lost no behavior — Part C reduced to verification.
+- **Oversized-skill split follow-up filed as `claude-tools-elf.13`.**
