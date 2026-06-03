@@ -1,7 +1,7 @@
 ---
 name: after-design
 description: Link a design document to the current beads task after the brainstorming or design phase. Use right after finishing a design doc; it records the link and suggests /flow:decompose, nothing else.
-allowed-tools: Bash(bd:*)
+allowed-tools: Bash(bd:*) Bash(ls:*) Bash(head:*)
 ---
 
 # Flow: After Design
