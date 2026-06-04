@@ -1,6 +1,7 @@
 ---
-name: linking-design
-description: Use after completing brainstorming/design phase. Links design document to task. Simple operation — save the link, nothing else. Suggests /flow:decompose for subtask creation.
+name: after-design
+description: Link a design document to the current beads task after the brainstorming or design phase. Use right after finishing a design doc; it records the link and suggests /flow:decompose, nothing else.
+allowed-tools: Bash(bd:*) Bash(ls:*) Bash(head:*)
 ---
 
 # Flow: After Design

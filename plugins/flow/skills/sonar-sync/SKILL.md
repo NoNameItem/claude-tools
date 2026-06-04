@@ -1,6 +1,7 @@
 ---
-name: syncing-sonarcloud
-description: Use when syncing SonarQube/SonarCloud issues with beads tasks, during tech debt review, or when user invokes /flow:sonar-sync. Handles project selection, issue loading, deduplication, classification, and bulk task creation.
+name: sonar-sync
+description: Sync SonarQube or SonarCloud issues into beads tasks — select a project, load and dedup issues, classify them, and bulk-create tasks. Use during tech-debt review or to triage a PR's Sonar findings. Pass a project key, or --pr <id> for PR mode.
+allowed-tools: Bash(bd:*) Bash(gh:*) Agent mcp__sonarqube__search_my_sonarqube_projects mcp__sonarqube__search_sonar_issues_in_projects
 ---
 
 # Flow: Sonar Sync

@@ -5,12 +5,12 @@
 
 # Flow Plugin
 
-Automated workflow commands for [Claude Code](https://code.claude.com) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
+Automated workflow skills for [Claude Code](https://code.claude.com) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
 
 ## Prerequisites
 
 - [Claude Code](https://code.claude.com) — flow runs as a Claude Code plugin
-- [beads](https://github.com/steveyegge/beads) — required. Flow commands use `bd` to select, update, and close tasks.
+- [beads](https://github.com/steveyegge/beads) — required. Flow skills use `bd` to select, update, and close tasks.
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
 
 ## Installation
@@ -39,7 +39,7 @@ Design: docs/plans/2026-02-10-login-error-design.md
 Plan: docs/plans/2026-02-10-login-error-impl-plan.md
 ```
 
-Each line is written by one command and read by others:
+Each line is written by one skill and read by others:
 
 | Line       | Written by           | Read by                            |
 |------------|----------------------|------------------------------------|
@@ -64,11 +64,11 @@ Claude Code has a finite context window. As a session grows, the available conte
 
 Splitting work into focused sessions — design, planning, implementation, review — keeps each session short and the context fresh. `/clear` or restarting Claude Code resets the context, and `/flow:continue` reconnects you to the task in seconds.
 
-Flow commands preserve continuity across sessions by saving state in beads tasks: branch name, linked documents, subtask structure. The context resets, but the task context doesn't.
+Flow skills preserve continuity across sessions by saving state in beads tasks: branch name, linked documents, subtask structure. The context resets, but the task context doesn't.
 
 ## Typical Workflow
 
-A task lifecycle typically spans multiple Claude Code sessions. Here's how flow commands chain together across sessions.
+A task lifecycle typically spans multiple Claude Code sessions. Here's how flow skills chain together across sessions.
 
 ### Session 1: Pick a task and design
 
@@ -110,7 +110,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 /flow:done                        # close task, clean up branch
 ```
 
-Not every task needs all phases. A small bug fix might go straight from `/flow:start` to implementation to `/flow:done` in a single session. The commands are independent — use what fits.
+Not every task needs all phases. A small bug fix might go straight from `/flow:start` to implementation to `/flow:done` in a single session. The skills are independent — use what fits.
 
 ## Commands
 

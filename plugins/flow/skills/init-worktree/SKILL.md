@@ -1,6 +1,7 @@
 ---
 name: init-worktree
-description: Initialize project environment after worktree creation. Detects project type from config files and CLAUDE.md, proposes setup commands with confirmation. Used by flow:start and flow:continue after new worktree creation.
+description: Internal sub-step — initialize a newly created worktree's project environment. Called by flow:start and flow:continue via the Skill tool after they create a worktree; not for direct use. Detects project type from CLAUDE.md, README, or config files, proposes setup commands, and runs them on confirmation.
+allowed-tools: Bash Read
 ---
 
 # Flow: Initialize Worktree
