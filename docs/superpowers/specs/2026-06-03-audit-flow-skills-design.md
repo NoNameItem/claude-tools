@@ -24,7 +24,7 @@ This is a structural cleanup + frontmatter polish task. **No behavior changes** 
 - **`init-worktree`:** kept as-is — internal helper, no command, already imperative.
 - **`docs/plans/*`:** left untouched — dated historical design records; a separate task (`claude-tools-0fu`) migrates them.
 - **Oversized-skill splitting:** deferred to a follow-up beads task under the Flow epic (`claude-tools-elf`).
-- **Frontmatter depth:** rewrite descriptions + add `allowed-tools` per skill + `disable-model-invocation` on `init-worktree`. No `!command` injection.
+- **Frontmatter depth:** rewrite descriptions + add `allowed-tools` per skill + ~~`disable-model-invocation` on `init-worktree`~~ *(superseded — see Correction)*. No `!command` injection.
 
 ## Verified facts (Claude Code skills spec)
 
@@ -74,7 +74,7 @@ The only path that breaks on rename:
    - `sonar-sync`: add `Bash(gh:*)` and the SonarQube MCP tools it calls.
    - `after-design` / `after-plan`: minimal — `Bash(bd:*)` (and `Read` if used).
    - Exact per-skill lists are determined during implementation by reading each skill's commands.
-3. **`disable-model-invocation: true`** — on `init-worktree` **only** (pure sub-step that should never auto-fire). All user-facing skills keep model-invocation on.
+3. ~~**`disable-model-invocation: true`** — on `init-worktree` **only** (pure sub-step that should never auto-fire)~~ *(superseded — see Correction: `init-worktree` does NOT get this flag; it would block the Skill-tool sub-invocation `start`/`continue` rely on)*. All user-facing skills keep model-invocation on.
 4. **Not doing — `!command` injection.** It would conflict with the STOP-AND-READ command sequencing every flow skill relies on (skills explicitly order *when* to run `bd`/`git`). Rationale recorded here so it isn't re-proposed.
 
 ## Part C — Argument handling (port real logic before deleting wrappers)
