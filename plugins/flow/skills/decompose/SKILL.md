@@ -40,7 +40,7 @@ Follow these steps **in order**. Do not skip steps.
 4. If none — suggest `flow:start` first.
 
 **Find the design document:**
-1. Read task description, look for `Design: docs/plans/...` line.
+1. Read task description, look for the `Design:` line (path may be under `docs/superpowers/specs/` or `docs/plans/`).
 2. If no link — ask user for the document path.
 3. Read the design document fully.
 
@@ -187,7 +187,7 @@ Append a `## Decomposition` section to the end of the design document:
 ```bash
 # Append to design doc (use Edit tool, not echo)
 # Then:
-git add docs/plans/...
+git add <design-path>   # the path from the task's Design: link, e.g. docs/superpowers/specs/...
 git commit -m "docs(flow): add decomposition to design doc"
 ```
 
