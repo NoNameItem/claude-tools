@@ -157,7 +157,7 @@ class TestTypeWords:
 
 class TestExtractLinks:
     def test_extracts_design_and_plan(self):
-        desc = "Some text\nDesign: docs/plans/foo.md\nPlan: docs/plans/bar.md\nMore text"
+        desc = "Some text\nDesign: docs/superpowers/specs/foo.md\nPlan: docs/superpowers/plans/bar.md\nMore text"
         clean, links = extract_links(desc)
         assert "Design:" not in clean
         assert "Plan:" not in clean
@@ -228,7 +228,7 @@ class TestRenderDescriptionSection:
 
 class TestRenderLinksSection:
     def test_includes_header_and_links(self):
-        links = ["Design: docs/plans/foo.md", "Plan: docs/plans/bar.md"]
+        links = ["Design: docs/superpowers/specs/foo.md", "Plan: docs/superpowers/plans/bar.md"]
         lines = render_links_section(links)
         text = "\n".join(lines)
         assert "LINKS" in text
@@ -348,7 +348,7 @@ class TestRenderCard:
             "- Продумать альтернативные варианты отображения\n"
             "- Реализовать выбранный вариант\n"
             "\n"
-            "Design: docs/plans/2026-02-10-task-card-script-design.md"
+            "Design: docs/superpowers/specs/2026-02-10-task-card-script-design.md"
         ),
         "status": "in_progress",
         "priority": 4,

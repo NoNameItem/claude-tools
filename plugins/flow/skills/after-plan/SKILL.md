@@ -19,7 +19,7 @@ This is a SIMPLE task. Find plan document, save link to task description. Done.
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Find Task | Get in_progress leaf task | Ask if multiple |
-| 2. Find Plan | Newest plan in docs/plans/ | Recent file |
+| 2. Find Plan | Newest in docs/superpowers/plans/ or docs/plans/ | Recent file |
 | 3. **Save Link** | Add `Plan: path` to description | **PRIMARY GOAL** |
 | 4. Sync | `bd sync` | Persist to git |
 | 5. Done | Verify link saved | That's it |
@@ -34,7 +34,7 @@ This is a SIMPLE task. Find plan document, save link to task description. Done.
 │                                                 │
 │  SAVE THIS TO TASK DESCRIPTION:                │
 │                                                 │
-│  Plan: docs/plans/{plan-filename}              │
+│  Plan: docs/superpowers/plans/{plan-filename}  │
 │                                                 │
 │  That's the ENTIRE task. Nothing else.         │
 │                                                 │
@@ -59,10 +59,12 @@ Filter for leaf tasks (no open children).
 ### 2. Find Newest Plan Document
 
 ```bash
-ls -t docs/plans/*.md | head -1
+ls -t docs/superpowers/plans/*.md docs/plans/*.md 2>/dev/null | head -1
 ```
 
-Look for newest markdown file in `docs/plans/`.
+Look for the newest markdown file across **both** `docs/superpowers/plans/`
+(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins. The
+`2>/dev/null` swallows the error when only one of the two directories exists.
 
 **Heuristics:**
 - Recent (within last hour)
@@ -83,14 +85,14 @@ bd show {task-id}
 
 Add Plan link:
 ```bash
-bd update {task-id} --description="{current-description}\n\nPlan: docs/plans/{plan-filename}"
+bd update {task-id} --description="{current-description}\n\nPlan: {plan-path}"
 ```
 
 **IMPORTANT:**
 - Preserve existing content
 - **Preserve existing Design link** (if present)
 - Add newline before Plan link
-- Format: `Plan: docs/plans/...`
+- Format: `Plan: <path>` (e.g. `docs/superpowers/plans/...` or `docs/plans/...`)
 
 **If Plan link already exists:**
 Ask: "Task already has Plan link: {old-link}. Update to {new-link}? (yes/no)"
@@ -204,7 +206,7 @@ Agent: [Creates todo list with 9 implementation tasks]
 User: "I finished the plan, set me up to start coding"
 Agent: Saved Plan link to task claude-tools-abc:
 
-       Plan: docs/plans/2026-01-17-implementation-plan.md
+       Plan: docs/superpowers/plans/2026-01-17-implementation-plan.md
 
        Done. Task now has both Design and Plan links.
 ```
@@ -236,7 +238,7 @@ Agent: [Saves Plan link] ✓
 
 ```
 User: "Run after-plan please"
-Agent: Found plan docs/plans/2026-01-17-test-plan.md
+Agent: Found plan docs/superpowers/plans/2026-01-17-test-plan.md
 
        Saved Plan link to task claude-tools-6hl.
 
@@ -264,15 +266,15 @@ Which task is this plan for? (enter 1 or 2, or task ID)
 ### Plan Link Already Exists
 
 ```
-Task already has Plan link: docs/plans/old-plan.md
+Task already has Plan link: docs/superpowers/plans/old-plan.md
 
-Update to new plan docs/plans/2026-01-17-new-plan.md? (yes/no)
+Update to new plan docs/superpowers/plans/2026-01-17-new-plan.md? (yes/no)
 ```
 
 ### No Plan File Found
 
 ```
-No recent plan files found in docs/plans/.
+No recent plan files found in docs/superpowers/plans/ or docs/plans/.
 
 Please provide the plan file path (or 'skip' if no plan needed):
 ```
@@ -281,11 +283,11 @@ Please provide the plan file path (or 'skip' if no plan needed):
 
 ```
 Task description before:
-  Design: docs/plans/2026-01-16-design.md
+  Design: docs/superpowers/specs/2026-01-16-design.md
 
 Task description after:
-  Design: docs/plans/2026-01-16-design.md
-  Plan: docs/plans/2026-01-17-plan.md
+  Design: docs/superpowers/specs/2026-01-16-design.md
+  Plan: docs/superpowers/plans/2026-01-17-plan.md
 
 Both links preserved ✓
 ```
