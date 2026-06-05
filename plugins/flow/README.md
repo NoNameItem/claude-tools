@@ -5,12 +5,12 @@
 
 # Flow Plugin
 
-Automated workflow commands for [Claude Code](https://code.claude.com) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
+Automated workflow skills for [Claude Code](https://code.claude.com) that guide you through a task lifecycle: from picking a task and creating a branch, through design, planning, and implementation, to PR review and task closure. Built on top of [beads](https://github.com/steveyegge/beads) for task management.
 
 ## Prerequisites
 
 - [Claude Code](https://code.claude.com) — flow runs as a Claude Code plugin
-- [beads](https://github.com/steveyegge/beads) — required. Flow commands use `bd` to select, update, and close tasks.
+- [beads](https://github.com/steveyegge/beads) — required. Flow skills use `bd` to select, update, and close tasks.
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
 
 ## Installation
@@ -35,11 +35,13 @@ Flow saves task state as special lines in the beads task description:
 
 ```text
 Git: feature/claude-tools-abc-login-error
-Design: docs/plans/2026-02-10-login-error-design.md
-Plan: docs/plans/2026-02-10-login-error-impl-plan.md
+Design: docs/superpowers/specs/2026-02-10-login-error-design.md
+Plan: docs/superpowers/plans/2026-02-10-login-error-impl-plan.md
 ```
 
-Each line is written by one command and read by others:
+Paths above use the superpowers 5.x layout — `docs/superpowers/specs/` for designs, `docs/superpowers/plans/` for plans. Pre-v5 projects may still use `docs/plans/` for both; flow reads either.
+
+Each line is written by one skill and read by others:
 
 | Line       | Written by           | Read by                            |
 |------------|----------------------|------------------------------------|
@@ -49,10 +51,10 @@ Each line is written by one command and read by others:
 
 With superpowers, the typical chain looks like this:
 
-1. `/superpowers:brainstorm` writes a **design document** — problem analysis, proposed approaches, architecture decisions
+1. `/superpowers:brainstorming` writes a **design document** — problem analysis, proposed approaches, architecture decisions
 2. `/flow:after-design` finds it and saves `Design:` to the task
 3. `/flow:decompose` reads `Design:`, opens the doc, creates subtasks
-4. `/superpowers:write-plan` writes an **implementation plan** — step-by-step commits, files to change, tests to add
+4. `/superpowers:writing-plans` writes an **implementation plan** — step-by-step commits, files to change, tests to add
 5. `/flow:after-plan` finds it and saves `Plan:` to the task
 6. `/flow:done` reads `Plan:`, offers to delete or archive the file
 
@@ -64,17 +66,17 @@ Claude Code has a finite context window. As a session grows, the available conte
 
 Splitting work into focused sessions — design, planning, implementation, review — keeps each session short and the context fresh. `/clear` or restarting Claude Code resets the context, and `/flow:continue` reconnects you to the task in seconds.
 
-Flow commands preserve continuity across sessions by saving state in beads tasks: branch name, linked documents, subtask structure. The context resets, but the task context doesn't.
+Flow skills preserve continuity across sessions by saving state in beads tasks: branch name, linked documents, subtask structure. The context resets, but the task context doesn't.
 
 ## Typical Workflow
 
-A task lifecycle typically spans multiple Claude Code sessions. Here's how flow commands chain together across sessions.
+A task lifecycle typically spans multiple Claude Code sessions. Here's how flow skills chain together across sessions.
 
 ### Session 1: Pick a task and design
 
 ```bash
 /flow:start                       # choose task, create branch
-/superpowers:brainstorm        # explore the problem, write design doc
+/superpowers:brainstorming        # explore the problem, write design doc
 /flow:after-design                # link design to task
 /flow:decompose                   # break into subtasks (if needed)
 ```
@@ -83,7 +85,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ```bash
 /flow:continue                    # resume active task
-/superpowers:write-plan        # create implementation plan
+/superpowers:writing-plans        # create implementation plan
 /flow:after-plan                  # link plan to task
 ```
 
@@ -91,7 +93,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 
 ```bash
 /flow:continue                    # resume active task
-/superpowers:execute-plan      # implement the plan
+/superpowers:executing-plans      # implement the plan
 # create PR when ready
 ```
 
@@ -110,7 +112,7 @@ A task lifecycle typically spans multiple Claude Code sessions. Here's how flow 
 /flow:done                        # close task, clean up branch
 ```
 
-Not every task needs all phases. A small bug fix might go straight from `/flow:start` to implementation to `/flow:done` in a single session. The commands are independent — use what fits.
+Not every task needs all phases. A small bug fix might go straight from `/flow:start` to implementation to `/flow:done` in a single session. The skills are independent — use what fits.
 
 ## Commands
 
@@ -142,9 +144,9 @@ When to use: after `/clear`, new session, or Claude Code restart.
 
 #### `/flow:after-design`
 
-Links a design document to the current task. Finds the most recent design file in `docs/plans/`, saves a `Design:` reference in the task description. Run this after completing the brainstorming phase.
+Links a design document to the current task. Finds the most recent design file in `docs/superpowers/specs/` or `docs/plans/`, saves a `Design:` reference in the task description. Run this after completing the brainstorming phase.
 
-When to use: after `/superpowers:brainstorm` (or your own design process) produces a design document.
+When to use: after `/superpowers:brainstorming` (or your own design process) produces a design document.
 
 ```bash
 /flow:after-design
@@ -162,9 +164,9 @@ When to use: after design is linked, when the task is too large to implement in 
 
 #### `/flow:after-plan`
 
-Links an implementation plan to the current task. Finds the most recent plan file in `docs/plans/`, saves a `Plan:` reference in the task description. Run this after the planning phase.
+Links an implementation plan to the current task. Finds the most recent plan file in `docs/superpowers/plans/` or `docs/plans/`, saves a `Plan:` reference in the task description. Run this after the planning phase.
 
-When to use: after `/superpowers:write-plan` (or your own planning process) produces an implementation plan.
+When to use: after `/superpowers:writing-plans` (or your own planning process) produces an implementation plan.
 
 ```bash
 /flow:after-plan

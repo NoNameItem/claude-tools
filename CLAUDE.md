@@ -9,7 +9,7 @@ This repository contains two types of tools for Claude Code:
 **Statuskit** - Python package for customizable statusline display. Modular architecture with plugins for model info,
 git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statusline hook and renders formatted output.
 
-**Flow Plugin** - Claude Code plugin for beads workflow automation. Provides slash commands (`/flow:start`,
+**Flow Plugin** - Claude Code plugin for beads workflow automation. Provides skills invoked by short names (`/flow:start`,
 `/flow:after-design`, `/flow:after-plan`, `/flow:decompose`, `/flow:done`) that guide you through task selection, branch
 management, design linking, task decomposition, and completion workflow.
 
@@ -57,7 +57,7 @@ claude-tools/
 │   └── flow/                   # Beads workflow plugin
 │       ├── .claude-plugin/
 │       │   └── plugin.json
-│       └── skills/             # /flow:* commands
+│       └── skills/             # /flow:* skills (auto-surfaced as slash commands)
 ├── packages/
 │   └── statuskit/              # Python statusline package
 │       ├── pyproject.toml
@@ -208,9 +208,9 @@ This repository is also a Claude Code plugin marketplace containing workflow aut
 
 ### Flow Plugin
 
-Automated beads workflow commands for task management.
+Automated beads workflow skills for task management.
 
-**Available commands:**
+**Available skills** (invoked as slash commands):
 
 - `/flow:start` - Start working on a beads task (task selection, branch management, context display)
 - `/flow:after-design` - After brainstorming/design phase (links design doc to task)

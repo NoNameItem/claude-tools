@@ -1,6 +1,7 @@
 ---
-name: completing-task
-description: Use after completing and verifying a task. Checks git branch (feature → suggests finishing-a-development-branch), closes task, cleans up implementation plan files, recursively checks parents with confirmation, runs bd sync. Handles task completion workflow for beads.
+name: done
+description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*)
 ---
 
 # Flow: Done
@@ -105,12 +106,19 @@ bd show {task-id}
 ```
 Look for `Plan:` line in description. If found, extract the file path.
 
-**Source B — untracked/modified files in `docs/plans/`:**
+**Source B — untracked/modified files in the plan directories:**
 
-If no `Plan:` link in description, search for untracked or unstaged plan files:
+If no `Plan:` link in description, search for untracked or unstaged plan files
+across **both** the pre-v5 and superpowers 5.x+ locations:
 ```bash
-git ls-files --others --modified -- 'docs/plans/'
+git ls-files --others --modified -- 'docs/plans/' 'docs/superpowers/plans/'
 ```
+
+> Do **not** add `--exclude-standard`. In repos that gitignore the plans
+> directory, untracked plan files would otherwise be hidden. Safety here comes
+> from git itself: `--others --modified` surfaces only untracked or unstaged
+> files, never clean committed ones — so committed plans are never offered for
+> deletion, whichever directory they live in.
 
 Filter results:
 - File name contains "impl" or "plan" (case-insensitive)
@@ -284,7 +292,7 @@ No cleanup performed. User can clean up manually later.
 ✅ Check git branch
 ✅ Find in_progress leaf task
 ✅ Close task with bd close
-✅ Find plan file (linked in description OR untracked in `docs/plans/`)
+✅ Find plan file (linked in description OR untracked in `docs/plans/` / `docs/superpowers/plans/`)
 ✅ Ask user: delete / archive / keep plan file
 ✅ Remove `Plan:` link from description after delete/archive
 ✅ Check parents recursively
@@ -347,7 +355,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Cleanup is obvious, just delete" | Ask first. User might want to keep the branch. |
 | "Skip cleanup, not my job" | Step 8 is part of the workflow. Offer it. |
 | "Plan cleanup is not part of completing" | Step 4 IS part of the workflow. Plan files are task artifacts. |
-| "No Plan: link → skip plan search" | Always search `docs/plans/` for untracked files too. Plans aren't always linked. |
+| "No Plan: link → skip plan search" | Always search `docs/plans/` and `docs/superpowers/plans/` for untracked files too. Plans aren't always linked. |
 | "Auto-delete the plan, it's obvious" | Always ask. User might want to archive or keep for reference. |
 | "Plan file is outside my scope" | Plan files are task artifacts. Cleaning them up IS in scope (Step 4). |
 | "Branch doesn't match, clean up anyway" | Only clean up if branch contains the closed task's ID. |
@@ -420,11 +428,11 @@ Agent: [Closes task]
 User: "flow:done"
 Agent: [Closes task]
        [No Plan: link in description → skips plan cleanup entirely]
-       [Doesn't check docs/plans/ for untracked files]
+       [Doesn't check docs/plans/ or docs/superpowers/plans/ for untracked files]
        Done!
 ```
 
-**Problem:** Plan file exists as untracked in `docs/plans/` but agent only checked description.
+**Problem:** Plan file exists as untracked in `docs/superpowers/plans/` but agent only checked description.
 
 ### ✅ GOOD: Plan cleanup with linked plan
 
@@ -433,7 +441,7 @@ User: "flow:done"
 Agent: [Checks branch: master, OK]
        [Closes task claude-tools-abc]
 
-       Plan file found: `docs/plans/2026-02-06-abc-impl-plan.md`
+       Plan file found: `docs/superpowers/plans/2026-02-06-abc-impl-plan.md`
 
        What to do with it?
        1. Delete
@@ -466,10 +474,10 @@ User: "flow:done"
 Agent: [Checks branch: master, OK]
        [Closes task claude-tools-xyz "Quota module"]
        [No Plan: link in description]
-       [Checks docs/plans/ for untracked files]
+       [Checks docs/plans/ and docs/superpowers/plans/ for untracked files]
        [Finds: quota-module-impl-plan.md (untracked, matches task title)]
 
-       Plan file found: `docs/plans/quota-module-impl-plan.md`
+       Plan file found: `docs/superpowers/plans/quota-module-impl-plan.md`
 
        What to do with it?
        1. Delete
@@ -489,7 +497,7 @@ Agent: [Deletes file]
 ```
 
 **Correct because:**
-- No link in description but still searched docs/plans/
+- No link in description but still searched docs/plans/ and docs/superpowers/plans/
 - Found untracked file matching task title
 - Asked user before deleting
 - No description update needed (wasn't linked)
@@ -673,10 +681,10 @@ Check task status with:
 ### Plan File Linked but Already Deleted
 
 ```
-Task description has Plan: docs/plans/old-plan.md
+Task description has Plan: docs/superpowers/plans/old-plan.md
 File does not exist on disk.
 
-Plan file referenced in description not found: docs/plans/old-plan.md
+Plan file referenced in description not found: docs/superpowers/plans/old-plan.md
 (already deleted or moved)
 
 Removing stale Plan: link from description.
@@ -685,7 +693,7 @@ Removing stale Plan: link from description.
 ### Multiple Untracked Plan Files Match
 
 ```
-Found multiple plan file candidates in docs/plans/:
+Found multiple plan file candidates in docs/plans/ or docs/superpowers/plans/:
 1. quota-module-impl-plan.md (untracked)
 2. quota-implementation-plan.md (untracked)
 

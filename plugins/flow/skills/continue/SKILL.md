@@ -1,6 +1,7 @@
 ---
-name: continue-issue
-description: Use when returning to work after /clear or new session. Fast return to an active in_progress task — finds task, resolves branch/worktree, shows task card. Use flow:start for new task selection.
+name: continue
+description: Fast return to an active in_progress beads task — find it, resolve its saved branch or worktree, and show the task card. Use when resuming work after /clear or a new session. To pick a new task instead, use flow:start.
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion TodoWrite
 ---
 
 # Flow: Continue
@@ -95,7 +96,7 @@ Skip to Step 4.
 
 Run the continue script:
 ```bash
-bd graph --all --json | python3 <skill-base-dir>/../starting-task/scripts/bd-continue.py [--all]
+bd graph --all --json | python3 <skill-base-dir>/../start/scripts/bd-continue.py [--all]
 ```
 
 Pass `--all` if user passed `--all` flag.
@@ -273,7 +274,7 @@ Invoke the `flow:init-worktree` skill using the Skill tool.
 Display the task card using the script:
 
 ```bash
-bd show <task-id> --json | python3 <skill-base-dir>/../starting-task/scripts/bd-card.py
+bd show <task-id> --json | python3 <skill-base-dir>/../start/scripts/bd-card.py
 ```
 
 Output in a ``` code block to preserve alignment.
@@ -325,7 +326,7 @@ Agent: [reads Git: from description → feature/claude-tools-elf.3-task-selectio
 
        Перешёл в worktree `.worktrees/feature-claude-tools-elf.3-task-selection-optimization`.
 
-       [runs bd show claude-tools-elf.3 --json | python3 <skill-base-dir>/../starting-task/scripts/bd-card.py]
+       [runs bd show claude-tools-elf.3 --json | python3 <skill-base-dir>/../start/scripts/bd-card.py]
 
        ```
        ┌─ Feature ──────────────────────────────────────────────────────────────────┐

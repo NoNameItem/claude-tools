@@ -1,6 +1,7 @@
 ---
-name: linking-design
-description: Use after completing brainstorming/design phase. Links design document to task. Simple operation — save the link, nothing else. Suggests /flow:decompose for subtask creation.
+name: after-design
+description: Link a design document to the current beads task after the brainstorming or design phase. Use right after finishing a design doc; it records the link and suggests /flow:decompose, nothing else.
+allowed-tools: Bash(bd:*) Bash(ls:*) Bash(head:*)
 ---
 
 # Flow: After Design
@@ -20,7 +21,7 @@ This is a SIMPLE task. Find design document, save link to task description. Done
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Find Task | Get in_progress leaf task | Ask if multiple |
-| 2. Find Design | Newest in docs/plans/ | Recent file |
+| 2. Find Design | Newest in docs/superpowers/specs/ or docs/plans/ | Recent file |
 | 3. **Save Link** | Add `Design: path` to description | **PRIMARY GOAL** |
 | 4. Sync | `bd sync` | Persist to git |
 | 5. Suggest | Offer `/flow:decompose` | If task needs subtasks |
@@ -35,7 +36,7 @@ This is a SIMPLE task. Find design document, save link to task description. Done
 |                                                  |
 |  SAVE THIS TO TASK DESCRIPTION:                  |
 |                                                  |
-|  Design: docs/plans/{design-filename}            |
+|  Design: docs/superpowers/specs/{design-filename}|
 |                                                  |
 |  That's the ENTIRE task. Nothing else.           |
 |                                                  |
@@ -60,10 +61,12 @@ Filter for leaf tasks (no open children).
 ### 2. Find Newest Design Document
 
 ```bash
-ls -t docs/plans/*.md | head -1
+ls -t docs/superpowers/specs/*.md docs/plans/*.md 2>/dev/null | head -1
 ```
 
-Look for newest markdown file in `docs/plans/`.
+Look for the newest markdown file across **both** `docs/superpowers/specs/`
+(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins. The
+`2>/dev/null` swallows the error when only one of the two directories exists.
 
 **Heuristics:**
 - Recent (within last hour)
@@ -84,14 +87,14 @@ bd show {task-id}
 
 Add Design link:
 ```bash
-bd update {task-id} --description="{current-description}\n\nDesign: docs/plans/{design-filename}"
+bd update {task-id} --description="{current-description}\n\nDesign: {design-path}"
 ```
 
 **IMPORTANT:**
 - Preserve existing content
 - **Preserve existing Plan link** (if present)
 - Add newline before Design link
-- Format: `Design: docs/plans/...`
+- Format: `Design: <path>` (e.g. `docs/superpowers/specs/...` or `docs/plans/...`)
 
 **If Design link already exists:**
 Ask: "Task already has Design link: {old-link}. Update to {new-link}? (yes/no)"
@@ -181,7 +184,7 @@ Agent: Found 5 subtasks in the design:
 User: "I finished the design"
 Agent: Saved Design link to task claude-tools-abc:
 
-       Design: docs/plans/2026-02-09-feature-design.md
+       Design: docs/superpowers/specs/2026-02-09-feature-design.md
 
        Done. Want to decompose into subtasks? Run `/flow:decompose`.
 ```
@@ -201,7 +204,7 @@ Agent: [Saves link, then creates 4 subtasks]
 User: "After design, also create subtasks"
 Agent: Saved Design link to task claude-tools-abc:
 
-       Design: docs/plans/2026-02-09-feature-design.md
+       Design: docs/superpowers/specs/2026-02-09-feature-design.md
 
        For subtasks, run `/flow:decompose` next.
 ```
@@ -221,20 +224,20 @@ Which task is this design for? (enter 1 or 2, or task ID)
 ### Design Link Already Exists
 
 ```
-Task already has Design link: docs/plans/old-design.md
+Task already has Design link: docs/superpowers/specs/old-design.md
 
-Update to new design docs/plans/2026-02-09-new-design.md? (yes/no)
+Update to new design docs/superpowers/specs/2026-02-09-new-design.md? (yes/no)
 ```
 
 ### Has Plan, Adding Design
 
 ```
 Task description before:
-  Plan: docs/plans/2026-01-17-plan.md
+  Plan: docs/superpowers/plans/2026-01-17-plan.md
 
 Task description after:
-  Design: docs/plans/2026-02-09-design.md
-  Plan: docs/plans/2026-01-17-plan.md
+  Design: docs/superpowers/specs/2026-02-09-design.md
+  Plan: docs/superpowers/plans/2026-01-17-plan.md
 
 Both links preserved.
 ```
