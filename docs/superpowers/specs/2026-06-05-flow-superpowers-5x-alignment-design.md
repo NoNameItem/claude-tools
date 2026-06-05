@@ -6,10 +6,11 @@
 
 ## Problem
 
-Superpowers 5.x changed where design and plan documents live. The flow plugin
-still assumes the old `docs/plans/` location throughout its skills, README, and
-test fixtures. The original task framed this as four concerns; an audit of the
-plugin against the installed superpowers 5.1.0 shows only two are real.
+Superpowers 5.x added a new home for design and plan documents
+(`docs/superpowers/specs/` and `docs/superpowers/plans/`). The flow plugin still
+assumes the pre-v5 `docs/plans/` location throughout its skills, README, and test
+fixtures. The original task framed this as four concerns; an audit of the plugin
+against the installed superpowers 5.1.0 shows only two are real.
 
 ## Audit findings
 
@@ -18,87 +19,104 @@ plugin against the installed superpowers 5.1.0 shows only two are real.
 | 1. Spec/plan paths moved | **Real & large.** ~43 references to `docs/plans/` across README, 5 skills, and `test_bd_card.py`. New layout confirmed: designs → `docs/superpowers/specs/`, plans → `docs/superpowers/plans/`. |
 | 2. Review Loops removed | **No-op.** Flow never references spec/plan review loops. |
 | 3. Subagent-driven mandatory | **No-op, and premise is stale.** Flow never documents an execution-mode choice. superpowers 5.1.0 `writing-plans` still offers "Two execution options," so the "now mandatory" claim does not hold for the installed version. |
-| 4. Legacy slash commands | **Real, but mis-described.** Flow does not use `/brainstorm` etc. Its README uses `/superpowers:brainstorm`, `/superpowers:write-plan`, `/superpowers:execute-plan` — old short names that should be the current skill names. |
+| 4. Legacy slash commands | **Real, but mis-described.** Flow does not use `/brainstorm` etc. Its README uses `/superpowers:brainstorm`, `/superpowers:write-plan`, `/superpowers:execute-plan` — old short names that should be the current skill names (slash kept). |
 
-Supporting context confirmed during the audit:
+## Core principle: both locations are first-class
 
-- This repo runs **both layouts at once**: `docs/plans/` holds 40 historical
-  design + plan files (committed); `docs/superpowers/specs/` is the new home;
-  `.gitignore` already ignores `docs/superpowers/plans/` (plans stay local).
-- `decompose` runs `git add docs/plans/...` to commit a design doc with the
-  decomposition appended — that file is a spec, so it moves to
-  `docs/superpowers/specs/`.
+`docs/plans/` is **not** legacy to be phased out. Projects that adopted
+superpowers before v5 may continue saving designs and plans there; projects on
+v5+ use `docs/superpowers/specs/` and `docs/superpowers/plans/`. Every
+path-aware flow skill must support **both** locations as first-class, both for
+finding existing files and going forward.
+
+**The flow plugin is distributed to arbitrary repos.** It must not assume the
+host project's `.gitignore` — e.g. it cannot assume `docs/superpowers/plans/` is
+ignored or that `docs/plans/` is committed. Where a skill needs to know whether
+a file is "local, not yet committed" (the `done` cleanup), it relies on git's
+own untracked/modified detection, never on a hardcoded directory convention.
+
+*(This repo happens to ignore `docs/superpowers/plans/` and commit specs to
+`docs/superpowers/specs/`, but that is one project's convention and the skills
+must not depend on it.)*
 
 ## Decisions
 
-1. **Scope:** concern #1 (paths) + reframed #4 (README command names). Drop #2
-   and #3 as no-ops; record the reasoning in the task's closing comment.
-2. **Backwards compatibility:** `after-design` / `after-plan` search **both**
-   new and old paths and let the newest file (by mtime) win. New work always
-   lands in the new path and wins; a stray old file is still found.
+1. **Scope:** concern #1 (paths) + reframed #4 (README command names, slash
+   kept). Drop #2 and #3 as no-ops; record the reasoning in the task's closing
+   comment.
+2. **Dual-location search:** `after-design` / `after-plan` search **both** the
+   new and old directories and let the newest file (by mtime) win. `done`'s
+   cleanup searches **both** directories too, relying on git's untracked/modified
+   filter for safety. `decompose` operates on whatever path the task's `Design:`
+   link points to.
 3. **Labels unchanged:** task-description links stay `Design:` and `Plan:`.
    Files are still named `*-design.md`; existing linked tasks keep working; the
-   card script and `decompose` parsing stay untouched. Only paths change.
+   card script and `decompose` parsing stay untouched. Only the directories the
+   skills look in change.
 
 ## Path mapping
 
-| Artifact | Old | New |
+| Artifact | Pre-v5 location | v5+ location |
 |---|---|---|
-| Design / spec docs | `docs/plans/` | `docs/superpowers/specs/` (committed) |
-| Implementation plans | `docs/plans/` | `docs/superpowers/plans/` (gitignored, local-only) |
+| Design / spec docs | `docs/plans/` | `docs/superpowers/specs/` |
+| Implementation plans | `docs/plans/` | `docs/superpowers/plans/` |
+
+Both remain supported; skills search both.
 
 ## Per-skill changes
 
 ### after-design (`plugins/flow/skills/after-design/SKILL.md`)
-- Search newest design across **both** `docs/superpowers/specs/*.md` and
-  `docs/plans/*.md` (e.g. `ls -t docs/superpowers/specs/*.md docs/plans/*.md
-  2>/dev/null | head -1`).
+- Find newest design across **both** locations, newest by mtime wins:
+  `ls -t docs/superpowers/specs/*.md docs/plans/*.md 2>/dev/null | head -1`.
 - Save the `Design:` link pointing at whatever path the chosen file lives in.
-- Update the box mockup and every example path.
+- Update the box mockup and every example path (show `docs/superpowers/specs/`
+  as the v5+ example, but the instruction text must name both locations).
 - Occurrences to revise: lines 24, 39, 64, 67, 88, 95, 185, 205, 225, 227, 234,
   237, 238.
 
 ### after-plan (`plugins/flow/skills/after-plan/SKILL.md`)
-- Same dual-glob over `docs/superpowers/plans/*.md` + `docs/plans/*.md`.
+- Same dual search over `docs/superpowers/plans/*.md` + `docs/plans/*.md`,
+  newest wins.
 - Save the `Plan:` link to the chosen file's path.
-- Update mockup and examples.
+- Update mockup and examples; instruction text names both locations.
 - Occurrences to revise: lines 22, 37, 62, 65, 86, 93, 207, 239, 267, 269, 275,
   284, 287, 288.
 
 ### done (`plugins/flow/skills/done/SKILL.md`)
-- Local-plan cleanup targets **only** `docs/superpowers/plans/` (gitignored,
-  local-only). It must **not** touch `docs/plans/` — those files are committed
-  history and must never be deleted.
-- Keep the dual detection: plan linked in the description **OR** an untracked
-  local plan file.
-- Impl note for the plan phase: the `git ls-files` listing must surface
-  gitignored files in `docs/superpowers/plans/` (the default `--others` excludes
-  ignored paths unless told otherwise) — verify the exact invocation when
-  implementing.
+- Local-plan cleanup searches **both** `docs/plans/` and
+  `docs/superpowers/plans/` for the local plan file.
+- Safety comes from git's untracked/modified detection — not from any gitignore
+  assumption — so committed files are never blindly deleted:
+  `git ls-files --others --modified -- docs/plans/ docs/superpowers/plans/`.
+  - Impl note for the plan phase: do **not** add `--exclude-standard`, or
+    gitignored plan files (in repos that ignore the plans dir) won't be
+    surfaced. Verify the exact invocation when implementing.
+- Keep the dual detection: plan linked in the description **OR** a local plan
+  file found by the search above.
 - Occurrences to revise: lines 109, 113, 288, 351, 424, 428, 437, 470, 473, 493,
   677, 680, 689.
 
 ### decompose (`plugins/flow/skills/decompose/SKILL.md`)
-- `git add docs/plans/...` → `git add docs/superpowers/specs/...` (the
-  decomposition is appended to the committed design/spec doc).
-- Update the `Design: docs/plans/...` parse example (line 43) and the `git add`
-  example (line 190).
+- `git add` the design doc at the path the task's `Design:` link points to
+  (which may be under `docs/plans/` or `docs/superpowers/specs/`) — do not
+  hardcode a directory. Update the `git add docs/plans/...` example (line 190) to
+  use the linked path; show `docs/superpowers/specs/` as the v5+ example.
+- Update the `Design: docs/plans/...` parse example (line 43); parsing stays
+  path-agnostic.
 
 ### test_bd_card.py (`plugins/flow/skills/start/scripts/test_bd_card.py`)
-- Update the 3 fixture example paths (lines 160, 231, 351) to the new layout.
+- Update the 3 fixture example paths (lines 160, 231, 351) to the v5+ layout.
   Cosmetic — the card script extracts any `Design:`/`Plan:` line regardless of
   path, so tests stay green; this just keeps examples current.
 
 ## README.md (`plugins/flow/README.md`)
-- Path examples (lines 38–39, 145, 165) → `docs/superpowers/specs/` (design) and
-  `docs/superpowers/plans/` (plan).
-- Command names (lines 52, 55, 77, 86, 94, 147, 167):
-  - `/superpowers:brainstorm` → `superpowers:brainstorming`
-  - `/superpowers:write-plan` → `superpowers:writing-plans`
-  - `/superpowers:execute-plan` → `superpowers:executing-plans`
-  - Drop the leading slash; use current skill names, matching how
-    `after-plan`'s frontmatter and the superpowers skills cross-reference each
-    other.
+- Path examples (lines 38–39, 145, 165): show the v5+ dirs, and mention that
+  pre-v5 projects may still use `docs/plans/`.
+- Command names (lines 52, 55, 77, 86, 94, 147, 167) — **keep the leading
+  slash**, correct the names to the current skills:
+  - `/superpowers:brainstorm` → `/superpowers:brainstorming`
+  - `/superpowers:write-plan` → `/superpowers:writing-plans`
+  - `/superpowers:execute-plan` → `/superpowers:executing-plans`
 
 ## Out of scope
 
@@ -112,7 +130,8 @@ No runtime logic changes (only skill content + test fixtures), so TDD does not
 apply. Verify by:
 
 - `uv run pytest` on the flow scripts stays green after fixture edits.
-- `grep -rn "docs/plans/" plugins/flow/` → only the intentional
-  backwards-compat globs remain.
-- `grep -rn "/superpowers:" plugins/flow/README.md` → empty.
-- Read-through of each edited skill for residual `docs/plans/` assumptions.
+- `grep -rn "docs/plans/" plugins/flow/` → every remaining hit is part of an
+  intentional dual-location search or example, never a sole/hardcoded path.
+- `grep -rn "/superpowers:" plugins/flow/README.md` → only the corrected
+  `brainstorming` / `writing-plans` / `executing-plans` forms (slash kept).
+- Read-through of each edited skill for residual single-location assumptions.
