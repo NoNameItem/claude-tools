@@ -115,9 +115,10 @@ git ls-files --others --modified -- 'docs/plans/' 'docs/superpowers/plans/'
 ```
 
 > Do **not** add `--exclude-standard`. In repos that gitignore the plans
-> directory, untracked plan files would otherwise be hidden. Git's
-> untracked/modified filter is what keeps committed files safe here — never a
-> hardcoded directory convention.
+> directory, untracked plan files would otherwise be hidden. Safety here comes
+> from git itself: `--others --modified` surfaces only untracked or unstaged
+> files, never clean committed ones — so committed plans are never offered for
+> deletion, whichever directory they live in.
 
 Filter results:
 - File name contains "impl" or "plan" (case-insensitive)
