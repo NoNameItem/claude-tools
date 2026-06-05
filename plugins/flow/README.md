@@ -39,6 +39,8 @@ Design: docs/superpowers/specs/2026-02-10-login-error-design.md
 Plan: docs/superpowers/plans/2026-02-10-login-error-impl-plan.md
 ```
 
+Paths above use the superpowers 5.x layout — `docs/superpowers/specs/` for designs, `docs/superpowers/plans/` for plans. Pre-v5 projects may still use `docs/plans/` for both; flow reads either.
+
 Each line is written by one skill and read by others:
 
 | Line       | Written by           | Read by                            |
