@@ -227,8 +227,9 @@ BRANCH=$(flow-branch-for <task-id>)
 **Case 1: Current branch matches task branch.**
 Check if current branch name matches pattern `(fix|feature|chore)/{task-id}`:
 ```bash
-git branch --show-current | grep -qE "(fix|feature|chore)/{task-id}" && echo "AUTO_RESOLVE=current_branch"
+flow-current-task {task-id} && echo "AUTO_RESOLVE=current_branch"
 ```
+Exact match — a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID.
 
 If matched: skip to Step 7, report:
 > "Вы уже на ветке `{current-branch}`, продолжаем."

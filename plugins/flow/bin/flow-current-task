@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Task ID vs. the current git branch.
+
+Usage:
+    flow-current-task            # extract & print the task ID from the branch (empty if none)
+    flow-current-task <task-id>  # exit 0 if the branch belongs to <task-id>, else 1
+
+Exit: extract -> 0 always (2 on git error); match -> 0 hit / 1 miss / 2 git error.
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+BD = os.environ.get("BD_BIN", "bd")
+TYPE_RE = r"(?:fix|chore|feature)/"
+
+
+def current_branch():
+    result = subprocess.run(["git", "branch", "--show-current"], capture_output=True, text=True, check=False)
+    return None if result.returncode != 0 else result.stdout.strip()
+
+
+def project_prefix():
+    result = subprocess.run([BD, "list", "--json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    issues = data if isinstance(data, list) else data.get("issues", [])
+    return issues[0]["id"].rsplit("-", 1)[0] if issues else None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Extract or match the task ID of the current branch.")
+    parser.add_argument("task_id", nargs="?")
+    task_id = parser.parse_args().task_id
+
+    branch = current_branch()
+    if branch is None:
+        sys.stderr.write("git error\n")
+        return 2
+
+    if task_id is not None:  # match mode
+        return 0 if re.match(rf"^{TYPE_RE}{re.escape(task_id)}(-.*)?$", branch) else 1
+
+    prefix = project_prefix()  # extract mode
+    if prefix:
+        match = re.match(rf"^{TYPE_RE}({re.escape(prefix)}-[a-z0-9]+(?:\.[0-9]+)*)", branch)
+        if match:
+            sys.stdout.write(match.group(1) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
