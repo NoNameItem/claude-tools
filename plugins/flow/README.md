@@ -218,3 +218,32 @@ When to use: when implementation is complete, PR is merged, and you're ready to 
 | `/flow:review-comments` | Process GitHub PR review comments                  |
 | `/flow:sonar-sync`      | Sync SonarCloud issues with beads tasks            |
 | `/flow:done`            | Close task, clean up branch and plan files         |
+
+## bin/ helpers
+
+`plugins/flow/bin/` holds small executables that the skills call **by bare name**
+(the plugin loader adds this directory to `PATH`). Each is an extension-less
+Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
+`bin/tests/`.
+
+| Helper | Purpose |
+|--------|---------|
+| `flow-task-card` | Render a beads task card from `bd show --json` |
+| `flow-task-tree` | Render the task tree from `bd graph --json` |
+| `flow-find-leaf` | Find leaf in-progress tasks |
+| `flow-branch-for <id>` | Compute the branch name for a task |
+| `flow-link-doc <id> <Git\|Design\|Plan> <value>` | Set/remove a link line (empty value removes) |
+| `flow-find-doc <design\|plan>` | Newest doc across `docs/superpowers/{specs,plans}/` + `docs/plans/` |
+| `flow-current-task [id]` | Extract the task id from the branch, or match the branch against `id` |
+| `flow-in-worktree` | Exit 0 if CWD is inside `.worktrees/` |
+| `flow-worktree-dir <branch>` | Map a branch to its `.worktrees/` directory |
+| `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
+
+Run the tests: `uv run pytest plugins/flow/bin/tests/`.
+
+**Adding a helper:** create the executable (`chmod +x`, no `.py`), ensure it's
+covered by `pyproject.toml`'s `[tool.ruff] extend-include` glob (`plugins/flow/bin/flow-*`),
+write a `bin/tests/test_flow_<name>.py`, and call it by bare name from the skill.
+
+**PATH fallback:** if a skill's Bash context can't resolve a bare helper name
+(`which flow-task-card` is empty), call it via `<skill-base-dir>/../../bin/<helper>`.
