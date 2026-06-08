@@ -23,6 +23,7 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+extend-include = ["plugins/flow/bin/flow-*"]  # extension-less helper executables
 
 [tool.ruff.lint]
 select = [
@@ -93,7 +94,7 @@ quote-style = "double"
     "SLF001",   # private member access
     "PLC0415",  # late imports - common test isolation pattern
 ]
-"plugins/flow/skills/start/scripts/bd-continue.py" = ["S603", "S607"]  # CLI script calling git/bd
+"plugins/flow/bin/flow-*" = ["S603", "S607", "INP001"]  # CLI helpers: call git/bd, standalone scripts
 ".github/scripts/*.py" = ["PLC0415", "S603"]  # Late imports and subprocess security warnings
 "packages/statuskit/src/statuskit/__init__.py" = ["PLC0415"]  # Lazy imports for faster CLI startup
 
