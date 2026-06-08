@@ -2,12 +2,12 @@
 
 # ruff: noqa: INP001
 
+import json
+
 from conftest import run_helper
 
 
 def _issue(issue_type, title):
-    import json
-
     return json.dumps([{"id": "claude-tools-uaj", "issue_type": issue_type, "title": title}])
 
 
@@ -35,3 +35,10 @@ def test_unknown_type_defaults_to_feature_with_warning(fake_bd):
     r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
     assert r.stdout.strip() == "feature/claude-tools-uaj-weird-thing"
     assert "molecule" in r.stderr
+
+
+def test_empty_title_falls_back_to_task_id(fake_bd):
+    fake_bd.set_show(_issue("task", ""))
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "feature/claude-tools-uaj"

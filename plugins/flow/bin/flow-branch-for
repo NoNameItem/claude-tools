@@ -37,7 +37,13 @@ def main():
     except json.JSONDecodeError:
         sys.stderr.write("malformed bd json\n")
         return 2
-    issue = data[0] if isinstance(data, list) else data
+    if isinstance(data, list):
+        if not data:
+            sys.stderr.write(f"task not found: {task_id}\n")
+            return 1
+        issue = data[0]
+    else:
+        issue = data
     if not issue:
         sys.stderr.write(f"task not found: {task_id}\n")
         return 1
@@ -47,7 +53,12 @@ def main():
     if prefix is None:
         sys.stderr.write(f"unknown type {issue_type!r}; defaulting to feature/\n")
         prefix = "feature/"
-    sys.stdout.write(f"{prefix}{task_id}-{slugify(issue.get('title', ''))}\n")
+    slug = slugify(issue.get("title", ""))
+    if slug:
+        sys.stdout.write(f"{prefix}{task_id}-{slug}\n")
+    else:
+        sys.stderr.write("title produces empty slug; using task-id only\n")
+        sys.stdout.write(f"{prefix}{task_id}\n")
     return 0
 
 
