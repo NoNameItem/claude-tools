@@ -378,27 +378,10 @@ No branch action, proceed to Step 8.1.
 
 **After branch is created or checked out**, save the branch name in the task description so `flow:continue` can find it later.
 
-**Read current description:**
 ```bash
-bd show <task-id> --json
+flow-link-doc <task-id> Git "$BRANCH"
 ```
-
-Extract the `description` field. Then append or update the `Git:` line:
-
-- If description already has a `Git:` line → replace it
-- If no `Git:` line → append to end of description
-
-**Update description:**
-```bash
-bd update <task-id> --description "<full-description-with-git-line>"
-```
-
-The `Git:` line format:
-```
-Git: feature/claude-tools-elf.3-task-selection-optimization
-```
-
-Same pattern as existing `Design:` and `Plan:` links in descriptions.
+This sets (or replaces) the `Git:` line in the task description; other link lines are preserved.
 
 **Then sync to propagate:**
 ```bash

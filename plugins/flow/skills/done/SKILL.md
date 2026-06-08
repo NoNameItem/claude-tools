@@ -158,10 +158,10 @@ mv {path} docs/archive/
 
 **Only if** task description contained a `Plan:` line AND user chose delete or archive:
 
-Get current description, remove the `Plan:` line, update:
 ```bash
-bd update {task-id} --description="{description-without-plan-line}"
+flow-link-doc {task-id} Plan ""
 ```
+Passing an empty value removes the `Plan:` line (and tidies the surrounding blank lines); the rest of the description is untouched.
 
 **Do NOT commit the file deletion/move.** The branch cleanup in step 8 or the user's next workflow will handle git state.
 
