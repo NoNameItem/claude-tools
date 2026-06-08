@@ -102,7 +102,7 @@ Follow these steps **in order**. Do not skip steps.
 bd sync
 
 # Check if already in a worktree
-pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
+flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
 `bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.

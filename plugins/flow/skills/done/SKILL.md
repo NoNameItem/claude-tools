@@ -242,7 +242,7 @@ If this exits non-zero (`SKIP_CLEANUP`), the user ran `flow:done` from an unrela
 
 Gather cleanup targets:
 
-- **Worktree:** `pwd | grep -q "\.worktrees/"` — are we in a worktree?
+- **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 - **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"` — does remote branch exist?
 - Local branch is always present (we're on it).
 

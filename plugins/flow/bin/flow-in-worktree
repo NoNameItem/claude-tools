@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+"""Exit 0 if the current working directory is inside a `.worktrees/` directory, else 1."""
+
+import sys
+from pathlib import Path
+
+
+def main():
+    return 0 if ".worktrees/" in str(Path.cwd()) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

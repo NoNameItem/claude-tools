@@ -212,7 +212,7 @@ Skip to Step 8 (no init needed — worktree already existed).
 
 Check if already in a worktree:
 ```bash
-pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
+flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
 **If IN_WORKTREE=true:**
