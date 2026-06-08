@@ -59,12 +59,11 @@ Filter for leaf tasks (no open children).
 ### 2. Find Newest Plan Document
 
 ```bash
-ls -t docs/superpowers/plans/*.md docs/plans/*.md 2>/dev/null | head -1
+flow-find-doc plan
 ```
 
 Look for the newest markdown file across **both** `docs/superpowers/plans/`
-(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins. The
-`2>/dev/null` swallows the error when only one of the two directories exists.
+(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins.
 
 **Heuristics:**
 - Recent (within last hour)
