@@ -351,7 +351,7 @@ git checkout -b "$BRANCH"
 
 **Create branch (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<branch-name>' | tr '/' '-')"
+WORKTREE_DIR=$(flow-worktree-dir "$BRANCH")
 git worktree add "$WORKTREE_DIR" -b <branch-name>
 cd "$WORKTREE_DIR"
 ```
@@ -367,7 +367,7 @@ git checkout -b <local-branch-name> origin/<remote-branch-name>
 
 **Checkout existing (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<existing-branch>' | tr '/' '-')"
+WORKTREE_DIR=$(flow-worktree-dir "<existing-branch>")
 git worktree add "$WORKTREE_DIR" <existing-branch>
 cd "$WORKTREE_DIR"
 ```

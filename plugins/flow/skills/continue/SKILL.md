@@ -250,7 +250,7 @@ Skip to Step 8.
 
 **Option 2 (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<branch-name>' | tr '/' '-')"
+WORKTREE_DIR=$(flow-worktree-dir "<branch-name>")
 git worktree add "$WORKTREE_DIR" <branch-name>
 cd "$WORKTREE_DIR"
 ```
