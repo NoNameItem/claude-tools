@@ -31,6 +31,7 @@ def _scan_branches(pat):
         line = raw.replace("*", "").strip()
         if not line or "->" in line:  # skip 'remotes/origin/HEAD -> origin/master'
             continue
+        # only origin remotes are surfaced; flow pushes/checks out via origin/<branch>
         if line.startswith("remotes/origin/"):
             name = line[len("remotes/origin/") :]
             if pat.match(name):

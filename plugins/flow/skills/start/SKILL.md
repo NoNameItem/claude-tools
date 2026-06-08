@@ -200,7 +200,7 @@ Each line is `<branch>\t<location>` (`location` ∈ local/remote/worktree); resu
 **If matching branches found:**
 - Present options to checkout existing branch OR create new one
 - If multiple branches found, show all options
-- Include branch names and location (local/remote) in the suggestion
+- Include branch names and location (local/remote/worktree) in the suggestion
 
 **If no matching branches found:**
 - Proceed to create new branch with appropriate prefix

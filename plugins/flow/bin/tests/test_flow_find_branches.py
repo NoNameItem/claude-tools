@@ -28,3 +28,25 @@ def test_no_matches_prints_nothing(git_repo):
     r = run_helper("flow-find-branches", "claude-tools-zzz", cwd=git_repo)
     assert r.returncode == 0
     assert r.stdout.strip() == ""
+
+
+def test_remote_branch_reported_as_remote(git_repo):
+    ref_dir = git_repo / ".git" / "refs" / "remotes" / "origin" / "feature"
+    ref_dir.mkdir(parents=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=git_repo, capture_output=True, text=True, check=True, env=_ENV
+    ).stdout.strip()
+    (ref_dir / "claude-tools-uaj-remote-only").write_text(sha + "\n")
+    r = run_helper("flow-find-branches", "claude-tools-uaj", cwd=git_repo)
+    assert r.returncode == 0
+    assert "feature/claude-tools-uaj-remote-only\tremote" in r.stdout
+
+
+def test_worktree_branch_takes_precedence_over_local(git_repo):
+    branch = "feature/claude-tools-uaj-in-wt"
+    wt_dir = git_repo.parent / "wt-test"
+    subprocess.run(["git", "worktree", "add", str(wt_dir), "-b", branch], cwd=git_repo, check=True, env=_ENV)
+    r = run_helper("flow-find-branches", "claude-tools-uaj", cwd=git_repo)
+    assert r.returncode == 0
+    assert f"{branch}\tworktree" in r.stdout
+    assert f"{branch}\tlocal" not in r.stdout
