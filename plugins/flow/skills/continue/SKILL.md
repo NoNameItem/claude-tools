@@ -96,7 +96,7 @@ Skip to Step 4.
 
 Run the continue script:
 ```bash
-bd graph --all --json | python3 <skill-base-dir>/../start/scripts/bd-continue.py [--all]
+bd graph --all --json | flow-find-leaf [--all]
 ```
 
 Pass `--all` if user passed `--all` flag.
@@ -274,7 +274,7 @@ Invoke the `flow:init-worktree` skill using the Skill tool.
 Display the task card using the script:
 
 ```bash
-bd show <task-id> --json | python3 <skill-base-dir>/../start/scripts/bd-card.py
+bd show <task-id> --json | flow-task-card
 ```
 
 Output in a ``` code block to preserve alignment.
@@ -326,7 +326,7 @@ Agent: [reads Git: from description → feature/claude-tools-elf.3-task-selectio
 
        Перешёл в worktree `.worktrees/feature-claude-tools-elf.3-task-selection-optimization`.
 
-       [runs bd show claude-tools-elf.3 --json | python3 <skill-base-dir>/../start/scripts/bd-card.py]
+       [runs bd show claude-tools-elf.3 --json | flow-task-card]
 
        ```
        ┌─ Feature ──────────────────────────────────────────────────────────────────┐

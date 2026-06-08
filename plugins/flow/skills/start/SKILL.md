@@ -39,10 +39,10 @@ This skill guides starting work on beads tasks through explicit consultation ste
 **Step 1 - Run the tree builder script:**
 ```bash
 # Without argument — full tree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+bd graph --all --json | flow-task-tree
 
 # With task ID argument — subtree rooted at that task
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
+bd graph --all --json | flow-task-tree --root <task-id>
 ```
 
 **If a task ID argument was provided** (e.g., user invoked `/flow:start 5dl`), pass it with `--root`. The script will:
@@ -72,9 +72,9 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
-| 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py [--root <id>]` | Script builds tree (subtree if --root) |
+| 1. Tree | `bd graph --all --json \| flow-task-tree [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | `bd show <id> --json \| python3 <skill-base-dir>/scripts/bd-card.py` | Context BEFORE commitment |
+| 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
@@ -112,10 +112,10 @@ pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=fal
 **Run the tree builder script:**
 ```bash
 # Without argument — full tree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+bd graph --all --json | flow-task-tree
 
 # With task ID argument (from /flow:start <id>) — subtree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
+bd graph --all --json | flow-task-tree --root <task-id>
 ```
 
 **If a task ID argument was provided**, always use `--root`. The script finds the task by exact ID or suffix (e.g., `5dl` matches `claude-tools-5dl`). If not found, it shows a warning and the full tree.
@@ -129,9 +129,9 @@ The script handles:
 - Subtree extraction with `--root` (found task becomes root `1\.`)
 
 **Script options:**
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py -s "search"` — filter by term
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --collapse` — show roots only with `[+N]`
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <id>` — subtree rooted at task
+- `bd graph --all --json | flow-task-tree -s "search"` — filter by term
+- `bd graph --all --json | flow-task-tree --collapse` — show roots only with `[+N]`
+- `bd graph --all --json | flow-task-tree --root <id>` — subtree rooted at task
 
 **If script shows no tasks:**
 ```
@@ -172,7 +172,7 @@ Map selection to task ID and proceed.
 **Before any actions**, display task details using the card script:
 
 ```bash
-bd show <task-id> --json | python3 <skill-base-dir>/scripts/bd-card.py
+bd show <task-id> --json | flow-task-card
 ```
 
 Output the script result in a ``` code block to preserve monospace alignment.
@@ -470,7 +470,7 @@ If you're thinking any of these, STOP and follow the workflow:
 |--------|---------|
 | "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
 | "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
-| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` |
+| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| flow-task-tree` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "AskUserQuestion for task selection" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text for TASKS, AskUserQuestion for BRANCHES. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
@@ -518,7 +518,7 @@ Agent: Доступные задачи:
 
 User: 1.2
 
-Agent: [runs bd show claude-tools-c7b --json | python3 <skill-base-dir>/scripts/bd-card.py]
+Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
 
        ```
        ┌─ Feature ──────────────────────────────────────────────────────────────────┐
