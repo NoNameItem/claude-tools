@@ -233,6 +233,7 @@ Confirm sync completed.
 #### 8.1. Validate current branch matches the task
 
 ```bash
+CURRENT_BRANCH=$(git branch --show-current)
 flow-current-task {task-id} || echo "SKIP_CLEANUP"
 ```
 If this exits non-zero (`SKIP_CLEANUP`), the user ran `flow:done` from an unrelated branch (e.g. master) — skip cleanup silently.

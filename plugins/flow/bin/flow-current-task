@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 BD = os.environ.get("BD_BIN", "bd")
-TYPE_RE = r"(?:fix|chore|feature)/"
+TYPE_RE = r"(?:fix|chore|feature|docs)/"
 
 
 def current_branch():
