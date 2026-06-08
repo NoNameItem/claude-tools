@@ -352,7 +352,7 @@ git checkout -b "$BRANCH"
 **Create branch (worktree):**
 ```bash
 WORKTREE_DIR=$(flow-worktree-dir "$BRANCH")
-git worktree add "$WORKTREE_DIR" -b <branch-name>
+git worktree add "$WORKTREE_DIR" -b "$BRANCH"
 cd "$WORKTREE_DIR"
 ```
 
