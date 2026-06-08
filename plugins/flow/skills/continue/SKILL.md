@@ -51,7 +51,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Sync | `bd sync` | Get latest task data |
-| 2. Find tasks | Run `bd-continue.py` script | Leaf in_progress tasks |
+| 2. Find tasks | Run `flow-find-leaf` script | Leaf in_progress tasks |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
 | 4. Extract branch | Read `Git:` from description | No Git: → exit |
 | 5. Find branch | worktree → local → remote | Priority order |
@@ -287,7 +287,7 @@ This is the final output. The user sees it and starts working.
 - "Let me change the task status" → Already in_progress. Don't touch.
 - "I'll show the full task tree" → flow:continue is fast path. Use flow:start for tree.
 - "I'll skip the Git: check and just search for branches" → Git: line is the source of truth.
-- "bd ready is a quick way to find tasks" → Use bd-continue.py script.
+- "bd ready is a quick way to find tasks" → Use flow-find-leaf script.
 - "AskUserQuestion for task selection" → Plain text. Numbers don't work in structured UI.
 
 ## Common Rationalizations
@@ -310,7 +310,7 @@ This is the final output. The user sees it and starts working.
 User: /flow:continue
 
 Agent: [runs bd sync]
-       [runs bd-continue.py]
+       [runs flow-find-leaf]
 
        Задача в работе:
 
