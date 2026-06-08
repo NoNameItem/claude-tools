@@ -191,17 +191,11 @@ Identify branch type:
 
 ### 5. Search for Existing Branches
 
-**Search for branches containing the task ID:**
+**Search for existing branches:**
 ```bash
-git branch -a | grep -E "(fix|chore|feature)/{task-id}"
+flow-find-branches <task-id>
 ```
-
-This searches both local and remote (origin) branches, filtering for branches that match our naming convention (prefix + full task-id).
-
-**Filter results:**
-- Remove `remotes/origin/HEAD` entries
-- Extract branch names (strip `remotes/origin/` prefix)
-- Deduplicate (if same branch exists locally and remotely, prefer local)
+Each line is `<branch>\t<location>` (`location` ∈ local/remote/worktree); results are already de-duplicated (a branch is listed once, worktree > local > remote). Empty output = no existing branch; proceed to create one.
 
 **If matching branches found:**
 - Present options to checkout existing branch OR create new one
