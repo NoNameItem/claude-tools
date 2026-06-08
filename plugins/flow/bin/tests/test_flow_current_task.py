@@ -42,3 +42,8 @@ def test_extract_mode_empty_off_task_branch(git_repo, fake_bd):
     r = run_helper("flow-current-task", cwd=git_repo, env={**fake_bd.env, "PATH": "/usr/bin:/bin"})
     assert r.returncode == 0
     assert r.stdout.strip() == ""
+
+
+def test_match_mode_docs_branch(git_repo):
+    _checkout(git_repo, "docs/claude-tools-abc-readme")
+    assert run_helper("flow-current-task", "claude-tools-abc", cwd=git_repo).returncode == 0

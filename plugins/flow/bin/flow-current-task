@@ -33,7 +33,8 @@ def project_prefix():
     except json.JSONDecodeError:
         return None
     issues = data if isinstance(data, list) else data.get("issues", [])
-    return issues[0]["id"].rsplit("-", 1)[0] if issues else None
+    first_id = issues[0].get("id") if issues else None
+    return first_id.rsplit("-", 1)[0] if first_id else None
 
 
 def main():
