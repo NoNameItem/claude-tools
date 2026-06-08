@@ -35,3 +35,11 @@ def test_invalid_key_exits_1(fake_bd):
     r = run_helper("flow-link-doc", "claude-tools-uaj", "Bogus", "v", env=fake_bd.env)
     assert r.returncode == 1
     assert fake_bd.captured_description() is None  # no bd update happened
+
+
+def test_replace_preserves_sibling_link(fake_bd):
+    fake_bd.set_show(_desc("Body.\n\nDesign: docs/old.md\n\nPlan: docs/p.md"))
+    run_helper("flow-link-doc", "claude-tools-uaj", "Design", "docs/new.md", env=fake_bd.env)
+    desc = fake_bd.captured_description()
+    assert "Design: docs/new.md" in desc
+    assert "Plan: docs/p.md" in desc

@@ -18,6 +18,15 @@ BD = os.environ.get("BD_BIN", "bd")
 KEYS = ("Git", "Design", "Plan")
 
 
+def _extract_issue(data):
+    """Return the issue dict from bd show output, or None if not found."""
+    if isinstance(data, list):
+        if not data:
+            return None
+        return data[0]
+    return data if data else None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Set or remove a Git/Design/Plan link line.")
     parser.add_argument("task_id")
@@ -37,7 +46,7 @@ def main():
     except json.JSONDecodeError:
         sys.stderr.write("malformed bd json\n")
         return 2
-    issue = data[0] if isinstance(data, list) and data else (data if not isinstance(data, list) else None)
+    issue = _extract_issue(data)
     if not issue:
         sys.stderr.write(f"task not found: {ns.task_id}\n")
         return 2
@@ -48,7 +57,7 @@ def main():
         new_desc = re.sub(r"\n{3,}", "\n\n", line_re.sub("", desc)).strip()
     else:
         line = f"{ns.key}: {ns.value}"
-        new_desc = line_re.sub(line, desc) if line_re.search(desc) else f"{desc.rstrip()}\n\n{line}".strip()
+        new_desc = line_re.sub(line, desc, count=1) if line_re.search(desc) else f"{desc.rstrip()}\n\n{line}".strip()
 
     upd = subprocess.run(
         [BD, "update", ns.task_id, "--description", new_desc], capture_output=True, text=True, check=False
