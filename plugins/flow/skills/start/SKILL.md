@@ -211,26 +211,14 @@ This searches both local and remote (origin) branches, filtering for branches th
 **If no matching branches found:**
 - Proceed to create new branch with appropriate prefix
 
-**Determine branch prefix from task type:**
-- bug → `fix/`
-- chore → `chore/`
-- feature → `feature/`
-- task → `feature/`
-- epic → `feature/` (epics use feature prefix)
-- **Unknown type:** default to `feature/` and warn user
-
-**Generate brief name:**
-- Take 2-3 key words from task title
-- Convert to lowercase
-- Replace spaces with hyphens
-- Example: "Fix authentication timeout" → "authentication-timeout"
-
-**Final format:** `{prefix}{task-id}-{brief-name}`
-
-Examples:
-- bug task `claude-tools-abc` "Fix login error" → `fix/claude-tools-abc-login-error`
-- feature task `claude-tools-xyz` "Add dark mode" → `feature/claude-tools-xyz-dark-mode`
-- chore task `claude-tools-123` "Update dependencies" → `chore/claude-tools-123-update-dependencies`
+**Compute the branch name:**
+```bash
+flow-branch-for <task-id>
+```
+This prints `<prefix><task-id>-<brief-name>` using the task's type (bug→`fix/`, chore→`chore/`, task/feature/epic→`feature/`, unknown→`feature/` + stderr warning) and a slug of its title. Capture it:
+```bash
+BRANCH=$(flow-branch-for <task-id>)
+```
 
 ### 5.5. Auto-Resolve Check
 
@@ -357,7 +345,7 @@ See `flow:init-worktree` skill for full algorithm.
 
 **Create branch (checkout here):**
 ```bash
-git checkout -b <prefix><task-id>-<brief-name>
+git checkout -b "$BRANCH"
 ```
 
 **Create branch (worktree):**

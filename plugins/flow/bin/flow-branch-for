@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Compute the flow branch name for a beads task.
+
+Usage: flow-branch-for <task-id>
+Prints: <prefix><task-id>-<brief-name>   e.g. feature/claude-tools-uaj-extract-repeated-bash
+Exit:   0 ok | 1 task not found | 2 bd error
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+BD = os.environ.get("BD_BIN", "bd")
+PREFIX_BY_TYPE = {"bug": "fix/", "chore": "chore/", "task": "feature/", "feature": "feature/", "epic": "feature/"}
+MAX_WORDS = 5
+
+
+def slugify(title):
+    words = [w for w in re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-").split("-") if w]
+    return "-".join(words[:MAX_WORDS])
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Compute the flow branch name for a beads task.")
+    parser.add_argument("task_id")
+    task_id = parser.parse_args().task_id
+
+    result = subprocess.run([BD, "show", task_id, "--json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr.strip() + "\n")
+        return 2
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        sys.stderr.write("malformed bd json\n")
+        return 2
+    issue = data[0] if isinstance(data, list) else data
+    if not issue:
+        sys.stderr.write(f"task not found: {task_id}\n")
+        return 1
+
+    issue_type = issue.get("issue_type", "")
+    prefix = PREFIX_BY_TYPE.get(issue_type)
+    if prefix is None:
+        sys.stderr.write(f"unknown type {issue_type!r}; defaulting to feature/\n")
+        prefix = "feature/"
+    sys.stdout.write(f"{prefix}{task_id}-{slugify(issue.get('title', ''))}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
