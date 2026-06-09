@@ -50,3 +50,23 @@ def test_worktree_branch_takes_precedence_over_local(git_repo):
     assert r.returncode == 0
     assert f"{branch}\tworktree" in r.stdout
     assert f"{branch}\tlocal" not in r.stdout
+
+
+def test_worktree_git_failure_exits_2(tmp_path):
+    """A `git worktree list` failure must surface (exit 2), not look like 'no worktrees'."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    git_shim = fake_bin / "git"
+    git_shim.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "worktree" ]; then\n'
+        '  echo "fatal: simulated worktree failure" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n"  # `git branch -a` succeeds with empty output
+    )
+    git_shim.chmod(0o755)
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin"}
+    r = run_helper("flow-find-branches", "claude-tools-uaj", env=env)
+    assert r.returncode == 2
+    assert "simulated worktree failure" in r.stderr

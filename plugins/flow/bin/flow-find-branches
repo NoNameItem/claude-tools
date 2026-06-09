@@ -42,11 +42,12 @@ def _scan_branches(pat):
 
 
 def _scan_worktrees(pat):
-    """Return set of worktree branch names matching pat."""
+    """Return set of worktree branch names matching pat, or raise SystemExit(2) on git error."""
     wt = git("worktree", "list", "--porcelain")
     matched: set[str] = set()
     if wt.returncode != 0:
-        return matched
+        sys.stderr.write(wt.stderr.strip() + "\n")
+        sys.exit(2)
     for ln in wt.stdout.splitlines():
         if ln.startswith("branch "):
             name = ln[len("branch ") :].strip().replace("refs/heads/", "")

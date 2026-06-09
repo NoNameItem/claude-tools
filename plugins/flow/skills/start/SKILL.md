@@ -374,9 +374,9 @@ No branch action, proceed to Step 8.1.
 **After branch is created or checked out**, save the branch name in the task description so `flow:continue` can find it later.
 
 ```bash
-flow-link-doc <task-id> Git "$BRANCH"
+flow-link-doc <task-id> Git "$(git branch --show-current)"
 ```
-This sets (or replaces) the `Git:` line in the task description; other link lines are preserved.
+This sets (or replaces) the `Git:` line in the task description; other link lines are preserved. Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch that differs from the computed candidate.
 
 **Then sync to propagate:**
 ```bash
