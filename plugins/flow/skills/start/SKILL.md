@@ -39,10 +39,10 @@ This skill guides starting work on beads tasks through explicit consultation ste
 **Step 1 - Run the tree builder script:**
 ```bash
 # Without argument — full tree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+bd graph --all --json | flow-task-tree
 
 # With task ID argument — subtree rooted at that task
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
+bd graph --all --json | flow-task-tree --root <task-id>
 ```
 
 **If a task ID argument was provided** (e.g., user invoked `/flow:start 5dl`), pass it with `--root`. The script will:
@@ -72,9 +72,9 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
-| 1. Tree | `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py [--root <id>]` | Script builds tree (subtree if --root) |
+| 1. Tree | `bd graph --all --json \| flow-task-tree [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | `bd show <id> --json \| python3 <skill-base-dir>/scripts/bd-card.py` | Context BEFORE commitment |
+| 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
@@ -102,7 +102,7 @@ Follow these steps **in order**. Do not skip steps.
 bd sync
 
 # Check if already in a worktree
-pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
+flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
 `bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.
@@ -112,10 +112,10 @@ pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=fal
 **Run the tree builder script:**
 ```bash
 # Without argument — full tree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py
+bd graph --all --json | flow-task-tree
 
 # With task ID argument (from /flow:start <id>) — subtree
-bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <task-id>
+bd graph --all --json | flow-task-tree --root <task-id>
 ```
 
 **If a task ID argument was provided**, always use `--root`. The script finds the task by exact ID or suffix (e.g., `5dl` matches `claude-tools-5dl`). If not found, it shows a warning and the full tree.
@@ -129,9 +129,9 @@ The script handles:
 - Subtree extraction with `--root` (found task becomes root `1\.`)
 
 **Script options:**
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py -s "search"` — filter by term
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --collapse` — show roots only with `[+N]`
-- `bd graph --all --json | python3 <skill-base-dir>/scripts/bd-tree.py --root <id>` — subtree rooted at task
+- `bd graph --all --json | flow-task-tree -s "search"` — filter by term
+- `bd graph --all --json | flow-task-tree --collapse` — show roots only with `[+N]`
+- `bd graph --all --json | flow-task-tree --root <id>` — subtree rooted at task
 
 **If script shows no tasks:**
 ```
@@ -172,7 +172,7 @@ Map selection to task ID and proceed.
 **Before any actions**, display task details using the card script:
 
 ```bash
-bd show <task-id> --json | python3 <skill-base-dir>/scripts/bd-card.py
+bd show <task-id> --json | flow-task-card
 ```
 
 Output the script result in a ``` code block to preserve monospace alignment.
@@ -191,46 +191,28 @@ Identify branch type:
 
 ### 5. Search for Existing Branches
 
-**Search for branches containing the task ID:**
+**Search for existing branches:**
 ```bash
-git branch -a | grep -E "(fix|chore|feature)/{task-id}"
+flow-find-branches <task-id>
 ```
-
-This searches both local and remote (origin) branches, filtering for branches that match our naming convention (prefix + full task-id).
-
-**Filter results:**
-- Remove `remotes/origin/HEAD` entries
-- Extract branch names (strip `remotes/origin/` prefix)
-- Deduplicate (if same branch exists locally and remotely, prefer local)
+Each line is `<branch>\t<location>` (`location` ∈ local/remote/worktree); results are already de-duplicated (a branch is listed once, worktree > local > remote). Empty output = no existing branch; proceed to create one.
 
 **If matching branches found:**
 - Present options to checkout existing branch OR create new one
 - If multiple branches found, show all options
-- Include branch names and location (local/remote) in the suggestion
+- Include branch names and location (local/remote/worktree) in the suggestion
 
 **If no matching branches found:**
 - Proceed to create new branch with appropriate prefix
 
-**Determine branch prefix from task type:**
-- bug → `fix/`
-- chore → `chore/`
-- feature → `feature/`
-- task → `feature/`
-- epic → `feature/` (epics use feature prefix)
-- **Unknown type:** default to `feature/` and warn user
-
-**Generate brief name:**
-- Take 2-3 key words from task title
-- Convert to lowercase
-- Replace spaces with hyphens
-- Example: "Fix authentication timeout" → "authentication-timeout"
-
-**Final format:** `{prefix}{task-id}-{brief-name}`
-
-Examples:
-- bug task `claude-tools-abc` "Fix login error" → `fix/claude-tools-abc-login-error`
-- feature task `claude-tools-xyz` "Add dark mode" → `feature/claude-tools-xyz-dark-mode`
-- chore task `claude-tools-123` "Update dependencies" → `chore/claude-tools-123-update-dependencies`
+**Compute the branch name:**
+```bash
+flow-branch-for <task-id>
+```
+This prints `<prefix><task-id>-<brief-name>` using the task's type (bug→`fix/`, chore→`chore/`, task/feature/epic→`feature/`, unknown→`feature/` + stderr warning) and a slug of its title. Capture it:
+```bash
+BRANCH=$(flow-branch-for <task-id>)
+```
 
 ### 5.5. Auto-Resolve Check
 
@@ -239,8 +221,9 @@ Examples:
 **Case 1: Current branch matches task branch.**
 Check if current branch name matches pattern `(fix|feature|chore)/{task-id}`:
 ```bash
-git branch --show-current | grep -qE "(fix|feature|chore)/{task-id}" && echo "AUTO_RESOLVE=current_branch"
+flow-current-task {task-id} && echo "AUTO_RESOLVE=current_branch"
 ```
+Exact match — a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID.
 
 If matched: skip to Step 7, report:
 > "Вы уже на ветке `{current-branch}`, продолжаем."
@@ -357,13 +340,13 @@ See `flow:init-worktree` skill for full algorithm.
 
 **Create branch (checkout here):**
 ```bash
-git checkout -b <prefix><task-id>-<brief-name>
+git checkout -b "$BRANCH"
 ```
 
 **Create branch (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<branch-name>' | tr '/' '-')"
-git worktree add "$WORKTREE_DIR" -b <branch-name>
+WORKTREE_DIR=$(flow-worktree-dir "$BRANCH")
+git worktree add "$WORKTREE_DIR" -b "$BRANCH"
 cd "$WORKTREE_DIR"
 ```
 
@@ -378,7 +361,7 @@ git checkout -b <local-branch-name> origin/<remote-branch-name>
 
 **Checkout existing (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<existing-branch>' | tr '/' '-')"
+WORKTREE_DIR=$(flow-worktree-dir "<existing-branch>")
 git worktree add "$WORKTREE_DIR" <existing-branch>
 cd "$WORKTREE_DIR"
 ```
@@ -390,27 +373,10 @@ No branch action, proceed to Step 8.1.
 
 **After branch is created or checked out**, save the branch name in the task description so `flow:continue` can find it later.
 
-**Read current description:**
 ```bash
-bd show <task-id> --json
+flow-link-doc <task-id> Git "$(git branch --show-current)"
 ```
-
-Extract the `description` field. Then append or update the `Git:` line:
-
-- If description already has a `Git:` line → replace it
-- If no `Git:` line → append to end of description
-
-**Update description:**
-```bash
-bd update <task-id> --description "<full-description-with-git-line>"
-```
-
-The `Git:` line format:
-```
-Git: feature/claude-tools-elf.3-task-selection-optimization
-```
-
-Same pattern as existing `Design:` and `Plan:` links in descriptions.
+This sets (or replaces) the `Git:` line in the task description; other link lines are preserved. Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch that differs from the computed candidate.
 
 **Then sync to propagate:**
 ```bash
@@ -470,7 +436,7 @@ If you're thinking any of these, STOP and follow the workflow:
 |--------|---------|
 | "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
 | "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
-| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| python3 <skill-base-dir>/scripts/bd-tree.py` |
+| "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| flow-task-tree` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "AskUserQuestion for task selection" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text for TASKS, AskUserQuestion for BRANCHES. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
@@ -518,7 +484,7 @@ Agent: Доступные задачи:
 
 User: 1.2
 
-Agent: [runs bd show claude-tools-c7b --json | python3 <skill-base-dir>/scripts/bd-card.py]
+Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
 
        ```
        ┌─ Feature ──────────────────────────────────────────────────────────────────┐

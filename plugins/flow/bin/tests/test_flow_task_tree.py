@@ -1,12 +1,15 @@
-"""Tests for bd-tree.py."""
+"""Tests for flow-task-tree."""
 
-# ruff: noqa: INP001, S101
+# ruff: noqa: INP001
 
 import importlib.util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-# Import bd-tree.py as module (hyphenated filename)
-_spec = importlib.util.spec_from_file_location("bd_tree", Path(__file__).parent / "bd-tree.py")
+_HELPER = Path(__file__).parent.parent / "flow-task-tree"
+_spec = importlib.util.spec_from_file_location(
+    "flow_task_tree", _HELPER, loader=SourceFileLoader("flow_task_tree", str(_HELPER))
+)
 assert _spec is not None
 assert _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)

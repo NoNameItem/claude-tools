@@ -158,10 +158,10 @@ mv {path} docs/archive/
 
 **Only if** task description contained a `Plan:` line AND user chose delete or archive:
 
-Get current description, remove the `Plan:` line, update:
 ```bash
-bd update {task-id} --description="{description-without-plan-line}"
+flow-link-doc {task-id} Plan ""
 ```
+Passing an empty value removes the `Plan:` line (and tidies the surrounding blank lines); the rest of the description is untouched.
 
 **Do NOT commit the file deletion/move.** The branch cleanup in step 8 or the user's next workflow will handle git state.
 
@@ -234,15 +234,15 @@ Confirm sync completed.
 
 ```bash
 CURRENT_BRANCH=$(git branch --show-current)
+flow-current-task {task-id} || echo "SKIP_CLEANUP"
 ```
-
-Check if `$CURRENT_BRANCH` contains the closed task's ID. **If not — skip cleanup silently.** The user ran `flow:done` from an unrelated branch (e.g. master).
+If this exits non-zero (`SKIP_CLEANUP`), the user ran `flow:done` from an unrelated branch (e.g. master) — skip cleanup silently.
 
 #### 8.2. Detect what exists
 
 Gather cleanup targets:
 
-- **Worktree:** `pwd | grep -q "\.worktrees/"` — are we in a worktree?
+- **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 - **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"` — does remote branch exist?
 - Local branch is always present (we're on it).
 

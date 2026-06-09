@@ -51,7 +51,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Sync | `bd sync` | Get latest task data |
-| 2. Find tasks | Run `bd-continue.py` script | Leaf in_progress tasks |
+| 2. Find tasks | Run `flow-find-leaf` script | Leaf in_progress tasks |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
 | 4. Extract branch | Read `Git:` from description | No Git: → exit |
 | 5. Find branch | worktree → local → remote | Priority order |
@@ -96,7 +96,7 @@ Skip to Step 4.
 
 Run the continue script:
 ```bash
-bd graph --all --json | python3 <skill-base-dir>/../start/scripts/bd-continue.py [--all]
+bd graph --all --json | flow-find-leaf [--all]
 ```
 
 Pass `--all` if user passed `--all` flag.
@@ -212,7 +212,7 @@ Skip to Step 8 (no init needed — worktree already existed).
 
 Check if already in a worktree:
 ```bash
-pwd | grep -q "\.worktrees/" && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
+flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
 **If IN_WORKTREE=true:**
@@ -250,7 +250,7 @@ Skip to Step 8.
 
 **Option 2 (worktree):**
 ```bash
-WORKTREE_DIR=".worktrees/$(echo '<branch-name>' | tr '/' '-')"
+WORKTREE_DIR=$(flow-worktree-dir "<branch-name>")
 git worktree add "$WORKTREE_DIR" <branch-name>
 cd "$WORKTREE_DIR"
 ```
@@ -274,7 +274,7 @@ Invoke the `flow:init-worktree` skill using the Skill tool.
 Display the task card using the script:
 
 ```bash
-bd show <task-id> --json | python3 <skill-base-dir>/../start/scripts/bd-card.py
+bd show <task-id> --json | flow-task-card
 ```
 
 Output in a ``` code block to preserve alignment.
@@ -287,7 +287,7 @@ This is the final output. The user sees it and starts working.
 - "Let me change the task status" → Already in_progress. Don't touch.
 - "I'll show the full task tree" → flow:continue is fast path. Use flow:start for tree.
 - "I'll skip the Git: check and just search for branches" → Git: line is the source of truth.
-- "bd ready is a quick way to find tasks" → Use bd-continue.py script.
+- "bd ready is a quick way to find tasks" → Use flow-find-leaf script.
 - "AskUserQuestion for task selection" → Plain text. Numbers don't work in structured UI.
 
 ## Common Rationalizations
@@ -310,7 +310,7 @@ This is the final output. The user sees it and starts working.
 User: /flow:continue
 
 Agent: [runs bd sync]
-       [runs bd-continue.py]
+       [runs flow-find-leaf]
 
        Задача в работе:
 
@@ -326,7 +326,7 @@ Agent: [reads Git: from description → feature/claude-tools-elf.3-task-selectio
 
        Перешёл в worktree `.worktrees/feature-claude-tools-elf.3-task-selection-optimization`.
 
-       [runs bd show claude-tools-elf.3 --json | python3 <skill-base-dir>/../start/scripts/bd-card.py]
+       [runs bd show claude-tools-elf.3 --json | flow-task-card]
 
        ```
        ┌─ Feature ──────────────────────────────────────────────────────────────────┐

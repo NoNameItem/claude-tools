@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Print the worktree directory for a branch: .worktrees/<branch with '/' -> '-'>.
+
+Usage: flow-worktree-dir <branch-name>
+"""
+
+import argparse
+import sys
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Map a branch name to its .worktrees/ directory.")
+    parser.add_argument("branch")
+    sys.stdout.write(".worktrees/" + parser.parse_args().branch.replace("/", "-") + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

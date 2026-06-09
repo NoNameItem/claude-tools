@@ -86,7 +86,7 @@ jobs:
             echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
           else
             # Lint only changed Python files
-            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PLUGIN" '.[$p] // [] | .[] | select(endswith(".py"))' | tr '\n' ' ')
+            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PLUGIN" '.[$p] // [] | .[] | select(endswith(".py") or test("/bin/flow-[^/]+$"))' | tr '\n' ' ')
             if [ -z "$PY_FILES" ]; then
               echo "files=" >> "$GITHUB_OUTPUT"
             else

@@ -1,12 +1,16 @@
-"""Tests for bd-card.py."""
+"""Tests for flow-task-card."""
 
-# ruff: noqa: INP001, S101, PLR2004, RUF003, RUF012
+# ruff: noqa: INP001, RUF003, RUF012
 
 import importlib.util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-# Import bd-card.py as module (hyphenated filename)
-_spec = importlib.util.spec_from_file_location("bd_card", Path(__file__).parent / "bd-card.py")
+# Import the extension-less executable as a module
+_HELPER = Path(__file__).parent.parent / "flow-task-card"
+_spec = importlib.util.spec_from_file_location(
+    "flow_task_card", _HELPER, loader=SourceFileLoader("flow_task_card", str(_HELPER))
+)
 assert _spec is not None
 assert _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)

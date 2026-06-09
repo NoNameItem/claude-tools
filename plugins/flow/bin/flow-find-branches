@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Find branches related to a task ID across local, remote, and worktrees.
+
+Usage: flow-find-branches <task-id>
+Output: one line per branch "<branch>\t<location>", location in {local, remote, worktree}.
+        A branch is reported once; precedence worktree > local > remote.
+Exit: 0 always (empty = none) | 2 git error.
+"""
+
+import argparse
+import re
+import subprocess
+import sys
+
+TYPES = r"(?:fix|chore|feature|docs)"
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def _scan_branches(pat):
+    """Return (local_set, remote_set) or raise SystemExit(2) on git error."""
+    result = git("branch", "-a")
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr.strip() + "\n")
+        sys.exit(2)
+    local: set[str] = set()
+    remote: set[str] = set()
+    for raw in result.stdout.splitlines():
+        line = raw.replace("*", "").strip()
+        if not line or "->" in line:  # skip 'remotes/origin/HEAD -> origin/master'
+            continue
+        # only origin remotes are surfaced; flow pushes/checks out via origin/<branch>
+        if line.startswith("remotes/origin/"):
+            name = line[len("remotes/origin/") :]
+            if pat.match(name):
+                remote.add(name)
+        elif pat.match(line):
+            local.add(line)
+    return local, remote
+
+
+def _scan_worktrees(pat):
+    """Return set of worktree branch names matching pat, or raise SystemExit(2) on git error."""
+    wt = git("worktree", "list", "--porcelain")
+    matched: set[str] = set()
+    if wt.returncode != 0:
+        sys.stderr.write(wt.stderr.strip() + "\n")
+        sys.exit(2)
+    for ln in wt.stdout.splitlines():
+        if ln.startswith("branch "):
+            name = ln[len("branch ") :].strip().replace("refs/heads/", "")
+            if pat.match(name):
+                matched.add(name)
+    return matched
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Find branches matching a task ID.")
+    parser.add_argument("task_id")
+    task_id = parser.parse_args().task_id
+    pat = re.compile(rf"^{TYPES}/{re.escape(task_id)}(-.*)?$")
+
+    local, remote = _scan_branches(pat)
+    worktree = _scan_worktrees(pat)
+
+    seen, out = set(), []
+    for name in sorted(worktree):
+        out.append(f"{name}\tworktree")
+        seen.add(name)
+    for name in sorted(local):
+        if name not in seen:
+            out.append(f"{name}\tlocal")
+            seen.add(name)
+    for name in sorted(remote):
+        if name not in seen:
+            out.append(f"{name}\tremote")
+            seen.add(name)
+    if out:
+        sys.stdout.write("\n".join(out) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -185,7 +185,11 @@ Current task: [F] Add git module (claude-tools-c7b) | in_progress
 Create subtasks under claude-tools-c7b? (yes / other)
 ```
 
-If no task in context - fallback: extract task ID from branch name (`feature/claude-tools-c7b-git-module` -> `claude-tools-c7b`).
+If no task in context - fallback: derive the parent task ID from the current branch:
+```bash
+flow-current-task
+```
+Empty output means the branch isn't a task branch; fall back to the "could not determine parent" path.
 
 ### 4. Preview Table
 
@@ -556,7 +560,7 @@ Check that:
 ```
 No in_progress task found in session context.
 
-Attempting to extract from branch name...
+Attempting to extract from branch name... (runs flow-current-task)
 Branch: feature/claude-tools-c7b-git-module
 Extracted task: claude-tools-c7b
 

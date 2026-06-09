@@ -61,12 +61,11 @@ Filter for leaf tasks (no open children).
 ### 2. Find Newest Design Document
 
 ```bash
-ls -t docs/superpowers/specs/*.md docs/plans/*.md 2>/dev/null | head -1
+flow-find-doc design
 ```
 
 Look for the newest markdown file across **both** `docs/superpowers/specs/`
-(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins. The
-`2>/dev/null` swallows the error when only one of the two directories exists.
+(superpowers 5.x+) and `docs/plans/` (pre-v5). Newest by mtime wins.
 
 **Heuristics:**
 - Recent (within last hour)
@@ -80,21 +79,10 @@ Look for the newest markdown file across **both** `docs/superpowers/specs/`
 
 **This is THE task. The only action.**
 
-Get current description:
 ```bash
-bd show {task-id}
+flow-link-doc {task-id} Design {design-path}
 ```
-
-Add Design link:
-```bash
-bd update {task-id} --description="{current-description}\n\nDesign: {design-path}"
-```
-
-**IMPORTANT:**
-- Preserve existing content
-- **Preserve existing Plan link** (if present)
-- Add newline before Design link
-- Format: `Design: <path>` (e.g. `docs/superpowers/specs/...` or `docs/plans/...`)
+Replaces an existing `Design:` line or appends one; the `Plan:` line and other content are preserved. (If a Design link already exists, confirm with the user before running this.)
 
 **If Design link already exists:**
 Ask: "Task already has Design link: {old-link}. Update to {new-link}? (yes/no)"

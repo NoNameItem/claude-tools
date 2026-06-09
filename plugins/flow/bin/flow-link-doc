@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Set or remove a link line (Git:/Design:/Plan:) in a beads task description.
+
+Usage:
+    flow-link-doc <task-id> <Git|Design|Plan> <value>   # set (replace existing or append)
+    flow-link-doc <task-id> <Git|Design|Plan> ""        # remove the line
+Exit: 0 ok | 1 invalid key | 2 task not found / bd error
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+BD = os.environ.get("BD_BIN", "bd")
+KEYS = ("Git", "Design", "Plan")
+
+
+def _extract_issue(data):
+    """Return the issue dict from bd show output, or None if not found."""
+    if isinstance(data, list):
+        if not data:
+            return None
+        return data[0]
+    return data if data else None
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Set or remove a Git/Design/Plan link line.")
+    parser.add_argument("task_id")
+    parser.add_argument("key")
+    parser.add_argument("value")
+    ns = parser.parse_args()
+    if ns.key not in KEYS:
+        sys.stderr.write(f"invalid key {ns.key!r}; expected one of {', '.join(KEYS)}\n")
+        return 1
+
+    show = subprocess.run([BD, "show", ns.task_id, "--json"], capture_output=True, text=True, check=False)
+    if show.returncode != 0:
+        sys.stderr.write(show.stderr.strip() + "\n")
+        return 2
+    try:
+        data = json.loads(show.stdout)
+    except json.JSONDecodeError:
+        sys.stderr.write("malformed bd json\n")
+        return 2
+    issue = _extract_issue(data)
+    if not issue:
+        sys.stderr.write(f"task not found: {ns.task_id}\n")
+        return 2
+
+    desc = issue.get("description") or ""
+    line_re = re.compile(rf"(?m)^{re.escape(ns.key)}:.*$")
+    if ns.value == "":
+        new_desc = re.sub(r"\n{3,}", "\n\n", line_re.sub("", desc)).strip()
+    else:
+        line = f"{ns.key}: {ns.value}"
+        new_desc = line_re.sub(line, desc, count=1) if line_re.search(desc) else f"{desc.rstrip()}\n\n{line}".strip()
+
+    upd = subprocess.run(
+        [BD, "update", ns.task_id, "--description", new_desc], capture_output=True, text=True, check=False
+    )
+    if upd.returncode != 0:
+        sys.stderr.write(upd.stderr.strip() + "\n")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

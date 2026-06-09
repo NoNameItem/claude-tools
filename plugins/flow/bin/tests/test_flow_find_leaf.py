@@ -1,14 +1,17 @@
-"""Tests for bd-continue.py."""
+"""Tests for flow-find-leaf."""
 
-# ruff: noqa: INP001, S101, PLR2004
+# ruff: noqa: INP001
 
 import importlib.util
+from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-# Import bd-continue.py as module (hyphenated filename)
-_spec = importlib.util.spec_from_file_location("bd_continue", Path(__file__).parent / "bd-continue.py")
+_HELPER = Path(__file__).parent.parent / "flow-find-leaf"
+_spec = importlib.util.spec_from_file_location(
+    "flow_find_leaf", _HELPER, loader=SourceFileLoader("flow_find_leaf", str(_HELPER))
+)
 if _spec is None or _spec.loader is None:
-    msg = "Unable to load bd-continue.py for tests"
+    msg = "Unable to load flow-find-leaf for tests"
     raise ImportError(msg)
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
