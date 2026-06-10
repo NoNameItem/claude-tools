@@ -65,7 +65,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 
 The command `/flow:continue` accepts:
 
-- **`<task-id>`** (optional) — skip task selection, go straight to branch resolution.
+- **`<task-id>`** (optional) — skip task selection, go straight to the assignee check and branch resolution.
   Validates task exists and is `in_progress`. If not → error with suggestion to use `/flow:start`.
 - **`--all`** — show all users' in_progress tasks, grouped by assignee (default shows only your tasks and unassigned ones).
 
