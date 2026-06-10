@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Find leaf in_progress tasks from bd graph --all --json output.
+Find leaf in_progress tasks from bd graph --all --json output and print a
+display-ready list grouped by assignee.
 
 A task is "leaf" if none of its children are in_progress.
 
-Usage:
-    bd graph --all --json | python3 bd-continue.py
-    bd graph --all --json | python3 bd-continue.py --all
+Group order: mine -> Unassigned -> other users alphabetically.
+Without --all only my tasks and unassigned tasks are shown.
+When no identity can be resolved, behaves like --all.
 
-Output (one task per line, pipe-delimited):
-    task-id|issue_type|title|P<priority>|first_label
+Usage:
+    bd graph --all --json | flow-find-leaf
+    bd graph --all --json | flow-find-leaf --all
 """
 
 import argparse
@@ -17,6 +19,9 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+TYPE_LETTERS = {"bug": "B", "feature": "F", "task": "T", "epic": "E", "chore": "C"}
 
 
 @dataclass
@@ -27,7 +32,7 @@ class Task:
     priority: int
     issue_type: str
     labels: list[str] = field(default_factory=list)
-    owner: str = ""
+    assignee: str = ""
     children: list["Task"] = field(default_factory=list)
     parent_id: str | None = None
 
@@ -46,7 +51,7 @@ def parse_graphs(data: list[dict]) -> dict[str, Task]:
                 priority=iss.get("priority", 2),
                 issue_type=iss.get("issue_type", "task"),
                 labels=iss.get("labels", []),
-                owner=iss.get("owner", ""),
+                assignee=iss.get("assignee") or "",
             )
             tasks[task.id] = task
 
@@ -62,8 +67,8 @@ def parse_graphs(data: list[dict]) -> dict[str, Task]:
     return tasks
 
 
-def find_leaf_in_progress(tasks: dict[str, Task], *, owner: str | None) -> list[Task]:
-    """Find leaf in_progress tasks, optionally filtered by owner.
+def find_leaf_in_progress(tasks: dict[str, Task]) -> list[Task]:
+    """Find leaf in_progress tasks, sorted by (priority, id).
 
     A task is "leaf" if none of its children are in_progress.
     """
@@ -71,9 +76,6 @@ def find_leaf_in_progress(tasks: dict[str, Task], *, owner: str | None) -> list[
     for task in tasks.values():
         if task.status != "in_progress":
             continue
-        if owner is not None and task.owner != owner:
-            continue
-        # Leaf = no children are in_progress
         has_in_progress_child = any(c.status == "in_progress" for c in task.children)
         if not has_in_progress_child:
             result.append(task)
@@ -81,32 +83,77 @@ def find_leaf_in_progress(tasks: dict[str, Task], *, owner: str | None) -> list[
     return sorted(result, key=lambda t: (t.priority, t.id))
 
 
-def _sanitize(value: str) -> str:
-    """Escape characters that break pipe-delimited output."""
-    return value.replace("|", "\\|").replace("\n", " ").replace("\r", "")
-
-
-def format_task_line(task: Task) -> str:
-    """Format task as pipe-delimited line."""
-    label = task.labels[0] if task.labels else ""
-    return f"{task.id}|{task.issue_type}|{_sanitize(task.title)}|P{task.priority}|{_sanitize(label)}"
-
-
-def get_git_user() -> str | None:
-    """Get current git user.name. Returns None if unavailable."""
-    try:
-        name = subprocess.check_output(
-            ["git", "config", "user.name"],
-            text=True,
-        ).strip()
-        return name or None
-    except (subprocess.CalledProcessError, FileNotFoundError):
+def get_actor() -> str | None:
+    """Resolve the actor via the sibling flow-actor helper."""
+    helper = Path(__file__).resolve().parent / "flow-actor"
+    result = subprocess.run(
+        [sys.executable, str(helper)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    name = result.stdout.strip()
+    if result.returncode != 0 or not name:
         return None
+    return name
+
+
+def select_tasks(tasks: list[Task], actor: str | None, *, show_all: bool) -> list[Task]:
+    """Keep my and unassigned tasks; everything with --all or when no identity."""
+    if show_all or actor is None:
+        return tasks
+    return [t for t in tasks if t.assignee in (actor, "")]
+
+
+def group_tasks(tasks: list[Task], actor: str | None) -> list[tuple[str, list[Task]]]:
+    """Group tasks: mine -> Unassigned -> other assignees alphabetically."""
+    mine: list[Task] = []
+    unassigned: list[Task] = []
+    others: dict[str, list[Task]] = {}
+    for task in tasks:
+        if actor is not None and task.assignee == actor:
+            mine.append(task)
+        elif not task.assignee:
+            unassigned.append(task)
+        else:
+            others.setdefault(task.assignee, []).append(task)
+
+    groups: list[tuple[str, list[Task]]] = []
+    if mine:
+        groups.append((f"Мои задачи ({actor}):", mine))
+    if unassigned:
+        groups.append(("Unassigned:", unassigned))
+    groups.extend((f"{name}:", others[name]) for name in sorted(others))
+    return groups
+
+
+def format_task_line(task: Task, number: int) -> str:
+    """Format one numbered display line."""
+    letter = TYPE_LETTERS.get(task.issue_type, "T")
+    title = " ".join(task.title.split())
+    line = f"{number}. [{letter}] {title} ({task.id}) | P{task.priority}"
+    if task.labels:
+        line += f" | #{task.labels[0]}"
+    return line
+
+
+def render(groups: list[tuple[str, list[Task]]]) -> str:
+    """Render groups with continuous numbering; empty string when no tasks."""
+    lines: list[str] = []
+    number = 0
+    for header, tasks in groups:
+        if lines:
+            lines.append("")
+        lines.append(header)
+        for task in tasks:
+            number += 1
+            lines.append(format_task_line(task, number))
+    return "\n".join(lines)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Find leaf in_progress tasks")
-    parser.add_argument("--all", action="store_true", help="Show all users' tasks")
+    parser = argparse.ArgumentParser(description="Find leaf in_progress tasks grouped by assignee")
+    parser.add_argument("--all", action="store_true", help="Show all users' tasks, grouped by assignee")
     args = parser.parse_args()
 
     try:
@@ -119,11 +166,12 @@ def main() -> None:
         sys.exit(0)
 
     tasks = parse_graphs(data)
-    owner = None if args.all else get_git_user()
-    result = find_leaf_in_progress(tasks, owner=owner)
-
-    for task in result:
-        print(format_task_line(task))
+    leaves = find_leaf_in_progress(tasks)
+    actor = get_actor()
+    selected = select_tasks(leaves, actor, show_all=args.all)
+    output = render(group_tasks(selected, actor))
+    if output:
+        print(output)
 
 
 if __name__ == "__main__":
