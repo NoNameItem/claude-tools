@@ -6,6 +6,8 @@ Usage:
     bd show <task-id> --json | python3 bd-card.py
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import unicodedata

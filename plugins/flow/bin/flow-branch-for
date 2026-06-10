@@ -6,6 +6,8 @@ Prints: <prefix><task-id>-<brief-name>   e.g. feature/claude-tools-uaj-extract-r
 Exit:   0 ok | 1 task not found | 2 bd error
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

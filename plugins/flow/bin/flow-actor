@@ -4,6 +4,8 @@
 Prints nothing and exits 1 when no identity is available.
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
