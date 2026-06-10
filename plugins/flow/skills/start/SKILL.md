@@ -79,7 +79,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
 | 6. Ask | `AskUserQuestion` with options matrix | Branch + worktree in one question |
-| 7. Update | `bd update` | Only after confirmation |
+| 7. Update | `bd update --status=in_progress -a actor` | Confirm first; ask before taking someone else's task |
 | 7.1. Sync | `bd sync` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` or `git worktree add` | Based on user's choice |
@@ -302,19 +302,31 @@ If the method is not clear from the text, ask a follow-up `AskUserQuestion` with
 
 ### 7. Update Task Status
 
-**Only after user confirms everything:**
+Read the task's `assignee` from the Step 3 `bd show` output and resolve your actor name (`flow-actor`). If `flow-actor` prints nothing (no identity available), run the update without `-a` — never pass an empty assignee:
+
 ```bash
 bd update <task-id> --status=in_progress
 ```
 
-Or if user is claiming:
+**If `assignee` is empty or already equals your actor name** — only after user confirms everything:
 ```bash
-bd update <task-id> --claim
+bd update <task-id> --status=in_progress -a "$(flow-actor)"
 ```
+
+**If `assignee` is someone else** — ask in plain text:
+
+```
+Задача назначена на `<assignee>`. Переназначить на вас? (yes/no)
+```
+
+- yes → run the same `bd update` command above.
+- no → stop; suggest picking another task.
+
+Do NOT use `bd update --claim` — it fails when the task is already claimed, even by you. The explicit `-a` form is idempotent.
 
 ### 7.1. Sync Changes
 
-**Run only if `bd update` or `bd claim` was executed in Step 7** (skip if task was already in_progress).
+**Run only if `bd update` was executed in Step 7** (skip if status and assignee were already correct).
 
 ```bash
 bd sync
@@ -565,7 +577,7 @@ Agent: [shows task description]
 If task status is already `in_progress`:
 1. Still show full description via script (user might not remember)
 2. Still check branch and ask
-3. Don't update status (already correct)
+3. If `assignee` is empty, still run the Step 7 update (backfills assignee on legacy tasks); skip the update only when status is `in_progress` AND `assignee` is already you
 
 ### When No Tasks Available
 
