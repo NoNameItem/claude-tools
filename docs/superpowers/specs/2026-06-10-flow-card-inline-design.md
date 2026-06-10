@@ -39,8 +39,14 @@ Replace the ambiguous sentence in `start/SKILL.md` Step 3 (line 179) and
 `continue/SKILL.md` Step 8 (line 279) with:
 
 > After running the script, reproduce its **full output verbatim** inside a fenced
-> ``` code block in your reply. The card must appear in your message text — that is
-> the only place the user reliably sees it. Do not summarize, truncate, or reformat it.
+> ``` code block in your reply — **every line** from the top border `┌─` to the
+> bottom border `└─`, none dropped. The card must appear in your message text — that
+> is the only place the user reliably sees it. Do not summarize, truncate, or
+> reformat it.
+
+The "every line" clause was added after subagent testing: with the shorter wording,
+one test run still silently dropped a single line (`Affects:`) from the middle of
+the card while otherwise complying.
 
 ### 2. Red Flags (both skills)
 
