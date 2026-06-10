@@ -1,0 +1,40 @@
+#!/usr/bin/env python3
+"""Print the resolved actor name: $BD_ACTOR -> git config user.name -> $USER.
+
+Prints nothing and exits 1 when no identity is available.
+"""
+
+import os
+import subprocess
+import sys
+
+
+def get_actor() -> str | None:
+    actor = os.environ.get("BD_ACTOR", "").strip()
+    if actor:
+        return actor
+    try:
+        result = subprocess.run(
+            ["git", "config", "user.name"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        name = result.stdout.strip()
+        if name:
+            return name
+    except FileNotFoundError:
+        pass
+    return os.environ.get("USER", "").strip() or None
+
+
+def main() -> int:
+    actor = get_actor()
+    if actor is None:
+        return 1
+    print(actor)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
