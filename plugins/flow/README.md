@@ -230,7 +230,8 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 |--------|---------|
 | `flow-task-card` | Render a beads task card from `bd show --json` |
 | `flow-task-tree` | Render the task tree from `bd graph --json` |
-| `flow-find-leaf` | Find leaf in-progress tasks |
+| `flow-find-leaf` | Leaf in-progress tasks as a grouped list (mine → Unassigned → others) |
+| `flow-actor` | Resolve actor name: `$BD_ACTOR` → git `user.name` → `$USER` |
 | `flow-branch-for <id>` | Compute the branch name for a task |
 | `flow-link-doc <id> <Git\|Design\|Plan> <value>` | Set/remove a link line (empty value removes) |
 | `flow-find-doc <design\|plan>` | Newest doc across `docs/superpowers/{specs,plans}/` + `docs/plans/` |

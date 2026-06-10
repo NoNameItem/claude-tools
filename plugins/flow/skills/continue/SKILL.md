@@ -34,7 +34,8 @@ allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion Todo
 This skill is the fast path for returning to work. Unlike `flow:start` which offers full task tree and branch creation, `flow:continue` assumes the task is already set up — it just reconnects you to it.
 
 **What this skill does:**
-- Finds your active (in_progress) leaf tasks
+- Finds active (in_progress) leaf tasks, grouped by assignee
+- Assigns the task to you if it is unassigned (quietly) or assigned to someone else (after asking)
 - Reads the saved branch name from task description
 - Finds the branch locally or in worktree
 - Switches to it
@@ -51,21 +52,22 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. Sync | `bd sync` | Get latest task data |
-| 2. Find tasks | Run `flow-find-leaf` script | Leaf in_progress tasks |
+| 2. Find tasks | Run `flow-find-leaf` script | Grouped by assignee, reproduce verbatim |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
-| 4. Extract branch | Read `Git:` from description | No Git: → exit |
-| 5. Find branch | worktree → local → remote | Priority order |
-| 6. Switch | cd or checkout | Depends on where branch is |
-| 7. Init | `flow:init-worktree` | Only if new worktree created |
-| 8. Card | Show task card | Final output — reproduce in reply |
+| 4. Assignee | Compare with `flow-actor` | Empty → assign quietly; other's → ask |
+| 5. Extract branch | Read `Git:` from description | No Git: → exit |
+| 6. Find branch | worktree → local → remote | Priority order |
+| 7. Switch | cd or checkout | Depends on where branch is |
+| 8. Init | `flow:init-worktree` | Only if new worktree created |
+| 9. Card | Show task card | Final output — reproduce in reply |
 
 ## Arguments
 
 The command `/flow:continue` accepts:
 
-- **`<task-id>`** (optional) — skip task selection, go straight to branch resolution.
+- **`<task-id>`** (optional) — skip task selection, go straight to the assignee check and branch resolution.
   Validates task exists and is `in_progress`. If not → error with suggestion to use `/flow:start`.
-- **`--all`** — show all users' in_progress tasks, not just current user's.
+- **`--all`** — show all users' in_progress tasks, grouped by assignee (default shows only your tasks and unassigned ones).
 
 ## Workflow
 
@@ -101,7 +103,7 @@ bd graph --all --json | flow-find-leaf [--all]
 
 Pass `--all` if user passed `--all` flag.
 
-Parse output lines. Each line is: `id|issue_type|title|priority|label`
+The script prints a display-ready grouped list with continuous numbering: your tasks → `Unassigned:` → other users (alphabetically, `--all` only). When no identity is available it behaves like `--all`. Reproduce the script output verbatim as plain text inside the Step 3 message (numbering comes from the script). Empty output = 0 tasks.
 
 ### 3. Select Task
 
@@ -118,7 +120,8 @@ Exit skill.
 ```
 Задача в работе:
 
-[F] Оптимизация выбора задачи (claude-tools-elf.3) | P2 | #flow
+Мои задачи (artem.vasin):
+1. [F] Оптимизация выбора задачи (claude-tools-elf.3) | P2 | #flow
 
 Продолжить работу над этой задачей? ('new' для запуска /flow:start)
 ```
@@ -130,7 +133,10 @@ If user says 'new' → "Используйте `/flow:start`." Exit skill.
 ```
 Задачи в работе:
 
+Мои задачи (artem.vasin):
 1. [F] Оптимизация выбора задачи (claude-tools-elf.3) | P2 | #flow
+
+Unassigned:
 2. [F] Git module (claude-tools-c7b) | P2 | #statuskit
 3. [B] Fix login error (claude-tools-abc) | P1 | #statuskit
 
@@ -141,15 +147,47 @@ User selects by number or task ID. If 'new' → exit.
 
 **For task selection: use plain text, NOT AskUserQuestion.**
 
-### 4. Extract Branch Name
+### 4. Check Assignee
 
-Read the task description and find the `Git:` line:
+Fetch the task once — this JSON is reused in Step 5 (if you already fetched it in Step 2's task-id branch, reuse that JSON instead of fetching again):
 
 ```bash
 bd show <task-id> --json
 ```
 
-Parse the JSON, extract `description` field, find line starting with `Git:`.
+Resolve your actor name:
+
+```bash
+flow-actor
+```
+
+If `flow-actor` prints nothing (no identity available), skip the rest of Step 4 — no assignee action — and proceed to Step 5. Never run `bd update -a` with an empty value.
+
+Compare the task's `assignee` field with the actor:
+
+- **`assignee` equals actor** → no action, proceed to Step 5 (fast path stays mutation-free).
+- **`assignee` empty or null** → assign quietly:
+
+  ```bash
+  bd update <task-id> -a "$(flow-actor)"
+  bd sync
+  ```
+
+  Report: "Назначил задачу на вас." Proceed to Step 5.
+- **`assignee` is someone else** → ask in plain text (NOT AskUserQuestion):
+
+  ```
+  Задача назначена на `<assignee>`. Взять её себе? (yes/no)
+  ```
+
+  - yes → `bd update <task-id> -a "$(flow-actor)"`, then `bd sync`.
+  - no → continue without changing assignee (pair work is fine). Proceed to Step 5.
+
+Do NOT use `bd update --claim` — it fails when the task is already claimed, even by you, and it changes status, which is not this skill's job.
+
+### 5. Extract Branch Name
+
+From the Step 4 `bd show` JSON, extract the `description` field and find the line starting with `Git:`.
 
 **If `Git:` line found** → extract branch name (everything after `Git: `, trimmed).
 
@@ -162,7 +200,7 @@ Parse the JSON, extract `description` field, find line starting with `Git:`.
 
 Exit skill.
 
-### 5. Find Branch
+### 6. Find Branch
 
 Search for the branch in priority order:
 
@@ -171,21 +209,21 @@ Search for the branch in priority order:
 git worktree list
 ```
 
-If a worktree uses this branch → extract path, go to step 6a.
+If a worktree uses this branch → extract path, go to step 7a.
 
 **b. Check local branches:**
 ```bash
 git branch --list "<branch-name>"
 ```
 
-If found → go to step 6b.
+If found → go to step 7b.
 
 **c. Check remote branches:**
 ```bash
 git branch -r --list "origin/<branch-name>"
 ```
 
-If found → go to step 6b.
+If found → go to step 7b.
 
 **d. Branch not found anywhere:**
 
@@ -196,9 +234,9 @@ If found → go to step 6b.
 
 Exit skill.
 
-### 6. Switch to Branch
+### 7. Switch to Branch
 
-#### 6a. Worktree exists
+#### 7a. Worktree exists
 
 ```bash
 cd <worktree-path>
@@ -206,9 +244,9 @@ cd <worktree-path>
 
 > "Перешёл в worktree `<worktree-path>`."
 
-Skip to Step 8 (no init needed — worktree already existed).
+Skip to Step 9 (no init needed — worktree already existed).
 
-#### 6b. Local or remote branch
+#### 7b. Local or remote branch
 
 Check if already in a worktree:
 ```bash
@@ -228,7 +266,7 @@ git checkout -b <branch-name> origin/<branch-name>
 
 > "Переключился на ветку `<branch-name>`."
 
-Skip to Step 8.
+Skip to Step 9.
 
 **If IN_WORKTREE=false — offer worktree option:**
 
@@ -246,7 +284,7 @@ git checkout <branch-name>
 git checkout -b <branch-name> origin/<branch-name>
 ```
 
-Skip to Step 8.
+Skip to Step 9.
 
 **Option 2 (worktree):**
 ```bash
@@ -261,15 +299,15 @@ git worktree add "$WORKTREE_DIR" -b <branch-name> origin/<branch-name>
 cd "$WORKTREE_DIR"
 ```
 
-Proceed to Step 7 (init new worktree).
+Proceed to Step 8 (init new worktree).
 
-### 7. Initialize Worktree (if newly created)
+### 8. Initialize Worktree (if newly created)
 
-**Only if a new worktree was created in Step 6b (Option 2).**
+**Only if a new worktree was created in Step 7b (Option 2).**
 
 Invoke the `flow:init-worktree` skill using the Skill tool.
 
-### 8. Show Task Card
+### 9. Show Task Card
 
 Display the task card using the script:
 
@@ -284,7 +322,9 @@ This is the final output. The user sees it and starts working.
 ## Red Flags
 
 - "I'll also create the branch if it's missing" → Out of scope. Exit with message.
-- "Let me change the task status" → Already in_progress. Don't touch.
+- "Let me change the task status" → Already in_progress. Don't touch (assignee in Step 4 is the only allowed mutation).
+- "I'll skip the assignee check" → Step 4 is mandatory; it migrates legacy unassigned tasks.
+- "I'll use AskUserQuestion for the takeover question" → Plain text yes/no.
 - "I'll show the full task tree" → flow:continue is fast path. Use flow:start for tree.
 - "I'll skip the Git: check and just search for branches" → Git: line is the source of truth.
 - "bd ready is a quick way to find tasks" → Use flow-find-leaf script.
@@ -301,7 +341,8 @@ This is the final output. The user sees it and starts working.
 | "Git: line is unreliable, search branches" | Git: is the source of truth. No Git: → exit. |
 | "User is in a hurry, skip confirmation" | 1 task still needs confirmation. N tasks need selection. |
 | "I'll run bd ready instead of the script" | Script gives exact format needed. |
-| "I'll also sync at the end" | No mutations → no sync needed. |
+| "I'll also sync at the end" | Sync happens in Step 4 only when assignee changed; nothing else mutates. |
+| "Assignee is someone else, I'll just take it" | Ask first — it may be pair work. |
 | "Running the script is enough to show the card" | No. Reproduce the script output verbatim in a fenced code block in your reply. |
 
 ## Examples
@@ -316,13 +357,15 @@ Agent: [runs bd sync]
 
        Задача в работе:
 
-       [F] Оптимизация выбора задачи (claude-tools-elf.3) | P2 | #flow
+       Мои задачи (artem.vasin):
+       1. [F] Оптимизация выбора задачи (claude-tools-elf.3) | P2 | #flow
 
        Продолжить работу над этой задачей? ('new' для запуска /flow:start)
 
 User: да
 
-Agent: [reads Git: from description → feature/claude-tools-elf.3-task-selection-optimization]
+Agent: [runs bd show → assignee == artem.vasin → no assignee action]
+       [reads Git: from description → feature/claude-tools-elf.3-task-selection-optimization]
        [finds worktree at .worktrees/feature-claude-tools-elf.3-...]
        [cd to worktree]
 
@@ -345,6 +388,7 @@ User: /flow:continue elf.3
 
 Agent: [runs bd sync]
        [validates claude-tools-elf.3 is in_progress → OK]
+       [assignee empty → bd update claude-tools-elf.3 -a "$(flow-actor)" + bd sync → "Назначил задачу на вас."]
        [reads Git: → feature/claude-tools-elf.3-task-selection-optimization]
        [finds branch locally]
        [offers checkout or worktree]
