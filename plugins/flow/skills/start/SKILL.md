@@ -74,7 +74,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
 | 1. Tree | `bd graph --all --json \| flow-task-tree [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment |
+| 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment, reproduce in reply |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
@@ -175,7 +175,7 @@ Map selection to task ID and proceed.
 bd show <task-id> --json | flow-task-card
 ```
 
-Output the script result in a ``` code block to preserve monospace alignment.
+After running the script, reproduce its **full output verbatim** inside a fenced ``` code block in your reply — **every line** from the top border `┌─` to the bottom border `└─`, none dropped. The card must appear in your message text — that is the only place the user reliably sees it. Do not summarize, truncate, or reformat it.
 
 **User needs context BEFORE committing to task.**
 
@@ -410,6 +410,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "User said they're in a hurry"
 - "I'll choose a good task for them"
 - "Description can go in summary at the end"
+- "The card is already displayed" → It is not. The card is visible only if YOU reproduced it verbatim in a code block in your reply.
 
 **Branch naming violations:**
 - "No need to search existing branches"
@@ -442,6 +443,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
 | "User said they're in a hurry" | Consultation is part of the service, not overhead. |
 | "I'll choose a good task for them" | User agency matters. Show options, let them choose. |
+| "Running the script is enough to show the card" | No. Reproduce the script output verbatim in a fenced code block in your reply. |
 | "No existing branches to search" | Always search. Prevents duplicate branches. |
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
