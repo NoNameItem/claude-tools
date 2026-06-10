@@ -57,7 +57,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 | 5. Find branch | worktree → local → remote | Priority order |
 | 6. Switch | cd or checkout | Depends on where branch is |
 | 7. Init | `flow:init-worktree` | Only if new worktree created |
-| 8. Card | Show task card | Final output |
+| 8. Card | Show task card | Final output — reproduce in reply |
 
 ## Arguments
 
@@ -277,7 +277,7 @@ Display the task card using the script:
 bd show <task-id> --json | flow-task-card
 ```
 
-Output in a ``` code block to preserve alignment.
+After running the script, reproduce its **full output verbatim** inside a fenced ``` code block in your reply — **every line** from the top border `┌─` to the bottom border `└─`, none dropped. The card must appear in your message text — that is the only place the user reliably sees it. Do not summarize, truncate, or reformat it.
 
 This is the final output. The user sees it and starts working.
 
@@ -289,6 +289,7 @@ This is the final output. The user sees it and starts working.
 - "I'll skip the Git: check and just search for branches" → Git: line is the source of truth.
 - "bd ready is a quick way to find tasks" → Use flow-find-leaf script.
 - "AskUserQuestion for task selection" → Plain text. Numbers don't work in structured UI.
+- "The card is already displayed" → It is not. The card is visible only if YOU reproduced it verbatim in a code block in your reply.
 
 ## Common Rationalizations
 
@@ -301,6 +302,7 @@ This is the final output. The user sees it and starts working.
 | "User is in a hurry, skip confirmation" | 1 task still needs confirmation. N tasks need selection. |
 | "I'll run bd ready instead of the script" | Script gives exact format needed. |
 | "I'll also sync at the end" | No mutations → no sync needed. |
+| "Running the script is enough to show the card" | No. Reproduce the script output verbatim in a fenced code block in your reply. |
 
 ## Examples
 
