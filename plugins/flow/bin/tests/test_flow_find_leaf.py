@@ -4,6 +4,7 @@
 
 import importlib.util
 import json
+import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -17,6 +18,7 @@ if _spec is None or _spec.loader is None:
     msg = "Unable to load flow-find-leaf for tests"
     raise ImportError(msg)
 _mod = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _mod
 _spec.loader.exec_module(_mod)
 
 find_leaf_in_progress = _mod.find_leaf_in_progress

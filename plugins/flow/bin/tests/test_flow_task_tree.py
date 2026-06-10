@@ -3,6 +3,7 @@
 # ruff: noqa: INP001
 
 import importlib.util
+import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -13,6 +14,7 @@ _spec = importlib.util.spec_from_file_location(
 assert _spec is not None
 assert _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _mod
 _spec.loader.exec_module(_mod)
 
 Task = _mod.Task
