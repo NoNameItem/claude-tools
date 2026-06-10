@@ -103,7 +103,7 @@ bd graph --all --json | flow-find-leaf [--all]
 
 Pass `--all` if user passed `--all` flag.
 
-The script prints a display-ready grouped list with continuous numbering: your tasks → `Unassigned:` → other users (alphabetically, `--all` only). When no identity is available it behaves like `--all`. Reproduce the script output verbatim as plain text (numbering comes from the script). Empty output = 0 tasks.
+The script prints a display-ready grouped list with continuous numbering: your tasks → `Unassigned:` → other users (alphabetically, `--all` only). When no identity is available it behaves like `--all`. Reproduce the script output verbatim as plain text inside the Step 3 message (numbering comes from the script). Empty output = 0 tasks.
 
 ### 3. Select Task
 
@@ -149,7 +149,7 @@ User selects by number or task ID. If 'new' → exit.
 
 ### 4. Check Assignee
 
-Fetch the task once — this JSON is reused in Step 5:
+Fetch the task once — this JSON is reused in Step 5 (if you already fetched it in Step 2's task-id branch, reuse that JSON instead of fetching again):
 
 ```bash
 bd show <task-id> --json
@@ -160,6 +160,8 @@ Resolve your actor name:
 ```bash
 flow-actor
 ```
+
+If `flow-actor` prints nothing (no identity available), skip the rest of Step 4 — no assignee action — and proceed to Step 5. Never run `bd update -a` with an empty value.
 
 Compare the task's `assignee` field with the actor:
 
@@ -179,7 +181,7 @@ Compare the task's `assignee` field with the actor:
   ```
 
   - yes → `bd update <task-id> -a "$(flow-actor)"`, then `bd sync`.
-  - no → continue without changing assignee (pair work is fine).
+  - no → continue without changing assignee (pair work is fine). Proceed to Step 5.
 
 Do NOT use `bd update --claim` — it fails when the task is already claimed, even by you, and it changes status, which is not this skill's job.
 
