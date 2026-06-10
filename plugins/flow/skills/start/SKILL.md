@@ -302,24 +302,44 @@ If the method is not clear from the text, ask a follow-up `AskUserQuestion` with
 
 ### 7. Update Task Status
 
-Read the task's `assignee` from the Step 3 `bd show` output and resolve your actor name (`flow-actor`). If `flow-actor` prints nothing (no identity available), run the update without `-a` — never pass an empty assignee:
+Run the update only after the user confirmed the branch choice in Step 6 (or after the Step 5.5 auto-resolve report).
+
+Fetch the task JSON and read its `assignee` field (Step 3 piped the JSON into `flow-task-card`, which does not show assignee — fetch it here), then resolve your actor name:
+
+```bash
+bd show <task-id> --json
+flow-actor
+```
+
+Pick exactly one branch:
+
+**a. `flow-actor` prints nothing (no identity available)** — run the update without `-a` (never pass an empty assignee); skip the assignee comparison and the takeover question:
 
 ```bash
 bd update <task-id> --status=in_progress
 ```
 
-**If `assignee` is empty or already equals your actor name** — only after user confirms everything:
+**b. `assignee` is empty or already equals your actor name:**
+
 ```bash
 bd update <task-id> --status=in_progress -a "$(flow-actor)"
 ```
 
-**If `assignee` is someone else** — ask in plain text:
+If the assignee was empty, report: "Назначил задачу на вас."
+
+**c. `assignee` is someone else** — ask in plain text:
 
 ```
 Задача назначена на `<assignee>`. Переназначить на вас? (yes/no)
 ```
 
-- yes → run the same `bd update` command above.
+- yes → run:
+
+  ```bash
+  bd update <task-id> --status=in_progress -a "$(flow-actor)"
+  ```
+
+  Report: "Переназначил задачу на вас."
 - no → stop; suggest picking another task.
 
 Do NOT use `bd update --claim` — it fails when the task is already claimed, even by you. The explicit `-a` form is idempotent.
@@ -459,6 +479,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "No existing branches to search" | Always search. Prevents duplicate branches. |
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
+| "--claim is shorter" | It fails on re-claim, even by you. Use the explicit `-a` form. |
 | "I'll ask about worktree separately" | Worktree is an option in Step 6 AskUserQuestion. One question, not two. |
 | "I'll offer worktree in a worktree" | Never offer worktree when IN_WORKTREE=true. Show only 2 options. |
 | "I'll skip auto-resolve" | Always check Step 5.5. Don't ask when the answer is obvious. |
@@ -577,7 +598,7 @@ Agent: [shows task description]
 If task status is already `in_progress`:
 1. Still show full description via script (user might not remember)
 2. Still check branch and ask
-3. If `assignee` is empty, still run the Step 7 update (backfills assignee on legacy tasks); skip the update only when status is `in_progress` AND `assignee` is already you
+3. If `assignee` is empty, still run the Step 7 update (backfills assignee on legacy tasks); skip the update only when status is `in_progress` AND `assignee` is already you (or when no identity is available — nothing to backfill then)
 
 ### When No Tasks Available
 
