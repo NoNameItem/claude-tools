@@ -90,7 +90,7 @@ flow-find-branches  flow-worktree-dir
 A pytest test wrapping the already-verified command:
 
 ```
-ruff check --select FA102 --target-version py39 plugins/flow/bin/flow-*
+ruff check --select FA102 --target-version py39 --no-cache plugins/flow/bin/flow-*
 ```
 
 The test asserts exit code 0; it skips when `ruff` is not on PATH. Ruff already lints
