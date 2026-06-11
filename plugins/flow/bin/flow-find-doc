@@ -6,6 +6,8 @@ Prints the newest *.md path (relative to CWD) by mtime, or nothing if none exist
 Exit: 0 (empty = none) | 2 on bad kind (argparse).
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path

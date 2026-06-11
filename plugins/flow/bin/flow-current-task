@@ -8,6 +8,8 @@ Usage:
 Exit: extract -> 0 always (2 on git error); match -> 0 hit / 1 miss / 2 git error.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

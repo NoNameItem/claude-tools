@@ -7,6 +7,8 @@ Usage:
 Exit: 0 ok | 1 invalid key | 2 task not found / bd error
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os

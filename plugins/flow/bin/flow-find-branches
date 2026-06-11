@@ -7,6 +7,8 @@ Output: one line per branch "<branch>\t<location>", location in {local, remote, 
 Exit: 0 always (empty = none) | 2 git error.
 """
 
+from __future__ import annotations
+
 import argparse
 import re
 import subprocess

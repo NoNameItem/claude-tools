@@ -14,6 +14,8 @@ Usage:
     bd graph --all --json | flow-find-leaf --all
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import subprocess
@@ -33,7 +35,7 @@ class Task:
     issue_type: str
     labels: list[str] = field(default_factory=list)
     assignee: str = ""
-    children: list["Task"] = field(default_factory=list)
+    children: list[Task] = field(default_factory=list)
     parent_id: str | None = None
 
 

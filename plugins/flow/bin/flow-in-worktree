@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exit 0 if the current working directory is inside a `.worktrees/` directory, else 1."""
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 

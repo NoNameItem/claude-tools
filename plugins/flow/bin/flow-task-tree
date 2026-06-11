@@ -10,6 +10,8 @@ Usage:
     bd graph --all --json | python3 bd-tree.py --root 5dl
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -25,7 +27,7 @@ class Task:
     issue_type: str
     labels: list[str] = field(default_factory=list)
     description: str = ""
-    children: list["Task"] = field(default_factory=list)
+    children: list[Task] = field(default_factory=list)
     parent_id: str | None = None
     is_blocked: bool = False
 

@@ -4,6 +4,8 @@
 Usage: flow-worktree-dir <branch-name>
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 

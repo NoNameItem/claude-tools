@@ -12,6 +12,7 @@ Automated workflow skills for [Claude Code](https://code.claude.com) that guide 
 - [Claude Code](https://code.claude.com) — flow runs as a Claude Code plugin
 - [beads](https://github.com/steveyegge/beads) — required. Flow skills use `bd` to select, update, and close tasks.
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
+- Python — the `bin/` helpers run under whatever `python3` is first on your `PATH`. **3.11+ recommended** (matches the workspace's `requires-python`); they stay compatible down to **3.9** as a fallback for the stock macOS system `python3`.
 
 ## Installation
 
