@@ -90,15 +90,22 @@ flow-find-branches  flow-worktree-dir
 A pytest test wrapping the already-verified command:
 
 ```
-ruff check --select FA --target-version py39 plugins/flow/bin/flow-*
+ruff check --select FA102 --target-version py39 plugins/flow/bin/flow-*
 ```
 
 The test asserts exit code 0; it skips when `ruff` is not on PATH. Ruff already lints
 these extensionless files via the root `extend-include = ["plugins/flow/bin/flow-*"]`.
 Targeting `py39` makes rule `FA102` ("Missing `from __future__ import annotations`, but
 uses PEP 604 union") fire on any helper that reintroduces a runtime union without the
-future import. The gate runs inside the existing `uv run pytest`, and ruff already runs
-in pre-commit and CI.
+future import.
+
+The gate runs via `uv run pytest plugins/flow/bin/tests/`. Caveat discovered during
+implementation: the flow plugin's `bin/` tests are **not** currently wired into CI or
+pre-commit — the plugin CI job only lints, and `.pre-commit-config.yaml` has no pytest
+hook — so until that gap is closed (tracked as **claude-tools-7sw**) the gate is enforced
+by the per-commit test checklist and local/pre-push runs, not automatically in CI. The
+repo's main `ruff check` cannot substitute, because it runs under the global `py311`
+target where PEP 604 unions are legal and `FA102` stays silent.
 
 The workspace's global ruff `target-version` stays `py311`; the `py39` floor is applied
 only by this test's explicit `--target-version` flag, so normal linting of the rest of
