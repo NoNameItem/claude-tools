@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Find the worktree path(s) for a task ID.
+
+Usage: flow-find-worktree <task-id>
+Output: one worktree path per line (sorted) whose checked-out branch matches the
+        task ID with the anchored, docs/-aware pattern; empty if none.
+Exit: 0 always (empty = none) | 2 git error.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import subprocess
+import sys
+
+TYPES = r"(?:fix|chore|feature|docs)"
+
+
+def git(*args):
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def _scan_worktrees(pat):
+    """Return sorted list of worktree paths whose branch matches pat, or exit 2 on git error."""
+    wt = git("worktree", "list", "--porcelain")
+    if wt.returncode != 0:
+        sys.stderr.write(wt.stderr.strip() + "\n")
+        sys.exit(2)
+    paths = []
+    current_path = None
+    for ln in wt.stdout.splitlines():
+        if ln.startswith("worktree "):
+            current_path = ln[len("worktree ") :].strip()
+        elif ln.startswith("branch ") and current_path is not None:
+            name = ln[len("branch ") :].strip().replace("refs/heads/", "")
+            if pat.match(name):
+                paths.append(current_path)
+    return sorted(paths)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Find worktree path(s) matching a task ID.")
+    parser.add_argument("task_id")
+    task_id = parser.parse_args().task_id
+    pat = re.compile(rf"^{TYPES}/{re.escape(task_id)}(-.*)?$")
+
+    paths = _scan_worktrees(pat)
+    if paths:
+        sys.stdout.write("\n".join(paths) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
