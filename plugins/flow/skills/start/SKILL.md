@@ -231,10 +231,12 @@ If matched: skip to Step 7, report:
 **Case 2: Worktree exists for a task branch.**
 Check if any worktree uses a branch matching the task ID:
 ```bash
-git worktree list | grep -E "(fix|feature|chore)/{task-id}"
+WT=$(flow-find-worktree {task-id} | head -1)
+[ -n "$WT" ] && echo "AUTO_RESOLVE=worktree path=$WT"
 ```
+Anchored match — like Case 1, a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID, and `docs/` branches are recognized.
 
-If matched: extract the worktree path (first column of `git worktree list` output), `cd` into it, skip to Step 7, report:
+If matched (`$WT` non-empty): `cd "$WT"`, skip to Step 7, report:
 > "Переключился в worktree `{worktree-path}`."
 
 These two cases are mutually exclusive (git doesn't allow a branch to be checked out in both main directory and a worktree simultaneously).
