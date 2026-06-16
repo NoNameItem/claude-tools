@@ -219,7 +219,7 @@ BRANCH=$(flow-branch-for <task-id>)
 **Before showing the question**, check two auto-resolve cases. If either matches, skip Steps 6-8 entirely and go to Step 7.
 
 **Case 1: Current branch matches task branch.**
-Check if current branch name matches pattern `(fix|feature|chore)/{task-id}`:
+Check if current branch name matches pattern `(fix|chore|feature|docs)/{task-id}`:
 ```bash
 flow-current-task {task-id} && echo "AUTO_RESOLVE=current_branch"
 ```
@@ -234,7 +234,7 @@ Check if any worktree uses a branch matching the task ID:
 WT=$(flow-find-worktree {task-id} | head -1)
 [ -n "$WT" ] && echo "AUTO_RESOLVE=worktree path=$WT"
 ```
-Anchored match — like Case 1, a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID, and `docs/` branches are recognized.
+Anchored match — like Case 1, a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID.
 
 If matched (`$WT` non-empty): `cd "$WT"`, skip to Step 7, report:
 > "Переключился в worktree `{worktree-path}`."
