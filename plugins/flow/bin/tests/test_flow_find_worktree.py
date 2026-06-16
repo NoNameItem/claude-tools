@@ -72,3 +72,14 @@ def test_worktree_git_failure_exits_2(tmp_path):
     r = run_helper("flow-find-worktree", "claude-tools-uaj", env=env)
     assert r.returncode == 2
     assert "simulated worktree failure" in r.stderr
+
+
+def test_multiple_matching_worktrees_printed_sorted(git_repo):
+    wt_b = _add_worktree(git_repo, "feature/claude-tools-uaj-bbb", "wt-bbb")
+    wt_a = _add_worktree(git_repo, "fix/claude-tools-uaj-aaa", "wt-aaa")
+    r = run_helper("flow-find-worktree", "claude-tools-uaj", cwd=git_repo)
+    assert r.returncode == 0
+    out = r.stdout.splitlines()
+    assert len(out) == 2
+    resolved = [str(Path(p).resolve()) for p in out]
+    assert resolved == sorted([str(wt_a.resolve()), str(wt_b.resolve())])
