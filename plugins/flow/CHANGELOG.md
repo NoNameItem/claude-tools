@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.6.0...flow-2.0.0) (2026-06-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **flow:** the gerund skill/command names (/flow:starting-task, /flow:completing-task, /flow:continue-issue, /flow:decomposing-task, /flow:linking-design, /flow:linking-plan, /flow:reviewing-comments, /flow:syncing-sonarcloud) are removed. Use the short forms (/flow:start, /flow:done, /flow:continue, /flow:decompose, /flow:after-design, /flow:after-plan, /flow:review-comments, /flow:sonar-sync). Anything scripted against the old skill names or skill directory paths must update.
+
+### Features
+
+* **flow:** drop legacy command wrappers, rename skills to short forms ([#71](https://github.com/NoNameItem/claude-tools/issues/71)) ([6b92e98](https://github.com/NoNameItem/claude-tools/commit/6b92e9856bf88095bf2ee30433cd55ae74b4a4ac))
+* **flow:** extract repeated bash from flow skills into bin/ helpers ([#73](https://github.com/NoNameItem/claude-tools/issues/73)) ([96ef5b3](https://github.com/NoNameItem/claude-tools/commit/96ef5b396becdc2fddd372f7f0462ec66686f8ab))
+
+
+### Bug Fixes
+
+* **flow:** anchored docs/-aware worktree lookup in flow:start Step 5.5 ([#78](https://github.com/NoNameItem/claude-tools/issues/78)) ([ed76f82](https://github.com/NoNameItem/claude-tools/commit/ed76f82a5ec03c47b38c2b157919e9d768362a70))
+* **flow:** assignee-based grouped task view in flow:continue ([#75](https://github.com/NoNameItem/claude-tools/issues/75)) ([666bc78](https://github.com/NoNameItem/claude-tools/commit/666bc788884694871b6845fdfb9678550839883f))
+* **flow:** make flow bin/ helpers importable under Python 3.9 ([#76](https://github.com/NoNameItem/claude-tools/issues/76)) ([08c14c1](https://github.com/NoNameItem/claude-tools/commit/08c14c109bbccd8cb118a7c9a9e43eccab4de716))
+* **flow:** preserve blank-line separator between bd-tree roots ([#69](https://github.com/NoNameItem/claude-tools/issues/69)) ([a8df914](https://github.com/NoNameItem/claude-tools/commit/a8df914eaab05260508d9c15d175abfb2875a27b))
+* **flow:** require inline task card reproduction in card steps ([#74](https://github.com/NoNameItem/claude-tools/issues/74)) ([3485a7c](https://github.com/NoNameItem/claude-tools/commit/3485a7ce64dd366897901e3fba44feb4e44c41c0))
+
+
+### Documentation
+
+* **flow:** add CI status badge ([#65](https://github.com/NoNameItem/claude-tools/issues/65)) ([782ad90](https://github.com/NoNameItem/claude-tools/commit/782ad90ae25e8fbede06d048e03e07d8aef437de))
+* **flow:** align flow plugin with superpowers 5.x paths & command names ([#72](https://github.com/NoNameItem/claude-tools/issues/72)) ([ff208b7](https://github.com/NoNameItem/claude-tools/commit/ff208b7354e832c1e74a925d71bd2e82b85a72d4))
+
 ## [1.6.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.5.0...flow-1.6.0) (2026-02-12)
 
 
