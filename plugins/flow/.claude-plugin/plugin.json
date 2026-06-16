@@ -1,6 +1,6 @@
 {
   "name": "flow",
-  "version": "1.6.0",
+  "version": "2.0.0",
   "description": "Automated beads workflow skills for Claude Code",
   "repository": "https://github.com/NoNameItem/claude-tools",
   "keywords": [
