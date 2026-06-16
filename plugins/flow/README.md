@@ -241,7 +241,8 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-worktree-dir <branch>` | Map a branch to its `.worktrees/` directory |
 | `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
 
-Run the tests: `uv run pytest plugins/flow/bin/tests/`.
+Run the tests: `uv run pytest plugins/flow/bin/tests/`. CI runs them too — the
+plugin-CI `test` job executes any plugin's `bin/tests/` on every PR.
 
 **Adding a helper:** create the executable (`chmod +x`, no `.py`), ensure it's
 covered by `pyproject.toml`'s `[tool.ruff] extend-include` glob (`plugins/flow/bin/flow-*`),
