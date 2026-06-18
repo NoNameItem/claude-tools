@@ -2,8 +2,33 @@
 
 - **Task:** claude-tools-elf.17
 - **Date:** 2026-06-18
-- **Status:** approved, ready for implementation plan
+- **Status:** SHELVED — bug not reproducible (see Investigation outcome). Revisit if it recurs.
 - **Scope:** `plugins/flow/skills/review-comments/SKILL.md` (prompt-only; no scripts)
+
+## Investigation outcome (2026-06-18) — SHELVED
+
+TDD-for-skills RED testing could not reproduce the reported bug against the current
+`SKILL.md`. Five faithful subagent runs (haiku, matching the production collection/analysis
+model) all behaved correctly:
+
+- **Phase 2, GitHub (clean + noisy, single-line dominant):** `start_line` retained for every
+  range comment (32–45, 45–60, 120–137); `outdated` correct in the non-contaminated run.
+- **Phase 2, GitLab (`position.line_range`):** `start_line` retained for the range.
+- **Phase 4 ×3 (35-line reviewed block, crux line at the top):** each subagent read the whole
+  range (`1–127` / `57–127` / `57–127`) and found the root cause — none collapsed to ±20
+  around the end line.
+
+Conclusion: the current prompts already keep the range and read the whole block, so the
+spec'd fix has no failing test to justify it (writing-skills Iron Law). Bug shelved as not
+reproducible.
+
+Caveats: tests were simulations with canned API JSON, not live `gh`/`glab` runs at production
+scale (30+ comments, full API noise). One narrow, untested gap remains — **outdated
+multi-line comments** (GitHub `line`/`start_line` both null; GitLab `new_line` null): the
+rules only fall back to a single `original_line`/`old_line`, losing the range. Low value,
+since outdated comments are judged against current code.
+
+The design below is retained as the plan to apply **if** the bug is reproduced later.
 
 ## Problem
 
