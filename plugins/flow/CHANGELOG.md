@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0](https://github.com/NoNameItem/claude-tools/compare/flow-2.0.0...flow-2.1.0) (2026-06-18)
+
+
+### Features
+
+* **flow:** add GitLab MR support to review-comments ([#79](https://github.com/NoNameItem/claude-tools/issues/79)) ([b2e73f6](https://github.com/NoNameItem/claude-tools/commit/b2e73f67f0fdab34b616d2c2a7cbfe0d9a472ac2))
+
 ## [2.0.0](https://github.com/NoNameItem/claude-tools/compare/flow-1.6.0...flow-2.0.0) (2026-06-16)
 
 
