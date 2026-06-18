@@ -282,15 +282,20 @@ always renders, and a warning is printed only in debug mode. Unknown keys are ig
 
 ## Decomposition
 
-Sizable; after the implementation plan, decompose via `/flow:decompose` into:
+The task adds two features: declarative config declaration, and template generation from
+those declarations. Split accordingly (the by-component pieces — `core/schema.py`, `Config`,
+`BaseModule`, module migration — are folded into the first):
 
-1. **`core/schema.py`** — `param()` + `parse_params` + `_coerce` (+ tests).
-2. **`Config` → dataclass schema** + `load_config` integration + `cache_path` (+ tests).
-3. **`BaseModule` parsing** + migrate `model` / `git` / `usage_limits` to `*Params` (+ tests).
-4. **`config_gen` generator + `config init` / `sync` CLI** (+ tests).
-
-Dependencies: 1 → {2, 3}; {1, 3} → 4 (the generator needs the modules' `PARAMS_CLASS` and
-`Config`'s schema). 2 and 3 can run in parallel after 1.
+1. **Декларативное объявление и парсинг конфигов модулей** (claude-tools-5dl.9.1) —
+   `core/schema.py` (`param()` + `parse_params` + coercion), `Config` as the dataclass schema
+   + `load_config` integration + `cache_path`, section parsing in `BaseModule`, migrate
+   `model` / `git` / `usage_limits` to `*Params`, drop the raw `config: dict` from the
+   constructor.
+2. **Генерация конфиг-шаблона из объявлений + CLI** (claude-tools-5dl.9.2) —
+   `setup/config_gen.py` template builder from `Config` + module `PARAMS_CLASS` schemas,
+   remove the hardcoded `DEFAULT_CONFIG`, `config init [--force]` / `config sync` CLI
+   subcommand. **Depends on 5dl.9.1** (the generator needs the modules' `PARAMS_CLASS` and
+   `Config`'s schema).
 
 ## Rejected alternatives
 
