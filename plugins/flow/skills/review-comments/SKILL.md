@@ -1,7 +1,7 @@
 ---
 name: review-comments
-description: Process unresolved GitHub PR review comments — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on GitHub. Use when addressing PR review feedback. Pass a PR number to target a specific PR.
-allowed-tools: Bash(git:*) Bash(gh:*) Agent AskUserQuestion Read
+description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Agent AskUserQuestion Read
 ---
 
 # Flow: Review Comments
@@ -10,27 +10,83 @@ allowed-tools: Bash(git:*) Bash(gh:*) Agent AskUserQuestion Read
 
 **Core principle:** Analyze before acting. Skepticism for nitpicks.
 
-This skill processes all unresolved PR review comments in one pass — applies fixes, argues against invalid comments, and replies on GitHub. Code is written by Claude Code, reviewed by the user and CodeRabbit.
+This skill processes all unresolved review comments in one pass — applies fixes, argues against invalid comments, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Command:** `/flow:review-comments [PR-number]`
+Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
+
+**Command:** `/flow:review-comments [number] [--platform github|gitlab]`
+
+- `[number]` — PR number (GitHub) or MR iid (GitLab).
+- `--platform` — optional override when auto-detection is ambiguous.
 
 ## Quick Reference
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. PR Detection | Detect PR, sync branch | Argument or autodetect |
-| 2. Collect | Subagent: fetch + parse threads | Haiku subagent for heavy lifting |
+| 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
+| 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
+| 2. Collect | Subagent: fetch + parse threads | Haiku subagent; platform-specific fetch + parse |
 | 3. Categorize | Show table, user confirms | Humans first, bots second |
 | 4. Analyze | Parallel subagents per comment | Verdicts: agree/disagree/outdated |
 | 5. Implement | Batch confirm → apply → reply → commit | Group by file, push with confirmation |
+
+## Platform Support
+
+This skill supports two platforms. Detect once (Phase 0), store `PLATFORM` (`github` | `gitlab`), and use the matching CLI/commands everywhere. The phases below give the concrete commands for each platform; this section is the shared reference.
+
+### Detection algorithm (used by Phase 0)
+
+Resolve `PLATFORM` in this order — stop at the first that decides:
+
+1. **Explicit override:** `--platform github|gitlab` argument → use it.
+2. **Remote host:** parse the host from `git remote get-url origin`. Handle both forms:
+   - SSH: `git@HOST:group/repo.git`
+   - HTTPS: `https://HOST/group/repo(.git)`
+3. **Match host against each CLI's authenticated hosts:**
+   ```bash
+   gh auth status      # lists authenticated GitHub hosts (incl. GitHub Enterprise)
+   glab auth status    # lists authenticated GitLab hosts (incl. self-hosted)
+   ```
+   - HOST appears in `gh auth status` → `github`.
+   - HOST appears in `glab auth status` → `gitlab`.
+   - **This is what makes self-hosted work** — it does not rely on the literal `github.com` / `gitlab.com` strings.
+4. **Fallback heuristic:** HOST contains `github` → `github`; contains `gitlab` → `gitlab`. Warn that the CLI may not be authenticated for that host (and suggest `gh auth login` / `glab auth login --hostname HOST`).
+5. **Still ambiguous / unknown** → ask with `AskUserQuestion` (GitHub / GitLab), or tell the user to pass `--platform`.
+
+### GitHub ↔ GitLab mapping
+
+| Concept | GitHub (`gh`) | GitLab (`glab`) |
+|---|---|---|
+| Unit | Pull Request, number | Merge Request, **iid** (the `!42` number) |
+| Repo identifier | `owner/repo` (`gh repo view --json nameWithOwner -q .nameWithOwner`) | **URL-encoded** project path `group%2Frepo` (from remote URL path; `/` → `%2F`) |
+| Detect unit for current branch | `gh pr view --json number,title,headRefName,url` | `glab mr view <iid> --output json` (fields: `iid`, `title`, `source_branch`, `web_url`, `state`) |
+| Fetch threads | `gh api repos/{o}/{r}/pulls/{n}/comments --paginate` + `…/reviews` | `glab api --paginate "projects/{id}/merge_requests/{iid}/discussions"` (one endpoint returns all) |
+| Thread model | flat comments linked by `in_reply_to_id` | each `discussion.notes[]` IS the thread; `notes[0]` = root, `notes[1:]` = replies |
+| Authenticated user | `gh api user -q .login` | `glab api user -q .username` |
+| Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{comment_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body=…` — keyed by **`discussion_id`, not comment id** |
+| Skip as already-done | `already_replied` heuristic | `resolved == true` **or** `already_replied` |
+| Outdated detection | `line == null && original_line` set | diff note where `position.new_line == null` (with `old_line` set) — the line no longer exists in the latest version; a note with no `position` is a general comment, not outdated. Do **not** use `head_sha` — it over-flags after a pull |
+| Bot / summary | `user.login` is `coderabbitai` / contains `[bot]` | `author.username` matches `coderabbit` / contains `bot`; a bot's summary/walkthrough is just a non-`position` discussion → `(summary)` bucket |
+| System notes | n/a | skip notes where `system == true` (e.g. "changed the description") |
+
+> **`glab` command verification:** the exact `glab` flags (`--output json`, `--method`, `--raw-field`, `--paginate`) and whether the `projects/:id` shorthand resolves the current repo can vary by `glab` version. If a documented command fails, fall back to the explicit URL-encoded project path (`projects/group%2Frepo/...`) and verify with `glab api --help` / `glab mr --help`.
 
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
 
-### Phase 1: PR Detection & Branch Sync
+### Phase 0: Detect Platform
 
-#### 1.1. Get owner/repo
+Resolve `PLATFORM` (`github` | `gitlab`) using the **Detection algorithm** in Platform Support above. Store it for all later phases.
+
+- If `glab`/`gh` is needed but **not installed or not authenticated** for the detected host, stop with the error shown in Edge Cases (do not guess credentials).
+- Report what was detected, e.g. "Detected GitLab (host `gitlab.example.com`) — using `glab`."
+
+### Phase 1: PR/MR Detection & Branch Sync
+
+#### 1.1. Get the repo identifier
+
+**GitHub:**
 
 ```bash
 gh repo view --json nameWithOwner -q .nameWithOwner
@@ -38,38 +94,66 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 
 Store as `{owner}/{repo}` for all subsequent `gh api` calls.
 
-#### 1.2. Detect PR
+**GitLab:**
 
-**Without argument:**
+```bash
+glab repo view --output json   # then read .path_with_namespace
+# fallback: derive group/repo from `git remote get-url origin`
+```
+
+Store the project path and **URL-encode every `/`**, including nested subgroups:
+`group/repo` → `group%2Frepo`, `group/subgroup/repo` → `group%2Fsubgroup%2Frepo`. Use this
+encoded path in all subsequent `glab api` calls.
+
+#### 1.2. Detect the PR/MR
+
+The argument is a **PR number** (GitHub) or an **MR iid** (GitLab); strip a leading `!` if the user typed `!42`.
+
+**GitHub — without argument:**
 
 ```bash
 gh pr view --json number,title,headRefName,url
 ```
 
-- PR found: show number, title, URL — continue
-- No PR: report "No PR for current branch" — stop
-
-**With argument (PR number provided):**
+**GitHub — with number:**
 
 ```bash
 gh pr view <number> --json number,title,headRefName,url
 ```
 
-Get `headRefName` (PR branch). Compare with current branch:
+The PR branch is `headRefName`.
+
+**GitLab — without argument:**
 
 ```bash
-git branch --show-current
+glab mr view --output json        # current branch's MR
 ```
 
-- Match: continue
-- Mismatch: `git checkout <headRefName>`
+**GitLab — with iid:**
+
+```bash
+glab mr view <iid> --output json
+```
+
+The MR branch is `source_branch`; the iid is `iid`; the URL is `web_url`. Only process `state == "opened"` MRs.
+
+**Both platforms:**
+
+- Found: show number/iid, title, URL — continue.
+- Not found: report "No PR/MR for current branch" — stop.
+- Compare the PR/MR branch with the current branch:
+  ```bash
+  git branch --show-current
+  ```
+  - Match: continue.
+  - Mismatch: `git checkout <branch>` (GitHub) / `glab mr checkout <iid>` (GitLab).
 
 #### 1.3. Sync with remote
 
-In both cases after PR detection:
+In all cases after PR/MR detection:
 
 ```bash
-git pull origin <headRefName>
+git pull origin <branch>
 ```
 
 ### Phase 2: Collect Comments (Single Haiku Subagent)
@@ -83,27 +167,58 @@ Use a **single haiku subagent** to fetch all comments and return structured data
 ```
 Run these steps and return results in the EXACT format specified at the end.
 
-1. Fetch inline review comments:
-   gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate
+Platform: {PLATFORM}            (github or gitlab — do ONLY the block for this platform)
+GitHub identifiers: owner/repo = {owner}/{repo}, PR number = {number}
+GitLab identifiers: project (URL-encoded) = {project}, MR iid = {iid}
 
-2. Fetch reviews (for CodeRabbit summary):
-   gh api repos/{owner}/{repo}/pulls/{number}/reviews
+=== STEP 1 — Fetch (only your platform's block) ===
 
-3. Parse inline comments:
-   - Keep only root comments (in_reply_to_id is null or absent)
-   - For each root comment, collect thread replies (other comments with in_reply_to_id == root.id)
-   - Detect outdated: comment has "original_line" but "line" is null
-   - Detect source: user.login contains "[bot]" or equals "coderabbitai" → bot; else → human
-   - Display format for lines: single line → "file.py:42"; range → "file.py:42-58" (use start_line and line)
-   - Check if the latest reply in each thread is from the authenticated user (gh api user -q .login) — if so, mark as "already_replied"
+If Platform is github:
+  a. Inline review comments:
+     gh api repos/{owner}/{repo}/pulls/{number}/comments --paginate
+  b. Reviews (for bot summary):
+     gh api repos/{owner}/{repo}/pulls/{number}/reviews
+  c. Authenticated user: gh api user -q .login
 
-4. Check CodeRabbit summary:
-   - Find review where user.login is "coderabbitai" or contains "[bot]"
-   - Read review body
-   - Check if summary contains actionable items not covered by inline comments
-   - If found, add as separate items with path="(summary)" and line="—"
+If Platform is gitlab:
+  a. Discussions (inline + general + system notes, all in one):
+     glab api --paginate "projects/{project}/merge_requests/{iid}/discussions"
+  b. Authenticated user: glab api user -q .username
 
-5. Return in this EXACT format with these two sections separated by a blank line:
+=== STEP 2 — Parse into threads (only your platform's block) ===
+
+If Platform is github:
+  - Keep only root comments (in_reply_to_id is null or absent).
+  - For each root, collect thread replies (comments with in_reply_to_id == root.id).
+  - Outdated: comment has "original_line" but "line" is null.
+  - Source: user.login contains "[bot]" or equals "coderabbitai" → bot; else human.
+  - Lines: single → "file.py:42"; range → "file.py:42-58" (use start_line and line).
+  - already_replied: latest reply author == authenticated user.
+  - Reply target: comment_id = root comment id; discussion_id = null.
+
+If Platform is gitlab:
+  - Each discussion = one thread. Drop notes where system == true.
+    notes[0] (first non-system note) = root, notes[1:] = replies.
+  - SKIP resolved threads: a discussion whose resolvable notes have resolved == true.
+  - Inline vs general: root note has a "position" object → inline; no "position" → general
+    comment (treat like a summary item: file = "(summary)", lines = "—").
+  - Lines: position.new_line (single) or position.line_range start/end (range) →
+    "file:42" / "file:42-58"; if new_line is null, use old_path/old_line.
+  - Outdated: the diff line no longer exists in the latest version — position.new_line is
+    null while position.old_line is set. (Do NOT use head_sha for this: after the Phase 1.3
+    pull, still-valid comments also have an older head_sha and would be wrongly flagged.)
+  - Source: author.username matches "coderabbit" or contains "bot" → bot; else human.
+  - already_replied: latest note author == authenticated user.
+  - Reply target: discussion_id = discussion.id (string); comment_id = null.
+
+=== STEP 3 — Bot summary ===
+  - GitHub: find the review whose user.login is "coderabbitai" / contains "[bot]"; if its
+    body has actionable items not in the inline comments, add them as items with
+    path="(summary)", line="—".
+  - GitLab: a bot's summary/walkthrough is just a general (no-position) note already
+    captured in Step 2 as a "(summary)" item — no separate fetch.
+
+=== STEP 4 — Return in this EXACT format (two sections, blank line between) ===
 
 TABLE:
 ## @{username} ({count} comments)
@@ -112,7 +227,7 @@ TABLE:
 | U1 | workflow.yml  | 22     | Add contents: read            |          |
 | U2 | projects.py   | 32-45  | Legacy code, needed?          | ⚠️       |
 
-## CodeRabbit ({count} comments)
+## {Bot} ({count} comments)
 | #  | File          | Lines  | Comment (brief)               | Outdated |
 |----|---------------|--------|-------------------------------|----------|
 | C1 | workflow.yml  | 15-20  | Missing error handling        |          |
@@ -120,7 +235,7 @@ TABLE:
 
 METADATA:
 [
-  {"id": 12345, "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "Add contents: read for...", "outdated": false, "already_replied": false, "thread": [{"user": "author", "body": "reply text"}]},
+  {"platform": "github", "id": 12345, "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "Add contents: read for...", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}]},
   ...
 ]
 
@@ -128,13 +243,16 @@ Rules for TABLE:
 - Humans first (U1, U2...), bots second (C1, C2...)
 - "Comment (brief)" column: truncate to ~40 chars
 - Outdated column: "⚠️" if outdated, empty otherwise
-- Summary items: show "(summary)" as file, "—" as lines
+- Summary/general items: show "(summary)" as file, "—" as lines
 
 Rules for METADATA JSON:
+- "platform": "github" or "gitlab" — the same value for every item
+- "comment_id": GitHub root comment id (number); null on GitLab
+- "discussion_id": GitLab discussion id (string); null on GitHub
 - "body": truncate to ~200 chars
 - "thread": array of {user, body} for all replies in the thread
 - "already_replied": true if the latest thread reply is from the authenticated user
-- Include ALL root comments, even if already_replied is true (table will mark them)
+- Include ALL root comments/threads, even if already_replied is true (table will mark them)
 - One JSON array, valid JSON, on a single line after "METADATA:"
 
 If there are NO unresolved comments, return:
@@ -178,7 +296,7 @@ For each selected comment (or group of comments in the same file with overlappin
 **Subagent prompt (per comment/group):**
 
 ```
-Analyze this PR review comment and return a verdict.
+Analyze this PR/MR review comment and return a verdict.
 
 Comment ref: {ref} (by {user})
 File: {path}
@@ -321,16 +439,26 @@ After all file subagents complete, run a final verification in the main context:
 uv run ruff check {changed_files}  # if Python files changed
 ```
 
-#### 5.3. Reply on GitHub
+#### 5.3. Reply on the platform
 
-For each processed comment, post a reply. Execute **sequentially** (avoid rate limiting):
+For each processed comment, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
+
+**GitHub** (reply addressed by `comment_id`):
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
   -f body="<reply text>"
 ```
 
-**Reply format by decision:**
+**GitLab** (reply addressed by `discussion_id`, NOT a comment id — a new note in the discussion):
+
+```bash
+glab api --method POST \
+  "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
+  --raw-field body="<reply text>"
+```
+
+**Reply format by decision** (identical on both platforms):
 
 | Decision | Reply |
 |----------|-------|
@@ -339,6 +467,22 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
 | Outdated, already fixed | `"Fixed in subsequent commits"` |
 
 **Do NOT reply to comments where `already_replied` is true.**
+
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc and pass it as a variable so the shell does not interpolate it — works for both platforms:
+
+```bash
+body=$(cat <<'EOF'
+Won't fix: the current loop is already clear; extracting a helper
+adds indirection without improving readability.
+EOF
+)
+gh   api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body="$body"                        # GitHub
+glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body="$body"   # GitLab
+```
+
+**Summary / general items:**
+- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its verdict in the Phase 5.6 summary report; do NOT attempt a reply.
+- **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
 
 #### 5.4. Commit
 
@@ -382,7 +526,7 @@ Processed: {total} comments
 ## Scope Boundaries
 
 ### This Skill DOES:
-- Detect PR from current branch or argument
+- Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
 - Collect all unresolved inline comments and review summaries
 - Categorize by source (human vs bot)
@@ -390,17 +534,17 @@ Processed: {total} comments
 - Apply higher skepticism to nitpick/style comments
 - Present grouped verdicts for batch confirmation
 - Apply accepted fixes grouped by file
-- Reply on GitHub with appropriate messages
+- Reply on the platform (GitHub or GitLab) with appropriate messages
 - Commit with proper scope
 - Push with user confirmation
 - Show summary report
 
 ### This Skill Does NOT:
-- Resolve/dismiss comment threads on GitHub (only replies)
+- Resolve/dismiss threads on either platform (reply-only — on GitLab it never resolves discussions, even though `resolved` is available)
 - Create beads tasks from comments
 - Modify files outside the scope of comments
-- Handle PR approval or merge
-- Process comments from closed/merged PRs
+- Handle PR/MR approval or merge
+- Process comments from closed/merged PRs/MRs
 - Auto-push without confirmation
 - Auto-apply without showing verdicts first
 - Reply to comments that already have a reply from the authenticated user
@@ -409,6 +553,9 @@ Processed: {total} comments
 
 If you're thinking any of these, STOP and follow the workflow:
 
+- "It's probably GitHub, I'll skip platform detection" → Run Phase 0 first. Never assume.
+- "gh works everywhere" → `gh` only talks to GitHub hosts; a GitLab remote needs `glab`.
+- "I'll reply on GitLab using the comment id" → GitLab keys replies by `discussion_id`, not a comment id.
 - "I'll apply all fixes without showing verdicts"
 - "This nitpick is valid, just apply it"
 - "Skip the subagent, I'll read the file inline"
@@ -427,6 +574,9 @@ If you're thinking any of these, STOP and follow the workflow:
 
 | Excuse | Reality |
 |--------|---------|
+| "Repo's probably GitHub, skip detection" | Always run Phase 0. The wrong CLI fails on the first command. |
+| "gh works everywhere" | `gh` only speaks to GitHub hosts. Use `glab` for GitLab (incl. self-hosted). |
+| "Reply by comment id on GitLab" | GitLab keys replies by `discussion_id` (a new note in the discussion), not a comment id. |
 | "Nitpick is obviously correct" | Nitpicks deserve skepticism. Evaluate if change genuinely improves code. |
 | "Skip subagents for small PRs" | Subagents keep context clean. Always use them for file reads and analysis. |
 | "Apply fixes then show results" | Show verdicts FIRST. User approves before any changes. |
@@ -606,12 +756,12 @@ Agent: C2: "Consider using snake_case for variable 'configPath'"
 
 ## Edge Cases
 
-### No PR for Current Branch
+### No PR/MR for Current Branch
 
 ```
-No PR found for current branch `feature/work-in-progress`.
+No PR/MR found for current branch `feature/work-in-progress`.
 
-Create a PR first, then run /flow:review-comments.
+Create a PR (GitHub) / MR (GitLab) first, then run /flow:review-comments.
 ```
 
 Stop. Do not proceed.
@@ -619,7 +769,7 @@ Stop. Do not proceed.
 ### No Unresolved Comments
 
 ```
-No unresolved review comments found on PR #42.
+No unresolved review comments found on PR/MR #42.
 
 Nothing to process.
 ```
@@ -646,18 +796,49 @@ Will reply "Fixed in subsequent commits" to all. OK? (yes / no)
 
 Skip Phase 4 analysis for these. Go directly to reply confirmation.
 
-### GitHub API Error
+### Platform CLI / API Error
 
 ```
-GitHub API error: {error message}
+{gh|glab} API error: {error message}
 
 Check that:
-- gh is authenticated (gh auth status)
+- The CLI is authenticated for this host (gh auth status / glab auth status --hostname HOST)
 - You have access to this repository
-- The PR number is correct
+- The PR/MR number is correct
 ```
 
 Stop. Do not retry automatically.
+
+### CLI Not Installed or Not Authenticated
+
+If the detected platform's CLI is missing or has no auth for the host:
+
+```
+This looks like a GitLab repo (host `gitlab.example.com`), but `glab` is not
+authenticated for it.
+
+Run: glab auth login --hostname gitlab.example.com
+
+(For GitHub: install/authenticate `gh` with `gh auth login`.)
+```
+
+Stop. Do not guess credentials or fall back to the other platform.
+
+### Ambiguous Platform
+
+If detection can't decide (host matches neither CLI's known hosts, or matches both):
+
+- Ask with `AskUserQuestion`: GitHub / GitLab, **or**
+- Tell the user to re-run with `--platform github|gitlab`.
+
+Never silently assume GitHub.
+
+### Self-Hosted / Enterprise Host
+
+A non-`github.com` / non-`gitlab.com` host is normal (self-hosted GitLab, GitHub
+Enterprise). Detection relies on CLI-auth-host matching, not the literal hostname — so a
+self-hosted host that is authenticated in `glab auth status` resolves to GitLab correctly.
+The only requirement is that the matching CLI is authenticated for that host.
 
 ### Mixed Scopes (Multiple Packages Changed)
 
@@ -669,16 +850,16 @@ If accepted fixes span multiple scopes (e.g., both `plugins/flow/` and `packages
    - `fix(flow): address PR review feedback`
 3. Push once after all commits
 
-### PR Number Provided But Branch Mismatch
+### PR/MR Number Provided But Branch Mismatch
 
 ```
-PR #42 is on branch `feature/add-auth` but you're on `master`.
+PR/MR #42 is on branch `feature/add-auth` but you're on `master`.
 
 Switching to feature/add-auth...
-[git checkout feature/add-auth]
+[GitHub: git checkout feature/add-auth | GitLab: glab mr checkout 42]
 [git pull origin feature/add-auth]
 
-Continuing with PR #42.
+Continuing with #42.
 ```
 
 ### Comment References Deleted File
