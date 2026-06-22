@@ -99,18 +99,19 @@ result in `self.params` → module `render()` reads `self.params.x`.
 
 ```python
 from dataclasses import field
-from typing import TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
 
 def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
-          type_: type | None = None) -> T:
+          type_: Any = None) -> T:
     """Declare a config field: a dataclasses.field() carrying description/choices/type.
 
     Annotated `-> T` so `x: bool = param(False, ...)` type-checks as bool (dataclasses.field
     is typed `-> _T` in typeshed, so no `# type: ignore` is needed). The runtime type used
-    for coercion is captured from `type(default)` (or `type_` when the default is None).
+    for coercion is captured from `type(default)` (or `type_` when the default is None or a
+    generic alias such as `list[str]` that has no runtime class).
     """
     meta = {"description": description, "choices": choices, "type": type_ or type(default)}
     if isinstance(default, (list, dict, set)):
@@ -119,6 +120,7 @@ def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
 ```
 
 - `choices` / `type_` are keyword-only (the `*`) so call sites stay self-documenting.
+- `type_: Any` (not `type`) — accepts both plain types (`int`) and generic aliases (`list[str]`).
 - Mutable defaults use `default_factory` (a fresh copy per instance — verified isolated).
 - "Schema field" = a dataclass field whose `metadata` has a `"type"` key. Internal fields
   (e.g. `Config.module_configs`) have no metadata and are skipped by validation and
@@ -148,10 +150,18 @@ def parse_params(params_cls, raw: dict, *, debug: bool = False, label: str = "")
     return result
 ```
 
-`_coerce(raw, expected_type, choices)` returns `(value, None)` or `(None, "error text")`:
-mismatched type → error; `choices` set and value not in it → error; otherwise the value.
-`bool` is checked before `int` (since `bool` is an `int` subclass) to reject
-`show_context = 1`.
+`_coerce(raw, expected_type, choices)` returns `(value, None)` or `(None, "error text")`.
+Dispatch order:
+
+1. **Generic alias** (`get_origin(expected_type) is not None`, e.g. `list[str]`): check
+   `isinstance(raw, origin)` for the container, then `isinstance(e, elem_type)` for every
+   element via `get_args`. `modules = ["model", 42]` fails because `42` is not `str`.
+2. **`bool`** before `int` (since `bool` is an `int` subclass): `expected_type is bool` →
+   require `isinstance(raw, bool)` strictly; `expected_type is int` → reject `bool` values
+   to prevent `bar_width = true` silently becoming `True`.
+3. **All other plain types**: `isinstance(raw, expected_type)`.
+
+After type check, validate `choices` if provided.
 
 ### Module declaration and `BaseModule`
 
@@ -171,7 +181,7 @@ class ModelParams:
 class ModelModule(BaseModule):
     name = "model"
     description = "Claude model, session duration, context usage"
-    PARAMS_CLASS: ClassVar[type] = ModelParams
+    PARAMS_CLASS: ClassVar[type | None] = ModelParams
 
     def render(self) -> str | None:
         if self.params.show_context:          # typed access; ty checks it
@@ -183,15 +193,22 @@ class ModelModule(BaseModule):
 class BaseModule(ABC):
     name: str
     description: str
-    PARAMS_CLASS: ClassVar[type]
+    PARAMS_CLASS: ClassVar[type | None] = None   # None = no config params
 
     def __init__(self, ctx: RenderContext, raw_section: dict):
         self.debug = ctx.debug
         self.data = ctx.data
-        parsed = parse_params(self.PARAMS_CLASS, raw_section, debug=ctx.debug, label=self.name)
-        self.params = self.PARAMS_CLASS(**parsed)
+        if self.PARAMS_CLASS is not None:
+            parsed = parse_params(self.PARAMS_CLASS, raw_section, debug=ctx.debug, label=self.name)
+            self.params = self.PARAMS_CLASS(**parsed)
+        else:
+            self.params = None
         # raw `config: dict` is no longer stored
 ```
+
+`PARAMS_CLASS = None` is the default — modules that declare no config params work without
+adding an empty dataclass. Accessing `self.params.x` on such a module raises `AttributeError`
+(developer error, not user error). All three built-in modules set `PARAMS_CLASS`.
 
 Each module migration: add the `*Params` dataclass, set `PARAMS_CLASS`, delete the
 `config.get()` block from `__init__`, and rewrite `render()` reads from `self.x` to
@@ -202,7 +219,7 @@ Each module migration: add the `*Params` dataclass, set `PARAMS_CLASS`, delete t
 ```python
 @dataclass
 class Config:
-    modules: list = param(["model", "git", "usage_limits"], "Модули для отображения (по порядку)")
+    modules: list[str] = param(["model", "git", "usage_limits"], "Модули для отображения (по порядку)", type_=list[str])
     debug:   bool = param(False, "Включить debug-вывод")
     colors:  bool = param(True,  "Цветной вывод")
     cache_dir: str = param("~/.cache/statuskit", "Каталог кэша")
@@ -273,8 +290,8 @@ always renders, and a warning is printed only in debug mode. Unknown keys are ig
 
 | Area | Cases |
 |------|-------|
-| `core/schema` | `param()` builds field + metadata (incl. mutable default isolation); `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key; `_coerce` incl. bool-vs-int |
-| `modules/base` | section parsed into `self.params`; per-field fallback; debug warnings; no raw `config` attr |
+| `core/schema` | `param()` builds field + metadata (incl. mutable default isolation); `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key; `_coerce` incl. bool-vs-int, generic `list[str]` (rejects non-list and list with non-str elements) |
+| `modules/base` | `PARAMS_CLASS` set → section parsed into `self.params`; per-field fallback; debug warnings; no raw `config` attr; `PARAMS_CLASS = None` → `self.params is None` |
 | `core/config` | `Config` schema defaults; `load_config` coercion; `cache_path`; module sections extracted |
 | `setup/config_gen` | full-template snapshot; `sync` appends only missing options and leaves existing lines intact |
 | CLI | `config init` create / refuse-existing / `--force`; `config sync` append |
