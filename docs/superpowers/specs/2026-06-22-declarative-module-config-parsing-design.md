@@ -142,7 +142,13 @@ def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
     is typed `-> _T` in typeshed, so no `# type: ignore` is needed). The runtime type used for
     coercion is captured from `type(default)` (or `type_` when the default is None or a generic
     alias such as `list[str]` that has no runtime class).
+
+    When `choices` is given, the allowed values are appended to the stored description
+    (e.g. "Context display format (choices: free, used, ratio, bar)"), so the single
+    `choices=(...)` tuple is the only source — no hand-written, drift-prone list.
     """
+    if choices is not None:
+        description = f"{description} (choices: {', '.join(map(str, choices))})"
     meta = {"description": description, "choices": choices, "type": type_ or type(default)}
     if isinstance(default, (list, dict, set)):
         return field(default_factory=lambda: type(default)(default), metadata=meta)
@@ -150,6 +156,9 @@ def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
 ```
 
 - `choices` / `type_` are keyword-only so call sites stay self-documenting.
+- A field with `choices` gets the allowed values appended to its stored description
+  automatically. The template generator (9.2) therefore emits the description verbatim and never
+  re-appends choices — the `choices` tuple remains the single source of truth.
 - `type_: Any` accepts both plain types (`int`) and generic aliases (`list[str]`).
 - Mutable defaults use `default_factory` (a fresh copy per instance).
 - "Schema field" = a dataclass field whose `metadata` has a `"type"` key. Internal fields (e.g.
@@ -259,11 +268,24 @@ class UsageLimitsParams:
                                     choices=("remaining", "reset_at"))
     sonnet_time_format: str = param("reset_at", "Sonnet time display",
                                     choices=("remaining", "reset_at"))
+    cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
 ```
 
 `ModelModule` and `GitModule` drop their `__init__` entirely. `UsageLimitsModule` keeps an
-`__init__` that calls `super().__init__(ctx, raw_section)` and then initialises
-`self.cache = UsageCache(ctx.cache_dir) if ctx.cache_dir else None`.
+`__init__` that calls `super().__init__(ctx, raw_section)` (which sets `self.params`) and then
+initialises the cache, feeding the new `cache_ttl` param into `UsageCache`'s `rate_limit`:
+
+```python
+self.cache = (
+    UsageCache(cache_dir=ctx.cache_dir, rate_limit=self.params.cache_ttl)
+    if ctx.cache_dir else None
+)
+```
+
+This finally wires up `cache_ttl`: the old hardcoded template advertised `cache_ttl = 60`, but the
+module never read it and `UsageCache` used its built-in `rate_limit=30`. The param default is `60`
+to match the documented value (and to halve API calls for a line that renders on every prompt), so
+the effective refetch gap changes from the previously hardcoded `30s` to `60s`.
 
 The current `ModelModule` stores `context_threshold_green` under the attribute name
 `threshold_green`; after migration it reads `self.params.context_threshold_green` (the internal
@@ -328,11 +350,11 @@ requirement.
 
 | Area | Cases |
 |------|-------|
-| `core/schema` | `param()` builds field + metadata (incl. mutable-default isolation); `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key (+ debug warnings); `_coerce` incl. bool-vs-int, generic `list[str]` (rejects non-list and list with a non-str element) |
+| `core/schema` | `param()` builds field + metadata (incl. mutable-default isolation); `param()` appends `choices` to the stored description (and leaves it untouched when no choices); `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key (+ debug warnings); `_coerce` incl. bool-vs-int, generic `list[str]` (rejects non-list and list with a non-str element) |
 | `modules/base` | `_params_class` resolved from the generic argument; section parsed into `self.params`; per-field fallback; debug warning; a `NoParams` module constructs with `self.params` an empty instance |
 | `core/config` | `Config` schema defaults; `load_config` coercion (incl. invalid `cache_dir` falls back); `cache_path`; module sections extracted |
 | `core/loader` | **`test_load_modules_with_config` rewritten** from `modules[0].config == {…}` to `modules[0].params.show_duration is False` — the raw `config` attribute no longer exists |
-| modules | existing `render()` tests are the regression harness; all pass valid values, so coercion does not change their behaviour |
+| modules | existing `render()` tests are the regression harness; all pass valid values, so coercion does not change their behaviour; plus a test that `cache_ttl` flows into `UsageCache.rate_limit` (default `60`, and a custom value is honoured) |
 | quality | `uv run ty check` green; `ruff format` + `ruff check` clean |
 
 **`cache_path` tests must monkeypatch the `HOME` environment variable, not `Path.home`.**
@@ -345,10 +367,6 @@ use).
 
 ## Carried-over issues for 5dl.9.2
 
-- The template advertises `cache_ttl = 60` under `usage_limits`, but the module never reads it and
-  `UsageCache` hardcodes `rate_limit=30`. This phantom option is intentionally absent from
-  `UsageLimitsParams`. 5dl.9.2 must reconcile it — either wire `cache_ttl` to `rate_limit` or drop
-  the option from the generated template.
 - The template generator will introspect each module's params class. With reflection, that class
   is available as `ModuleClass._params_class` (a class attribute, accessible within the package);
   9.2 can read it directly or add a small accessor.
