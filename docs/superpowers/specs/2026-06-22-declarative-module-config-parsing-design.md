@@ -270,6 +270,12 @@ def param(default: T, description: str, *,
   to a help string (for when the value name is not self-explanatory). It is stored verbatim and
   the `description` string is left untouched; the 9.2 generator owns all choices rendering. The
   `choices` structure is the single source — no hand-written, drift-prone list anywhere.
+- **Convention for display-format choices:** when a choice *selects a rendering format*
+  (`context_format`, `commit_age_format`, the `*_time_format` trio), use the dict form and make each
+  help string carry a concrete **rendered example** of that format (e.g. `bar` →
+  ``[███████░░░] 75%``). Because the help flows verbatim into the 9.2-generated template comments,
+  the user sees exactly what each option produces without having to try it. Examples are kept
+  consistent (the model ones share one scenario: total 200,000, used 50,000 → 150,000 free / 75%).
 - `type_: Any` accepts both plain types (`int`) and generic aliases (`list[str]`).
 - Mutable defaults use `default_factory` (a fresh copy per instance). This works under
   `frozen=True` too.
@@ -371,13 +377,13 @@ All `*Params` classes are `frozen=True` (config is read-only after construction)
 class ModelParams:
     show_duration: bool = param(True, "Show session duration")
     show_context: bool = param(True, "Show context window usage")
-    context_format: str = param(             # dict form: each value annotated
+    context_format: str = param(             # dict form: each value annotated with a rendered example
         "free", "Context display format",
         choices={
-            "free": "free tokens remaining",
-            "used": "tokens consumed",
-            "ratio": "used / total",
-            "bar": "progress bar",
+            "free": "free tokens remaining — e.g. `150,000 free (75.0%)`",
+            "used": "tokens consumed — e.g. `50,000 used (25.0%)`",
+            "ratio": "used / total — e.g. `50,000/200,000 (25.0%)`",
+            "bar": "progress bar — e.g. `[███████░░░] 75%`",
         },
     )
     context_compact: bool = param(False, "Compact number format (150k instead of 150,000)")
@@ -389,8 +395,14 @@ class ModelParams:
 # modules/git.py
 @dataclass(frozen=True)
 class GitParams:
-    commit_age_format: str = param("relative", "Commit age display format",
-                                   choices=("relative", "compact", "raw"))
+    commit_age_format: str = param(
+        "relative", "Commit age display format",
+        choices={
+            "relative": "full words — e.g. `1 day 2 hours 30 minutes ago`",
+            "compact": "abbreviated — e.g. `1d 2h 30m`",
+            "raw": "git's own string, unmodified — e.g. `2 hours ago`",
+        },
+    )
     show_project: bool = param(True, "Show project name")
     show_worktree: bool = param(True, "Show worktree name")
     show_folder: bool = param(True, "Show current subfolder")
@@ -402,6 +414,13 @@ class GitParams:
 
 ```python
 # modules/usage_limits.py
+# Shared by the three *_time_format fields below (same choices, same examples).
+_TIME_FORMAT_CHOICES = {
+    "remaining": "time left until reset — e.g. `2h 30m`",
+    "reset_at": "wall-clock reset time — e.g. `Thu 17:00`",
+}
+
+
 @dataclass(frozen=True)
 class UsageLimitsParams:
     show_session: bool = param(True, "Show 5-hour session limit")
@@ -412,11 +431,11 @@ class UsageLimitsParams:
     show_progress_bar: bool = param(False, "Show ASCII progress bar")
     bar_width: int = param(10, "Progress bar character width")
     session_time_format: str = param("remaining", "Session time display",
-                                     choices=("remaining", "reset_at"))
+                                     choices=_TIME_FORMAT_CHOICES)
     weekly_time_format: str = param("reset_at", "Weekly time display",
-                                    choices=("remaining", "reset_at"))
+                                    choices=_TIME_FORMAT_CHOICES)
     sonnet_time_format: str = param("reset_at", "Sonnet time display",
-                                    choices=("remaining", "reset_at"))
+                                    choices=_TIME_FORMAT_CHOICES)
     cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
 ```
 
