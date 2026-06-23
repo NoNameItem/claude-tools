@@ -134,8 +134,8 @@ from typing import Any, TypeVar
 T = TypeVar("T")
 
 
-def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
-          type_: Any = None) -> T:
+def param(default: T, description: str, *,
+          choices: tuple[T, ...] | dict[T, str] | None = None, type_: Any = None) -> T:
     """Declare a config field: a dataclasses.field() carrying description/choices/type.
 
     Annotated `-> T` so `x: bool = param(False, ...)` type-checks as bool (dataclasses.field
@@ -143,12 +143,11 @@ def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
     coercion is captured from `type(default)` (or `type_` when the default is None or a generic
     alias such as `list[str]` that has no runtime class).
 
-    When `choices` is given, the allowed values are appended to the stored description
-    (e.g. "Context display format (choices: free, used, ratio, bar)"), so the single
-    `choices=(...)` tuple is the only source — no hand-written, drift-prone list.
+    `choices` accepts either a plain tuple of allowed values, or a dict mapping each value to a
+    short help string for when the value name alone is not self-explanatory. Both forms are
+    stored verbatim in metadata; the template generator (9.2) renders them — an inline list for
+    the tuple form, a per-value annotated block for the dict form.
     """
-    if choices is not None:
-        description = f"{description} (choices: {', '.join(map(str, choices))})"
     meta = {"description": description, "choices": choices, "type": type_ or type(default)}
     if isinstance(default, (list, dict, set)):
         return field(default_factory=lambda: type(default)(default), metadata=meta)
@@ -156,9 +155,10 @@ def param(default: T, description: str, *, choices: tuple[T, ...] | None = None,
 ```
 
 - `choices` / `type_` are keyword-only so call sites stay self-documenting.
-- A field with `choices` gets the allowed values appended to its stored description
-  automatically. The template generator (9.2) therefore emits the description verbatim and never
-  re-appends choices — the `choices` tuple remains the single source of truth.
+- `choices` is either a `tuple[T, ...]` of allowed values or a `dict[T, str]` mapping each value
+  to a help string (for when the value name is not self-explanatory). It is stored verbatim and
+  the `description` string is left untouched; the 9.2 generator owns all choices rendering. The
+  `choices` structure is the single source — no hand-written, drift-prone list anywhere.
 - `type_: Any` accepts both plain types (`int`) and generic aliases (`list[str]`).
 - Mutable defaults use `default_factory` (a fresh copy per instance).
 - "Schema field" = a dataclass field whose `metadata` has a `"type"` key. Internal fields (e.g.
@@ -199,7 +199,9 @@ Dispatch order:
    `bar_width = true` does not silently become `True`.
 3. **All other plain types**: `isinstance(raw, expected_type)`.
 
-After the type check, validate `choices` if provided.
+After the type check, validate `choices` if provided. Membership works for both forms —
+`raw not in choices` checks tuple elements or dict keys — and the error message lists the allowed
+values via `tuple(choices)` (so a dict's help strings never leak into the message).
 
 **Known limitation (documented, no current field hits it):** only single-argument containers are
 element-validated. A future `dict[str, int]` would check keys but ignore value types, and
@@ -229,8 +231,15 @@ As shown in *Approach*. Notes:
 class ModelParams:
     show_duration: bool = param(True, "Show session duration")
     show_context: bool = param(True, "Show context window usage")
-    context_format: str = param("free", "Context display format",
-                                choices=("free", "used", "ratio", "bar"))
+    context_format: str = param(             # dict form: each value annotated
+        "free", "Context display format",
+        choices={
+            "free": "free tokens remaining",
+            "used": "tokens consumed",
+            "ratio": "used / total",
+            "bar": "progress bar",
+        },
+    )
     context_compact: bool = param(False, "Compact number format (150k instead of 150,000)")
     context_threshold_green: int = param(50, "Percentage free above which colour is green")
     context_threshold_yellow: int = param(25, "Percentage free above which colour is yellow")
@@ -350,7 +359,7 @@ requirement.
 
 | Area | Cases |
 |------|-------|
-| `core/schema` | `param()` builds field + metadata (incl. mutable-default isolation); `param()` appends `choices` to the stored description (and leaves it untouched when no choices); `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key (+ debug warnings); `_coerce` incl. bool-vs-int, generic `list[str]` (rejects non-list and list with a non-str element) |
+| `core/schema` | `param()` builds field + metadata (incl. mutable-default isolation); `choices` stored verbatim for both the tuple and the dict-with-help forms, description left untouched; `parse_params` valid / wrong-type / not-in-choices / missing / unknown-key (+ debug warnings); `_coerce` incl. bool-vs-int, choices membership for tuple AND dict forms (+ error lists values only), generic `list[str]` (rejects non-list and list with a non-str element) |
 | `modules/base` | `_params_class` resolved from the generic argument; section parsed into `self.params`; per-field fallback; debug warning; a `NoParams` module constructs with `self.params` an empty instance |
 | `core/config` | `Config` schema defaults; `load_config` coercion (incl. invalid `cache_dir` falls back); `cache_path`; module sections extracted |
 | `core/loader` | **`test_load_modules_with_config` rewritten** from `modules[0].config == {…}` to `modules[0].params.show_duration is False` — the raw `config` attribute no longer exists |
@@ -370,6 +379,9 @@ use).
 - The template generator will introspect each module's params class. With reflection, that class
   is available as `ModuleClass._params_class` (a class attribute, accessible within the package);
   9.2 can read it directly or add a small accessor.
+- Choices rendering is 9.2's responsibility: read each field's `choices` metadata and emit an
+  inline `(choices: a, b)` list for the tuple form, or a per-value annotated block (value + help)
+  for the dict form.
 
 ## Decomposition
 
