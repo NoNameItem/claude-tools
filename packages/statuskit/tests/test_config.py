@@ -167,3 +167,61 @@ class TestLoadConfigHierarchy:
         config = load_config()
 
         assert config.modules == ["model"]
+
+
+def test_config_cache_dir_default_is_str():
+    """cache_dir is a string default (TOML values arrive as strings)."""
+    cfg = Config()
+    assert cfg.cache_dir == "~/.cache/statuskit"
+
+
+def test_config_cache_path_expands_home(monkeypatch, tmp_path):
+    """cache_path expands ~ via $HOME (os.path.expanduser), not Path.home()."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg = Config(cache_dir="~/.cache/statuskit")
+    assert cfg.cache_path == tmp_path / ".cache" / "statuskit"
+
+
+def test_load_config_invalid_cache_dir_falls_back(tmp_path, monkeypatch, capsys):
+    """An int cache_dir is rejected; the default applies and a debug warning prints."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_text("debug = true\ncache_dir = 123\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.cache_dir == "~/.cache/statuskit"  # fell back to default
+    captured = capsys.readouterr()
+    assert "[!] config.cache_dir" in captured.out
+
+
+def test_load_config_invalid_modules_warns_in_debug(tmp_path, monkeypatch, capsys):
+    """A non-list modules value falls back and warns in debug."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_text('debug = true\nmodules = "notalist"\n')
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.modules == ["model", "git", "usage_limits"]  # fell back to default
+    captured = capsys.readouterr()
+    assert "[!] config.modules" in captured.out
+
+
+def test_load_config_no_warning_without_debug(tmp_path, monkeypatch, capsys):
+    """Invalid values are silent (per-field fallback) when debug is off."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_text("cache_dir = 123\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.cache_dir == "~/.cache/statuskit"
+    captured = capsys.readouterr()
+    assert captured.out == ""
