@@ -38,6 +38,7 @@ TYPE_LETTERS = {
     "task": "T",
     "bug": "B",
     "chore": "C",
+    "decision": "D",
 }
 
 TASK_TYPE_EMOJI = {
@@ -46,6 +47,7 @@ TASK_TYPE_EMOJI = {
     "bug": "❌",
     "task": "📋",
     "chore": "⚙️",
+    "decision": "⚖️",
 }
 
 
