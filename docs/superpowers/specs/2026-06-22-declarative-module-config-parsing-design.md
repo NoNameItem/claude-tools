@@ -38,6 +38,53 @@ changelog note; `_coerce` validates rather than converts (now documented, and a 
 no longer silent — it produces a `ParamWarning`); `param(None, ...)` without `type_` is rejected at
 declaration; user-facing descriptions are English (matching the existing template).
 
+## Revision 2026-06-24 — RUF009 and the `param()` field-specifier
+
+Implementing `param()` against the repo's strict ruff config surfaced an issue the earlier
+revisions missed: **`RUF009` ("function call in dataclass defaults") fires on every `param()`
+used as a field default** — in `Config`, all three `*Params`, and the tests. `param()` always
+returns `dataclasses.field()` (exactly what `RUF009` permits directly), so this is a textbook
+false positive; ruff just cannot see through the one-level wrapper, and there is no config to
+extend `RUF009`'s allowlist with a custom function. Left unaddressed it fires ~40+ times and
+grows with every new field.
+
+Three options were weighed:
+
+1. **Project-wide ignore of `RUF009`** (add it to `[tool.ruff.lint] ignore`). Simplest, no
+   per-module upkeep, but disables a useful rule across the whole repo — including for any future
+   genuine `x: list = []` written *without* `param()`.
+2. **Targeted `per-file-ignores`** for `config.py`, the three module files, and `**/tests/**`.
+   Keeps `RUF009` active elsewhere, but the ignore list must be hand-maintained: every new module
+   that declares params has to be added or CI breaks.
+3. **`typing.dataclass_transform` field specifiers (chosen).** Mark two thin decorators —
+   `params_schema` (frozen) and `config_schema` (non-frozen) — with
+   `@dataclass_transform(field_specifiers=(field, param))`, and have the schema classes use them
+   instead of bare `@dataclass`. PEP 681 then tells *both* ruff and ty that `param()` is a
+   legitimate field specifier.
+
+**Why option 3 was chosen.** It is the only option with **zero suppressions**: `RUF009` stays
+fully enabled for the rest of the repo and nothing is silenced. It is also strictly *stronger* on
+typing — under `field_specifiers` ty derives each field's type from its annotation and (via
+`frozen_default=True` on `params_schema`) flags accidental `self.params.x = …` mutation in module
+code at type-check time, which neither ignore-based option provides. The cost is small and aligned
+with the spec's existing ethos: two extra decorators (~8 lines) localized to `core/schema.py` —
+the same "exercise modern Python, eyes open" trade-off already accepted for the ~20 lines of
+`__init_subclass__` reflection in `BaseModule`. Module authors never see the machinery — they
+write `@params_schema` / `@config_schema`, which return real `dataclasses.dataclass` objects, so
+`is_dataclass()`, `fields()`, runtime `frozen=True`, and every strict `BaseModule` check are
+unchanged.
+
+This supersedes the earlier "plain `@dataclass(frozen=True)`" wording wherever the two differ:
+`*Params` classes use `@params_schema`; `Config` uses `@config_schema`. `ParamWarning` and
+`NoParams` declare no `param()` fields, so they stay on bare `@dataclass(frozen=True)`.
+
+**Verified empirically** (ruff + ty spike, 2026-06-24): with the two `dataclass_transform`
+decorators, `ruff check` reports no `RUF009`; `ty check` correctly types each field
+(`show_duration` → `bool`, `modules` → `list[str]`), resolves the keyword constructor, flags
+unknown attributes, enforces frozen read-only on `params_schema` classes, and leaves
+`config_schema` classes mutable. The overloaded `param(None, type_=…)` form (needed for the
+standalone declaration test) coexists with the field specifiers without conflict.
+
 ## Scope
 
 Declarative param declaration, framework-side parsing and validation, `Config` as a typed
@@ -50,7 +97,8 @@ warnings those features will later introspect.
 
 ## Approach
 
-A module declares its options once as a plain `@dataclass(frozen=True)` of `param()` fields. The
+A module declares its options once as a `@params_schema` dataclass (a frozen dataclass; see the
+2026-06-24 revision) of `param()` fields. The
 framework — not module code — parses the module's raw TOML section against that contract, validates
 and coerces each value, and hands the module a typed `self.params`. `Config` uses the same
 `param()` mechanism for global settings, so validation is uniform and the template generator (9.2)
@@ -207,7 +255,7 @@ that skipped `param()`).
 ### Files
 
 ```
-core/schema.py          [NEW]    param() + parse_params() + _coerce() + ParamWarning + NoParams
+core/schema.py          [NEW]    param() + params_schema/config_schema + parse_params() + _coerce() + ParamWarning + NoParams
 modules/base.py         [edit]   generic BaseModule[P]; strict _params_class resolution; prints warnings; drops raw config
 modules/model.py        [edit]   frozen ModelParams; BaseModule[ModelParams]; remove __init__
 modules/git.py          [edit]   frozen GitParams; BaseModule[GitParams]; remove __init__
@@ -228,18 +276,23 @@ stores the result in `self.params` → `render()` reads `self.params.x`.
 
 ## Components
 
-### `core/schema.py` — `param()`, `_coerce()`, `parse_params()`, `ParamWarning`, `NoParams`
+### `core/schema.py` — `param()`, `params_schema`/`config_schema`, `_coerce()`, `parse_params()`, `ParamWarning`, `NoParams`
 
 `core/schema.py` has **no presentation dependency** (no `termcolor`, no `print`). It returns data;
 callers decide how to surface it.
 
 ```python
-from dataclasses import dataclass, field, fields
-from typing import Any, TypeVar, get_args, get_origin
+from dataclasses import Field, dataclass, field, fields
+from typing import Any, TypeVar, dataclass_transform, get_args, get_origin, overload
 
 T = TypeVar("T")
 
 
+@overload
+def param(default: None, description: str, *, choices: Any = ..., type_: type[T]) -> Field[T]: ...
+@overload
+def param(default: T, description: str, *,
+          choices: tuple[T, ...] | dict[T, str] | None = ..., type_: Any = ...) -> T: ...
 def param(default: T, description: str, *,
           choices: tuple[T, ...] | dict[T, str] | None = None, type_: Any = None) -> T:
     """Declare a config field: a dataclasses.field() carrying description/choices/type.
@@ -260,11 +313,32 @@ def param(default: T, description: str, *,
     if default is None and type_ is None:
         raise ValueError(f"param({description!r}): default is None, an explicit type_ is required")
     meta = {"description": description, "choices": choices, "type": type_ or type(default)}
-    if isinstance(default, (list, dict, set)):
+    if isinstance(default, list | dict | set):
         return field(default_factory=lambda: type(default)(default), metadata=meta)
     return field(default=default, metadata=meta)
+
+
+@dataclass_transform(frozen_default=True, field_specifiers=(field, param))
+def params_schema(cls: type[T]) -> type[T]:
+    """Frozen schema decorator for module `*Params` classes.
+
+    `@dataclass_transform(field_specifiers=(field, param))` tells PEP 681-aware tools (ruff, ty)
+    that `param()` is a legitimate field specifier: no RUF009 false positive, and each field is
+    typed from its annotation. `frozen_default=True` makes ty enforce read-only access. The body
+    returns a real frozen dataclass, so `is_dataclass()`/`fields()`/runtime `frozen` are unchanged.
+    """
+    return dataclass(frozen=True)(cls)
+
+
+@dataclass_transform(field_specifiers=(field, param))
+def config_schema(cls: type[T]) -> type[T]:
+    """Non-frozen schema decorator for `Config` (it carries the mutable `module_configs`)."""
+    return dataclass(cls)
 ```
 
+- `*Params` classes are decorated `@params_schema`; `Config` is `@config_schema`. Both are real
+  dataclasses (the decorator body calls `dataclasses.dataclass`); the `dataclass_transform` marker
+  only changes what the *type checker / linter* understands. See the 2026-06-24 revision for why.
 - `choices` / `type_` are keyword-only so call sites stay self-documenting.
 - `choices` is either a `tuple[T, ...]` of allowed values or a `dict[T, str]` mapping each value
   to a help string (for when the value name is not self-explanatory). It is stored verbatim and
@@ -369,11 +443,12 @@ As shown in *Approach*. Notes:
 
 ### Module declarations
 
-All `*Params` classes are `frozen=True` (config is read-only after construction).
+All `*Params` classes use `@params_schema` (a frozen dataclass; config is read-only after
+construction).
 
 ```python
 # modules/model.py
-@dataclass(frozen=True)
+@params_schema
 class ModelParams:
     show_duration: bool = param(True, "Show session duration")
     show_context: bool = param(True, "Show context window usage")
@@ -393,7 +468,7 @@ class ModelParams:
 
 ```python
 # modules/git.py
-@dataclass(frozen=True)
+@params_schema
 class GitParams:
     commit_age_format: str = param(
         "relative", "Commit age display format",
@@ -421,7 +496,7 @@ _TIME_FORMAT_CHOICES = {
 }
 
 
-@dataclass(frozen=True)
+@params_schema
 class UsageLimitsParams:
     show_session: bool = param(True, "Show 5-hour session limit")
     show_weekly: bool = param(True, "Show 7-day weekly limit")
@@ -468,7 +543,7 @@ and the strings the 9.2 generator will emit. (The parent spec's Russian examples
 ### `core/config.py` — `Config` is the global schema
 
 ```python
-@dataclass
+@config_schema
 class Config:
     modules: list[str] = param(["model", "git", "usage_limits"],
                                "Modules to display (in order)", type_=list[str])
@@ -543,7 +618,7 @@ This is accepted as YAGNI for now; revisit if params start churning.
 | `core/loader` | **`test_load_modules_with_config` rewritten** from `modules[0].config == {…}` to `modules[0].params.show_duration is False` — the raw `config` attribute no longer exists |
 | `modules/base` test | **`tests/test_base_module.py` rewritten** — it currently asserts `mod.config == {"option": "value"}` (`test_base_module.py:25`), which the removed raw `config` attribute breaks. Audit *all* attribute-level access in tests, not only these two named files: any test reading `module.show_duration` (old attr) instead of `module.params.show_duration` must be updated. |
 | modules | existing `render()` tests are the regression harness; the constructor still takes a `dict` positionally, so `ModelModule(ctx, {"show_duration": False})` still works (parsing now happens inside); all pass valid values, so coercion does not change their behaviour; plus a test that `cache_ttl` flows into `UsageCache.rate_limit` (default `60`, and a custom value is honoured) |
-| quality | `uv run ty check` green (incl. the `_params_class: type[P]` ↔ `params: P` linkage — re-confirm the no-`ClassVar` nuance with a spike); `ruff format` + `ruff check` clean |
+| quality | `uv run ty check` green (incl. the `_params_class: type[P]` ↔ `params: P` linkage — re-confirm the no-`ClassVar` nuance with a spike); `ruff format` + `ruff check` clean **with no suppressions** — RUF009 must NOT fire on any `param()` field (guaranteed by the `@params_schema`/`@config_schema` `dataclass_transform` decorators, not by an ignore); the `params_schema` frozen typing is exercised by the `FrozenInstanceError` test plus ty's static read-only check |
 
 **`cache_path` tests must monkeypatch the `HOME` environment variable, not `Path.home`.**
 `Path.expanduser()` resolves `~` from `$HOME` (via `os.path.expanduser`), not from `Path.home()`.
