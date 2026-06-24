@@ -81,7 +81,10 @@ def test_noparams_module_constructs(make_render_context, minimal_input_data):
 def test_params_are_frozen(make_render_context, minimal_input_data):
     ctx = make_render_context(minimal_input_data)
     mod = StubModule(ctx, {})
-    attr = "option"  # variable name avoids ruff B010; setattr avoids ty's static read-only error
+    # params is a frozen dataclass: `mod.params.option = "x"` is BOTH a ty static error and a
+    # runtime FrozenInstanceError. We assert the runtime behavior; the variable attr name avoids
+    # ruff B010 and setattr() avoids ty's static read-only error so the file stays check-clean.
+    attr = "option"
     with pytest.raises(FrozenInstanceError):
         setattr(mod.params, attr, "x")
 
@@ -130,6 +133,13 @@ def test_field_without_param_raises():
 
 
 def test_ambiguous_params_raises():
+    # Our ambiguity check fires when two distinct generic intermediates bind different params,
+    # so __orig_bases__ carries two concrete BaseModule args. (Plain
+    # `class Bad(BaseModule[A], BaseModule[B])` can't be used: Python rejects it earlier as a
+    # duplicate base class, so it would never reach our check.)
+    PA = TypeVar("PA")
+    PB = TypeVar("PB")
+
     @params_schema
     class A:
         a: int = param(1, "a")
@@ -138,14 +148,19 @@ def test_ambiguous_params_raises():
     class B:
         b: int = param(1, "b")
 
-    with pytest.raises(TypeError):
+    class Mid1(BaseModule[PA], Generic[PA]):
+        def render(self) -> str | None:
+            return None
 
-        class Bad(BaseModule[A], BaseModule[B]):
+    class Mid2(BaseModule[PB], Generic[PB]):
+        def render(self) -> str | None:
+            return None
+
+    with pytest.raises(TypeError, match="ambiguous"):
+
+        class Bad(Mid1[A], Mid2[B]):
             name = "bad"
             description = "bad"
-
-            def render(self) -> str | None:
-                return None
 
 
 def test_generic_intermediate_resolves_lazily(make_render_context, minimal_input_data):
@@ -168,3 +183,13 @@ def test_generic_intermediate_resolves_lazily(make_render_context, minimal_input
         description = "concrete"
 
     assert Concrete._params_class is FooParams
+
+
+def test_subclass_of_resolved_module_inherits_params(make_render_context, minimal_input_data):
+    class SubStub(StubModule):
+        pass
+
+    ctx = make_render_context(minimal_input_data)
+    mod = SubStub(ctx, {"option": "v"})
+    assert SubStub._params_class is StubParams  # resolution inherited from the parent
+    assert mod.params.option == "v"

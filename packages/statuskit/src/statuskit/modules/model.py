@@ -1,5 +1,7 @@
 """Model module for statuskit."""
 
+from collections.abc import Callable
+
 from termcolor import colored
 
 from statuskit.core.schema import param, params_schema
@@ -116,7 +118,7 @@ class ModelModule(BaseModule[ModelParams]):
         # "free" or default
         return f"{free_fmt} free ({pct_free:.{pct_precision}f}%)"
 
-    def _get_number_formatter(self):
+    def _get_number_formatter(self) -> Callable[[int], str]:
         if self.params.context_compact:
             return self._compact_number
         return lambda n: f"{n:,}"

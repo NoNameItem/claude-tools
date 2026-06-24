@@ -53,6 +53,9 @@ class BaseModule(ABC, Generic[P]):
                 return  # intermediate (defer), or inherits a resolved class via the MRO
             msg = f"{cls.__name__} must subclass BaseModule[<Params>] with a concrete params class"
             raise TypeError(msg)
+        # Reachable when two distinct generic intermediates bind different params
+        # (e.g. class Bad(Mid1[A], Mid2[B])); plain BaseModule[A], BaseModule[B] is rejected
+        # earlier by Python as a duplicate base class.
         if len(set(concrete)) > 1:
             msg = f"{cls.__name__}: ambiguous params classes {concrete}"
             raise TypeError(msg)
