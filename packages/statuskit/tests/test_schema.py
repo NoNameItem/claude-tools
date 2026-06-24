@@ -105,6 +105,25 @@ def test_param_rejects_unsupported_types(type_):
         param(None, "bad", type_=type_)
 
 
+def test_param_rejects_default_mismatching_declared_type():
+    # type_ overrides the default's runtime type; a default that violates it must fail loudly.
+    with pytest.raises(ValueError, match="invalid default"):
+        param({}, "bad", type_=str)
+
+
+def test_param_rejects_default_outside_choices():
+    with pytest.raises(ValueError, match="invalid default"):
+        param("z", "bad", choices=("a", "b"))
+
+
+def test_param_accepts_default_within_choices():
+    @schema
+    class S:
+        c: str = param("a", "ok", choices=("a", "b"))
+
+    assert S().c == "a"
+
+
 # --- _coerce() ---
 
 

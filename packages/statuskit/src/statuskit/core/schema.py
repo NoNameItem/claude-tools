@@ -91,8 +91,18 @@ def param(
         raise ValueError(msg)
     declared = type_ or type(default)
     _check_declared_type(declared, description)
+    if default is not None:
+        # `default` may diverge from `declared` when type_ is passed explicitly (e.g.
+        # param({}, ..., type_=str)). Reject a default that violates its own type or choices so
+        # it fails at declaration, not silently when the field is omitted from raw config.
+        _, default_err = _coerce(default, declared, choices)
+        if default_err is not None:
+            msg = f"param({description!r}): invalid default: {default_err}"
+            raise ValueError(msg)
     meta = {"description": description, "choices": choices, "type": declared}
-    if isinstance(default, list | dict | set):
+    if isinstance(default, list):
+        # Only list is both schema-allowed (_check_declared_type) and mutable, so it is the only
+        # default needing a fresh per-instance copy. tuple is immutable; dict/set are rejected above.
         return field(default_factory=lambda: type(default)(default), metadata=meta)
     return field(default=default, metadata=meta)
 
