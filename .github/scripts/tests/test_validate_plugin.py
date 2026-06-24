@@ -384,3 +384,156 @@ class TestValidateMarketplace:
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
         assert any("marketplace.json" in e for e in result.errors)
+
+    def test_object_source_valid(self, tmp_path: Path) -> None:
+        """Should pass for a tag-pinned git-subdir object source."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-ok"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-ok", "version": "2.1.0"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "obj-ok",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "NoNameItem/claude-tools",
+                                "path": "plugins/obj-ok",
+                                "ref": "obj-ok-2.1.0",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is True
+        assert result.errors == []
+
+    def test_object_source_wrong_path(self, tmp_path: Path) -> None:
+        """Should fail when object source.path points elsewhere."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-path"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-path"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "obj-path",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "NoNameItem/claude-tools",
+                                "path": "plugins/somewhere-else",
+                                "ref": "obj-path-1.0.0",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("does not point at" in e for e in result.errors)
+
+    def test_object_source_missing_ref(self, tmp_path: Path) -> None:
+        """Should fail when a git-subdir object source has no ref."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-ref"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-ref"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "obj-ref",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "NoNameItem/claude-tools",
+                                "path": "plugins/obj-ref",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("ref" in e.lower() for e in result.errors)
+
+    def test_object_source_wrong_type(self, tmp_path: Path) -> None:
+        """Should fail when object source type is not git-subdir."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-type"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-type"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "obj-type",
+                            "source": {
+                                "source": "github",
+                                "url": "NoNameItem/claude-tools",
+                                "path": "plugins/obj-type",
+                                "ref": "obj-type-1.0.0",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("git-subdir" in e for e in result.errors)
+
+    def test_object_source_unsupported_value(self, tmp_path: Path) -> None:
+        """Should fail when a matching entry has a non-string, non-object source."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-bad"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-bad"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(json.dumps({"plugins": [{"name": "obj-bad", "source": 42}]}))
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("unsupported source value" in e for e in result.errors)
