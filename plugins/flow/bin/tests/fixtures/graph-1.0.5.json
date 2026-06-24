@@ -1,0 +1,250 @@
+[
+  {
+    "Root": {
+      "id": "fx-gwv",
+      "title": "Fixture bug",
+      "status": "open",
+      "priority": 1,
+      "issue_type": "bug",
+      "owner": "nonameitem@me.com",
+      "created_at": "2026-06-24T13:30:55Z",
+      "created_by": "artem.vasin",
+      "updated_at": "2026-06-24T13:30:55Z"
+    },
+    "Issues": [
+      {
+        "id": "fx-gwv",
+        "title": "Fixture bug",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "bug",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      },
+      {
+        "id": "fx-g31",
+        "title": "Fixture task",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:54Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T16:30:55Z"
+      }
+    ],
+    "Dependencies": [
+      {
+        "issue_id": "fx-g31",
+        "depends_on_id": "fx-gwv",
+        "type": "blocks",
+        "created_at": "2026-06-24T16:30:55Z",
+        "created_by": "artem.vasin",
+        "metadata": "{}"
+      }
+    ],
+    "IssueMap": {
+      "fx-g31": {
+        "id": "fx-g31",
+        "title": "Fixture task",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "task",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:54Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T16:30:55Z"
+      },
+      "fx-gwv": {
+        "id": "fx-gwv",
+        "title": "Fixture bug",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "bug",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      }
+    },
+    "VarDefs": null,
+    "Phase": "",
+    "Pour": false
+  },
+  {
+    "Root": {
+      "id": "fx-w6r",
+      "title": "Fixture epic",
+      "status": "open",
+      "priority": 1,
+      "issue_type": "epic",
+      "owner": "nonameitem@me.com",
+      "created_at": "2026-06-24T13:30:53Z",
+      "created_by": "artem.vasin",
+      "updated_at": "2026-06-24T13:30:53Z"
+    },
+    "Issues": [
+      {
+        "id": "fx-w6r",
+        "title": "Fixture epic",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:53Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:53Z"
+      },
+      {
+        "id": "fx-w6r.1",
+        "title": "Fixture feature",
+        "description": "Feature body paragraph for fixture rendering.\n\nGit: feature/fx-demo-branch\nDesign: docs/superpowers/specs/fx-demo-design.md",
+        "status": "in_progress",
+        "priority": 2,
+        "issue_type": "feature",
+        "assignee": "fixtureuser",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:54Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:56Z",
+        "started_at": "2026-06-24T13:30:56Z",
+        "labels": [
+          "config",
+          "flow"
+        ]
+      }
+    ],
+    "Dependencies": [
+      {
+        "issue_id": "fx-w6r.1",
+        "depends_on_id": "fx-w6r",
+        "type": "parent-child",
+        "created_at": "2026-06-24T16:30:53Z",
+        "created_by": "artem.vasin",
+        "metadata": "{}"
+      }
+    ],
+    "IssueMap": {
+      "fx-w6r": {
+        "id": "fx-w6r",
+        "title": "Fixture epic",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:53Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:53Z"
+      },
+      "fx-w6r.1": {
+        "id": "fx-w6r.1",
+        "title": "Fixture feature",
+        "description": "Feature body paragraph for fixture rendering.\n\nGit: feature/fx-demo-branch\nDesign: docs/superpowers/specs/fx-demo-design.md",
+        "status": "in_progress",
+        "priority": 2,
+        "issue_type": "feature",
+        "assignee": "fixtureuser",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:54Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:56Z",
+        "started_at": "2026-06-24T13:30:56Z",
+        "labels": [
+          "config",
+          "flow"
+        ]
+      }
+    },
+    "VarDefs": null,
+    "Phase": "",
+    "Pour": false
+  },
+  {
+    "Root": {
+      "id": "fx-p9v",
+      "title": "Fixture decision",
+      "status": "open",
+      "priority": 2,
+      "issue_type": "decision",
+      "owner": "nonameitem@me.com",
+      "created_at": "2026-06-24T13:30:55Z",
+      "created_by": "artem.vasin",
+      "updated_at": "2026-06-24T13:30:55Z"
+    },
+    "Issues": [
+      {
+        "id": "fx-p9v",
+        "title": "Fixture decision",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "decision",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      }
+    ],
+    "Dependencies": null,
+    "IssueMap": {
+      "fx-p9v": {
+        "id": "fx-p9v",
+        "title": "Fixture decision",
+        "status": "open",
+        "priority": 2,
+        "issue_type": "decision",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      }
+    },
+    "VarDefs": null,
+    "Phase": "",
+    "Pour": false
+  },
+  {
+    "Root": {
+      "id": "fx-dbf",
+      "title": "Fixture chore",
+      "status": "open",
+      "priority": 3,
+      "issue_type": "chore",
+      "owner": "nonameitem@me.com",
+      "created_at": "2026-06-24T13:30:55Z",
+      "created_by": "artem.vasin",
+      "updated_at": "2026-06-24T13:30:55Z"
+    },
+    "Issues": [
+      {
+        "id": "fx-dbf",
+        "title": "Fixture chore",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "chore",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      }
+    ],
+    "Dependencies": null,
+    "IssueMap": {
+      "fx-dbf": {
+        "id": "fx-dbf",
+        "title": "Fixture chore",
+        "status": "open",
+        "priority": 3,
+        "issue_type": "chore",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:55Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:55Z"
+      }
+    },
+    "VarDefs": null,
+    "Phase": "",
+    "Pour": false
+  }
+]

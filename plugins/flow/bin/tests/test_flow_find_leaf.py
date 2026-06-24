@@ -291,3 +291,9 @@ class TestEndToEnd:
         r = run_helper("flow-find-leaf", cwd=tmp_path, env={**NO_GIT_ENV, "BD_ACTOR": "alice"}, stdin="[]")
         assert r.returncode == 0
         assert r.stdout == ""
+
+
+class TestDecisionType:
+    def test_decision_letter(self):
+        tasks = parse_graphs(make_graph([issue("x", issue_type="decision")]))
+        assert format_task_line(tasks["x"], 1).startswith("1. [D]")
