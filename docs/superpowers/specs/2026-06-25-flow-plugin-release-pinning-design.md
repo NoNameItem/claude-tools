@@ -84,7 +84,13 @@ chicken-and-egg between "pin commit" and "tag content".
 
 **One-time migration:** set `ref` to the current latest tag, `flow-2.1.0`.
 
-### 2. Universal pin step — `.github/scripts/pin-marketplace-refs.sh`
+### 2. Universal pin step — `.github/scripts/pin_marketplace_refs.py`
+
+> **Implementation note:** this section sketches the logic as a bash script, but it was
+> implemented in **Python** (`.github/scripts/pin_marketplace_refs.py`, run via
+> `python …`) to match the repo's all-Python `.github/scripts/` convention and its pytest
+> harness (unit tests for the pure helpers + an integration test against a bare git remote).
+> The behaviour and data flow are exactly as described below.
 
 A data-driven script: it iterates **every plugin in `marketplace.json`** and, for each one
 that has an open release-please PR this run, writes that plugin's release tag into its
