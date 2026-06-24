@@ -125,13 +125,23 @@ def run(repo: Path) -> int:
     marketplace = json.loads((repo / MARKETPLACE).read_text())
     rp_config = json.loads((repo / RP_CONFIG).read_text())
     pins = resolve_pins(marketplace, rp_config)
+    if not pins:
+        return 0
 
     _run_git(repo, "config", "user.name", BOT_NAME)
     _run_git(repo, "config", "user.email", BOT_EMAIL)
 
+    failed: list[str] = []
     for pin in pins:
-        process_pin(repo, pin)
-    return 0
+        try:
+            process_pin(repo, pin)
+        except (subprocess.CalledProcessError, OSError, ValueError, KeyError) as exc:
+            detail = ""
+            if isinstance(exc, subprocess.CalledProcessError):
+                detail = (exc.stderr or exc.stdout or "").strip()
+            print(f"error pinning '{pin.name}': {exc} {detail}".rstrip())
+            failed.append(pin.name)
+    return 1 if failed else 0
 
 
 def main() -> int:

@@ -131,7 +131,7 @@ class TestPinMarketplaceFile:
         assert mp.read_text() == original  # byte-for-byte unchanged
 
 
-def _git(cwd, *args: str) -> None:
+def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
 
@@ -221,3 +221,21 @@ def test_run_noop_without_release_branch(tmp_path: Path) -> None:
         json.loads((repo / ".claude-plugin" / "marketplace.json").read_text())["plugins"][0]["source"]["ref"]
         == "flow-1.0.0"
     )
+    log = subprocess.run(["git", "log", "--oneline"], cwd=repo, check=True, capture_output=True, text=True).stdout
+    assert len(log.strip().splitlines()) == 1  # only the init commit; nothing pinned
+
+
+def test_run_returns_1_on_plugin_error(tmp_path: Path) -> None:
+    from ..pin_marketplace_refs import run
+
+    repo = _make_repo_with_remote(tmp_path)
+    branch = "release-please--branches--master--components--flow"
+
+    # Release branch exists but its plugin.json is gone -> read_plugin_version fails.
+    _git(repo, "checkout", "-b", branch)
+    _git(repo, "rm", "plugins/flow/.claude-plugin/plugin.json")
+    _git(repo, "commit", "-m", "chore(flow): break plugin.json")
+    _git(repo, "push", "-u", "origin", branch)
+    _git(repo, "checkout", "master")
+
+    assert run(repo) == 1
