@@ -1,7 +1,8 @@
 """Tests for statuskit.modules.base."""
 
+import types
 from dataclasses import FrozenInstanceError, dataclass
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 import pytest
 from statuskit.core.schema import NoParams, param, params_schema
@@ -156,11 +157,13 @@ def test_ambiguous_params_raises():
         def render(self) -> str | None:
             return None
 
+    # We can't build this statically: ty (>=0.0.52) rejects inheriting two different BaseModule
+    # specializations, and plain type() can't resolve generic-alias MRO entries. types.new_class
+    # does resolve them (sets __orig_bases__), so concrete = [A, B] and our check fires; the
+    # Any-typed bases tuple keeps the construction opaque to ty while still hitting the runtime path.
+    bases: Any = (Mid1[A], Mid2[B])
     with pytest.raises(TypeError, match="ambiguous"):
-
-        class Bad(Mid1[A], Mid2[B]):
-            name = "bad"
-            description = "bad"
+        types.new_class("Bad", bases, {}, lambda ns: ns.update(name="bad", description="bad"))
 
 
 def test_generic_intermediate_resolves_lazily(make_render_context, minimal_input_data):

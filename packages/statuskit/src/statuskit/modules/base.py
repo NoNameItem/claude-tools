@@ -37,7 +37,7 @@ class BaseModule(ABC, Generic[P]):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        concrete: list[type] = []
+        concrete: list[type[P]] = []
         has_typevar = False
         for base in getattr(cls, "__orig_bases__", ()):
             origin = get_origin(base)
