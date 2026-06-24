@@ -54,8 +54,9 @@ def load_config() -> Config:
     3. ~/.claude/statuskit.toml (User)
 
     Returns defaults if no config file exists. Top-level keys are validated against the
-    Config schema (per-field fallback); invalid values are dropped (default applies) and,
-    when the raw ``debug`` flag is True, reported as warnings.
+    Config schema (per-field fallback); invalid values are dropped (the default applies)
+    and unknown top-level keys are flagged; both are reported as warnings when the raw
+    ``debug`` flag is True.
     """
     for config_path in _get_config_paths():
         if config_path.exists():
@@ -70,6 +71,9 @@ def load_config() -> Config:
             non_section = {k: v for k, v in data.items() if not isinstance(v, dict)}
 
             globals_, warnings = parse_params(Config, non_section)
+            # Gate on the RAW debug flag (chicken-and-egg: debug must be known before it is
+            # parsed). `is True` is deliberate — only a real TOML boolean enables warnings; a
+            # mistyped `debug = 1` / "yes" is itself rejected by parse_params and stays off.
             if data.get("debug") is True:
                 for w in warnings:
                     print(colored(f"[!] config.{w.field}: {w.message}", "yellow"))

@@ -225,3 +225,32 @@ def test_load_config_no_warning_without_debug(tmp_path, monkeypatch, capsys):
     assert cfg.cache_dir == "~/.cache/statuskit"
     captured = capsys.readouterr()
     assert captured.out == ""
+
+
+def test_load_config_unknown_key_warns_in_debug(tmp_path, monkeypatch, capsys):
+    """An unrecognised top-level key is reported as a warning in debug."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_text("debug = true\nbogus_key = 1\n")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    load_config()
+
+    captured = capsys.readouterr()
+    assert "[!] config.bogus_key" in captured.out
+
+
+def test_load_config_custom_cache_dir_round_trip(tmp_path, monkeypatch):
+    """A valid custom cache_dir string is kept verbatim and expanded by cache_path."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_text('cache_dir = "~/custom/cache"\n')
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.cache_dir == "~/custom/cache"
+    assert cfg.cache_path == home / "custom" / "cache"
