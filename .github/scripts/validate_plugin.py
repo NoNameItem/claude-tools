@@ -245,6 +245,39 @@ def validate_name_uniqueness(plugin_path: Path, plugin_json: dict) -> PluginVali
     return result
 
 
+def _source_matches(mp_source: object, expected_relative: str) -> tuple[bool, str | None]:
+    """Check a marketplace `source` against a plugin's location.
+
+    Accepts the legacy relative-path string ("./plugins/<name>") and the
+    tag-pinned git-subdir object form.
+
+    Returns (matches, structural_error):
+      - (True, None)   this entry is for this plugin and is well-formed.
+      - (False, None)  this entry is NOT for this plugin (no match, no error).
+      - (False, msg)   this entry IS for this plugin but is malformed.
+    """
+    if isinstance(mp_source, str):
+        return mp_source == f"./{expected_relative}", None
+
+    if not isinstance(mp_source, dict):
+        return False, f"unsupported source value: {mp_source!r}"
+
+    if mp_source.get("path") != expected_relative:
+        return False, None  # object source for a different plugin
+
+    # Path matches — validate the remaining fields.
+    if mp_source.get("source") != "git-subdir":
+        err: str | None = f"source type must be 'git-subdir', got '{mp_source.get('source')}'"
+    elif not mp_source.get("url"):
+        err = "git-subdir source missing 'url'"
+    elif not mp_source.get("ref"):
+        err = "git-subdir source missing 'ref'"
+    else:
+        err = None
+
+    return err is None, err
+
+
 def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo_root: Path) -> PluginValidationResult:
     """Validate plugin is registered in marketplace.
 
@@ -271,35 +304,31 @@ def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo
     plugins = marketplace_data.get("plugins", [])
     plugin_name = plugin_json.get("name", "")
 
-    # Calculate expected source path
+    # Expected plugin location relative to repo root, e.g. "plugins/flow".
     try:
-        relative_path = plugin_path.relative_to(repo_root)
-        expected_source = f"./{relative_path}"
+        expected_relative = str(plugin_path.relative_to(repo_root))
     except ValueError:
-        expected_source = f"./plugins/{plugin_path.name}"
+        expected_relative = f"plugins/{plugin_path.name}"
 
-    # Find plugin in marketplace by name
+    # Find plugin in marketplace by name (or by source pointing at its location).
     found = False
     for mp_plugin in plugins:
         mp_name = mp_plugin.get("name", "")
         mp_source = mp_plugin.get("source", "")
+        source_ok, source_err = _source_matches(mp_source, expected_relative)
 
-        # Check if this entry matches our plugin by name
         if mp_name == plugin_name:
             found = True
-
-            # Check source matches
-            if mp_source != expected_source:
-                result.add_error(f"Marketplace source mismatch: expected '{expected_source}', got '{mp_source}'")
+            if source_err is not None:
+                result.add_error(f"Marketplace source invalid for '{plugin_name}': {source_err}")
+            elif not source_ok:
+                result.add_error(f"Marketplace source mismatch: '{mp_name}' does not point at '{expected_relative}'")
             break
 
-        # Also check by source path (for name mismatch detection)
-        if mp_source == expected_source:
+        # Entry not matched by name, but its source points at this plugin's location.
+        if source_ok:
             found = True
-
-            # Check name matches
-            if mp_name != plugin_name:
-                result.add_error(f"Name mismatch: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
+            result.add_error(f"Name mismatch: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
             break
 
     if not found:
