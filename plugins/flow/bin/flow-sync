@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Best-effort Dolt-native sync wrapper for flow skills.
+
+Usage: flow-sync (pull | push)
+
+Wraps `bd dolt pull` / `bd dolt push` (bd 1.0.x). This helper never blocks a
+skill — it informs, it does not gate:
+
+    - no dolt-remote configured  -> short note on stderr, exit 0
+    - remote configured, op ok    -> silent, exit 0
+    - remote configured, op fails -> warning on stderr, exit 0
+
+Assumes the version guard (flow-require-bd, Step 0) already ensured
+bd >= 1.0.0, so the version is not re-checked here. The bd binary is resolved
+via the BD_BIN override (default `bd`), like the other flow helpers.
+
+Exit code is always 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+
+BD = os.environ.get("BD_BIN", "bd")
+README_REF = 'plugins/flow/README.md, раздел "bd requirements and migration"'
+
+
+def has_remote() -> bool:
+    """Return True when a Dolt remote is configured (so pull/push can work).
+
+    A failing detect command (e.g. old bd without the `dolt` subcommand) is
+    treated as "no remote" so the caller degrades gracefully instead of erroring.
+    """
+    result = subprocess.run([BD, "dolt", "remote"], capture_output=True, text=True, check=False)
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def run_sync(action: str) -> None:
+    """Run `bd dolt <action>`; warn on failure but never raise or block."""
+    result = subprocess.run([BD, "dolt", action], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or "unknown error").splitlines()[0]
+        sys.stderr.write(f"flow-sync: {action} не удалось ({detail}); синхронизируйте вручную — см. {README_REF}.\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Best-effort Dolt-native sync for flow.")
+    parser.add_argument("action", choices=["pull", "push"])
+    action = parser.parse_args().action
+
+    if not has_remote():
+        sys.stderr.write(f"flow-sync: dolt-remote не настроен — синхронизация на вас; см. {README_REF}.\n")
+        return 0
+
+    run_sync(action)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
