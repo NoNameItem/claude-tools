@@ -86,6 +86,7 @@ TYPE_WORDS = {
     "bug": "Bug",
     "task": "Task",
     "chore": "Chore",
+    "decision": "Decision",
 }
 
 DEP_TYPE_HEADERS = {

@@ -24,6 +24,7 @@ find_task_by_id = _mod.find_task_by_id
 get_type_emoji = _mod.get_type_emoji
 find_min_priority = _mod.find_min_priority
 format_task_line = _mod.format_task_line
+TYPE_LETTERS = _mod.TYPE_LETTERS
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +451,11 @@ class TestTreeEmojiAndBold:
         child1_line = next(line for line in lines if "Child1" in line)
         assert "**" in parent_line  # P1 is subtree min → bold
         assert "**" not in child1_line  # P2 is not subtree min
+
+
+class TestDecisionType:
+    def test_decision_letter(self):
+        assert TYPE_LETTERS["decision"] == "D"
+
+    def test_decision_emoji(self):
+        assert get_type_emoji("decision") == "⚖️"
