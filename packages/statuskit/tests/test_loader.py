@@ -47,7 +47,7 @@ def test_load_modules_unknown_debug(make_render_context, minimal_input_data, cap
 
 
 def test_load_modules_with_config(make_render_context, minimal_input_data):
-    """load_modules passes module config to modules."""
+    """load_modules parses each module's raw section into typed params."""
     config = Config(
         modules=["model"],
         module_configs={"model": {"show_duration": False}},
@@ -56,7 +56,9 @@ def test_load_modules_with_config(make_render_context, minimal_input_data):
 
     modules = load_modules(config, ctx)
 
-    assert modules[0].config == {"show_duration": False}
+    mod = modules[0]
+    assert isinstance(mod, ModelModule)  # narrow for typed params access
+    assert mod.params.show_duration is False
 
 
 def test_loads_usage_limits_module(make_render_context, minimal_input_data):

@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from termcolor import colored
 
+from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
 if TYPE_CHECKING:
@@ -327,30 +328,38 @@ FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY
 
 
-class UsageLimitsModule(BaseModule):
+# Shared by the three *_time_format fields below (same choices, same examples).
+_TIME_FORMAT_CHOICES = {
+    "remaining": "time left until reset — e.g. `2h 30m`",
+    "reset_at": "wall-clock reset time — e.g. `Thu 17:00`",
+}
+
+
+@schema
+class UsageLimitsParams:
+    show_session: bool = param(True, "Show 5-hour session limit")
+    show_weekly: bool = param(True, "Show 7-day weekly limit")
+    show_sonnet: bool = param(False, "Show Sonnet-only 7-day limit")
+    show_reset_time: bool = param(True, "Show time until / when reset occurs")
+    multiline: bool = param(True, "Multi-line output (one limit per line)")
+    show_progress_bar: bool = param(False, "Show ASCII progress bar")
+    bar_width: int = param(10, "Progress bar character width")
+    session_time_format: str = param("remaining", "Session time display", choices=_TIME_FORMAT_CHOICES)
+    weekly_time_format: str = param("reset_at", "Weekly time display", choices=_TIME_FORMAT_CHOICES)
+    sonnet_time_format: str = param("reset_at", "Sonnet time display", choices=_TIME_FORMAT_CHOICES)
+    cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
+
+
+class UsageLimitsModule(BaseModule[UsageLimitsParams]):
     """Module for displaying API usage limits."""
 
     name = "usage_limits"
     description = "API usage limits (5h session, 7d weekly, Sonnet-only)"
 
-    def __init__(self, ctx: RenderContext, config: dict):
-        """Initialize module with context and config."""
-        super().__init__(ctx, config)
-        self.show_session = config.get("show_session", True)
-        self.show_weekly = config.get("show_weekly", True)
-        self.show_sonnet = config.get("show_sonnet", False)
-        self.show_reset_time = config.get("show_reset_time", True)
-        self.multiline = config.get("multiline", True)
-        self.show_progress_bar = config.get("show_progress_bar", False)
-        self.bar_width = config.get("bar_width", 10)
-        self.session_time_format = config.get("session_time_format", "remaining")
-        self.weekly_time_format = config.get("weekly_time_format", "reset_at")
-        self.sonnet_time_format = config.get("sonnet_time_format", "reset_at")
-
-        # Initialize cache if cache_dir available
-        self.cache = None
-        if ctx.cache_dir:
-            self.cache = UsageCache(cache_dir=ctx.cache_dir)
+    def __init__(self, ctx: RenderContext, raw_section: dict) -> None:
+        """Initialize module: parse params, then set up the rate-limited cache."""
+        super().__init__(ctx, raw_section)
+        self.cache = UsageCache(cache_dir=ctx.cache_dir, rate_limit=self.params.cache_ttl) if ctx.cache_dir else None
 
     def render(self) -> str | None:
         """Render usage limits display."""
@@ -360,7 +369,7 @@ class UsageLimitsModule(BaseModule):
 
         # Main output
         if data:
-            if self.multiline:
+            if self.params.multiline:
                 parts.append(self._render_multiline(data))
             else:
                 parts.append(self._render_single_line(data))
@@ -449,12 +458,12 @@ class UsageLimitsModule(BaseModule):
     def _get_display_items(self, data: UsageData) -> list[tuple]:
         """Get list of (label, limit, window_hours, time_format) to display."""
         items = []
-        if self.show_session and data.session:
-            items.append(("Session:", data.session, FIVE_HOUR_WINDOW, self.session_time_format))
-        if self.show_weekly and data.weekly:
-            items.append(("Weekly:", data.weekly, SEVEN_DAY_WINDOW, self.weekly_time_format))
-        if self.show_sonnet and data.sonnet:
-            items.append(("Sonnet:", data.sonnet, SEVEN_DAY_WINDOW, self.sonnet_time_format))
+        if self.params.show_session and data.session:
+            items.append(("Session:", data.session, FIVE_HOUR_WINDOW, self.params.session_time_format))
+        if self.params.show_weekly and data.weekly:
+            items.append(("Weekly:", data.weekly, SEVEN_DAY_WINDOW, self.params.weekly_time_format))
+        if self.params.show_sonnet and data.sonnet:
+            items.append(("Sonnet:", data.sonnet, SEVEN_DAY_WINDOW, self.params.sonnet_time_format))
         return items
 
     def _format_limit(
@@ -478,7 +487,7 @@ class UsageLimitsModule(BaseModule):
         if limit.resets_at is None:
             # No reset time: dim color, placeholder for time
             color = None  # Will use attrs=["dark"]
-            time_str = colored(" (—)", attrs=["dark"]) if self.show_reset_time else ""
+            time_str = colored(" (—)", attrs=["dark"]) if self.params.show_reset_time else ""
         else:
             # Normalize naive datetime to UTC to avoid TypeError on subtraction
             resets_at = limit.resets_at
@@ -490,7 +499,7 @@ class UsageLimitsModule(BaseModule):
             remaining = max(0, (resets_at - now).total_seconds() / 3600)
             color = calculate_color(limit.utilization, remaining, window)
             time_str = ""
-            if self.show_reset_time:
+            if self.params.show_reset_time:
                 if time_fmt == "remaining":
                     time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
                 else:
@@ -503,7 +512,7 @@ class UsageLimitsModule(BaseModule):
             util_str = colored(f"{limit.utilization:.0f}%", color)
 
         bar = ""
-        if self.show_progress_bar:
+        if self.params.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
         return f"{label_str}{bar} {util_str}{time_str}"
@@ -511,9 +520,9 @@ class UsageLimitsModule(BaseModule):
     def _format_line(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single line for multiline output."""
         label_str = colored(f"{label:8}", attrs=["dark"])
-        return self._format_limit(label_str, limit, window, time_fmt, self.bar_width)
+        return self._format_limit(label_str, limit, window, time_fmt, self.params.bar_width)
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
         label_str = colored(label, attrs=["dark"])
-        return self._format_limit(label_str, limit, window, time_fmt, self.bar_width // 2)
+        return self._format_limit(label_str, limit, window, time_fmt, self.params.bar_width // 2)

@@ -90,7 +90,7 @@ def _render_statusline() -> None:
             print(colored(f"[!] Failed to parse input: {e}", "red"))
         return
 
-    ctx = RenderContext(debug=config.debug, data=data, cache_dir=config.cache_dir)
+    ctx = RenderContext(debug=config.debug, data=data, cache_dir=config.cache_path)
     modules = load_modules(config, ctx)
 
     for mod in modules:

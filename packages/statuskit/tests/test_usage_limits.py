@@ -756,3 +756,19 @@ class TestGetUsageDataRateLimited:
         # Debug message should be in render output, not stdout
         assert output is not None
         assert "[usage_limits] No token" in output
+
+
+def test_cache_ttl_default_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
+    """cache_ttl default (60) flows into UsageCache.rate_limit."""
+    ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    module = UsageLimitsModule(ctx, {})
+    assert module.cache is not None
+    assert module.cache.rate_limit == 60
+
+
+def test_cache_ttl_custom_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
+    """A custom cache_ttl is honoured by UsageCache.rate_limit."""
+    ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    module = UsageLimitsModule(ctx, {"cache_ttl": 120})
+    assert module.cache is not None
+    assert module.cache.rate_limit == 120

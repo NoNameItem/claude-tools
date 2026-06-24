@@ -1,7 +1,10 @@
 """Model module for statuskit."""
 
+from collections.abc import Callable
+
 from termcolor import colored
 
+from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
 # Time constants
@@ -13,20 +16,30 @@ _THOUSAND = 1_000
 _MILLION = 1_000_000
 
 
-class ModelModule(BaseModule):
+@schema
+class ModelParams:
+    show_duration: bool = param(True, "Show session duration")
+    show_context: bool = param(True, "Show context window usage")
+    context_format: str = param(
+        "free",
+        "Context display format",
+        choices={
+            "free": "free tokens remaining — e.g. `150,000 free (75.0%)`",
+            "used": "tokens consumed — e.g. `50,000 used (25.0%)`",
+            "ratio": "used / total — e.g. `50,000/200,000 (25.0%)`",
+            "bar": "progress bar — e.g. `[███████░░░] 75%`",
+        },
+    )
+    context_compact: bool = param(False, "Compact number format (150k instead of 150,000)")
+    context_threshold_green: int = param(50, "Percentage free above which colour is green")
+    context_threshold_yellow: int = param(25, "Percentage free above which colour is yellow")
+
+
+class ModelModule(BaseModule[ModelParams]):
     """Display model name, session duration, and context window usage."""
 
     name = "model"
     description = "Model name, session duration, context window usage"
-
-    def __init__(self, ctx, config: dict):
-        super().__init__(ctx, config)
-        self.show_duration = config.get("show_duration", True)
-        self.show_context = config.get("show_context", True)
-        self.context_format = config.get("context_format", "free")
-        self.context_compact = config.get("context_compact", False)
-        self.threshold_green = config.get("context_threshold_green", 50)
-        self.threshold_yellow = config.get("context_threshold_yellow", 25)
 
     def render(self) -> str | None:
         parts = []
@@ -36,13 +49,13 @@ class ModelModule(BaseModule):
             parts.append(f"[{self.data.model.display_name}]")
 
         # Duration: 2h 15m
-        if self.show_duration:
+        if self.params.show_duration:
             duration = self._format_duration()
             if duration:
                 parts.append(duration)
 
         # Context: 150,000 free (75.0%)
-        if self.show_context:
+        if self.params.show_context:
             ctx_str = self._format_context()
             if ctx_str:
                 parts.append(f"Context: {ctx_str}")
@@ -84,29 +97,29 @@ class ModelModule(BaseModule):
         return colored(text, color)
 
     def _determine_color(self, pct_free: float) -> str:
-        if pct_free > self.threshold_green:
+        if pct_free > self.params.context_threshold_green:
             return "green"
-        if pct_free > self.threshold_yellow:
+        if pct_free > self.params.context_threshold_yellow:
             return "yellow"
         return "red"
 
     def _format_context_text(self, free: int, used: int, total: int, pct_free: float, pct_used: float) -> str:
         fmt = self._get_number_formatter()
         free_fmt, used_fmt, total_fmt = fmt(free), fmt(used), fmt(total)
-        pct_precision = 0 if self.context_compact else 1
+        pct_precision = 0 if self.params.context_compact else 1
 
-        if self.context_format == "used":
+        if self.params.context_format == "used":
             return f"{used_fmt} used ({pct_used:.{pct_precision}f}%)"
-        if self.context_format == "ratio":
+        if self.params.context_format == "ratio":
             return f"{used_fmt}/{total_fmt} ({pct_used:.{pct_precision}f}%)"
-        if self.context_format == "bar":
+        if self.params.context_format == "bar":
             bar = self._make_bar(pct_free)
             return f"{bar} {pct_free:.0f}%"
         # "free" or default
         return f"{free_fmt} free ({pct_free:.{pct_precision}f}%)"
 
-    def _get_number_formatter(self):
-        if self.context_compact:
+    def _get_number_formatter(self) -> Callable[[int], str]:
+        if self.params.context_compact:
             return self._compact_number
         return lambda n: f"{n:,}"
 
