@@ -455,3 +455,8 @@ class TestRenderCard:
         expected_width = str_width(long_url) + 4
         for line in lines:
             assert str_width(line) == expected_width, f"Line width {str_width(line)} != {expected_width}: {line!r}"
+
+
+class TestDecisionType:
+    def test_decision_word(self):
+        assert TYPE_WORDS["decision"] == "Decision"

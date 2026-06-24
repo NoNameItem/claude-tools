@@ -23,7 +23,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-TYPE_LETTERS = {"bug": "B", "feature": "F", "task": "T", "epic": "E", "chore": "C"}
+TYPE_LETTERS = {"bug": "B", "feature": "F", "task": "T", "epic": "E", "chore": "C", "decision": "D"}
 
 
 @dataclass

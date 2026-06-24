@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Guard: require bd >= MIN_BD before any flow skill touches beads.
+
+Resolves the bd binary (honouring the optional BD_BIN override, default `bd`),
+reads its version, and exits 0 only when it is >= MIN_BD. On any failure it
+writes a clear message to stderr — including the resolved binary path, so
+PATH-shadowing (incident claude-tools-elf.19) is immediately visible — and
+exits non-zero. MIN_BD here is the single source of truth; the README documents
+the same number.
+
+Exit codes:
+    0  bd >= MIN_BD (silent)
+    1  bd found but older than MIN_BD
+    2  bd binary not found
+    3  `bd version` failed or produced no parseable semver
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+MIN_BD = (1, 0, 0)
+README_REF = 'plugins/flow/README.md, раздел "bd requirements and migration"'
+SEMVER_RE = re.compile(r"version\s+v?(\d+)\.(\d+)\.(\d+)")  # anchored to the `version` token
+
+
+def min_bd_str() -> str:
+    return ".".join(str(p) for p in MIN_BD)
+
+
+def resolve_bd() -> str | None:
+    """Resolve the bd binary via BD_BIN override or PATH lookup."""
+    return shutil.which(os.environ.get("BD_BIN", "bd"))
+
+
+def read_version(bd_path: str) -> tuple[int, int, int] | None:
+    """Return (major, minor, patch) from `bd version`, or None on failure."""
+    result = subprocess.run([bd_path, "version"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return None
+    match = SEMVER_RE.search(result.stdout)
+    if not match:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def main() -> int:
+    bd_path = resolve_bd()
+    if bd_path is None:
+        requested = os.environ.get("BD_BIN", "bd")
+        sys.stderr.write(f"flow: bd не найден (BD_BIN={requested!r}). Нужен bd >= {min_bd_str()}. См. {README_REF}.\n")
+        return 2
+
+    version = read_version(bd_path)
+    if version is None:
+        sys.stderr.write(
+            f"flow: не удалось определить версию bd ({bd_path}). Нужен bd >= {min_bd_str()}. См. {README_REF}.\n"
+        )
+        return 3
+
+    if version < MIN_BD:
+        found = ".".join(str(p) for p in version)
+        sys.stderr.write(
+            f"flow: нужен bd >= {min_bd_str()}, найден {found} ({bd_path}). Обновите bd — см. {README_REF}.\n"
+        )
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

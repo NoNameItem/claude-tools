@@ -1,0 +1,38 @@
+[
+  {
+    "id": "fx-w6r.1",
+    "title": "Fixture feature",
+    "description": "Feature body paragraph for fixture rendering.\n\nGit: feature/fx-demo-branch\nDesign: docs/superpowers/specs/fx-demo-design.md",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "feature",
+    "assignee": "fixtureuser",
+    "owner": "nonameitem@me.com",
+    "created_at": "2026-06-24T13:30:54Z",
+    "created_by": "artem.vasin",
+    "updated_at": "2026-06-24T13:30:56Z",
+    "started_at": "2026-06-24T13:30:56Z",
+    "labels": [
+      "config",
+      "flow"
+    ],
+    "dependencies": [
+      {
+        "id": "fx-w6r",
+        "title": "Fixture epic",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nonameitem@me.com",
+        "created_at": "2026-06-24T13:30:53Z",
+        "created_by": "artem.vasin",
+        "updated_at": "2026-06-24T13:30:53Z",
+        "dependency_type": "parent-child"
+      }
+    ],
+    "parent": "fx-w6r",
+    "dependent_count": 0,
+    "dependency_count": 1,
+    "comment_count": 0
+  }
+]
