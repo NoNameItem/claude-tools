@@ -10,7 +10,7 @@ Automated workflow skills for [Claude Code](https://code.claude.com) that guide 
 ## Prerequisites
 
 - [Claude Code](https://code.claude.com) — flow runs as a Claude Code plugin
-- [beads](https://github.com/steveyegge/beads) — required. Flow skills use `bd` to select, update, and close tasks.
+- [beads](https://github.com/steveyegge/beads) — required (**bd >= 1.0.0**, recommended 1.0.5). Flow skills use `bd` to select, update, and close tasks. See [bd requirements and migration](#bd-requirements-and-migration).
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
 - Python — the `bin/` helpers run under whatever `python3` is first on your `PATH`. **3.11+ recommended** (matches the workspace's `requires-python`); they stay compatible down to **3.9** as a fallback for the stock macOS system `python3`.
 
@@ -29,6 +29,32 @@ Local development:
 /plugin marketplace add /path/to/claude-tools
 /plugin install flow@nonameitem-toolkit
 ```
+
+## bd requirements and migration
+
+Flow targets **bd >= 1.0.0** (recommended **1.0.5**). Older builds break flow in confusing ways — a stale Homebrew `bd 0.44.0` once lacked `graph --all` and shadowed the working binary on `PATH`, so flow failed with cryptic errors. The `flow-require-bd` guard runs first in every bd-using skill and stops with a clear message (including the resolved binary path) when bd is missing or too old.
+
+**Pinning the bd binary.** Flow resolves `bd` via the `BD_BIN` environment variable, falling back to the first `bd` on `PATH`. If more than one `bd` is installed, check the active one with `which -a bd` and pin a specific binary with `BD_BIN=/full/path/to/bd`.
+
+**Migrating from bd 0.47.x to 1.0.x.** There is no automatic migration; bd 1.0.x uses a different on-disk layout. Move data across the JSONL bridge:
+
+```bash
+bd list --json -n 0 --all > .beads/issues.jsonl   # export with the OLD bd
+# install / link bd >= 1.0.0, then:
+bd init <prefix> --from-jsonl .beads/issues.jsonl  # import into the new embedded Dolt store
+```
+
+`--from-jsonl` preserves IDs, prefix, dependencies, statuses, labels, and comments. The old `bd import` command was removed — do not use it.
+
+**Sync setup (your responsibility, not flow's).** For cross-machine sync, configure a Dolt remote and the git hooks once:
+
+```bash
+bd dolt remote add origin <git-remote-url>   # enables bd dolt push/pull over refs/dolt/data
+bd hooks install                             # post-merge pull on `git pull`, pre-push push on `git push`
+bd config set dolt.auto-commit on            # each write commits to the embedded Dolt store
+```
+
+Without a remote, flow still works — `flow-sync` prints a one-line note and continues; syncing is then on you.
 
 ## How Flow Stores State
 
@@ -60,6 +86,12 @@ With superpowers, the typical chain looks like this:
 6. `/flow:done` reads `Plan:`, offers to delete or archive the file
 
 If you edit task descriptions manually, keep these lines intact.
+
+### How task data syncs
+
+The task graph itself lives in beads' embedded Dolt store under `.beads/` — that is the source of truth, not the JSONL file. `.beads/issues.jsonl` is a passive export for review/interop and is **not** tracked in git.
+
+flow does not run `bd sync` (removed in bd 1.0.x). Instead, skills call `flow-sync` at the natural points — `flow-sync pull` before reading the graph, `flow-sync push` after changing it — which wrap `bd dolt pull` / `bd dolt push` over the `refs/dolt/data` git-ref. If no Dolt remote is configured, `flow-sync` is a no-op that prints a note. Configure the remote and hooks once as described in [bd requirements and migration](#bd-requirements-and-migration).
 
 ## Why Multiple Sessions?
 
@@ -199,7 +231,7 @@ When to use: during tech debt review or after SonarCloud analysis flags new issu
 
 #### `/flow:done`
 
-Completes the current task. Checks git branch and PR status, closes the task, offers to clean up plan files (delete/archive/keep), recursively checks if parent tasks can be closed too, runs bd sync, and offers to delete the feature branch and worktree. If you're on a feature branch without a PR, stops and suggests creating one first.
+Completes the current task. Checks git branch and PR status, closes the task, offers to clean up plan files (delete/archive/keep), recursively checks if parent tasks can be closed too, runs flow-sync push, and offers to delete the feature branch and worktree. If you're on a feature branch without a PR, stops and suggests creating one first.
 
 When to use: when implementation is complete, PR is merged, and you're ready to close the task.
 
