@@ -6,6 +6,7 @@ from pathlib import Path
 
 from termcolor import colored
 
+from statuskit.core.schema import param, params_schema
 from statuskit.modules.base import BaseModule
 
 _GIT_TIMEOUT = 2  # seconds
@@ -41,22 +42,31 @@ _UNIT_TO_MINUTES: dict[str, int] = {
 }
 
 
-class GitModule(BaseModule):
+@params_schema
+class GitParams:
+    commit_age_format: str = param(
+        "relative",
+        "Commit age display format",
+        choices={
+            "relative": "full words — e.g. `1 day 2 hours 30 minutes ago`",
+            "compact": "abbreviated — e.g. `1d 2h 30m`",
+            "raw": "git's own string, unmodified — e.g. `2 hours ago`",
+        },
+    )
+    show_project: bool = param(True, "Show project name")
+    show_worktree: bool = param(True, "Show worktree name")
+    show_folder: bool = param(True, "Show current subfolder")
+    show_branch: bool = param(True, "Show branch name")
+    show_remote_status: bool = param(True, "Show remote tracking status")
+    show_changes: bool = param(True, "Show working tree change counts")
+    show_commit: bool = param(True, "Show last commit hash and age")
+
+
+class GitModule(BaseModule[GitParams]):
     """Display git branch, status, and location."""
 
     name = "git"
     description = "Git branch, status, and location"
-
-    def __init__(self, ctx, config: dict):
-        super().__init__(ctx, config)
-        self.commit_age_format = config.get("commit_age_format", "relative")
-        self.show_project = config.get("show_project", True)
-        self.show_worktree = config.get("show_worktree", True)
-        self.show_folder = config.get("show_folder", True)
-        self.show_branch = config.get("show_branch", True)
-        self.show_remote_status = config.get("show_remote_status", True)
-        self.show_changes = config.get("show_changes", True)
-        self.show_commit = config.get("show_commit", True)
 
     def render(self) -> str | None:
         """Render git status output.
@@ -267,7 +277,7 @@ class GitModule(BaseModule):
             Formatted age string
         """
         # Raw format: return as-is
-        if self.commit_age_format == "raw":
+        if self.params.commit_age_format == "raw":
             return age_str
 
         # Parse git output to minutes
@@ -283,7 +293,7 @@ class GitModule(BaseModule):
         days, hours, minutes = self._decompose_minutes(total_minutes)
 
         # Format based on config
-        if self.commit_age_format == "compact":
+        if self.params.commit_age_format == "compact":
             return self._format_compact(days, hours, minutes)
         # relative (default)
         return self._format_relative(days, hours, minutes)
@@ -368,14 +378,14 @@ class GitModule(BaseModule):
         parts = []
         separator = colored(" → ", "dark_grey")
 
-        if self.show_project and location["project"]:
+        if self.params.show_project and location["project"]:
             parts.append(colored(location["project"], "cyan"))
 
-        if self.show_worktree and location["worktree"]:
+        if self.params.show_worktree and location["worktree"]:
             worktree_name = colored(location["worktree"], "yellow")
             parts.append(f"🌲 {worktree_name}")
 
-        if self.show_folder and location["subfolder"]:
+        if self.params.show_folder and location["subfolder"]:
             parts.append(colored(location["subfolder"], "white"))
 
         if not parts:
@@ -443,20 +453,20 @@ class GitModule(BaseModule):
         """
         parts = []
 
-        if self.show_branch:
+        if self.params.show_branch:
             parts.append(colored(branch, "magenta"))
 
-        if self.show_remote_status:
+        if self.params.show_remote_status:
             remote = self._render_remote_status(remote_status)
             if remote:
                 parts.append(remote)
 
-        if self.show_changes:
+        if self.params.show_changes:
             changes_str = self._render_changes(changes)
             if changes_str:
                 parts.append(changes_str)
 
-        if self.show_commit and commit:
+        if self.params.show_commit and commit:
             commit_hash, commit_age = commit
             parts.append(colored(f"{commit_hash} {commit_age}", "white", attrs=["dark"]))
 
