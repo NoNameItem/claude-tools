@@ -114,9 +114,28 @@ Standalone Python-хелпер в стиле остальных `bin/`-скри�
 
 ### 5. `.beads/issues.jsonl` → gitignore + untrack
 
-- Добавить в `.gitignore`: `.beads/issues.jsonl`, `.beads/embeddeddolt/`, и проверить прочие производные (`.beads/interactions.jsonl`, `.beads/metadata.json` — оценить, что из них производное и должно уйти; `config.yaml` оставить, если содержит нужный repo-level конфиг).
-- `git rm --cached .beads/issues.jsonl` (+ прочие производные), коммит.
+**Что уже игнорит bd:** `.beads/.gitignore` (его ведёт сам bd) уже игнорит `*.db*`, runtime демона (`bd.sock`, `*.log.gz`, `daemon.*`), `.local_version`, `redirect`, merge-артефакты, sync-state. JSONL (`issues.jsonl`, `interactions.jsonl`) и config (`config.yaml`, `metadata.json`) — **трекаются по умолчанию**; в файле явная заметка против negation-паттернов (fork-protection через `.git/info/exclude`).
+
+**План:**
+- **JSONL-игнор кладём в КОРНЕВОЙ `.gitignore`, не в `.beads/.gitignore`** — bd при init перезаписывает свой `.beads/.gitignore`, корневой он не трогает. Добавляем: `.beads/issues.jsonl`, `.beads/interactions.jsonl`.
+- `.beads/embeddeddolt/` / `.beads/dolt/` (стор Dolt) — bd 1.0.5 добавит в свой `.gitignore` при init; продублировать в корневом для надёжности.
+- `git rm --cached .beads/issues.jsonl .beads/interactions.jsonl` + коммит.
+- **`config.yaml` оставляем трекаемым** (repo-level identity: prefix и т.п.); `metadata.json` — выверить на 1.0.5 (в миграции llms-full его `rm -f` как stale server-метаданные → вероятно runtime, кандидат на untrack).
 - Снять трекинг ветки `beads-sync` как механизма синхры (оставить как историю или удалить — операционно).
+
+### 6. Worktree-поддержка (Dolt-native)
+
+**Хорошая новость: под Dolt-native worktree-история чище, чем в 0.47.** Подтверждено доками bd (GIT_INTEGRATION.md, worktree.md) и эмпирически (`bd where` из этого worktree → main `.beads`).
+
+- **Все worktree'ы делят ОДИН embedded Dolt-стор** в main-репо (`.beads/embeddeddolt/`), резолвинг — автоматически через **git common directory** («no redirect file needed»). Из любого worktree `bd` работает с тем же стором и теми же 122 задачами.
+- **Gitignore `embeddeddolt/` безопасен для worktree'ов**: свежий worktree без локального стора всё равно находит main через common dir. **Не нужен** ни per-worktree `bd init`, ни `bd bootstrap` (bootstrap — только для свежего clone на новой машине, где стора нет вообще).
+- **Трение демон↔worktree из 0.47 исчезает by construction**: предупреждение «daemon may commit to wrong branch» — это про демона, а в 1.0.x демона нет. Снимается главная worktree-боль (см. reference_beads_daemon_git_friction).
+- **`flow-sync push/pull` из любого worktree** работает с общим стором → один `refs/dolt/data` на origin. Консистентно независимо от git-ветки worktree.
+- **Dolt-ветка не привязана к git-ветке** worktree: beads-задачи — глобальный граф проекта, видны из всех worktree'ов/веток (как и текущее `--all`-поведение flow).
+- **Caveat — single-writer:** embedded Dolt одно-писательный (файловый лок). Две одновременные flow-сессии в разных worktree'ах, пишущие в один момент, сериализуются на локе (одна ждёт/получает ошибку). Для интерактивного flow (одна сессия за раз) — приемлемо; multi-writer = server mode, вне scope.
+- **Диагностика:** `bd where` — авторитетная проверка «какой `.beads`/стор активен» (полезно в troubleshooting README и при отладке).
+
+**Влияние на flow:** flow продолжает создавать worktree'ы своим механизмом (`git worktree add` через `flow-worktree-dir`); `bd worktree create` (который сам gitignore'ит путь и шарит БД) — не обязателен, шаринг и так автоматический. Убедиться, что каталог flow-worktree'ов (`.worktrees/`) в gitignore. `flow:init-worktree` для bd ничего доп. делать не должен — стор уже общий.
 
 ## Катовер окружения (двухфазный)
 
@@ -221,5 +240,6 @@ flow в `.beads/*` не лезет — миграцию исполняет bd; f
 - **Точные дефолты конфига 1.0.5** (`dolt.auto-commit`, `export.auto`) и **синтаксис `bd init --from-jsonl`** (позиционный префикс vs `--prefix=`, нужен ли `--role`) — выверить против живого `bd ... --help` на Фазе 1.
 - **Способ детекта remote** в `flow-sync` (`bd dolt remote list` парсинг vs `bd config get sync.remote`) — выбрать по реальному выводу 1.0.5.
 - **Поведение `bd dolt push` при `auto-commit=off`** (есть ли что пушить) — решить, нужен ли `bd dolt commit` перед push внутри `flow-sync push`.
-- **Судьба `.beads/interactions.jsonl` / `metadata.json`** при untrack — оценить, что производное, а что нужно сохранить.
+- **Судьба `.beads/metadata.json`** при untrack — выверить на 1.0.5 (вероятно runtime → untrack; `config.yaml` оставляем). `interactions.jsonl` — в untrack по умолчанию.
+- **Worktree-резолвинг БД — РЕШЕНО:** все worktree'ы делят main-стор через git common dir; gitignore стора безопасен; per-worktree init/bootstrap не нужен; демон-трение исчезает (демона нет). Остаётся проверить на 1.0.5 точное имя каталога стора (`embeddeddolt/` vs `dolt/`).
 - Миграция данных на машине необратима в части relink — снимается двухфазностью и тройным откатом.
