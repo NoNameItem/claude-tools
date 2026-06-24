@@ -31,6 +31,11 @@ reviews:
   tools:
     ruff:
       enabled: false
+    opengrep:
+      # CodeRabbit fails to write its temp fallback config (.coderabbit-opengrep-fallback.yml
+      # missing) and OpenGrep has no config_file knob, so it errors per-file with 0 findings.
+      # Secret/security coverage stays via gitleaks + SonarCloud; lint/types run in CI.
+      enabled: false
     gitleaks:
       enabled: true
     shellcheck:
