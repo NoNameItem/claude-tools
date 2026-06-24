@@ -71,7 +71,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 0. Sync | `bd sync` + check worktree | Get tasks from all branches |
+| 0. Sync | `flow-sync pull` + check worktree | Get latest tasks (other machines) |
 | 1. Tree | `bd graph --all --json \| flow-task-tree [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
 | 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment, reproduce in reply |
@@ -80,10 +80,10 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
 | 6. Ask | `AskUserQuestion` with options matrix | Branch + worktree in one question |
 | 7. Update | `bd update --status=in_progress -a actor` | Confirm first; ask before taking someone else's task |
-| 7.1. Sync | `bd sync` | Persist status change |
+| 7.1. Sync | `flow-sync push` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` or `git worktree add` | Based on user's choice |
-| 8.1. Git Info | `bd update` + `bd sync` | Save branch name for flow:continue |
+| 8.1. Git Info | `bd update` + `flow-sync push` | Save branch name for flow:continue |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -98,14 +98,14 @@ Follow these steps **in order**. Do not skip steps.
 **Run at skill start:**
 
 ```bash
-# Sync tasks from all branches
-bd sync
+# Pull latest tasks from the shared store (other machines)
+flow-sync pull
 
 # Check if already in a worktree
 flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
-`bd sync` ensures you see tasks created in other branches. Store `IN_WORKTREE` for Step 6.
+`flow-sync pull` brings task changes from other machines. Store `IN_WORKTREE` for Step 6.
 
 ### 1. Build and Display Task Tree
 
@@ -351,10 +351,10 @@ Do NOT use `bd update --claim` — it fails when the task is already claimed, ev
 **Run only if `bd update` was executed in Step 7** (skip if status and assignee were already correct).
 
 ```bash
-bd sync
+flow-sync push
 ```
 
-Persist the status change to git immediately.
+Push the status change to the shared store immediately.
 
 ### 7.2. Initialize Project Environment (worktree only)
 
@@ -414,7 +414,7 @@ This sets (or replaces) the `Git:` line in the task description; other link line
 
 **Then sync to propagate:**
 ```bash
-bd sync
+flow-sync push
 ```
 
 **Skip this step if:**
