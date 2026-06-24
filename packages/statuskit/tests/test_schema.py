@@ -152,6 +152,11 @@ class SampleParams:
     mode: str = param("x", "a mode", choices=("x", "y"))
 
 
+@params_schema
+class GenericParams:
+    tags: list[str] = param([], "tags", type_=list[str])
+
+
 def test_parse_params_valid():
     values, warnings = parse_params(SampleParams, {"flag": False, "count": 7, "mode": "y"})
     assert values == {"flag": False, "count": 7, "mode": "y"}
@@ -195,6 +200,27 @@ def test_parse_params_skips_non_schema_field():
 
     values, _ = parse_params(WithInternal, {"a": 2})
     assert values == {"a": 2}  # 'internal' never coerced or added
+
+
+def test_parse_params_noparams_unknown_key():
+    values, warnings = parse_params(NoParams, {"x": 1})
+    assert values == {}
+    assert len(warnings) == 1
+    assert warnings[0].field == "x"
+    assert warnings[0].kind == "unknown"
+
+
+def test_parse_params_validates_generic_field():
+    values, warnings = parse_params(GenericParams, {"tags": ["a", "b"]})
+    assert values == {"tags": ["a", "b"]}
+    assert warnings == []
+
+
+def test_parse_params_rejects_bad_generic_element():
+    values, warnings = parse_params(GenericParams, {"tags": ["a", 1]})
+    assert "tags" not in values
+    assert warnings[0].field == "tags"
+    assert warnings[0].kind == "invalid"
 
 
 # --- NoParams ---

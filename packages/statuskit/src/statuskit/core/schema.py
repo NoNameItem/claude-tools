@@ -44,6 +44,9 @@ def param(
     type used for validation is captured from `type(default)`, or from `type_` when the
     default is None or a generic alias (e.g. list[str]) with no runtime class.
 
+    Mutable defaults (list/dict/set) get a fresh *shallow* copy per instance via
+    default_factory; nested mutable objects would be shared (no current field nests).
+
     `choices` is either a plain tuple of allowed values or a dict mapping each value to a
     short help string. Both forms are stored verbatim in metadata; the 9.2 template
     generator renders them. `description` is left untouched.
@@ -90,6 +93,10 @@ def _type_msg(raw: Any, expected_type: Any) -> str | None:
     """Return an error message if `raw` fails the type check, else None.
 
     Handles generics (list[str]), bool-vs-int strictness, and plain types.
+
+    Known limitation: only the first type argument of a generic is validated. A ``dict[K, V]``
+    is key-checked only (values are not validated), and ``list[int]`` admits ``bool`` elements
+    (``bool`` subclasses ``int``). No current field hits this; revisit if one is added.
     """
     origin = get_origin(expected_type)
     msg: str | None = None
