@@ -5,11 +5,11 @@ from dataclasses import FrozenInstanceError, dataclass
 from typing import Any, Generic, TypeVar
 
 import pytest
-from statuskit.core.schema import NoParams, param, params_schema
+from statuskit.core.schema import NoParams, param, schema
 from statuskit.modules.base import BaseModule
 
 
-@params_schema
+@schema
 class StubParams:
     option: str = param("default", "An option")
 
@@ -141,11 +141,11 @@ def test_ambiguous_params_raises():
     PA = TypeVar("PA")
     PB = TypeVar("PB")
 
-    @params_schema
+    @schema
     class A:
         a: int = param(1, "a")
 
-    @params_schema
+    @schema
     class B:
         b: int = param(1, "b")
 
@@ -177,7 +177,7 @@ def test_generic_intermediate_resolves_lazily(make_render_context, minimal_input
     with pytest.raises(TypeError):
         Mid(ctx, {})
 
-    @params_schema
+    @schema
     class FooParams:
         v: int = param(1, "v")
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from termcolor import colored
 
-from statuskit.core.schema import param, params_schema
+from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
 _GIT_TIMEOUT = 2  # seconds
@@ -42,7 +42,7 @@ _UNIT_TO_MINUTES: dict[str, int] = {
 }
 
 
-@params_schema
+@schema
 class GitParams:
     commit_age_format: str = param(
         "relative",

@@ -10,6 +10,39 @@ from typing import Any, TypeVar, dataclass_transform, get_args, get_origin, over
 
 T = TypeVar("T")
 
+_ALLOWED_PRIMITIVES = (bool, int, float, str)
+_VARIADIC_TUPLE_ARGS = 2  # tuple[X, ...] -> get_args() returns (X, Ellipsis)
+
+
+def _check_declared_type(declared: Any, description: str) -> None:
+    """Raise ValueError unless `declared` is a supported param type.
+
+    Allowed: the primitives bool/int/float/str, and ``list[X]``/``tuple[X]``/``tuple[X, ...]``
+    where X is one of those primitives. Everything else is rejected at declaration time, so
+    misuse fails on import rather than silently at parse time: dict, set, multi-arg or
+    heterogeneous generics (``dict[K, V]``, ``tuple[int, str]``), nested generics
+    (``list[list[str]]``), generics over non-primitives, and bare ``list``/``tuple`` with no
+    element type.
+
+    datetime/date/time are also valid TOML scalars but no param needs one; add them to
+    ``_ALLOWED_PRIMITIVES`` if that ever changes.
+    """
+    if declared in _ALLOWED_PRIMITIVES:
+        return
+    origin = get_origin(declared)
+    if origin in (list, tuple):
+        args = get_args(declared)
+        if origin is tuple and len(args) == _VARIADIC_TUPLE_ARGS and args[1] is Ellipsis:
+            args = (args[0],)  # tuple[X, ...] is homogeneous: validate the single element type
+        if len(args) == 1 and args[0] in _ALLOWED_PRIMITIVES:
+            return
+    allowed = ", ".join(t.__name__ for t in _ALLOWED_PRIMITIVES)
+    msg = (
+        f"param({description!r}): unsupported type {declared!r}; allowed are {allowed} "
+        f"and list/tuple over one such primitive (e.g. list[str], tuple[int, ...])"
+    )
+    raise ValueError(msg)
+
 
 @overload
 def param(
@@ -56,28 +89,30 @@ def param(
     if default is None and type_ is None:
         msg = f"param({description!r}): default is None, an explicit type_ is required"
         raise ValueError(msg)
-    meta = {"description": description, "choices": choices, "type": type_ or type(default)}
+    declared = type_ or type(default)
+    _check_declared_type(declared, description)
+    meta = {"description": description, "choices": choices, "type": declared}
     if isinstance(default, list | dict | set):
         return field(default_factory=lambda: type(default)(default), metadata=meta)
     return field(default=default, metadata=meta)
 
 
 @dataclass_transform(frozen_default=True, field_specifiers=(field, param))
-def params_schema(cls: type[T]) -> type[T]:
-    """Frozen schema decorator for module ``*Params`` classes (and param-based test helpers).
+def schema(cls: type[T]) -> type[T]:
+    """Frozen dataclass schema decorator for param-based config classes.
+
+    Used for both module ``*Params`` classes and the top-level ``Config`` — config is loaded
+    once and never mutated during a render, so a single frozen decorator expresses both.
 
     ``dataclass_transform(field_specifiers=(field, param))`` tells PEP 681-aware tools (ruff, ty)
     that ``param()`` is a legitimate field specifier: no RUF009 false positive, and each field is
     typed from its annotation. ``frozen_default=True`` makes ty enforce read-only access. The body
     returns a real frozen dataclass, so ``is_dataclass()``/``fields()``/runtime ``frozen`` hold.
+
+    ``Config`` holds a plain ``module_configs`` dict; freezing locks only the field binding, not
+    the dict's contents — and nothing rebinds or mutates it after construction.
     """
     return dataclass(frozen=True)(cls)
-
-
-@dataclass_transform(field_specifiers=(field, param))
-def config_schema(cls: type[T]) -> type[T]:
-    """Non-frozen schema decorator for ``Config`` (it carries the mutable ``module_configs``)."""
-    return dataclass(cls)
 
 
 @dataclass(frozen=True)
@@ -92,11 +127,12 @@ class ParamWarning:
 def _type_msg(raw: Any, expected_type: Any) -> str | None:
     """Return an error message if `raw` fails the type check, else None.
 
-    Handles generics (list[str]), bool-vs-int strictness, and plain types.
+    Handles generics (list[str]), bool-vs-int strictness, and plain types. Declared types are
+    restricted by `_check_declared_type` to primitives and list/tuple over a single primitive,
+    so a generic always has exactly one primitive element type to validate.
 
-    Known limitation: only the first type argument of a generic is validated. A ``dict[K, V]``
-    is key-checked only (values are not validated), and ``list[int]`` admits ``bool`` elements
-    (``bool`` subclasses ``int``). No current field hits this; revisit if one is added.
+    One residual laxity: ``list[int]`` admits ``bool`` elements, since ``bool`` subclasses
+    ``int`` and element checks use ``isinstance``. No current field hits this.
     """
     origin = get_origin(expected_type)
     msg: str | None = None

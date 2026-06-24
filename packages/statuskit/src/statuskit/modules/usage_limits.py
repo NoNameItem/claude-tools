@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 
 from termcolor import colored
 
-from statuskit.core.schema import param, params_schema
+from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
 if TYPE_CHECKING:
@@ -335,7 +335,7 @@ _TIME_FORMAT_CHOICES = {
 }
 
 
-@params_schema
+@schema
 class UsageLimitsParams:
     show_session: bool = param(True, "Show 5-hour session limit")
     show_weekly: bool = param(True, "Show 7-day weekly limit")

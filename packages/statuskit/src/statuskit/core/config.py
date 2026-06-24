@@ -7,7 +7,7 @@ from pathlib import Path
 from termcolor import colored
 
 from statuskit.core.constants import CLAUDE_DIR, CONFIG_FILENAME
-from statuskit.core.schema import config_schema, param, parse_params
+from statuskit.core.schema import param, parse_params, schema
 
 CONFIG_LOCAL_FILENAME = CONFIG_FILENAME.replace(".toml", ".local.toml")
 
@@ -21,7 +21,7 @@ def _get_config_paths() -> list[Path]:
     ]
 
 
-@config_schema
+@schema
 class Config:
     """Statuskit configuration."""
 

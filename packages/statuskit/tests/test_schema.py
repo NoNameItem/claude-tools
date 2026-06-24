@@ -7,15 +7,15 @@ from statuskit.core.schema import (
     NoParams,
     _coerce,
     param,
-    params_schema,
     parse_params,
+    schema,
 )
 
 # --- param() ---
 
 
 def test_param_builds_field_with_metadata():
-    @params_schema
+    @schema
     class S:
         x: int = param(5, "an int")
 
@@ -27,9 +27,9 @@ def test_param_builds_field_with_metadata():
 
 
 def test_param_mutable_default_isolated():
-    @params_schema
+    @schema
     class S:
-        items: list = param([], "a list", type_=list)
+        items: list[int] = param([], "a list", type_=list[int])
 
     a, b = S(), S()
     a.items.append(1)
@@ -47,7 +47,7 @@ def test_param_none_with_type_allowed():
 
 
 def test_param_stores_tuple_choices_verbatim():
-    @params_schema
+    @schema
     class S:
         c: str = param("a", "choice", choices=("a", "b"))
 
@@ -59,13 +59,50 @@ def test_param_stores_tuple_choices_verbatim():
 def test_param_stores_dict_choices_verbatim():
     choices = {"a": "help a", "b": "help b"}
 
-    @params_schema
+    @schema
     class S:
         c: str = param("a", "choice", choices=choices)
 
     f = next(fld for fld in fields(S) if fld.name == "c")
     assert f.metadata["choices"] == choices
     assert f.metadata["description"] == "choice"  # description left untouched
+
+
+# --- declared-type guard (param) ---
+
+
+@pytest.mark.parametrize(
+    ("default", "type_"),
+    [
+        (True, None),  # bool
+        (1, None),  # int
+        (1.5, None),  # float
+        ("x", None),  # str
+        ([], list[str]),  # list over a primitive
+        ((1,), tuple[int]),  # single-element tuple over a primitive
+        (("a",), tuple[str, ...]),  # homogeneous variadic tuple over a primitive
+    ],
+)
+def test_param_accepts_supported_types(default, type_):
+    fld = param(default, "ok", type_=type_)
+    assert "type" in fld.metadata
+
+
+@pytest.mark.parametrize(
+    "type_",
+    [
+        list,  # bare list, no element type
+        tuple,  # bare tuple, no element type
+        dict[str, int],  # mapping
+        set[str],  # set
+        tuple[int, str],  # heterogeneous / multi-arg tuple
+        list[list[str]],  # nested generic
+        complex,  # not an allowed primitive
+    ],
+)
+def test_param_rejects_unsupported_types(type_):
+    with pytest.raises(ValueError, match="unsupported type"):
+        param(None, "bad", type_=type_)
 
 
 # --- _coerce() ---
@@ -145,14 +182,14 @@ def test_coerce_generic_rejects_bad_element():
 # --- parse_params() ---
 
 
-@params_schema
+@schema
 class SampleParams:
     flag: bool = param(True, "a flag")
     count: int = param(3, "a count")
     mode: str = param("x", "a mode", choices=("x", "y"))
 
 
-@params_schema
+@schema
 class GenericParams:
     tags: list[str] = param([], "tags", type_=list[str])
 
@@ -193,7 +230,7 @@ def test_parse_params_unknown_key_warns():
 
 
 def test_parse_params_skips_non_schema_field():
-    @params_schema
+    @schema
     class WithInternal:
         a: int = param(1, "a")
         internal: dict = field(default_factory=dict)  # no metadata -> not a schema field

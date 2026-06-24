@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from termcolor import colored
 
-from statuskit.core.schema import param, params_schema
+from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
 # Time constants
@@ -16,7 +16,7 @@ _THOUSAND = 1_000
 _MILLION = 1_000_000
 
 
-@params_schema
+@schema
 class ModelParams:
     show_duration: bool = param(True, "Show session duration")
     show_context: bool = param(True, "Show context window usage")
