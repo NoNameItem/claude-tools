@@ -49,6 +49,14 @@ def test_version_suffix_uses_numeric_part(tmp_path):
     assert r.returncode == 0
 
 
+def test_version_anchored_to_version_keyword(tmp_path):
+    # A stray triple before the real version must not be picked up: the regex
+    # anchors to the `version` token, so it parses (1, 0, 5), not (0, 0, 1).
+    bd = make_fake_bd(tmp_path, version_line="meta 0.0.1\nbd version 1.0.5 (x)\n")
+    r = run_helper("flow-require-bd", env={**BASE_ENV, "BD_BIN": str(bd)})
+    assert r.returncode == 0
+
+
 def test_old_version_rejected_with_message(tmp_path):
     bd = make_fake_bd(tmp_path, version_line="bd version 0.47.1 (x)\n")
     r = run_helper("flow-require-bd", env={**BASE_ENV, "BD_BIN": str(bd)})

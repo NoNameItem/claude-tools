@@ -25,7 +25,7 @@ import sys
 
 MIN_BD = (1, 0, 0)
 README_REF = 'plugins/flow/README.md, раздел "bd requirements and migration"'
-SEMVER_RE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+SEMVER_RE = re.compile(r"version\s+v?(\d+)\.(\d+)\.(\d+)")  # anchored to the `version` token
 
 
 def min_bd_str() -> str:

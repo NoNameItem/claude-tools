@@ -76,7 +76,7 @@ def test_task_card_renders_show_with_description_and_links():
     m = _load("flow-task-card", ["render_card"])
     rendered = m["render_card"](SHOW_FEATURE)  # render_card returns a single string
     assert "Fixture feature" in rendered  # title
-    assert "Feature" in rendered  # type word in border
+    assert "┌─ Feature " in rendered  # type word in the top border, not the description text
     assert "fx-demo-design.md" in rendered  # Design: link shown in LINKS
     assert "feature/fx-demo-branch" not in rendered  # Git: is intentionally hidden from the card
 
