@@ -451,7 +451,7 @@ class TestValidateMarketplace:
 
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
-        assert any("source mismatch" in e.lower() for e in result.errors)
+        assert any("does not point at" in e for e in result.errors)
 
     def test_object_source_missing_ref(self, tmp_path: Path) -> None:
         """Should fail when a git-subdir object source has no ref."""
@@ -519,3 +519,21 @@ class TestValidateMarketplace:
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
         assert any("git-subdir" in e for e in result.errors)
+
+    def test_object_source_unsupported_value(self, tmp_path: Path) -> None:
+        """Should fail when a matching entry has a non-string, non-object source."""
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = tmp_path / "plugins" / "obj-bad"
+        plugin_dir.mkdir(parents=True)
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir()
+        (claude_plugin / "plugin.json").write_text('{"name": "obj-bad"}')
+
+        mp = tmp_path / ".claude-plugin"
+        mp.mkdir(exist_ok=True)
+        (mp / "marketplace.json").write_text(json.dumps({"plugins": [{"name": "obj-bad", "source": 42}]}))
+
+        result = validate_plugin(plugin_dir, tmp_path)
+        assert result.success is False
+        assert any("unsupported source value" in e for e in result.errors)

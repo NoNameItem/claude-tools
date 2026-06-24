@@ -262,18 +262,18 @@ def _source_matches(mp_source: object, expected_relative: str) -> tuple[bool, st
     if not isinstance(mp_source, dict):
         return False, f"unsupported source value: {mp_source!r}"
 
-    if mp_source.get("path") != expected_relative:
+    path = mp_source.get("path")
+    if not path or path != expected_relative:
         return False, None  # object source for a different plugin
 
     # Path matches — validate the remaining fields.
+    err: str | None = None
     if mp_source.get("source") != "git-subdir":
-        err: str | None = f"source type must be 'git-subdir', got '{mp_source.get('source')}'"
+        err = f"source type must be 'git-subdir', got '{mp_source.get('source')}'"
     elif not mp_source.get("url"):
         err = "git-subdir source missing 'url'"
     elif not mp_source.get("ref"):
         err = "git-subdir source missing 'ref'"
-    else:
-        err = None
 
     return err is None, err
 
