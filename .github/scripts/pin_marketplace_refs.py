@@ -11,6 +11,8 @@ version bump. Generic over all marketplace plugins; no plugin name is hardcoded.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -77,3 +79,64 @@ def pin_marketplace_file(marketplace_path: Path, name: str, ref: str) -> bool:
     if changed:
         marketplace_path.write_text(json.dumps(data, indent=2) + "\n")
     return changed
+
+
+def _run_git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)  # noqa: S607
+
+
+def _git_fetch_ok(repo: Path, branch: str) -> bool:
+    """True if the remote branch exists and was fetched."""
+    return (
+        subprocess.run(
+            ["git", "fetch", "origin", branch],  # noqa: S607
+            cwd=repo,
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode
+        == 0
+    )
+
+
+def process_pin(repo: Path, pin: PluginPin) -> str | None:
+    """Pin one plugin inside its release-please PR branch. Returns the tag if pushed."""
+    branch = release_branch_name(pin.component)
+    if not _git_fetch_ok(repo, branch):
+        print(f"skip '{pin.name}': no open release PR ({branch})")
+        return None
+
+    _run_git(repo, "checkout", "-B", branch, f"origin/{branch}")
+    tag = tag_name(pin.component, read_plugin_version(repo, pin.path))
+
+    if not pin_marketplace_file(repo / MARKETPLACE, pin.name, tag):
+        print(f"'{pin.name}' already pinned to {tag}")
+        return None
+
+    _run_git(repo, "add", str(MARKETPLACE))
+    _run_git(repo, "commit", "-m", f"chore: pin {pin.name} marketplace ref to {tag}")
+    _run_git(repo, "push", "origin", branch)
+    print(f"pinned '{pin.name}' -> {tag}")
+    return tag
+
+
+def run(repo: Path) -> int:
+    """Pin every resolvable plugin inside its release branch. Returns an exit code."""
+    marketplace = json.loads((repo / MARKETPLACE).read_text())
+    rp_config = json.loads((repo / RP_CONFIG).read_text())
+    pins = resolve_pins(marketplace, rp_config)
+
+    _run_git(repo, "config", "user.name", BOT_NAME)
+    _run_git(repo, "config", "user.email", BOT_EMAIL)
+
+    for pin in pins:
+        process_pin(repo, pin)
+    return 0
+
+
+def main() -> int:
+    return run(Path.cwd())
+
+
+if __name__ == "__main__":
+    sys.exit(main())
