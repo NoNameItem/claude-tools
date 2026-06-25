@@ -247,7 +247,16 @@ Update `docs/bd-0.47-to-1.0.5-migration.md`:
 
 ## 8. Risks & open questions
 
-- **Version skew** (gastownhall `main` vs Homebrew 1.0.5) — mitigated by the §6.2 smoke test.
+- **Version skew** (gastownhall `main` vs Homebrew 1.0.5) — mitigated by the §6.2 smoke test, run
+  2026-06-26. Results: `--shared-server` init works (mode `server`, `~/.beads/shared-server/dolt`,
+  auto-started on :3308); the init "No dolt database found" warning is benign (the DB initializes on
+  first write); **embedded→shared-server via `bd backup` → re-init → `bd backup restore --force`
+  preserved all issues + IDs**; git worktrees share the one shared-server DB (instant cross-worktree
+  consistency); and the Part 1 `flow-sync push`/`pull` work end-to-end against a `file://` Dolt remote.
+  **Correction to §2/§5:** on 1.0.5, shared-server defaults `dolt.auto-commit=on` (not `off` as the
+  upstream doc states) — the commit-flush is therefore a safe no-op/defensive net here, not
+  load-bearing. Also, shared-server's `bd dolt status --json` is server-shaped (`pid`/`port`/`running`,
+  no `mode`/`data_dir`); Part 1 does not depend on it, so no impact.
 - **Mode propagation across machines:** does shared-server mode travel via committed `config.yaml`
   (`dolt.mode`) or stay per-machine in `metadata.json` (`dolt_mode`)? In 1.0.5 mode currently reads
   from `metadata.json`, while the doc treats `config.yaml` as the committed source. Decide whether to
