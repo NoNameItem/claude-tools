@@ -30,8 +30,12 @@ uv.lock
 # Git worktrees
 .worktrees/
 
-# Beads daemon logs
+# Beads — embedded Dolt store is the source of truth; JSONL is a passive export.
+# bd 1.0.x keeps the store in .beads/dolt/; the JSONL is not a transport and is not tracked.
 .beads/*.log.gz
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/dolt/
 
 # Local config (keep template, ignore actual)
 *.local
