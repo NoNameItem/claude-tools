@@ -14,6 +14,22 @@ Automated workflow skills for [Claude Code](https://code.claude.com) that guide 
 - [superpowers](https://github.com/obra/superpowers) — recommended. Flow was designed to pair with superpowers for brainstorming, planning, and implementation. You can substitute your own approach, but the workflow descriptions below assume superpowers.
 - Python — the `bin/` helpers run under whatever `python3` is first on your `PATH`. **3.11+ recommended** (matches the workspace's `requires-python`); they stay compatible down to **3.9** as a fallback for the stock macOS system `python3`.
 
+## bd requirements and migration
+
+Flow currently targets **bd 0.47.x**, which provides the commands flow relies on (`bd graph --all --json`, `bd sync`, and the auto-syncing daemon). Older builds can break flow in confusing ways — for example a stale Homebrew `bd 0.44.0` lacked `graph --all`, so flow failed with cryptic errors when that binary shadowed the working one on `PATH`.
+
+**Pinning the bd binary.** Flow resolves `bd` via the `BD_BIN` environment variable, falling back to the first `bd` on your `PATH`. If you have more than one `bd` installed, check which one is active with `which -a bd`, and pin a specific binary with `BD_BIN=/full/path/to/bd` to avoid PATH-shadowing.
+
+### bd 1.0.x support (in progress)
+
+bd 1.0.x is a major release and **flow does not fully support it yet** — keep your working bd on 0.47.x for flow until this lands. Status:
+
+- ✅ Flow renders the new first-class `decision` issue type, and its `--json` parsers are verified against real bd 1.0.5 output (the built-in types are `bug | feature | task | epic | chore | decision`).
+- ⚠️ bd 1.0.x **removed `bd sync` and the `bd daemon` command** in favour of a Dolt-native model (`bd export` for JSONL interchange, `bd vc` / `bd federation` for sync, with Dolt auto-push). Flow's state-persistence steps assume `bd sync`, so they need redesigning before flow runs on 1.0.x.
+- A version-guard helper (`bin/flow-require-bd`) is in place to require a supported bd once 1.0.x support is complete; it is not yet enforced in the skills.
+
+The remaining bd 1.0.x migration — sync/persistence redesign, version-guard enforcement, and the environment cutover — is tracked as a separate follow-up.
+
 ## Installation
 
 From GitHub:

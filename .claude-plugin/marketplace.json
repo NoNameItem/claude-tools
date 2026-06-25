@@ -11,7 +11,12 @@
   "plugins": [
     {
       "name": "flow",
-      "source": "./plugins/flow",
+      "source": {
+        "source": "git-subdir",
+        "url": "NoNameItem/claude-tools",
+        "path": "plugins/flow",
+        "ref": "flow-2.1.0"
+      },
       "description": "Automated beads workflow skills for Claude Code"
     }
   ]
