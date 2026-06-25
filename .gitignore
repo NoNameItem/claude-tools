@@ -36,6 +36,7 @@ uv.lock
 .beads/issues.jsonl
 .beads/interactions.jsonl
 .beads/dolt/
+.beads/embeddeddolt/
 # bd 1.0.x runtime / credentials (added by bd init)
 .dolt/
 *.db
