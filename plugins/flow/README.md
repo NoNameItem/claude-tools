@@ -39,12 +39,12 @@ Flow targets **bd >= 1.0.0** (recommended **1.0.5**). Older builds break flow in
 **Migrating from bd 0.47.x to 1.0.x.** There is no automatic migration; bd 1.0.x uses a different on-disk layout. Move data across the JSONL bridge:
 
 ```bash
-bd list --json -n 0 --all > .beads/issues.jsonl   # export with the OLD bd
-# install / link bd >= 1.0.0, then:
-bd init <prefix> --from-jsonl .beads/issues.jsonl  # import into the new embedded Dolt store
+bd list --json --all -n 0 > .beads/issues.jsonl   # full export with the OLD bd (plain `bd list` is filtered)
+# install / link bd >= 1.0.0, then in the repo:
+bd init -p <prefix> --from-jsonl                   # imports .beads/issues.jsonl into the new embedded Dolt store
 ```
 
-`--from-jsonl` preserves IDs, prefix, dependencies, statuses, labels, and comments. The old `bd import` command was removed — do not use it.
+`--from-jsonl` is a flag (no file argument): it reads the JSONL at the configured `import.path` (default `.beads/issues.jsonl`) and preserves IDs, prefix, dependencies, statuses, labels, and comments. To load a JSONL into an already-initialized store, use `bd import <file>` instead.
 
 **Sync setup (your responsibility, not flow's).** For cross-machine sync, configure a Dolt remote and the git hooks once:
 
