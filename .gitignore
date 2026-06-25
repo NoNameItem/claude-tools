@@ -42,6 +42,14 @@ uv.lock
 *.db
 .beads-credential-key
 .beads/proxieddb/
+.beads/shared-server/
+# server-mode port/pid files (machine-local)
+.beads/dolt-server.port
+.beads/*.port
+# metadata.json holds the per-machine dolt mode (embedded vs server); keep it
+# local so each machine/clone picks its own mode. Project identity is recovered
+# from refs/dolt/data via `bd bootstrap` on a fresh clone.
+.beads/metadata.json
 
 # Local config (keep template, ignore actual)
 *.local
