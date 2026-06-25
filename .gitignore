@@ -36,9 +36,18 @@ uv.lock
 .beads/issues.jsonl
 .beads/interactions.jsonl
 .beads/dolt/
+# bd 1.0.x runtime / credentials (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
 
 # Local config (keep template, ignore actual)
 *.local
+
+# Local Claude Code settings (machine-specific; shared .claude/ config stays tracked)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Implementation plans (superpowers:writing-plans output) — local-only workflow
 # scaffolding. Design specs in docs/superpowers/specs/ are tracked; plans are not.
