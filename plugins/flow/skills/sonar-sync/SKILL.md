@@ -39,7 +39,15 @@ This skill synchronizes SonarQube/SonarCloud issues with beads tasks. Two modes:
 
 Follow these steps **in order**. Do not skip steps.
 
-### 0. Mode Detection
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
+
+### 0.1. Mode Detection
 
 **If `--pr <id>` passed:** PR mode with that ID.
 

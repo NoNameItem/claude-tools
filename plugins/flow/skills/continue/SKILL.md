@@ -51,6 +51,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 
 | Step | Action | Key Point |
 |------|--------|-----------|
+| 0. Guard | `flow-require-bd` | Require bd >= 1.0.0 |
 | 1. Sync | `flow-sync pull` | Get latest task data |
 | 2. Find tasks | Run `flow-find-leaf` script | Grouped by assignee, reproduce verbatim |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
@@ -72,6 +73,14 @@ The command `/flow:continue` accepts:
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
+
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
 
 ### 1. Sync
 
