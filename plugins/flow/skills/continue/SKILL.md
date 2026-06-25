@@ -13,7 +13,7 @@ allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion Todo
 **READ this ENTIRE skill FIRST. Do NOT run any commands yet.**
 
 **Violation check — if ANY of these are true, STOP and apologize:**
-- [ ] I already ran `bd sync` → VIOLATION. Apologize, start over.
+- [ ] I already ran `flow-sync pull` → VIOLATION. Apologize, start over.
 - [ ] I already ran `bd list` → VIOLATION. Apologize, start over.
 - [ ] I already ran `bd show` → VIOLATION. Apologize, start over.
 - [ ] I said "Let me check your tasks" → About to violate. STOP.
@@ -51,7 +51,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. Sync | `bd sync` | Get latest task data |
+| 1. Sync | `flow-sync pull` | Get latest task data |
 | 2. Find tasks | Run `flow-find-leaf` script | Grouped by assignee, reproduce verbatim |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
 | 4. Assignee | Compare with `flow-actor` | Empty → assign quietly; other's → ask |
@@ -76,7 +76,7 @@ Follow these steps **in order**. Do not skip steps.
 ### 1. Sync
 
 ```bash
-bd sync
+flow-sync pull
 ```
 
 ### 2. Find Active Tasks
@@ -170,7 +170,7 @@ Compare the task's `assignee` field with the actor:
 
   ```bash
   bd update <task-id> -a "$(flow-actor)"
-  bd sync
+  flow-sync push
   ```
 
   Report: "Назначил задачу на вас." Proceed to Step 5.
@@ -180,7 +180,7 @@ Compare the task's `assignee` field with the actor:
   Задача назначена на `<assignee>`. Взять её себе? (yes/no)
   ```
 
-  - yes → `bd update <task-id> -a "$(flow-actor)"`, then `bd sync`.
+  - yes → `bd update <task-id> -a "$(flow-actor)"`, then `flow-sync push`.
   - no → continue without changing assignee (pair work is fine). Proceed to Step 5.
 
 Do NOT use `bd update --claim` — it fails when the task is already claimed, even by you, and it changes status, which is not this skill's job.
@@ -352,7 +352,7 @@ This is the final output. The user sees it and starts working.
 ```
 User: /flow:continue
 
-Agent: [runs bd sync]
+Agent: [runs flow-sync pull]
        [runs flow-find-leaf]
 
        Задача в работе:
@@ -386,9 +386,9 @@ Agent: [runs bd show → assignee == artem.vasin → no assignee action]
 ```
 User: /flow:continue elf.3
 
-Agent: [runs bd sync]
+Agent: [runs flow-sync pull]
        [validates claude-tools-elf.3 is in_progress → OK]
-       [assignee empty → bd update claude-tools-elf.3 -a "$(flow-actor)" + bd sync → "Назначил задачу на вас."]
+       [assignee empty → bd update claude-tools-elf.3 -a "$(flow-actor)" + flow-sync push → "Назначил задачу на вас."]
        [reads Git: → feature/claude-tools-elf.3-task-selection-optimization]
        [finds branch locally]
        [offers checkout or worktree]
