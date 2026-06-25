@@ -20,6 +20,7 @@ Exit code is always 0.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -31,11 +32,22 @@ README_REF = 'plugins/flow/README.md, раздел "bd requirements and migratio
 def has_remote() -> bool:
     """Return True when a Dolt remote is configured (so pull/push can work).
 
-    A failing detect command (e.g. old bd without the `dolt` subcommand) is
-    treated as "no remote" so the caller degrades gracefully instead of erroring.
+    Detection uses `bd dolt remote list --json`, which prints `null` when no
+    remote is configured and a non-empty JSON array when one is. (Bare
+    `bd dolt remote` prints help text and exits 0, and plain `remote list`
+    prints "No remotes configured." — both are non-empty, so neither is a
+    reliable signal; the JSON form is.) A failing command (e.g. old bd without
+    the `dolt` subcommand) or unparseable output is treated as "no remote" so
+    the caller degrades gracefully instead of erroring.
     """
-    result = subprocess.run([BD, "dolt", "remote"], capture_output=True, text=True, check=False)
-    return result.returncode == 0 and bool(result.stdout.strip())
+    result = subprocess.run([BD, "dolt", "remote", "list", "--json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return False
+    return bool(data)
 
 
 def run_sync(action: str) -> None:

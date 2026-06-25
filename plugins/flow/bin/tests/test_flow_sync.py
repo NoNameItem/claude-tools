@@ -10,10 +10,13 @@ from conftest import run_helper
 def _fake_bd(tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_errors: bool = False):
     """Write a fake `bd` that logs argv and simulates dolt remote/pull/push.
 
-    Returns (env, calls_path). `calls_path` accumulates one line per invocation.
+    Models real bd 1.0.5: `dolt remote list --json` prints `null` when no remote
+    is configured and a JSON array when one is. Returns (env, calls_path);
+    `calls_path` accumulates one line per invocation.
     """
     bd_path = tmp_path / "fake-bd"
     calls = tmp_path / "calls.txt"
+    remote_json = '[{"name": "origin", "sql_url": "git+ssh://x", "cli_url": "git+ssh://x"}]'
     bd_path.write_text(
         "#!/usr/bin/env python3\n"
         "import sys\n"
@@ -21,14 +24,14 @@ def _fake_bd(tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_err
         f"REMOTE = {remote!r}\n"
         f"OP_FAILS = {op_fails!r}\n"
         f"DETECT_ERRORS = {detect_errors!r}\n"
+        f"REMOTE_JSON = {remote_json!r}\n"
         "args = sys.argv[1:]\n"
         "open(CALLS, 'a').write(' '.join(args) + '\\n')\n"
-        "if args[:2] == ['dolt', 'remote']:\n"
+        "if args[:3] == ['dolt', 'remote', 'list']:\n"
         "    if DETECT_ERRORS:\n"
         "        sys.stderr.write('unknown command \"dolt\"\\n')\n"
         "        sys.exit(1)\n"
-        "    if REMOTE:\n"
-        "        sys.stdout.write('origin\\n')\n"
+        "    sys.stdout.write((REMOTE_JSON if REMOTE else 'null') + '\\n')\n"
         "    sys.exit(0)\n"
         "if args[:2] in (['dolt', 'pull'], ['dolt', 'push']):\n"
         "    if OP_FAILS:\n"
