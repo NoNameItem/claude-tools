@@ -102,7 +102,7 @@ flow is **mode-agnostic** — it runs the same `bd dolt` commands whatever stora
 
 In **every** mode, issue data reaches git the same way — `bd dolt push` ships the store to a special **`refs/dolt/data`** ref on the remote, *not* as files in your branches. Only small pointer files (`.beads/config.yaml`, `.beads/metadata.json`) are ever committed.
 
-**auto-commit caveat (handled for you):** server-class modes default `dolt.auto-commit=off` (the server owns its transaction lifecycle). So `flow-sync` runs `bd dolt commit` before every push/pull — otherwise an uncommitted working set would never leave the machine. Under embedded's `auto-commit=on` that commit is a no-op. No configuration needed.
+**auto-commit (handled for you):** `bd dolt push` ships only *committed* Dolt commits. If `dolt.auto-commit` is ever `off` or `batch` (some bd builds/server setups use that so the server owns its transaction lifecycle), an uncommitted working set would never leave the machine. So `flow-sync` runs `bd dolt commit` before every push/pull — a no-op when auto-commit is `on` (the default on bd 1.0.5, embedded and shared-server alike). No configuration needed.
 
 ## Why Multiple Sessions?
 
