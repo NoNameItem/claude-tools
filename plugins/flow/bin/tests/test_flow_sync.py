@@ -7,7 +7,9 @@ from pathlib import Path
 from conftest import run_helper
 
 
-def _fake_bd(tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_errors: bool = False):
+def _fake_bd(
+    tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_errors: bool = False, commit_fails: bool = False
+):
     """Write a fake `bd` that logs argv and simulates dolt remote/pull/push.
 
     Models real bd 1.0.5: `dolt remote list --json` prints `null` when no remote
@@ -24,6 +26,7 @@ def _fake_bd(tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_err
         f"REMOTE = {remote!r}\n"
         f"OP_FAILS = {op_fails!r}\n"
         f"DETECT_ERRORS = {detect_errors!r}\n"
+        f"COMMIT_FAILS = {commit_fails!r}\n"
         f"REMOTE_JSON = {remote_json!r}\n"
         "args = sys.argv[1:]\n"
         "open(CALLS, 'a').write(' '.join(args) + '\\n')\n"
@@ -32,6 +35,12 @@ def _fake_bd(tmp_path: Path, *, remote: bool, op_fails: bool = False, detect_err
         "        sys.stderr.write('unknown command \"dolt\"\\n')\n"
         "        sys.exit(1)\n"
         "    sys.stdout.write((REMOTE_JSON if REMOTE else 'null') + '\\n')\n"
+        "    sys.exit(0)\n"
+        "if args[:2] == ['dolt', 'commit']:\n"
+        "    if COMMIT_FAILS:\n"
+        "        sys.stderr.write('database is read only\\n')\n"
+        "        sys.exit(1)\n"
+        "    sys.stdout.write('Nothing to commit.\\n')\n"
         "    sys.exit(0)\n"
         "if args[:2] in (['dolt', 'pull'], ['dolt', 'push']):\n"
         "    if OP_FAILS:\n"
@@ -93,3 +102,33 @@ def test_invalid_action_rejected(tmp_path):
     env, _ = _fake_bd(tmp_path, remote=True)
     r = run_helper("flow-sync", "frobnicate", env=env)
     assert r.returncode != 0  # argparse rejects unknown choice
+
+
+def test_push_commits_before_push(tmp_path):
+    env, calls = _fake_bd(tmp_path, remote=True)
+    r = run_helper("flow-sync", "push", env=env)
+    assert r.returncode == 0
+    assert r.stderr == ""
+    lines = calls.read_text().splitlines()
+    commit_i = next(i for i, ln in enumerate(lines) if ln.startswith("dolt commit"))
+    push_i = next(i for i, ln in enumerate(lines) if ln.startswith("dolt push"))
+    assert commit_i < push_i  # flush before push so auto-commit=off can't drop data
+
+
+def test_pull_commits_before_pull(tmp_path):
+    env, calls = _fake_bd(tmp_path, remote=True)
+    r = run_helper("flow-sync", "pull", env=env)
+    assert r.returncode == 0
+    assert r.stderr == ""
+    lines = calls.read_text().splitlines()
+    commit_i = next(i for i, ln in enumerate(lines) if ln.startswith("dolt commit"))
+    pull_i = next(i for i, ln in enumerate(lines) if ln.startswith("dolt pull"))
+    assert commit_i < pull_i
+
+
+def test_commit_failure_is_non_blocking(tmp_path):
+    env, calls = _fake_bd(tmp_path, remote=True, commit_fails=True)
+    r = run_helper("flow-sync", "push", env=env)
+    assert r.returncode == 0  # best-effort: a failed commit never blocks
+    assert "dolt push" in calls.read_text()  # op still runs
+    assert "commit" in r.stderr.lower()  # but warns about the commit

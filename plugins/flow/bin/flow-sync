@@ -58,6 +58,22 @@ def run_sync(action: str) -> None:
         sys.stderr.write(f"flow-sync: {action} не удалось ({detail}); синхронизируйте вручную — см. {README_REF}.\n")
 
 
+def flush_commit() -> None:
+    """Commit pending changes before a remote op so auto-commit=off can't drop them.
+
+    `bd dolt commit` is a no-op ("Nothing to commit.", exit 0) when the working
+    set is already committed (embedded defaults to dolt.auto-commit=on). Server
+    and shared-server modes default auto-commit=off, so without this a bare
+    `bd dolt push` would ship only committed data and silently leave the working
+    set behind. Best-effort: on failure (e.g. the "database is read only" class
+    seen under concurrent load) warn and continue — never raise or block.
+    """
+    result = subprocess.run([BD, "dolt", "commit"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or "unknown error").splitlines()[0]
+        sys.stderr.write(f"flow-sync: commit не удался ({detail}); продолжаю синхронизацию — см. {README_REF}.\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Best-effort Dolt-native sync for flow.")
     parser.add_argument("action", choices=["pull", "push"])
@@ -67,6 +83,7 @@ def main() -> int:
         sys.stderr.write(f"flow-sync: dolt-remote не настроен — синхронизация на вас; см. {README_REF}.\n")
         return 0
 
+    flush_commit()
     run_sync(action)
     return 0
 
