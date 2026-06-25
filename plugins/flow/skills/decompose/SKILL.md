@@ -25,7 +25,7 @@ This skill decomposes a task into subtasks through collaborative discussion. The
 | 5. **Merge** | Check existing subtasks | Skip duplicates |
 | 6. **Create** | Only after explicit confirmation | `bd create` for each |
 | 7. **Record** | Write Decomposition section | Append to design doc |
-| 8. Sync | `bd sync` | Persist changes |
+| 8. Sync | `flow-sync push` | Persist changes |
 
 ## Workflow
 
@@ -194,7 +194,7 @@ git commit -m "docs(flow): add decomposition to design doc"
 ### 7. Sync
 
 ```bash
-bd sync
+flow-sync push
 ```
 
 ## Scope Boundaries

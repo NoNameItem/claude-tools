@@ -344,7 +344,7 @@ Skipped (user): 0
 - Update existing beads tasks from SonarQube
 - Configure SonarCloud base URL
 - Create branches or manage git workflow
-- Run bd sync (separate concern; user runs after if needed)
+- Run flow-sync push (separate concern; user runs after if needed)
 - Auto-create without preview
 
 ## Red Flags - STOP
