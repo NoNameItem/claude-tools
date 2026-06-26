@@ -100,7 +100,7 @@ flow is **mode-agnostic** — it runs the same `bd dolt` commands whatever stora
 - **Embedded** (default): in-process engine, store in `.beads/embeddeddolt/`, single-writer. Zero setup.
 - **Server / shared-server**: a `dolt sql-server` — per-project, or one shared server for all projects on the machine at `~/.beads/shared-server/`. Required to view tasks in a TUI like [Perles](https://github.com/zjrosen/perles), and allows concurrent writers. Shared-server keeps git-coupled sync exactly as embedded: each project is still its own Dolt database with its own remote.
 
-In **every** mode, issue data reaches git the same way — `bd dolt push` ships the store to a special **`refs/dolt/data`** ref on the remote, *not* as files in your branches. Only small pointer files (`.beads/config.yaml`, `.beads/metadata.json`) are ever committed.
+In **every** mode, issue data reaches git the same way — `bd dolt push` ships the store to a special **`refs/dolt/data`** ref on the remote, *not* as files in your branches. The small `.beads/config.yaml` / `.beads/metadata.json` pointer files hold per-machine settings (Dolt mode, remote, identity); whether you track or gitignore them is your project's choice.
 
 **auto-commit (handled for you):** `bd dolt push` ships only *committed* Dolt commits. If `dolt.auto-commit` is ever `off` or `batch` (some bd builds/server setups use that so the server owns its transaction lifecycle), an uncommitted working set would never leave the machine. So `flow-sync` runs `bd dolt commit` before every push/pull — a no-op when auto-commit is `on` (the default on bd 1.0.5, embedded and shared-server alike). No configuration needed.
 
