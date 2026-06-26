@@ -232,7 +232,7 @@ flow-sync push
 
 Always run at end, regardless of how many tasks closed.
 
-Confirm sync completed.
+`flow-sync push` is **best-effort**: it exits 0 even when the remote push fails and only reports problems on **stderr**, so a clean exit does not by itself confirm the sync succeeded. Check stderr for warnings (e.g. no dolt-remote configured, or a push failure to handle manually).
 
 ### 8. Cleanup Branch and Worktree
 
