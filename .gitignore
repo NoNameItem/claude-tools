@@ -50,6 +50,12 @@ uv.lock
 # local so each machine/clone picks its own mode. Project identity is recovered
 # from refs/dolt/data via `bd bootstrap` on a fresh clone.
 .beads/metadata.json
+# config.yaml carries the per-machine server mode (dolt.shared-server) next to
+# sync.remote; keep it local too — the remote is auto-detected from git origin.
+.beads/config.yaml
+# bd backup destination + activity marker (local, machine-specific)
+.beads/dolt-backup.json
+.beads/last-touched
 
 # Local config (keep template, ignore actual)
 *.local
