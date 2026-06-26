@@ -12,11 +12,11 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # Skip forked PRs: a fork's pull_request run has no access to repo secrets
+    # (CLAUDE_CODE_OAUTH_TOKEN would be empty), so the job would just fail.
+    # Restrict to same-repo PRs. You can AND additional author filters here, e.g.
+    # github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'.
+    if: github.event.pull_request.head.repo.full_name == github.repository
 
     runs-on: ubuntu-latest
     permissions:
@@ -30,6 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Run Claude Code Review
         id: claude-review
