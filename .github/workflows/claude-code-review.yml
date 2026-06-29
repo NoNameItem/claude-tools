@@ -13,10 +13,13 @@ on:
 jobs:
   claude-review:
     # Skip forked PRs: a fork's pull_request run has no access to repo secrets
-    # (CLAUDE_CODE_OAUTH_TOKEN would be empty), so the job would just fail.
-    # Restrict to same-repo PRs. You can AND additional author filters here, e.g.
+    # (CLAUDE_CODE_OAUTH_TOKEN would be empty), so the job would just fail. The same
+    # applies to Dependabot PRs (same-repo, but secret-less), so skip those too.
+    # You can AND additional author filters here, e.g.
     # github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
 
     runs-on: ubuntu-latest
     permissions:
