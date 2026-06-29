@@ -25,6 +25,7 @@ bd dolt push          # Push task changes to the remote
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
+   bd dolt commit  # flush working set before sync (no-op when auto-commit is on)
    bd dolt pull
    bd dolt push
    git push
