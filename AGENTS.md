@@ -9,6 +9,7 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
+bd dolt pull          # Pull task changes from the remote
 bd dolt push          # Push task changes to the remote
 ```
 
@@ -24,6 +25,7 @@ bd dolt push          # Push task changes to the remote
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
+   bd dolt pull
    bd dolt push
    git push
    git status  # MUST show "up to date with origin"

@@ -100,7 +100,13 @@ Follow these steps **in order**. Do not skip steps.
 ```bash
 # Require a supported bd (>= 1.0.0); STOP the skill if not satisfied
 flow-require-bd
+```
 
+If `flow-require-bd` exits non-zero, **STOP** — print its message and run nothing else (it requires `bd >= 1.0.0`; see `plugins/flow/README.md`, "bd requirements and migration"). Keep it in its own block so a failed guard cannot fall through to the commands below.
+
+Only if the guard passed:
+
+```bash
 # Pull latest tasks from the shared store (other machines)
 flow-sync pull
 
@@ -108,7 +114,7 @@ flow-sync pull
 flow-in-worktree && echo "IN_WORKTREE=true" || echo "IN_WORKTREE=false"
 ```
 
-If `flow-require-bd` exits non-zero, **STOP** — print its message and run nothing else (it requires `bd >= 1.0.0`; see `plugins/flow/README.md`, "bd requirements and migration"). Otherwise `flow-sync pull` brings task changes from other machines. Store `IN_WORKTREE` for Step 6.
+`flow-sync pull` brings task changes from other machines. Store `IN_WORKTREE` for Step 6.
 
 ### 1. Build and Display Task Tree
 
