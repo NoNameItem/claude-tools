@@ -21,7 +21,7 @@ repo-wide agent and review guidance.
   `flow-find-branches` / `flow-current-task` / `flow-in-worktree` / `flow-worktree-dir`
   (branch & worktree resolution), `flow-link-doc` (set `Git:`/`Design:`/`Plan:` lines),
   `flow-find-doc` (newest spec/plan), `flow-require-bd` (enforce a minimum bd version),
-  `flow-sync` (sync wrapper).
+  `flow-sync` (best-effort `bd dolt` commit + push/pull wrapper).
 
 **Principles:**
 - **bd only via the CLI** — helpers shell out to `bd` (`bd graph`, `bd show`, `bd create`,
