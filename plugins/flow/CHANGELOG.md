@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0](https://github.com/NoNameItem/claude-tools/compare/flow-2.1.0...flow-3.0.0) (2026-06-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **flow:** redesign sync for Dolt-native bd 1.0.x (requires bd >= 1.0.0) ([#85](https://github.com/NoNameItem/claude-tools/issues/85))
+
+### Features
+
+* **flow:** bd 1.0.x groundwork — decision type, version-guard helper, schema-compat tests ([#82](https://github.com/NoNameItem/claude-tools/issues/82)) ([41121d9](https://github.com/NoNameItem/claude-tools/commit/41121d9d0bbbae390e612fb5031649e315e1307a))
+* **flow:** redesign sync for Dolt-native bd 1.0.x (requires bd &gt;= 1.0.0) ([#85](https://github.com/NoNameItem/claude-tools/issues/85)) ([bd79177](https://github.com/NoNameItem/claude-tools/commit/bd79177f42de6dc68108d6777549ab6a2cd26c4f))
+
 ## [2.1.0](https://github.com/NoNameItem/claude-tools/compare/flow-2.0.0...flow-2.1.0) (2026-06-18)
 
 
