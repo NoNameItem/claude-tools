@@ -25,11 +25,19 @@ This skill decomposes a task into subtasks through collaborative discussion. The
 | 5. **Merge** | Check existing subtasks | Skip duplicates |
 | 6. **Create** | Only after explicit confirmation | `bd create` for each |
 | 7. **Record** | Write Decomposition section | Append to design doc |
-| 8. Sync | `bd sync` | Persist changes |
+| 8. Sync | `flow-sync push` | Persist changes |
 
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
+
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
 
 ### 1. Find Task and Design Document
 
@@ -194,7 +202,7 @@ git commit -m "docs(flow): add decomposition to design doc"
 ### 7. Sync
 
 ```bash
-bd sync
+flow-sync push
 ```
 
 ## Scope Boundaries

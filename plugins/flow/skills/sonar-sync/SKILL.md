@@ -39,7 +39,15 @@ This skill synchronizes SonarQube/SonarCloud issues with beads tasks. Two modes:
 
 Follow these steps **in order**. Do not skip steps.
 
-### 0. Mode Detection
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
+
+### 0.1. Mode Detection
 
 **If `--pr <id>` passed:** PR mode with that ID.
 
@@ -283,7 +291,7 @@ bd create --title "Reduce Cognitive Complexity (model.py)" --type chore --priori
 ..."
 ```
 
-**Create sequentially** - parallel `bd create` may conflict with SQLite. Do NOT dispatch parallel subagents for creation.
+**Create sequentially** - embedded Dolt is single-writer (a file lock), so parallel `bd create` can contend. Do NOT dispatch parallel subagents for creation. (Server/shared-server modes accept concurrent writes, but sequential is the safe default in every mode.)
 
 **Shell escaping:** If the SonarQube message contains special characters (`$`, backticks, `!`), use single quotes for the description or escape them. Prefer using `--body-file -` with stdin to avoid shell escaping issues for long descriptions.
 
@@ -344,7 +352,7 @@ Skipped (user): 0
 - Update existing beads tasks from SonarQube
 - Configure SonarCloud base URL
 - Create branches or manage git workflow
-- Run bd sync (separate concern; user runs after if needed)
+- Run flow-sync push (separate concern; user runs after if needed)
 - Auto-create without preview
 
 ## Red Flags - STOP
@@ -371,7 +379,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Sync means import everything" | Sync means preview + user selection. Never auto-create. |
 | "Deduplication is overhead" | Without dedup, you create duplicate tasks. Always dedup. |
 | "I know the right parent" | Ask. User might want a different parent or new one. |
-| "Parallel bd create is faster" | SQLite conflicts. Sequential is correct. |
+| "Parallel bd create is faster" | Embedded Dolt is single-writer; parallel creates contend. Sequential is correct (and safe in every mode). |
 | "Subagent is overkill" | Subagent keeps context clean. 500+ issues pollute context. |
 | "Grouping would be helpful" | Out of scope. Show flat list, let user decide. |
 | "Skip table for small batches" | Always show table. Even 1 issue gets a preview. |
@@ -508,7 +516,7 @@ Agent: [User selected 8 issues]
        Error: database is locked
 ```
 
-**Problem:** SQLite doesn't handle parallel writes. Create sequentially.
+**Problem:** embedded Dolt is single-writer (file lock); parallel writes contend. Create sequentially (safe in every mode).
 
 ## Edge Cases
 

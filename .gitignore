@@ -30,11 +30,39 @@ uv.lock
 # Git worktrees
 .worktrees/
 
-# Beads daemon logs
+# Beads — embedded Dolt store is the source of truth; JSONL is a passive export.
+# bd 1.0.x keeps the store in .beads/dolt/; the JSONL is not a transport and is not tracked.
 .beads/*.log.gz
+.beads/issues.jsonl
+.beads/interactions.jsonl
+.beads/dolt/
+.beads/embeddeddolt/
+# bd 1.0.x runtime / credentials (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+.beads/shared-server/
+# server-mode port/pid files (machine-local)
+.beads/dolt-server.port
+.beads/*.port
+# metadata.json holds the per-machine dolt mode (embedded vs server); keep it
+# local so each machine/clone picks its own mode. Project identity is recovered
+# from refs/dolt/data via `bd bootstrap` on a fresh clone.
+.beads/metadata.json
+# config.yaml carries the per-machine server mode (dolt.shared-server) next to
+# sync.remote; keep it local too — the remote is auto-detected from git origin.
+.beads/config.yaml
+# bd backup destination + activity marker (local, machine-specific)
+.beads/dolt-backup.json
+.beads/last-touched
 
 # Local config (keep template, ignore actual)
 *.local
+
+# Local Claude Code settings (machine-specific; shared .claude/ config stays tracked)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Implementation plans (superpowers:writing-plans output) — local-only workflow
 # scaffolding. Design specs in docs/superpowers/specs/ are tracked; plans are not.

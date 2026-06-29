@@ -23,7 +23,7 @@ This is a SIMPLE task. Find design document, save link to task description. Done
 | 1. Find Task | Get in_progress leaf task | Ask if multiple |
 | 2. Find Design | Newest in docs/superpowers/specs/ or docs/plans/ | Recent file |
 | 3. **Save Link** | Add `Design: path` to description | **PRIMARY GOAL** |
-| 4. Sync | `bd sync` | Persist to git |
+| 4. Sync | `flow-sync push` | Persist to git |
 | 5. Suggest | Offer `/flow:decompose` | If task needs subtasks |
 
 **Total actions:** 2 (save link + sync)
@@ -46,6 +46,14 @@ This is a SIMPLE task. Find design document, save link to task description. Done
 ## Workflow
 
 Follow these steps **in order**. Do not add steps.
+
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
 
 ### 1. Find In-Progress Leaf Task
 
@@ -90,7 +98,7 @@ Ask: "Task already has Design link: {old-link}. Update to {new-link}? (yes/no)"
 ### 4. Sync Changes
 
 ```bash
-bd sync
+flow-sync push
 ```
 
 Persist the design link to git.

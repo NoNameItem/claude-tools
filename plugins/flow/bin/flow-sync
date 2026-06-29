@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""Best-effort Dolt-native sync wrapper for flow skills.
+
+Usage: flow-sync (pull | push)
+
+Wraps `bd dolt pull` / `bd dolt push` (bd 1.0.x). This helper never blocks a
+skill — it informs, it does not gate:
+
+    - no dolt-remote configured  -> short note on stderr, exit 0
+    - remote configured, op ok    -> silent, exit 0
+    - remote configured, op fails -> warning on stderr, exit 0
+
+Assumes the version guard (flow-require-bd, Step 0) already ensured
+bd >= 1.0.0, so the version is not re-checked here. The bd binary is resolved
+via the BD_BIN override (default `bd`), like the other flow helpers.
+
+Exit code is always 0.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+BD = os.environ.get("BD_BIN", "bd")
+README_REF = 'plugins/flow/README.md, раздел "bd requirements and migration"'
+
+
+def has_remote() -> bool:
+    """Return True when a Dolt remote is configured (so pull/push can work).
+
+    Detection uses `bd dolt remote list --json`, which prints `null` when no
+    remote is configured and a non-empty JSON array when one is. (Bare
+    `bd dolt remote` prints help text and exits 0, and plain `remote list`
+    prints "No remotes configured." — both are non-empty, so neither is a
+    reliable signal; the JSON form is.) A failing command (e.g. old bd without
+    the `dolt` subcommand) or unparseable output is treated as "no remote" so
+    the caller degrades gracefully instead of erroring.
+    """
+    result = subprocess.run([BD, "dolt", "remote", "list", "--json"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return False
+    return bool(data)
+
+
+def run_sync(action: str) -> None:
+    """Run `bd dolt <action>`; warn on failure but never raise or block."""
+    result = subprocess.run([BD, "dolt", action], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or "unknown error").splitlines()[0]
+        sys.stderr.write(f"flow-sync: {action} не удалось ({detail}); синхронизируйте вручную — см. {README_REF}.\n")
+
+
+def flush_commit() -> None:
+    """Commit pending changes before a remote op so auto-commit=off can't drop them.
+
+    `bd dolt commit` is a no-op ("Nothing to commit.", exit 0) when the working
+    set is already committed (embedded defaults to dolt.auto-commit=on). Server
+    and shared-server modes default auto-commit=off, so without this a bare
+    `bd dolt push` would ship only committed data and silently leave the working
+    set behind. Best-effort: on failure (e.g. the "database is read only" class
+    seen under concurrent load) warn and continue — never raise or block.
+    """
+    result = subprocess.run([BD, "dolt", "commit"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        detail = (result.stderr.strip() or result.stdout.strip() or "unknown error").splitlines()[0]
+        sys.stderr.write(f"flow-sync: commit не удался ({detail}); продолжаю синхронизацию — см. {README_REF}.\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Best-effort Dolt-native sync for flow.")
+    parser.add_argument("action", choices=["pull", "push"])
+    action = parser.parse_args().action
+
+    if not has_remote():
+        sys.stderr.write(f"flow-sync: dolt-remote не настроен — синхронизация на вас; см. {README_REF}.\n")
+        return 0
+
+    flush_commit()
+    run_sync(action)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -22,14 +22,22 @@ This skill handles task completion: close task, clean up plan files, check paren
 | 4. **Plan Cleanup** | Find and remove plan file | Ask: delete / archive / keep |
 | 5. **Check Parent** | Recursive parent check | With confirmation |
 | 6. **Ask** | Before closing parent | Even if "obvious" |
-| 7. **Sync** | `bd sync` | Always, at end |
+| 7. **Sync** | `flow-sync push` | Always, at end |
 | 8. **Cleanup** | Delete branch/worktree | Only if branch matches task; ask first |
 
-**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always clean up plan files. Always run bd sync. Offer cleanup after sync.
+**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always clean up plan files. Always run flow-sync push. Offer cleanup after sync.
 
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
+
+### 0. Require supported bd (version guard)
+
+```bash
+flow-require-bd
+```
+
+If this exits non-zero, **STOP**: print its stderr message and run no further commands. flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, section "bd requirements and migration".
 
 ### 1. Check Git Branch (MANDATORY FIRST STEP)
 
@@ -216,15 +224,15 @@ Continue checking grandparents, great-grandparents, etc. until:
 
 **Always ask at each level.** Do NOT auto-close parents.
 
-### 7. Run bd sync (MANDATORY)
+### 7. Run flow-sync push (MANDATORY)
 
 ```bash
-bd sync
+flow-sync push
 ```
 
 Always run at end, regardless of how many tasks closed.
 
-Confirm sync completed.
+`flow-sync push` is **best-effort**: it exits 0 even when the remote push fails and only reports problems on **stderr**, so a clean exit does not by itself confirm the sync succeeded. Check stderr for warnings (e.g. no dolt-remote configured, or a push failure to handle manually).
 
 ### 8. Cleanup Branch and Worktree
 
@@ -297,7 +305,7 @@ No cleanup performed. User can clean up manually later.
 ✅ Remove `Plan:` link from description after delete/archive
 ✅ Check parents recursively
 ✅ Ask before closing each parent
-✅ Run bd sync at end
+✅ Run flow-sync push at end
 ✅ Offer to clean up branch and worktree (Step 8)
 ✅ Delete local branch, remote branch, worktree (after confirmation)
 ✅ Switch to default branch and pull after cleanup
@@ -323,7 +331,7 @@ If you're thinking any of these, STOP and follow the workflow:
 
 - "All children closed → close parent"
 - "Branch check unnecessary"
-- "bd sync is obvious (skip it)"
+- "flow-sync push is obvious (skip it)"
 - "Use SQL for efficiency"
 - "Parent obviously should close"
 - "Being helpful by auto-closing cascade"
@@ -338,7 +346,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Auto-delete the plan, user obviously doesn't need it"
 - "Plan file is outside my scope"
 
-**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Always check for plan files (linked AND unlinked). Run bd sync. Offer cleanup only if branch matches task.**
+**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Always check for plan files (linked AND unlinked). Run flow-sync push. Offer cleanup only if branch matches task.**
 
 ## Common Rationalizations
 
@@ -346,7 +354,7 @@ If you're thinking any of these, STOP and follow the workflow:
 |--------|---------|
 | "All children closed → close parent" | Ask first. User might add more children or want to review. |
 | "Branch check unnecessary" | Feature branch needs different workflow. Always check. |
-| "bd sync is obvious" | Obvious steps get skipped. Make it explicit. |
+| "flow-sync push is obvious" | Obvious steps get skipped. Make it explicit. |
 | "Use SQL for efficiency" | bd close has logging, events, validation. Use it. |
 | "Parent obviously should close" | Obvious to you ≠ user wants it. Ask. |
 | "Being helpful by auto-closing" | Asking IS being helpful. Assuming isn't. |
@@ -376,7 +384,7 @@ Agent: [Closes task]
 **Problems:**
 - Didn't check branch
 - Auto-closed parent without asking
-- Didn't run bd sync
+- Didn't run flow-sync push
 
 ### ✅ GOOD: Ask before closing parent
 
@@ -391,7 +399,7 @@ Agent: [Checks branch: master, OK to proceed]
 
 User: yes
 Agent: [Closes parent]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Closed claude-tools-abc.3
        ✓ Closed claude-tools-abc (parent)
@@ -403,7 +411,7 @@ Agent: [Closes parent]
 **Correct because:**
 - Checked branch first
 - Asked before closing parent
-- Ran bd sync
+- Ran flow-sync push
 - Clear confirmation
 
 ### ❌ BAD: Auto-delete plan without asking
@@ -452,7 +460,7 @@ User: 2
 Agent: [Moves to docs/archive/]
        [Removes Plan: link from description]
        [Checks parent, has open children]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Closed claude-tools-abc
        ✓ Plan archived to docs/archive/
@@ -487,7 +495,7 @@ Agent: [Checks branch: master, OK]
 User: 1
 Agent: [Deletes file]
        [Checks parent, has open children]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Closed claude-tools-xyz
        ✓ Plan deleted
@@ -546,7 +554,7 @@ Agent: [Checks branch: feature/add-auth]
 
 User: yes
 Agent: [Continues to step 2, finds task, closes it]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Closed claude-tools-xyz
        ✓ Synced with remote
@@ -570,7 +578,7 @@ Agent: [Checks branch: feature/claude-tools-elf.6-delete-branches-worktrees]
        [Asks user, user says yes]
        [Closes task claude-tools-elf.6]
        [Checks parent: has open children, skip]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        You are on branch `feature/claude-tools-elf.6-delete-branches-worktrees`.
 
@@ -607,7 +615,7 @@ Agent: [cd to main repo root]
 
 ```
 Agent: [Closes task]
-       [Runs bd sync]
+       [Runs flow-sync push]
        [Immediately deletes branch and worktree]
 ```
 
@@ -618,7 +626,7 @@ Agent: [Closes task]
 ```
 Agent: [On master branch]
        [Closes task claude-tools-elf.6]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Closed claude-tools-elf.6
        ✓ Synced with remote
@@ -628,7 +636,7 @@ Agent: [On master branch]
 
 **Correct because:** Branch "master" doesn't contain task ID "elf.6", so cleanup is silently skipped.
 
-### ❌ BAD: Skip bd sync
+### ❌ BAD: Skip flow-sync push
 
 ```
 User: "flow:done"
@@ -637,16 +645,16 @@ Agent: [Closes task]
        Done!
 ```
 
-**Problem:** Skipped bd sync at end.
+**Problem:** Skipped flow-sync push at end.
 
-### ✅ GOOD: Always bd sync
+### ✅ GOOD: Always flow-sync push
 
 ```
 User: "flow:done"
 Agent: [Checks branch]
        [Closes task]
        [Asks about parent, closes if yes]
-       [Runs bd sync]
+       [Runs flow-sync push]
 
        ✓ Synced with remote
 
@@ -654,7 +662,7 @@ Agent: [Checks branch]
 ```
 
 **Correct because:**
-- bd sync always run at end
+- flow-sync push always run at end
 - Explicit confirmation
 
 ## Edge Cases
@@ -719,7 +727,7 @@ Close it too? (yes/no)
 
 Closed claude-tools-abc
 
-No more parents. Running bd sync...
+No more parents. Running flow-sync push...
 ```
 
 ### Parent Has Open Sibling
@@ -732,7 +740,7 @@ Parent claude-tools-abc still has open children:
 
 Not asking to close parent (has open children).
 
-Running bd sync...
+Running flow-sync push...
 ```
 
 ### Cleanup: Worktree Remove Fails
@@ -779,7 +787,7 @@ Always follow the workflow.
 
 **Ask before closing parents.** Even when "obviously" all children closed.
 
-**Run bd sync ALWAYS.** At end, no exceptions.
+**Run flow-sync push ALWAYS.** At end, no exceptions.
 
 **Offer cleanup.** If branch matches task, show what will be deleted and ask. Non-blocking — failure doesn't undo the close.
 
