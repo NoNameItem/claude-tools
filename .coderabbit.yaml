@@ -11,6 +11,9 @@ reviews:
     - "!.beads/**"
     - "!**/*.lock"
   auto_review:
+    # Disabled: reviews are handled by Codex + Claude (see .github/workflows/).
+    # Flip to true (or remove this line) to turn CodeRabbit auto-review back on.
+    enabled: false
     labels:
       - "!autorelease: pending"
     base_branches:
