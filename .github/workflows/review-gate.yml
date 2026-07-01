@@ -17,13 +17,14 @@ name: Review Gate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
     types: [submitted]
 
 permissions:
   contents: read
   pull-requests: read
+  issues: read # reactions on a PR are read via the Issues API endpoint
 
 concurrency:
   group: review-gate-${{ github.event.pull_request.number }}
@@ -58,12 +59,15 @@ jobs:
           deadline=$(( $(date +%s) + TIMEOUT ))
           while :; do
             # Findings path: a Codex review pinned to the exact head SHA.
-            review_head=$(gh api "repos/$REPO/pulls/$PR/reviews" \
-              --jq "[.[] | select(.user.login==\"$CODEX_BOT\" and .commit_id==\"$HEAD_SHA\")] | length")
+            # --paginate applies --jq per page, so emit ids and count lines (a per-page
+            # `length` would only see the last page on a PR with >30 reviews).
+            review_head=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              --jq ".[] | select(.user.login==\"$CODEX_BOT\" and .commit_id==\"$HEAD_SHA\") | .id" | wc -l | tr -d ' ')
             # Clean path: a 👍 reaction newer than the head commit (Codex strips the old 👍
-            # on every push and re-adds it after a clean re-review).
-            thumb_time=$(gh api "repos/$REPO/issues/$PR/reactions" \
-              --jq "[.[] | select(.user.login==\"$CODEX_BOT\" and .content==\"+1\") | .created_at] | max // \"\"")
+            # on every push and re-adds it after a clean re-review). Emit timestamps and take the
+            # latest with sort|tail — a per-page `max` would miss a 👍 past the first 30 reactions.
+            thumb_time=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+              --jq ".[] | select(.user.login==\"$CODEX_BOT\" and .content==\"+1\") | .created_at" | sort | tail -n1)
 
             if [ "$review_head" -gt 0 ]; then
               echo "Codex reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."

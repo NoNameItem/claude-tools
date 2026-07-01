@@ -98,7 +98,7 @@ on:
 
 **Detection (`codex_done(head)`):**
 
-```
+```text
 codex_done = (∃ Codex review with commit_id == HEAD_SHA)            # findings on head
           OR (∃ Codex 👍 reaction with created_at > head commit time)  # clean review of head
 ```
