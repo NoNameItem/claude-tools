@@ -145,7 +145,7 @@ The pre-commit hooks will then verify:
 uv run ty check
 ```
 
-**Always run ty on the whole project — never scope it to changed files.** Unlike ruff (scoped to changed files above), `ty check` takes **no path argument**. ty is cross-file, so a path-scoped run silently skips other affected files — notably **tests**, which are type-checked too — and can pass locally while CI (which runs `uv run ty check` whole-project) fails. ty is also **not** a git pre-commit hook (only `ruff-format`, `ruff`, `single-package-commit`, `beads` run there), so this manual run is the last gate before CI. Rule of thumb: enumerate files for ruff, but always run ty pathless.
+**Always run ty on the whole project — never scope it to changed files.** Unlike ruff (which you scope to changed files above), **run `ty check` with no path argument**. `ty check` *does* accept `[PATH]...`, but a path-scoped run silently skips other affected files — notably **tests**, which are type-checked too — and can pass locally while CI (which runs `uv run ty check` whole-project) fails. ty is also **not** a git pre-commit hook (only `ruff-format`, `ruff`, `single-package-commit`, `beads` run there), so this manual run is the last gate before CI. Rule of thumb: enumerate files for ruff, but always run ty pathless.
 
 **Do not ignore ty warnings.** Warnings like `possibly-missing-attribute` indicate potential None access bugs. Either fix them (add assert for type narrowing) or explicitly justify why they're safe to ignore.
 
@@ -165,7 +165,7 @@ When writing plans that modify Python files, each commit step MUST include:
 
 1. `uv run ruff format <files>`
 2. `uv run ruff check --fix <files>`
-3. `uv run ty check` (for packages — whole project, **no path argument**)
+3. `uv run ty check` (for packages — run pathless to check the whole project)
 4. Then `git add` and `git commit`
 
 This applies to ALL Python files in the repo, including `.github/scripts/`.
