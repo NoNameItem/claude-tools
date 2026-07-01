@@ -87,13 +87,15 @@ Single job whose check-run name is **`review-gate`** (that name is what the rule
 
 ```yaml
 on:
-  pull_request:        { types: [opened, synchronize, reopened] }
-  pull_request_review: { types: [submitted] }
+  pull_request: { types: [opened, synchronize, reopened, ready_for_review] }
 ```
 
 - `pull_request: synchronize` — new head → job runs → polls (re-arm).
-- `pull_request_review: submitted` — fires when Codex posts a *findings* review (or a human
-  reviews) → fast re-evaluation.
+- `ready_for_review` — a draft marked ready re-arms the gate.
+- No `pull_request_review` trigger: a review event's `updated_at` is the review time, not the
+  head's push time, so a review-triggered run would use the wrong freshness cutoff — and a
+  human review on a clean PR could falsely time the gate out. The in-job poll already detects a
+  findings review@head or a fresh 👍 within one interval, so the trigger is unnecessary.
 - No `check_run` trigger needed (the gate no longer observes Claude).
 
 **Detection (`codex_done(head)`):**
@@ -117,8 +119,8 @@ payload, so it stays correct across manual re-runs. (See §9.)
 **Clean-case re-trigger — in-job poll:** a 👍 reaction fires no workflow event, so the job
 **polls** (every 30 s, up to ~12 min — observed Codex latency is ~5–8 min). While polling the
 `review-gate` check is pending (merge blocked); it goes green when Codex settles. On timeout
-it fails with a message to re-run once Codex finishes. The findings path also resolves
-immediately via the `pull_request_review` trigger.
+it fails with a message to re-run once Codex finishes. The same poll also covers the findings
+path — it detects a Codex review@head within one interval.
 
 **Guards / config:** fork guard (`head.repo.full_name == github.repository`),
 `permissions: { contents: read, pull-requests: read }`, `concurrency` keyed on the PR with
@@ -172,10 +174,8 @@ normalize its exit code on a posted review and skip-with-pass on bot-authored co
 1. **Freshness cutoff** — the clean-case check compares the 👍 `created_at` to the head's
    **push time** (`pull_request.updated_at`), not the commit's committer date. This avoids both
    committer-clock skew and the stale-👍 race where an old reaction's timestamp beats a new
-   commit's (older) committer date. Residual edge: on a run triggered by `pull_request_review`
-   rather than a push, `updated_at` is the review time — harmless for the findings path (SHA-
-   matched), at worst a rare extra poll on the clean path. If that ever bites, observe the
-   👀→👍 transition instead.
+   commit's (older) committer date. The gate triggers only on `pull_request` events, so
+   `updated_at` always reflects the head's push (never a review), keeping the cutoff accurate.
 2. **Ruleset sequencing** — must land PR #86 first (so `claude-review` is on `master`).
 3. **Claude check reliability** — leave native unless it flakes chronically (then Phase 3).
 
