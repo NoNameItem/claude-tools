@@ -188,7 +188,10 @@ change, "comment `@codex review` to request a fresh review."
 ## 6. Testing
 
 - **Unit:** `pytest` on `decide()` — the real safety net (every §4.2 row + §4.1 races).
-  Run via the repo's existing `.github/scripts/tests` harness.
+  Run **locally** via `uv run pytest .github/scripts/tests/`. Note: `.github/scripts/tests`
+  is not wired into CI or pre-commit today (only `packages/*/tests` run in CI), so these
+  tests are a developer safety net, not a merge gate — consistent with the existing scripts
+  tests. Wiring the scripts suite into CI is out of scope for this task.
 - **Static:** `actionlint` on `review-gate.yml` (runs shellcheck on the `run:` block).
 - **Lint/format/types:** `uv run ruff format`, `uv run ruff check --fix`, `uv run ty check`
   on the new script + test (per repo pre-commit workflow).
