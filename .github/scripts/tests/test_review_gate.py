@@ -68,3 +68,39 @@ class TestNonContentChange:
 
     def test_reopened_no_evidence_waits(self):
         assert decide("reopened", False, CUTOFF, HEAD, [], []) == "wait"
+
+
+class TestCli:
+    """main(): reads reviews/reactions JSON on stdin, prints pass/wait."""
+
+    def _run(self, payload, *args):
+        import json
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        script = Path(__file__).resolve().parent.parent / "review_gate.py"
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def test_cli_pass(self):
+        payload = {"reviews": [], "reactions": [_thumb(AFTER)]}
+        out = self._run(payload, "--event-action", "synchronize", "--updated-at", CUTOFF, "--head-sha", HEAD)
+        assert out == "pass"
+
+    def test_cli_wait(self):
+        payload = {"reviews": [], "reactions": []}
+        out = self._run(payload, "--event-action", "synchronize", "--updated-at", CUTOFF, "--head-sha", HEAD)
+        assert out == "wait"
+
+    def test_cli_base_changed_flag(self):
+        payload = {"reviews": [_review(HEAD, BEFORE)], "reactions": []}
+        out = self._run(
+            payload, "--event-action", "edited", "--updated-at", CUTOFF, "--head-sha", HEAD, "--base-changed"
+        )
+        assert out == "wait"
