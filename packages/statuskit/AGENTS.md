@@ -11,14 +11,17 @@ it through pluggable **modules**, and prints the formatted line(s). Entry point:
 
 - **`core/`** — I/O-light plumbing. `models.py` holds frozen `StatusInput` /
   `RenderContext` dataclasses (`StatusInput.from_dict()` deserializes the hook JSON with
-  safe fallbacks). `config.py` loads layered TOML (`~/.claude/statuskit.toml` < project
-  `.claude/statuskit.toml` < `.local.toml`). `schema.py` is a declarative, side-effect-free
+  safe fallbacks). `config.py` returns the first config file that exists, in priority order
+  `.claude/statuskit.local.toml` > project `.claude/statuskit.toml` > user
+  `~/.claude/statuskit.toml` (first found wins; files are not merged). `schema.py` is a
+  declarative, side-effect-free
   param system (`param()` / `parse_params()` → values + warnings). `loader.py` maps config
   module names to classes via the `BUILTIN_MODULES` registry.
 - **`modules/`** — each module subclasses `BaseModule[P]` (P = a params dataclass, validated
   at class-creation time), declares `name`/`description`, and implements
-  `render(...) -> str | None` (text, or `None` to skip). Built-ins: `model`, `git`, `beads`,
-  `quota`/`usage_limits`. The user picks and orders them via `modules = [...]` in config.
+  `render(...) -> str | None` (text, or `None` to skip). Built-ins: `model`, `git`,
+  `usage_limits` (`beads` is planned — commented out in `BUILTIN_MODULES`). The user picks
+  and orders them via `modules = [...]` in config.
 
 **Principles:** modular plugin pattern (add a module = register in `BUILTIN_MODULES`, no
 core changes); **error isolation** — the render loop wraps each module in try/except so one
