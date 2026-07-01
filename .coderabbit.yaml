@@ -12,10 +12,12 @@ reviews:
     - "!**/*.lock"
   auto_review:
     # Disabled: reviews are handled by Codex + Claude (see .github/workflows/).
-    # Flip to true (or remove this line) to turn CodeRabbit auto-review back on.
+    # NOTE: a `labels:` filter re-triggers auto-review even when `enabled: false`
+    # (per CodeRabbit docs), and the old negative-only filter would review every PR.
+    # So it's commented out too. Re-enable: set `enabled: true` and restore `labels`.
     enabled: false
-    labels:
-      - "!autorelease: pending"
+    # labels:
+    #   - "!autorelease: pending"
     base_branches:
       - "master"
   finishing_touches:
