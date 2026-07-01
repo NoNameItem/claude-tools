@@ -100,15 +100,19 @@ on:
 
 ```text
 codex_done = (∃ Codex review with commit_id == HEAD_SHA)            # findings on head
-          OR (∃ Codex 👍 reaction with created_at > head commit time)  # clean review of head
+          OR (∃ Codex 👍 reaction with created_at > head push time)   # clean review of head
 ```
 
 **Why the timestamp comparison (the lingering-👍 race):** right after a push the *previous*
 commit's 👍 may still be present for a few seconds/minutes before Codex strips it. A bare
-"👍 exists" check would falsely open the gate. Comparing the 👍 `created_at` against the head
-commit's committer date rejects the stale 👍 and accepts only the fresh one Codex re-adds
-after reviewing the new head. (Assumes committer clock ≈ GitHub time — true for NTP hosts;
-see §9.)
+"👍 exists" check would falsely open the gate. Comparing the 👍 `created_at` against the head's
+**push time** (`pull_request.updated_at` from the triggering event) rejects the stale 👍 and
+accepts only the fresh one Codex re-adds after reviewing the new head. We use the push time,
+**not** the commit's committer date: a committer date is set when the commit is authored
+locally and can predate an earlier commit's 👍 (e.g. a commit made while Codex was still
+reviewing the prior push), which would let that stale 👍 satisfy the gate for unreviewed code.
+`updated_at` is GitHub's own clock (no committer-clock dependency) and is frozen in the event
+payload, so it stays correct across manual re-runs. (See §9.)
 
 **Clean-case re-trigger — in-job poll:** a 👍 reaction fires no workflow event, so the job
 **polls** (every 30 s, up to ~12 min — observed Codex latency is ~5–8 min). While polling the
@@ -134,7 +138,7 @@ immediately via the `pull_request_review` trigger.
 |---|---|
 | First run on a fresh push | `review-gate` pending (polling) until Codex settles — correct. |
 | New push after a clean review | Codex strips 👍 → poll waits for a fresh 👍 / review@head → re-arm. |
-| Stale 👍 right after push | Rejected by the `created_at > head commit time` check. |
+| Stale 👍 right after push | Rejected by the `created_at > head push time` check. |
 | Findings | Codex posts review@head → gate "reviewed"; the open threads block via conversation resolution. |
 | Codex slower than the poll timeout | `review-gate` fails red; re-run the check once Codex finishes. |
 | Fork PRs | Job skipped by the fork guard (skipped check is treated as satisfied); forks are out of scope. |
@@ -165,9 +169,13 @@ normalize its exit code on a posted review and skip-with-pass on bot-authored co
 
 ## 9. Open Questions / Caveats
 
-1. **Clock skew** — the clean-case check compares the 👍 `created_at` to the head commit's
-   committer date. A badly-skewed committer clock could mis-time it; negligible on NTP hosts.
-   If it ever bites, add a small grace margin or switch to observing the 👀→👍 transition.
+1. **Freshness cutoff** — the clean-case check compares the 👍 `created_at` to the head's
+   **push time** (`pull_request.updated_at`), not the commit's committer date. This avoids both
+   committer-clock skew and the stale-👍 race where an old reaction's timestamp beats a new
+   commit's (older) committer date. Residual edge: on a run triggered by `pull_request_review`
+   rather than a push, `updated_at` is the review time — harmless for the findings path (SHA-
+   matched), at worst a rare extra poll on the clean path. If that ever bites, observe the
+   👀→👍 transition instead.
 2. **Ruleset sequencing** — must land PR #86 first (so `claude-review` is on `master`).
 3. **Claude check reliability** — leave native unless it flakes chronically (then Phase 3).
 

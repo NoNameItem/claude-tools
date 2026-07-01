@@ -43,17 +43,21 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSHED_AT: ${{ github.event.pull_request.updated_at }}
         run: |
           set -euo pipefail
           CODEX_BOT='chatgpt-codex-connector[bot]'
           TIMEOUT=720    # ~12 min (observed Codex latency ~5-8 min)
           INTERVAL=30
 
-          # Head commit time: lets us tell a *fresh* clean-review 👍 (re-added with a new
-          # timestamp after re-review) from a stale 👍 left over from an earlier commit.
-          # (Assumes the committer clock is roughly in sync with GitHub — true for NTP hosts.)
-          head_time=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date')
-          echo "PR #$PR head=$HEAD_SHA committed at $head_time"
+          # Freshness cutoff = when this head was PUSHED (the PR's updated_at from the
+          # triggering event), NOT the commit's committer date. A committer date is when the
+          # commit was authored locally and can predate an earlier commit's 👍 (e.g. a commit
+          # made while Codex was still reviewing the prior push), which would let a stale 👍
+          # open the gate for unreviewed code. updated_at is GitHub's push time and is frozen in
+          # the event payload, so it stays correct across manual re-runs.
+          push_time="$PUSHED_AT"
+          echo "PR #$PR head=$HEAD_SHA pushed at $push_time"
           echo "Waiting for Codex ($CODEX_BOT): 👍 reaction (clean) or a review on the head (findings)."
 
           deadline=$(( $(date +%s) + TIMEOUT ))
@@ -73,8 +77,8 @@ jobs:
               echo "Codex reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
               exit 0
             fi
-            if [ -n "$thumb_time" ] && [ "$thumb_time" \> "$head_time" ]; then
-              echo "Codex 👍 at $thumb_time is newer than head commit — clean review, gate open."
+            if [ -n "$thumb_time" ] && [ "$thumb_time" \> "$push_time" ]; then
+              echo "Codex 👍 at $thumb_time is newer than the push — clean review, gate open."
               exit 0
             fi
 
@@ -82,6 +86,6 @@ jobs:
               echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. Re-run this check once Codex finishes (it shows 👀 while reviewing, then 👍 or a review)."
               exit 1
             fi
-            echo "Not yet (review@head=$review_head, latest 👍=${thumb_time:-none}, need newer than $head_time). Sleeping ${INTERVAL}s…"
+            echo "Not yet (review@head=$review_head, latest 👍=${thumb_time:-none}, need newer than $push_time). Sleeping ${INTERVAL}s…"
             sleep "$INTERVAL"
           done
