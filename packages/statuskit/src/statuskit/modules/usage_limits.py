@@ -43,7 +43,15 @@ class UsageData:
     session: UsageLimit | None  # five_hour
     weekly: UsageLimit | None  # seven_day
     sonnet: UsageLimit | None  # seven_day_sonnet
-    fetched_at: datetime
+    fetched_at: datetime  # when the data was actually fetched (for display / staleness)
+    # When the API was last hit (success OR failure) — the rate-limiter keys off this so a
+    # failing fetch still throttles instead of hammering. Defaults to fetched_at for callers
+    # and cache files predating this field.
+    last_attempt_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if self.last_attempt_at is None:
+            self.last_attempt_at = self.fetched_at
 
 
 def parse_api_response(response: dict) -> UsageData:
@@ -267,11 +275,20 @@ class UsageCache:
                         pass  # Malformed date string, treat as no reset time
                 return UsageLimit(utilization=utilization, resets_at=resets_at)
 
+            last_attempt_at = fetched_at
+            last_attempt_str = data.get("last_attempt_at")
+            if last_attempt_str:
+                try:
+                    last_attempt_at = datetime.fromisoformat(last_attempt_str)
+                except (ValueError, TypeError):
+                    pass  # Malformed timestamp, fall back to fetched_at
+
             return UsageData(
                 session=parse_limit(data["data"].get("session")),
                 weekly=parse_limit(data["data"].get("weekly")),
                 sonnet=parse_limit(data["data"].get("sonnet")),
                 fetched_at=fetched_at,
+                last_attempt_at=last_attempt_at,
             )
         except (json.JSONDecodeError, KeyError, OSError):
             return None
@@ -296,6 +313,7 @@ class UsageCache:
                     "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
+            last_attempt_at = data.last_attempt_at or data.fetched_at
             cache_data = {
                 "data": {
                     "session": serialize_limit(data.session),
@@ -303,6 +321,7 @@ class UsageCache:
                     "sonnet": serialize_limit(data.sonnet),
                 },
                 "fetched_at": data.fetched_at.isoformat(),
+                "last_attempt_at": last_attempt_at.isoformat(),
             }
 
             # Atomic write: temp file + rename
@@ -399,9 +418,11 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             self._debug_messages.append("No token, using cache")
             return cached
 
-        # Check rate limit using cached data (avoids second file read)
-        if cached and self.cache:
-            age = (datetime.now(UTC) - cached.fetched_at).total_seconds()
+        # Check rate limit using cached data (avoids second file read).
+        # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but
+        # must still throttle, otherwise every render re-hits the API and sustains a 429.
+        if cached and cached.last_attempt_at and self.cache:
+            age = (datetime.now(UTC) - cached.last_attempt_at).total_seconds()
             if age < self.cache.rate_limit:
                 self._debug_messages.append("Rate limited, using cache")
                 return cached
@@ -409,13 +430,18 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         # Try to fetch fresh data
         new_data = fetch_usage_api(token)
 
-        if not new_data:
-            self._debug_messages.append("API failed, using cache")
-
         # Determine what to save and return
-        data = new_data if new_data else cached
+        if new_data:
+            data = new_data
+        else:
+            self._debug_messages.append("API failed, using cache")
+            data = cached
+            # Advance the attempt clock on the stale cache so the next render throttles
+            # instead of hammering, while keeping fetched_at (true data age) untouched.
+            if data is not None:
+                data.last_attempt_at = datetime.now(UTC)
 
-        # Save (updates fetched_at even on failure)
+        # Save so the advanced attempt clock (and any fresh data) persists across renders.
         if self.cache and data:
             self.cache.save(data)
 
