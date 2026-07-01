@@ -10,14 +10,21 @@ name: Review Gate
 #   - This workflow only asserts that *Codex* has reviewed the head commit.
 #
 # Codex signals its state via reactions/reviews (no check run, no commit status):
-#   - reviewing   -> 👀 (eyes) reaction on the PR, previous 👍 removed
-#   - clean       -> 👍 (+1) reaction, re-added with a fresh timestamp
+#   - reviewing    -> 👀 (eyes) reaction on the PR, previous 👍 removed
+#   - clean        -> 👍 (+1) reaction, re-added with a fresh timestamp
 #   - has findings -> a PR review whose commit_id == head SHA (+ inline comments)
-# Because a 👍 reaction fires no workflow event, the job polls until Codex settles.
+# Because a 👍 reaction fires no workflow event, the job polls until Codex settles. The
+# decision (which evidence counts, given the triggering event) lives in review_gate.py.
+#
+# SECURITY (pull_request_target): the workflow definition and review_gate.py always come from
+# the BASE branch, so a PR that edits either cannot alter the gate guarding its own merge.
+# This is SAFE ONLY because the job checks out the BASE branch (never the PR head) and reads
+# PR metadata via `gh api`. NEVER add a checkout of `github.event.pull_request.head.*` or
+# otherwise execute head code here.
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -31,10 +38,22 @@ concurrency:
 jobs:
   review-gate:
     name: review-gate
-    # Same-repo PRs only — forked PRs get no Codex app review and can't be gated here.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Same-repo PRs only (forked PRs get no Codex app review and can't be gated here), and for
+    # `edited` run only when the PR base actually changed (ignore title/body edits).
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action != 'edited' || github.event.changes.base != null)
     runs-on: ubuntu-latest
     steps:
+      - name: Check out base-branch scripts
+        # pull_request_target: with no `ref`, checkout takes the BASE branch (trusted), NOT the
+        # PR head, so review_gate.py can't be swapped by the PR. Do NOT set
+        # `ref: github.event.pull_request.head.sha` here — that would defeat the security fix.
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Wait for Codex to review the head commit
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,48 +61,44 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PUSHED_AT: ${{ github.event.pull_request.updated_at }}
+          EVENT_ACTION: ${{ github.event.action }}
+          BASE_CHANGED: ${{ github.event.changes.base != null }}
         run: |
           set -euo pipefail
-          CODEX_BOT='chatgpt-codex-connector[bot]'
           TIMEOUT=720    # ~12 min (observed Codex latency ~5-8 min)
           INTERVAL=30
 
-          # Freshness cutoff = when this head was PUSHED (the PR's updated_at from the
-          # triggering event), NOT the commit's committer date. A committer date is when the
-          # commit was authored locally and can predate an earlier commit's 👍 (e.g. a commit
-          # made while Codex was still reviewing the prior push), which would let a stale 👍
-          # open the gate for unreviewed code. updated_at is GitHub's push time and is frozen in
-          # the event payload, so it stays correct across manual re-runs.
-          push_time="$PUSHED_AT"
-          echo "PR #$PR head=$HEAD_SHA pushed at $push_time"
-          echo "Waiting for Codex ($CODEX_BOT): 👍 reaction (clean) or a review on the head (findings)."
+          echo "PR #$PR head=$HEAD_SHA event=$EVENT_ACTION base_changed=$BASE_CHANGED updated_at=$PUSHED_AT"
+          echo "Waiting for Codex: 👍 reaction (clean) or a review on the head (findings)."
+
+          base_flag=()
+          if [ "$BASE_CHANGED" = "true" ]; then
+            base_flag=(--base-changed)
+          fi
 
           deadline=$(( $(date +%s) + TIMEOUT ))
           while :; do
-            # Findings path: a Codex review pinned to the exact head SHA.
-            # --paginate applies --jq per page, so emit ids and count lines (a per-page
-            # `length` would only see the last page on a PR with >30 reviews).
-            review_head=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
-              --jq ".[] | select(.user.login==\"$CODEX_BOT\" and .commit_id==\"$HEAD_SHA\") | .id" | wc -l | tr -d ' ')
-            # Clean path: a 👍 reaction newer than the head commit (Codex strips the old 👍
-            # on every push and re-adds it after a clean re-review). Emit timestamps and take the
-            # latest with sort|tail — a per-page `max` would miss a 👍 past the first 30 reactions.
-            thumb_time=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
-              --jq ".[] | select(.user.login==\"$CODEX_BOT\" and .content==\"+1\") | .created_at" | sort | tail -n1)
+            # Fetch Codex's reviews and reactions (metadata only — no head checkout). --paginate
+            # applies --jq per page and emits one array per page; `jq -s 'add // []'` merges them.
+            reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              --jq '[.[] | {user: {login: .user.login}, commit_id, submitted_at}]' | jq -s 'add // []')
+            reactions=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+              --jq '[.[] | {user: {login: .user.login}, content, created_at}]' | jq -s 'add // []')
+            payload=$(jq -n --argjson reviews "$reviews" --argjson reactions "$reactions" \
+              '{reviews: $reviews, reactions: $reactions}')
 
-            if [ "$review_head" -gt 0 ]; then
-              echo "Codex reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
-              exit 0
-            fi
-            if [ -n "$thumb_time" ] && [ "$thumb_time" \> "$push_time" ]; then
-              echo "Codex 👍 at $thumb_time is newer than the push — clean review, gate open."
+            decision=$(printf '%s' "$payload" | python .github/scripts/review_gate.py \
+              --event-action "$EVENT_ACTION" --updated-at "$PUSHED_AT" --head-sha "$HEAD_SHA" "${base_flag[@]}")
+
+            if [ "$decision" = "pass" ]; then
+              echo "Codex has reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
               exit 0
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. Re-run this check once Codex finishes (it shows 👀 while reviewing, then 👍 or a review)."
+              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. If the PR base branch changed, comment \`@codex review\` to request a fresh review; otherwise re-run this check once Codex finishes (👀 while reviewing, then 👍 or a review)."
               exit 1
             fi
-            echo "Not yet (review@head=$review_head, latest 👍=${thumb_time:-none}, need newer than $push_time). Sleeping ${INTERVAL}s…"
+            echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
             sleep "$INTERVAL"
           done
