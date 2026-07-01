@@ -742,6 +742,70 @@ class TestGetUsageDataRateLimited:
         assert result.session is not None
         assert result.session.utilization == 45.0
 
+    def test_throttles_after_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
+        """A failed fetch must throttle the next call — no hammering the API on every render.
+
+        Regression test for the 'usage frozen' bug (claude-tools-5dl.19): when a fetch
+        fails, the rate-limit clock must advance so subsequent renders back off instead of
+        retrying every time (which sustains the server-side 429 that keeps the value stuck).
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+
+        # Stale cache, old enough that a fetch is allowed on the first call.
+        cached_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        module.cache.save(cached_data)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = None  # API keeps failing
+                module._get_usage_data()  # first call: attempts, fails, falls back to cache
+                module._get_usage_data()  # second call: must be throttled now
+
+        # Exactly ONE attempt — the second call is rate-limited by the advanced attempt clock.
+        assert mock_fetch.call_count == 1
+
+    def test_failed_fetch_advances_attempt_clock_but_not_fetched_at(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """A failed fetch advances last_attempt_at (for throttling) but preserves fetched_at.
+
+        This keeps the throttle working during an outage without falsifying how old the
+        displayed data actually is.
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+
+        stale_fetched_at = datetime.now(UTC) - timedelta(days=5)
+        cached_data = UsageData(
+            session=UsageLimit(45.0, datetime.now(UTC) + timedelta(hours=2)),
+            weekly=None,
+            sonnet=None,
+            fetched_at=stale_fetched_at,
+        )
+        module.cache.save(cached_data)
+
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = None  # API fails
+                module._get_usage_data()
+
+        reloaded = module.cache.load()
+        assert reloaded is not None
+        # Displayed data age stays honest — fetched_at is unchanged.
+        assert reloaded.fetched_at == stale_fetched_at
+        # But the attempt clock advanced so we throttle instead of hammering.
+        assert reloaded.last_attempt_at > stale_fetched_at
+
     def test_debug_output_in_render(self, make_render_context, minimal_input_data, tmp_path):
         """Debug messages appear in render output."""
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
