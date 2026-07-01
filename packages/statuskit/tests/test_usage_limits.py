@@ -804,6 +804,7 @@ class TestGetUsageDataRateLimited:
         # Displayed data age stays honest — fetched_at is unchanged.
         assert reloaded.fetched_at == stale_fetched_at
         # But the attempt clock advanced so we throttle instead of hammering.
+        assert reloaded.last_attempt_at is not None
         assert reloaded.last_attempt_at > stale_fetched_at
 
     def test_debug_output_in_render(self, make_render_context, minimal_input_data, tmp_path):
