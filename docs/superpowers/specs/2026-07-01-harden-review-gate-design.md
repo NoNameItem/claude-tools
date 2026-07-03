@@ -357,5 +357,28 @@ an explicit head-SHA status per §9), and the reopen drop (§8, closing C1/C3). 
 
 Final design in one line: on `opened`/`synchronize`, `pull_request_target` runs the base
 definition, polls Codex, and POSTs a `review-gate` status to the head SHA — `success` iff a
-Codex review@head or 👍 is newer than the push time, else `failure` at the deadline; forks pass;
-reopen/edited/ready_for_review are not triggers.
+Codex review@head or 👍 is newer than the push time, else `failure` at the deadline; forks are
+skipped; reopen/edited/ready_for_review are not triggers.
+
+## 11. Revision 4 — 2026-07-03 (Codex round-8) — status-mechanism hardening
+
+Three more findings, this time on the §10 publish mechanism itself (not the base-change swamp)
+— all cleanly bounded (comments 3518798827 / 3518798831 / 3518798822):
+
+- **827 (P1)** — commit statuses are keyed by (SHA, context), not by PR. The fork `success`
+  bypass could post a green `review-gate` to a head SHA a *same-repo* PR also points at, greening
+  its gate with no Codex evidence. **Fix:** skip forks entirely (`if: head.repo == repo`); a
+  fork PR's `review-gate` stays missing (blocked) rather than falsely green. (Behaviour change:
+  fork PRs are no longer auto-mergeable — acceptable; forks are out of scope and rare here.)
+- **831 (P1)** — with no `concurrency`, a poll for old SHA A still running after a push to SHA B
+  can accept B's PR-level 👍 (newer than A's cutoff) and post `success` to A; that green on the
+  reusable (SHA, context) status could later satisfy another PR at A. **Fix:** before posting
+  `success`, re-fetch `pulls/{n}.head.sha` and bail if the PR no longer points at this run's
+  `HEAD_SHA`.
+- **822 (P2)** — after `pending`, any `set -e` failure (transient gh/jq/python) exited without a
+  terminal status, stranding the head at `pending`. **Fix:** an `EXIT` trap posts `error` when
+  the run exits non-zero before a terminal status was posted (guarded by a `RESULT_POSTED` flag
+  so it never overwrites a real success/failure).
+
+These harden the mechanism without reopening the freshness/cutoff design; §10's one-line summary
+still holds (with "forks are skipped" and the stale-poll head re-check).

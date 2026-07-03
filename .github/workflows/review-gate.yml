@@ -17,12 +17,14 @@ name: Review Gate
 # evidence is fresh enough (newer than the head's push time) is decided by review_gate.py.
 #
 # HOW THE REQUIRED CHECK IS PUBLISHED: the job POSTs a commit status with context `review-gate`
-# to the PR *head* SHA (pending -> success/failure). The `master` ruleset requires the context
-# `review-gate`, which is this status. We do NOT rely on the job's own check run: under
+# to the PR *head* SHA (pending -> success/failure/error). The `master` ruleset requires the
+# context `review-gate`, which is this status. We do NOT rely on the job's own check run: under
 # `pull_request_target` that run is attributed to the base SHA (not the PR head), and a job
 # skipped by `if:` reports "success" — either would let an unreviewed head look green. Posting
 # an explicit status to the head SHA avoids both. The job name below is therefore deliberately
-# NOT `review-gate`.
+# NOT `review-gate`. NOTE: commit statuses are keyed by (SHA, context), not by PR — so only
+# ever post `success` after confirming this run's evidence is for the PR's *current* head (a
+# stale poll must not green a superseded SHA that another PR could reuse).
 #
 # SECURITY (pull_request_target): the workflow definition and review_gate.py always come from
 # the BASE branch, so a PR that edits either cannot alter the gate guarding its own merge.
@@ -52,14 +54,20 @@ permissions:
 # No `concurrency`: each run posts its status only to its own (frozen) HEAD_SHA, and only
 # `opened`/`synchronize` trigger runs — so no two runs ever target the same head SHA, and a
 # commit pushed mid-poll just starts a fresh run for the new SHA while the stale poll finishes
-# harmlessly against the old SHA. `cancel-in-progress: true` would instead risk an unrelated
-# event cancelling a live poll and stranding its `pending` status.
+# harmlessly against the old SHA (and re-checks the head before posting success, so it can't
+# green a superseded SHA). `cancel-in-progress: true` would instead risk an unrelated event
+# cancelling a live poll and stranding its `pending` status.
 
 jobs:
   # NOTE: name is NOT `review-gate` on purpose — the required check is the posted status, not
   # this job's own check run (see the HOW THE REQUIRED CHECK IS PUBLISHED note above).
   review-gate-poll:
     name: review-gate-poll
+    # Same-repo PRs only. Forks can't be Codex-gated AND a fork run must not write a `success`
+    # status to the base repo's head SHA (statuses are keyed by SHA/context, so it could green a
+    # same-repo PR sharing that SHA — Codex #96 827). Skipping posts nothing, so a fork PR's
+    # required `review-gate` stays missing (blocked) rather than falsely green.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Check out base-branch scripts
@@ -77,7 +85,6 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PUSHED_AT: ${{ github.event.pull_request.updated_at }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -91,13 +98,11 @@ jobs:
               -f state="$1" -f context="review-gate" -f description="$2" -f target_url="$RUN_URL" >/dev/null
           }
 
-          # Forked PRs get no Codex app review and can't be gated here; pass them (out of scope,
-          # matching the previous skip-as-satisfied behavior) with an honest status.
-          if [ "$HEAD_REPO" != "$REPO" ]; then
-            post_status success "Fork PR — Codex gate not applicable"
-            echo "Fork PR ($HEAD_REPO); gate not applicable."
-            exit 0
-          fi
+          # Ensure the head SHA never gets stranded at `pending`: if the run exits non-zero before
+          # posting a terminal status (a transient gh/jq/python failure under `set -e`), post
+          # `error` so branch protection reports a real, re-runnable failure instead of pending.
+          RESULT_POSTED=0
+          trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$RESULT_POSTED" = "0" ]; then post_status error "review-gate run failed — re-run this check" || true; fi' EXIT
 
           # Freshness cutoff = the head's push time. pull_request.updated_at is GitHub's own
           # clock, frozen in the event payload (correct across manual re-runs), and for
@@ -122,13 +127,25 @@ jobs:
               --cutoff "$cutoff" --head-sha "$HEAD_SHA")
 
             if [ "$decision" = "pass" ]; then
+              # Guard against a stale poll: a Codex 👍 is PR-level (not SHA-pinned), so a poll for
+              # an old head could accept a 👍 posted for a newer head. Only publish success if the
+              # PR still points at the SHA this run gated — otherwise a superseded SHA (reusable by
+              # another PR) would get a false green (Codex #96 831).
+              current_head=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+              if [ "$current_head" != "$HEAD_SHA" ]; then
+                echo "PR head moved to $current_head (was $HEAD_SHA); this poll is stale — not posting success."
+                RESULT_POSTED=1
+                exit 0
+              fi
               post_status success "Codex has reviewed the head commit"
+              RESULT_POSTED=1
               echo "Codex has reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
               exit 0
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
               post_status failure "Codex has not reviewed the head commit in time — re-run after it finishes"
+              RESULT_POSTED=1
               echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. This check is NOT re-triggered by Codex comments or reviews — re-run it here once Codex finishes (👀 while reviewing, then 👍 or a review)."
               exit 1
             fi
