@@ -382,3 +382,10 @@ Three more findings, this time on the §10 publish mechanism itself (not the bas
 
 These harden the mechanism without reopening the freshness/cutoff design; §10's one-line summary
 still holds (with "forks are skipped" and the stale-poll head re-check).
+
+**Round-9 follow-up (comment 3518919030, P2):** the stale-poll re-check (831) exited without a
+terminal status, leaving the superseded SHA at `pending`. Now the stale branch posts `failure`
+("Superseded — PR advanced to a newer head") before exiting, and guards the head compare on a
+non-empty API result so a transient blip can't be read as "moved". Inherent, accepted residual:
+commit statuses are keyed by (SHA, context), so two PRs sharing a head SHA share the gate status
+— unusual, and out of scope.

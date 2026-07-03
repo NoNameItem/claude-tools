@@ -132,9 +132,16 @@ jobs:
               # PR still points at the SHA this run gated — otherwise a superseded SHA (reusable by
               # another PR) would get a false green (Codex #96 831).
               current_head=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
-              if [ "$current_head" != "$HEAD_SHA" ]; then
-                echo "PR head moved to $current_head (was $HEAD_SHA); this poll is stale — not posting success."
+              # Guard on a non-empty result so a transient API blip isn't read as "moved" and
+              # doesn't wrongly fail the current head.
+              if [ -n "$current_head" ] && [ "$current_head" != "$HEAD_SHA" ]; then
+                # Superseded: the PR advanced to a newer head while this poll ran. Clear the
+                # `pending` posted earlier for this (now superseded) SHA with a terminal status,
+                # so a PR that later uses this SHA isn't blocked on a stuck pending (Codex #96
+                # round-5). A fresh run for this SHA (if it ever becomes a head again) overwrites it.
+                post_status failure "Superseded — PR advanced to a newer head before this SHA was gated"
                 RESULT_POSTED=1
+                echo "PR head moved to $current_head (was $HEAD_SHA); poll superseded — posted failure to the old SHA."
                 exit 0
               fi
               post_status success "Codex has reviewed the head commit"
