@@ -957,8 +957,14 @@ M  staged_modified.py
 
         assert result is None
 
-    def test_render_fresh_repo_no_commits_location_only(self, make_render_context):
-        """Fresh repo (branch unresolved, no commits) → location line only, no status line."""
+    def test_render_branch_unresolved_location_only(self, make_render_context):
+        """When _get_branch() is None but a location resolves, render shows the location line only.
+
+        Reachable when no ref resolves (e.g. an unborn/detached HEAD whose short
+        hash also fails). NOTE: a normal fresh `git init` repo does NOT hit this —
+        modern git's `branch --show-current` returns the unborn branch name, so
+        _get_branch() resolves and render shows two lines.
+        """
         data = make_input_data(
             model=make_model_data(),
             workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
