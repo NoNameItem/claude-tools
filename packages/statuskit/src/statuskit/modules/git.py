@@ -80,7 +80,7 @@ class GitModule(BaseModule[GitParams]):
             One or two lines, or None if there is nothing to show.
         """
         location = self._get_location()  # None ⟺ current_dir is not in a repo
-        branch = self._get_branch()  # None even inside a repo (fresh, no commits)
+        branch = self._get_branch()  # None outside a repo, or when no ref resolves
 
         # Line 1: location — always attempted.
         if location is not None:
