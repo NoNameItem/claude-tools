@@ -132,6 +132,23 @@ class GitModule(BaseModule[GitParams]):
         except subprocess.TimeoutExpired:
             return None
 
+    def _shorten_path(self, path: str) -> str:
+        """Shorten an absolute path by replacing a leading $HOME with ``~``.
+
+        Args:
+            path: Absolute filesystem path.
+
+        Returns:
+            ``~`` when ``path`` equals $HOME, ``~/...`` when under $HOME,
+            otherwise ``path`` unchanged.
+        """
+        home = str(Path.home())
+        if path == home:
+            return "~"
+        if path.startswith(home + "/"):
+            return "~" + path[len(home) :]
+        return path
+
     def _get_branch(self) -> str | None:
         """Get current branch name or short hash for detached HEAD.
 
