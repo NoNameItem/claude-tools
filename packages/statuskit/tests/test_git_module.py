@@ -51,6 +51,31 @@ class TestGitModule:
 
         assert result is None
 
+    def test_run_git_passes_cwd(self, make_render_context):
+        """_run_git forwards cwd to subprocess.run."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr="")
+            result = mod._run_git("rev-parse", "--git-common-dir", cwd="/some/repo")
+
+        assert result == "ok"
+        assert mock_run.call_args.kwargs["cwd"] == "/some/repo"
+
+    def test_run_git_default_cwd_is_none(self, make_render_context):
+        """_run_git defaults cwd to None (process cwd)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="main\n", stderr="")
+            mod._run_git("branch", "--show-current")
+
+        assert mock_run.call_args.kwargs["cwd"] is None
+
     def test_get_branch_name(self, make_render_context):
         """_get_branch returns current branch name."""
         data = make_input_data(model=make_model_data())

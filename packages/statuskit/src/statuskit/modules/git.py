@@ -104,11 +104,14 @@ class GitModule(BaseModule[GitParams]):
 
         return "\n".join(lines)
 
-    def _run_git(self, *args: str) -> str | None:
+    def _run_git(self, *args: str, cwd: str | None = None) -> str | None:
         """Run git command and return output.
 
         Args:
             *args: Git command arguments (without 'git' prefix)
+            cwd: Working directory for the command. Defaults to None (the process
+                cwd, which tracks ``current_dir`` — the behaviour the module
+                already relies on).
 
         Returns:
             Command output stripped, or None on failure/timeout
@@ -117,6 +120,7 @@ class GitModule(BaseModule[GitParams]):
         try:
             result = subprocess.run(  # noqa: S603
                 cmd,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=_GIT_TIMEOUT,
