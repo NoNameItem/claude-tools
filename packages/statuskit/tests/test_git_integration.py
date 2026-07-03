@@ -56,3 +56,18 @@ class TestGitModuleIntegration:
         assert "untracked" in changes
         # Values should be non-negative
         assert all(v >= 0 for v in changes.values())
+
+    def test_render_outside_git_repo(self, make_render_context, tmp_path, monkeypatch):
+        """Outside any git repo, render falls back to the current directory (Case 2)."""
+        # tmp_path is a real directory with no .git ancestor.
+        monkeypatch.chdir(tmp_path)
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": str(tmp_path), "project_dir": str(tmp_path)},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        result = mod.render()
+
+        assert result is not None
+        assert tmp_path.name in result
