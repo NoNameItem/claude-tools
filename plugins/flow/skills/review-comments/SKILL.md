@@ -468,14 +468,18 @@ identifier/pattern, then READ each candidate to confirm it truly shares the
 defect (do not over-match on a name).
 
 Return:
-CATEGORY: <short name for the class, e.g. "freshness computed from committer_date">
+CLASS: <short name for the class, e.g. "freshness computed from committer_date">
 SITES:
 - {path}:{line} — {one-line why it shares the defect}
 - ...
 If there are no siblings, return exactly:
-CATEGORY: (instance only)
+CLASS: (instance only)
 SITES: none
 ```
+
+`CLASS` is deliberately a separate field from the Phase 4 verdict `CATEGORY` —
+the 5.3 self-review gate keys on `CATEGORY ∈ {correctness, logic, security}`, so
+the class name must never overwrite it.
 
 Skip the subagent for pure `doc` / `nitpick` fixes with no plausible siblings
 (e.g. a typo). When siblings exist, present the expanded scope and let the user
@@ -489,7 +493,7 @@ U1 (add `contents: read`) generalizes to a class: 3 sites
 Apply to: all / original only / select
 ```
 
-Record the confirmed sites for 5.2 and the CATEGORY name for the 5.4 reply.
+Record the confirmed sites for 5.2 and the CLASS name for the 5.4 reply.
 
 #### 5.2. Apply Changes
 
@@ -539,8 +543,10 @@ did not analyze or apply any of these fixes — it only tries to break the resul
 You are a fresh skeptic reviewing an applied fix BEFORE it is pushed. Do not
 rubber-stamp — your job is to catch what the next review round would flag.
 
-Applied diff:
-  git diff        (run it; review every hunk)
+Applied changes — review ALL of them, including newly created files:
+  git diff              (modified files — read every hunk)
+  git status --short    (anything marked ?? is a NEW file that `git diff` omits)
+  Read each new (??) file in full — it is part of the applied fix too.
 
 Findings this diff was meant to close:
 {list of accepted findings with their file:line}
@@ -590,7 +596,7 @@ glab api --method POST \
 | Decision | Reply |
 |----------|-------|
 | Accepted (fixed) | `"Fixed: {brief description of what was changed}"` |
-| Accepted, generalized | `"Fixed: {change}; applied across the class ({category}) at {N} sites."` |
+| Accepted, generalized | `"Fixed: {change}; applied across the class ({class}) at {N} sites."` |
 | Rejected | `"Won't fix: {reasoning}"` |
 | Outdated, already fixed | `"Fixed in subsequent commits"` |
 
@@ -674,7 +680,7 @@ Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ### This Skill Does NOT:
 - Resolve/dismiss threads on either platform (reply-only — on GitLab it never resolves discussions, even though `resolved` is available)
 - Create beads tasks from comments
-- Modify files outside the scope of comments
+- Modify files outside the scope of comments — **except** sibling sites within a user-confirmed generalized fix (Phase 5.1), which are in scope by definition
 - Handle PR/MR approval or merge
 - Process comments from closed/merged PRs/MRs
 - Auto-push without confirmation
@@ -977,13 +983,18 @@ Stop. Do not proceed.
 
 ### All Comments Outdated
 
-```
-All 3 unresolved comments are outdated and already fixed in current code.
+"Outdated" means the commented line **moved** in the diff — NOT that the concern
+was addressed. Do **not** skip analysis and bulk-reply "Fixed in subsequent
+commits"; that is the shallow dismissal Phase 4 exists to prevent.
 
-Will reply "Fixed in subsequent commits" to all. OK? (yes / no)
-```
+Run each outdated thread through the Phase 4 `outdated_fixed` path: the verdict
+must cite EVIDENCE (file:line in the current code) that actually fixes the
+concern. Only threads that clear that bar get "Fixed in subsequent commits"; the
+rest are analyzed like any other comment — they may still be valid.
 
-Skip Phase 4 analysis for these. Go directly to reply confirmation.
+```
+3 comments are marked outdated. Verifying each against current code before replying…
+```
 
 ### Platform CLI / API Error
 
