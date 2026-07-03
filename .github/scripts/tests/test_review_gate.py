@@ -57,17 +57,22 @@ class TestBaseChange:
 
 
 class TestNonContentChange:
-    """reopened / ready_for_review: no new content, so existing evidence stays valid (fix #1)."""
+    """ready_for_review: no new content, so existing evidence stays valid.
 
-    def test_reopened_with_stale_but_valid_thumb_passes(self):
-        # The #1 regression: updated_at is inflated, but the 👍 is still valid.
-        assert decide("reopened", False, CUTOFF, HEAD, [], [_thumb(BEFORE)]) == "pass"
+    `reopened` is intentionally not a gate trigger (Codex #96 C1/C3 — reopen must not launder
+    stale evidence into a fresh green), so the non-content path is exercised only by
+    ready_for_review. A draft's head SHA can't change invisibly, so a bare 👍 is trustworthy here.
+    """
+
+    def test_ready_for_review_with_stale_but_valid_thumb_passes(self):
+        # updated_at is inflated on ready_for_review, but the 👍 for the unchanged head is valid.
+        assert decide("ready_for_review", False, CUTOFF, HEAD, [], [_thumb(BEFORE)]) == "pass"
 
     def test_ready_for_review_with_review_at_head_passes(self):
         assert decide("ready_for_review", False, CUTOFF, HEAD, [_review(HEAD, BEFORE)], []) == "pass"
 
-    def test_reopened_no_evidence_waits(self):
-        assert decide("reopened", False, CUTOFF, HEAD, [], []) == "wait"
+    def test_ready_for_review_no_evidence_waits(self):
+        assert decide("ready_for_review", False, CUTOFF, HEAD, [], []) == "wait"
 
 
 class TestCli:

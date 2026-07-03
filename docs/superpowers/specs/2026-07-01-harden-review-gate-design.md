@@ -1,7 +1,7 @@
 # Harden review-gate: freshness cutoff, base-change, self-modification — Design
 
-**Date:** 2026-07-01
-**Status:** Design approved; implementation pending.
+**Date:** 2026-07-01 (revised 2026-07-03 after Codex review on PR #96 — see §8)
+**Status:** Implemented on PR #96; revised per Codex round-5 review (§8).
 **Scope:** repo (`.github/workflows/review-gate.yml`, `.github/scripts/`)
 **Task:** claude-tools-cna (epic claude-tools-5vg, Repo-level tasks)
 **Supersedes:** the freshness-cutoff caveat in
@@ -47,9 +47,9 @@ the PR that discovered it").
 
 | Decision | Choice |
 |---|---|
-| #1 fix | **Event-aware cutoff** — the cutoff advances only on content-change events (push, base change), never on `reopened` / `ready_for_review` |
+| #1 fix | **Event-aware cutoff** — the cutoff advances only on content-change events (push, base change), never on `ready_for_review`. `reopened` is not a trigger at all (revised §8). |
 | #2 fix | Listen to `edited` (base only); on base change **re-arm** and require *fresh* evidence on **both** paths |
-| #2 re-review UX | **Block + instruct** — poll, then fail with a message to comment `@codex review`. No auto-comment → workflow stays **read-only** |
+| #2 re-review UX | **Block + instruct** — poll, then fail with a message to comment `@codex review` **and re-run the check** (the gate isn't re-triggered by comments/reviews; revised §8 C2). No auto-comment → workflow stays **read-only** |
 | #3 fix | Switch `pull_request` → **`pull_request_target`** (runs base-branch definition); job stays metadata-only, no head checkout |
 | Structure | Extract the decision logic to a **tested Python script**; YAML keeps the `gh api` fetch + poll loop |
 | Permissions | Keep explicit **read-only** token (`contents`/`pull-requests`/`issues: read`), downgrading the write token `pull_request_target` grants by default |
@@ -115,7 +115,8 @@ races:
 |---|---|---|---|
 | `opened`, `synchronize` | yes | `updated_at` | review@head with `submitted_at > cutoff`, **or** 👍 `created_at > cutoff` |
 | `edited` **with** `changes.base` | yes | `updated_at` (= base-change time) | same — an *old* review@head now fails freshness → waits for a fresh review |
-| `reopened`, `ready_for_review` | no | none | review@head **exists**, or 👍 **exists** |
+| `ready_for_review` | no | none | review@head **exists**, or 👍 **exists** |
+| `reopened` | — | **not a trigger** (revised §8) — prior check result persists | — |
 | `edited` **without** base change | — | job skipped (`if:`) | — |
 
 Adding `submitted_at > cutoff` to the findings path is what closes #2's stale-review hole and
@@ -126,7 +127,7 @@ is a no-op for normal pushes (a new head's review is always after the push).
 ```yaml
 on:
   pull_request_target:              # #3: run the BASE-branch definition, not the PR's
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, ready_for_review, edited]   # `reopened` dropped — see §8
 
 permissions:                        # least privilege; downgrades pull_request_target's write token
   contents: read
@@ -175,7 +176,8 @@ change, "comment `@codex review` to request a fresh review."
 
 | Case | Behavior |
 |---|---|
-| Reopen a PR whose head already has a clean 👍 | `content_change=false` → 👍-exists → **pass** (fixes #1). |
+| Reopen a PR (head unchanged) | not a trigger — the head SHA's prior green check persists → mergeable (fixes #1 without re-running; revised §8). |
+| Reopen after a while-closed push (head changed) | not a trigger — new SHA has no gate run → required check missing → **blocked** until a push/re-run (revised §8, closes C3). |
 | Draft marked ready, already reviewed | `ready_for_review` → evidence exists → **pass**. |
 | Draft marked ready, not yet reviewed | poll until Codex reviews (it triggers on ready) → **pass**; else deadline → fail. |
 | Title/body edit | job `if:` skips (`changes.base == null`); the head SHA's prior passing status persists. |
@@ -206,3 +208,37 @@ change, "comment `@codex review` to request a fresh review."
 - Auto-posting `@codex review` on base change (chose block + instruct to stay read-only).
 - Reviewing fork PRs.
 - Any change to the Claude native `claude-review` check or the `master` ruleset.
+
+## 8. Revision — 2026-07-03 (Codex round-5 review on PR #96)
+
+Codex's review of the implementation PR found three valid holes in the original non-content
+path (comments 3517637489 / 3517637493 / 3517637495):
+
+- **C1** — a base change re-arms and blocks, but a later **close→reopen** (head unchanged)
+  entered the non-content path and re-accepted the pre-base-change review@head → false green.
+- **C3** — a 👍 is PR-level (not SHA-pinned). **Close → push new commits → reopen** let the
+  `reopened` run accept the stale 👍 from the old SHA → false green for the new SHA.
+- **C2** — on a base-change timeout, following the message (`@codex review`) makes Codex post
+  a review, but the workflow isn't triggered by comments/reviews, so the required check stays
+  red until someone re-runs it.
+
+**Resolution (all in PR #96, no durable-cutoff redesign):**
+
+1. **Drop `reopened` from the triggers.** Both C1 and C3 are exploited *through* the
+   `reopened` event. With it removed, a reopen doesn't re-run the gate: the head SHA's prior
+   check result persists. This closes C1 and C3 (a reopen can no longer launder stale evidence
+   into a fresh green) **and** fixes the original #1 false-block more cleanly — a still-valid
+   green just persists instead of being re-evaluated against an inflated `updated_at`. A reopen
+   whose head genuinely changed has no gate run for the new SHA, so the required check is
+   missing and merge stays **blocked** (safe: false-block, never false-green). GitHub has no
+   repo-level setting to forbid reopening a PR, so this workflow-level drop is the mechanism.
+   The non-content path now serves only `ready_for_review` (a draft's head SHA can't change
+   invisibly — pushes to a draft fire `synchronize` — so a bare 👍 there is trustworthy).
+2. **C2 message.** The timeout error now states the check is not re-triggered by Codex
+   comments/reviews and must be re-run manually once Codex finishes — on the base-change path,
+   comment `@codex review` first, then re-run.
+
+Residual (accepted): a base change *on a draft* followed by marking it ready could still
+accept a pre-base-change review@head via `ready_for_review`. Very narrow; not worth a durable
+cutoff. `ready_for_review` is kept because it's needed for the draft→ready flow to trigger a
+gate run.

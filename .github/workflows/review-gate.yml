@@ -23,8 +23,13 @@ name: Review Gate
 # otherwise execute head code here.
 
 on:
+  # `reopened` is deliberately NOT listed: on reopen the head SHA's prior check result
+  # persists (no re-run), so a still-valid green stays green (no false block) and a reopen
+  # cannot launder stale evidence into a fresh green after a base change or a while-closed
+  # push. A reopened PR whose head genuinely changed has no gate run for the new SHA, so the
+  # required check is missing and merge stays blocked until a push/re-run.
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review, edited]
+    types: [opened, synchronize, ready_for_review, edited]
 
 permissions:
   contents: read
@@ -96,7 +101,7 @@ jobs:
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. If the PR base branch changed, comment \`@codex review\` to request a fresh review; otherwise re-run this check once Codex finishes (👀 while reviewing, then 👍 or a review)."
+              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. This check is NOT re-triggered by Codex comments or reviews — you must re-run it here once Codex finishes (👀 while reviewing, then 👍 or a review). If the PR base branch changed, first comment \`@codex review\` to get a fresh review of the new base, then re-run this check."
               exit 1
             fi
             echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"

@@ -41,8 +41,9 @@ def decide(
     """Return "pass" if Codex has reviewed the current head, else "wait".
 
     Args:
-        event_action: The pull_request(_target) action (opened, synchronize, reopened,
-            ready_for_review, edited).
+        event_action: The pull_request(_target) action (opened, synchronize,
+            ready_for_review, edited). `reopened` is intentionally NOT a gate trigger — see
+            the non-content note below.
         is_base_change: True when action == "edited" and the PR base ref changed.
         updated_at: The event's pull_request.updated_at (ISO-8601 UTC "Z"). The freshness
             cutoff on content-change events.
@@ -66,9 +67,16 @@ def decide(
         fresh_thumb = any(r.get("created_at", "") > updated_at for r in thumbs)
         return "pass" if fresh_review or fresh_thumb else "wait"
 
-    # Non-content-change event (reopened / ready_for_review): no new content, so any existing
-    # evidence for the current head is still valid. (edited-without-base never reaches this
-    # script — the workflow `if:` filters it out.)
+    # Non-content-change event (ready_for_review): no new content, so any existing evidence for
+    # the current head is still valid — a draft's head SHA can't change invisibly (pushes to a
+    # draft fire `synchronize`), so a bare 👍 here is genuinely for this head.
+    #
+    # `reopened` is deliberately absent from the gate's triggers: on reopen the head SHA's prior
+    # check result simply persists (no re-run), which both keeps a valid green (fixing the
+    # non-push false-block) AND prevents a reopen from laundering stale evidence into a fresh
+    # green after a base change or a while-closed push (Codex #96 C1/C3). If `reopened` were ever
+    # routed here it would take this same non-content branch; the workflow just never sends it.
+    # (edited-without-base also never reaches this script — the workflow `if:` filters it out.)
     return "pass" if reviews_at_head or thumbs else "wait"
 
 
