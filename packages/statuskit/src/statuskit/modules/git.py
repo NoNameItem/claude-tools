@@ -427,6 +427,57 @@ class GitModule(BaseModule[GitParams]):
 
         return separator.join(parts)
 
+    def _render_cwd_fallback(self) -> str | None:
+        """Render Line 1 when ``current_dir`` is not inside a git repo.
+
+        Two states (see design doc):
+
+        - Case 1 — the session's ``project_dir`` *is* a repo but we have ``cd``'d
+          out of it: ``project``[cyan] → ``current_dir``[red].
+        - Case 2 — never in a repo: ``current_dir``[light_magenta].
+
+        Returns:
+            The fallback location line, or None when there is no workspace,
+            ``current_dir`` is empty, or the relevant segments are disabled.
+        """
+        workspace = self.data.workspace
+        if workspace is None:
+            return None
+
+        current_dir = workspace.current_dir
+        if not current_dir:
+            return None
+
+        project_dir = workspace.project_dir
+
+        # Case 1 detection: project_dir differs from current_dir and is a repo.
+        # Skip the probe (→ Case 2) when project_dir is missing or equal to
+        # current_dir — we already know current_dir is not a repo.
+        project_name = None
+        if project_dir and project_dir != current_dir:
+            git_common_dir = self._run_git("rev-parse", "--git-common-dir", cwd=project_dir)
+            if git_common_dir is not None:
+                project_name = self._project_name_from_common_dir(git_common_dir, base=project_dir)
+
+        shortened = self._shorten_path(current_dir)
+        separator = colored(" → ", "dark_grey")
+        parts = []
+
+        if project_name is not None:
+            # Case 1: stepped out of the project repo.
+            if self.params.show_project:
+                parts.append(colored(project_name, "cyan"))
+            if self.params.show_folder:
+                parts.append(colored(shortened, "red"))
+        # Case 2: plain directory, never in a repo.
+        elif self.params.show_folder:
+            parts.append(colored(shortened, "light_magenta"))
+
+        if not parts:
+            return None
+
+        return separator.join(parts)
+
     def _render_remote_status(self, remote_status: tuple[str, int]) -> str | None:
         """Render remote tracking status indicator.
 
