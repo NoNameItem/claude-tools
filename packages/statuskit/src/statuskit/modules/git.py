@@ -71,38 +71,35 @@ class GitModule(BaseModule[GitParams]):
     def render(self) -> str | None:
         """Render git status output.
 
+        Line 1 (location) is always attempted: inside a repo it shows the
+        project / worktree / subfolder; outside a repo it falls back to the
+        current directory. Line 2 (git status) renders only when a branch
+        resolves.
+
         Returns:
-            Two-line output (location + status) or None if not a git repo
+            One or two lines, or None if there is nothing to show.
         """
-        # Check if we're in a git repo
-        branch = self._get_branch()
-        if branch is None:
-            return None
+        location = self._get_location()  # None ⟺ current_dir is not in a repo
+        branch = self._get_branch()  # None even inside a repo (fresh, no commits)
 
-        lines = []
-
-        # Line 1: Location
-        location = self._get_location()
-        if location:
+        # Line 1: location — always attempted.
+        if location is not None:
             line1 = self._render_location_line(location)
-            if line1:
-                lines.append(line1)
+        else:
+            line1 = self._render_cwd_fallback()
 
-        # Line 2: Git status
-        remote_status = self._get_remote_status()
-        changes = self._get_changes()
-        commit = self._get_last_commit()
-        if commit:
-            commit = (commit[0], self._format_commit_age(commit[1]))
+        # Line 2: git status — only when a branch resolves.
+        line2 = None
+        if branch is not None:
+            remote_status = self._get_remote_status()
+            changes = self._get_changes()
+            commit = self._get_last_commit()
+            if commit:
+                commit = (commit[0], self._format_commit_age(commit[1]))
+            line2 = self._render_status_line(branch, remote_status, changes, commit)
 
-        line2 = self._render_status_line(branch, remote_status, changes, commit)
-        if line2:
-            lines.append(line2)
-
-        if not lines:
-            return None
-
-        return "\n".join(lines)
+        lines = [line for line in (line1, line2) if line]
+        return "\n".join(lines) if lines else None
 
     def _run_git(self, *args: str, cwd: str | None = None) -> str | None:
         """Run git command and return output.

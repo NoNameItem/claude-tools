@@ -942,16 +942,60 @@ M  staged_modified.py
         assert result is None
 
     def test_render_not_git_repo(self, make_render_context):
-        """render returns None when not in git repo."""
-        data = make_input_data(model=make_model_data())
+        """render returns None when not in a git repo and there is no workspace to fall back to."""
+        data = make_input_data(model=make_model_data())  # no workspace
         ctx = make_render_context(data)
         mod = GitModule(ctx, {})
 
-        with patch.object(mod, "_get_branch") as mock_branch:
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = None
             mock_branch.return_value = None
             result = mod.render()
 
         assert result is None
+
+    def test_render_fresh_repo_no_commits_location_only(self, make_render_context):
+        """Fresh repo (branch unresolved, no commits) → location line only, no status line."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = None
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "project" in result
+
+    def test_render_not_repo_uses_cwd_fallback(self, make_render_context):
+        """Not a repo but workspace present → cwd fallback line, no status line."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/work/scratch"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = None
+            mock_branch.return_value = None
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "/work/scratch" in result
 
     def test_render_two_lines(self, make_render_context):
         """render returns two lines of output."""
