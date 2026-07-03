@@ -329,8 +329,9 @@ Steps:
      show the guard is on THIS path.
    Do NOT invent supporting facts to dismiss a comment. A thread reply that
    asserts "already handled" is a claim to verify against the code, not evidence.
-   If you cannot cite code that moots the SPECIFIC claim → verdict is `agree`,
-   not `disagree`/`outdated_fixed`. When unsure, agree.
+   If you cannot cite code that moots the SPECIFIC claim → do NOT dismiss. Return a
+   structured agree — `agree_obvious` if the requested change is clear, otherwise
+   `agree_unclear` — never a bare "agree". When unsure, prefer agreeing over dismissing.
 
 4. For nitpick/style comments: does the change genuinely improve readability,
    correctness, or maintainability? If not → disagree (still fill CLAIM +
@@ -366,7 +367,7 @@ Collect verdicts and group by type. For `disagree` / `outdated_fixed`, show the
 CLAIM and EVIDENCE — a dismissal is only as good as the code it cites. **If an
 EVIDENCE line does not cite code that addresses the specific CLAIM (it just names
 a related mechanism, or restates the author's assertion), treat it as a shallow
-dismissal: re-analyze it, defaulting to `agree`.**
+dismissal: re-analyze it, landing on `agree_obvious`/`agree_unclear`.**
 
 ```
 Analysis complete:
@@ -544,8 +545,8 @@ You are a fresh skeptic reviewing an applied fix BEFORE it is pushed. Do not
 rubber-stamp — your job is to catch what the next review round would flag.
 
 Applied changes — review ALL of them, including newly created files:
-  git diff              (modified files — read every hunk)
-  git status --short    (anything marked ?? is a NEW file that `git diff` omits)
+  git diff                                    (modified files — read every hunk)
+  git status --short --untracked-files=all    (every NEW file marked ?? — the `=all` also lists files INSIDE a brand-new directory, which plain `git status` collapses to a single `dir/` entry)
   Read each new (??) file in full — it is part of the applied fix too.
 
 Findings this diff was meant to close:
@@ -567,8 +568,9 @@ If the fixes are complete and don't shift the problem, return exactly:
 
 - `NO MATERIAL FINDINGS` → continue to 5.4 silently.
 - Material findings → present them as an addendum batch (same confirmation UX as
-  5.1). Apply each item the user accepts via a 5.2 apply subagent, then continue.
-  Do **not** re-run the skeptic — a single pass, then proceed.
+  5.1). Apply each item the user accepts via a 5.2 apply subagent, then re-run the
+  Phase 5.2 final verification (`ruff check` on the changed files) so the addendum
+  code is checked too. Do **not** re-run the skeptic — a single pass, then proceed.
 
 Runs **before** the reply (5.4) so replies describe the final code.
 
@@ -731,7 +733,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "CodeRabbit summary is noise" | Summary may contain valid points not in inline comments. Check it. |
 | "I'll auto-reject bot nitpicks" | Bots catch real issues too. Analyze each comment on merit. |
 | "User approved in Phase 3, skip Phase 5 confirm" | Phase 3 = approve processing. Phase 5 = approve specific fixes. Different decisions. |
-| "This dismissal is clearly correct" | Then citing the moot code is trivial. If you can't cite it, it isn't clear — agree. |
+| "This dismissal is clearly correct" | Then citing the moot code is trivial. If you can't cite it, it isn't clear — agree (`agree_obvious`/`agree_unclear`). |
 | "A timestamp/null/guard already exists" | The topic being handled ≠ the claim being handled. Show the code addresses the SPECIFIC claim. |
 | "The author reply already explained it's fine" | A thread reply is a claim to verify, not evidence. Check it against the code. |
 | "Fix the one line the comment names" | One instance of a class re-flags next round. Enumerate siblings, fix the class. |
@@ -1085,7 +1087,7 @@ For PRs with many comments, process in batches:
 
 Always collect with subagent. Always show verdicts before applying. Always ask before pushing.
 
-To dismiss a comment, restate its specific claim and cite the exact code that moots it — a related mechanism existing is not enough, and a thread reply is a claim to verify, not evidence. If you can't prove it moot, agree.
+To dismiss a comment, restate its specific claim and cite the exact code that moots it — a related mechanism existing is not enough, and a thread reply is a claim to verify, not evidence. If you can't prove it moot, agree (as `agree_obvious`/`agree_unclear`).
 
 Fix the class, not the instance: enumerate siblings and apply with confirmed scope. On any correctness/logic/security round, run the pre-push self-review — it catches the shifted bug before the next reviewer does.
 
