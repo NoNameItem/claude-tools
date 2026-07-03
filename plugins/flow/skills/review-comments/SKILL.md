@@ -8,7 +8,7 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Agent AskUserQuestion Read
 
 ## Overview
 
-**Core principle:** Analyze before acting. Skepticism for nitpicks.
+**Core principle:** Analyze before acting. Cite code to dismiss. Fix the class, not the instance.
 
 This skill processes all unresolved review comments in one pass — applies fixes, argues against invalid comments, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
@@ -27,8 +27,8 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
 | 2. Collect | Subagent: fetch + parse threads | Haiku subagent; platform-specific fetch + parse |
 | 3. Categorize | Show table, user confirms | Humans first, bots second |
-| 4. Analyze | Parallel subagents per comment | Verdicts: agree/disagree/outdated |
-| 5. Implement | Batch confirm → apply → reply → commit | Group by file, push with confirmation |
+| 4. Analyze | Parallel sonnet subagents per comment | Dismissal needs CLAIM + EVIDENCE |
+| 5. Implement | Confirm + generalize → apply → self-review → reply → commit | Fix the class; skeptic pass before push |
 
 ## Platform Support
 
@@ -285,18 +285,18 @@ Process all {N} comments? (yes / select / no)
 - **select**: user provides comma-separated refs (e.g., "U1, U3, C2") to process
 - **no**: stop
 
-### Phase 4: Analyze Comments (Parallel Haiku Subagents)
+### Phase 4: Analyze Comments (Parallel Sonnet Subagents)
 
-For each selected comment (or group of comments in the same file with overlapping line ranges), launch a **haiku subagent**.
+For each selected comment (or group of comments in the same file with overlapping line ranges), launch a **sonnet subagent**. Analysis is where a shallow read does the most damage — a misdiagnosed dismissal costs a full rework round — so it runs on **sonnet**, not haiku.
 
 **Grouping rule:** Comments in the same file where line ranges overlap or are within 10 lines of each other → single subagent. This avoids reading the same file section multiple times.
 
-**Subagent:** `subagent_type="Bash"`, `model="haiku"`
+**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
 
 **Subagent prompt (per comment/group):**
 
 ```
-Analyze this PR/MR review comment and return a verdict.
+Analyze this PR/MR review comment and return a structured verdict.
 
 Comment ref: {ref} (by {user})
 File: {path}
@@ -310,50 +310,84 @@ Outdated: {yes/no}
 Steps:
 1. Read the file at the relevant lines (with context ±20 lines):
    Read tool or: sed -n '{start-20},{end+20}p' {path}
+   If understanding the code needs a value defined elsewhere (a variable, a
+   constant, what a helper actually compares against), trace it — do not stop at
+   the local lines. The bug is often in WHAT is compared, not whether a
+   comparison exists.
 
-2. If outdated: check if the problem described in the comment is already fixed
-   in the current code. If fixed → return "outdated_fixed".
+2. Identify the comment's SPECIFIC claim — the exact thing it says is wrong, in
+   one sentence. Not the topic ("freshness"), the claim ("committer_date is the
+   wrong signal; must compare the head SHA").
 
-3. Analyze whether the comment is valid:
-   - Is it a real bug, security issue, or correctness problem? → likely agree
-   - Is it a style nitpick, naming preference, or optional suggestion? → higher skepticism
-   - Does the current code already handle what the comment asks for? → disagree
-   - Is the suggestion actually worse than current code? → disagree
+3. Decide the verdict. To return `disagree` or `outdated_fixed`, you MUST cite
+   the exact code (file:line + snippet) that makes THAT specific claim moot.
+
+   A related mechanism existing is NOT evidence the claim is moot:
+   - "a timestamp comparison exists" does NOT refute "timestamps are the wrong
+     signal" — show the code compares the RIGHT thing.
+   - "a null check exists somewhere" does NOT refute "this path is unguarded" —
+     show the guard is on THIS path.
+   Do NOT invent supporting facts to dismiss a comment. A thread reply that
+   asserts "already handled" is a claim to verify against the code, not evidence.
+   If you cannot cite code that moots the SPECIFIC claim → do NOT dismiss. Return a
+   structured agree — `agree_obvious` if the requested change is clear, otherwise
+   `agree_unclear` — never a bare "agree". When unsure, prefer agreeing over dismissing.
 
 4. For nitpick/style comments: does the change genuinely improve readability,
-   correctness, or maintainability? If not → disagree with reasoning.
+   correctness, or maintainability? If not → disagree (still fill CLAIM +
+   EVIDENCE showing why the current code is fine or the suggestion is worse).
 
-5. Return EXACTLY one of these verdicts on the FIRST line, followed by a brief explanation:
+5. Return the verdict in this EXACT structured form. Every verdict has a CATEGORY
+   line. `disagree` and `outdated_fixed` ALSO need CLAIM and EVIDENCE lines.
 
    VERDICT: agree_obvious | <one-line description of fix>
-   VERDICT: agree_unclear | <2-3 option descriptions, separated by " OR ">
-   VERDICT: disagree | <2-3 sentence reasoning>
-   VERDICT: outdated_fixed | <one-line explanation of what changed>
+   CATEGORY: <correctness|security|logic|style|nitpick|doc>
 
-Return ONLY the verdict line. No other output.
+   VERDICT: agree_unclear | <2-3 options separated by " OR ">
+   CATEGORY: <correctness|security|logic|style|nitpick|doc>
+
+   VERDICT: disagree
+   CLAIM: <the comment's specific claim, restated in your own words>
+   EVIDENCE: <file:line + exact snippet that moots THAT claim, or why the suggestion is worse>
+   CATEGORY: <correctness|security|logic|style|nitpick|doc>
+
+   VERDICT: outdated_fixed
+   CLAIM: <the comment's specific claim, restated in your own words>
+   EVIDENCE: <file:line + current code that already fixes it>
+   CATEGORY: <correctness|security|logic|style|nitpick|doc>
+
+Return ONLY the verdict block. No other output.
 ```
 
 **Launch all subagents in parallel** (independent comments have no dependencies).
 
 **After all subagents return:**
 
-Collect verdicts and group by type:
+Collect verdicts and group by type. For `disagree` / `outdated_fixed`, show the
+CLAIM and EVIDENCE — a dismissal is only as good as the code it cites. **If an
+EVIDENCE line does not cite code that addresses the specific CLAIM (it just names
+a related mechanism, or restates the author's assertion), treat it as a shallow
+dismissal: re-analyze it, landing on `agree_obvious`/`agree_unclear`.**
 
 ```
 Analysis complete:
 
 Obvious fixes (auto-apply):
-  U1: remove unused import in utils.py
-  C1: add error handling in workflow.yml:15-20
+  U1: remove unused import in utils.py  [nitpick]
+  C1: add error handling in workflow.yml:15-20  [correctness]
 
 Needs clarification:
-  U2: rename variable — Option A: camelCase OR Option B: snake_case OR Option C: keep as is
+  U2: rename variable — Option A: camelCase OR Option B: snake_case OR keep  [style]
 
 Disagree:
-  C3: naming preference — current naming follows project conventions, change adds churn
+  C3 [style]
+    CLAIM: variable should be snake_case
+    EVIDENCE: config.py:1-40 — module uses camelCase throughout; renaming one breaks consistency
 
 Already fixed (outdated):
-  U3: import order — fixed in subsequent commits
+  U3 [correctness]
+    CLAIM: import order triggers a circular import
+    EVIDENCE: utils.py:1-5 — imports already reordered; no cycle remains
 ```
 
 ### Phase 5: Implementation & Completion
@@ -413,6 +447,55 @@ Already fixed in current code:
 Will reply "Fixed in subsequent commits" to all. OK? (yes / no)
 ```
 
+##### Generalize accepted fixes (fix the class, not the instance)
+
+Once the user has accepted fixes (`agree_obvious` / `agree_unclear` / an accepted
+`disagree`) and **before applying them**, check whether each is one instance of a
+class. Patching only the literal line is how one defect gets re-flagged round
+after round (fixed for one event type, still broken for the next).
+
+For each accepted fix, launch a **sonnet subagent**:
+
+**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
+
+**Subagent prompt (per accepted fix):**
+
+```
+The accepted fix is: {fix description} at {path}:{lines}.
+
+Find siblings — other places with the SAME underlying issue: other event types,
+call sites, inputs, or files that share the pattern. Grep for the relevant
+identifier/pattern, then READ each candidate to confirm it truly shares the
+defect (do not over-match on a name).
+
+Return:
+CLASS: <short name for the class, e.g. "freshness computed from committer_date">
+SITES:
+- {path}:{line} — {one-line why it shares the defect}
+- ...
+If there are no siblings, return exactly:
+CLASS: (instance only)
+SITES: none
+```
+
+`CLASS` is deliberately a separate field from the Phase 4 verdict `CATEGORY` —
+the 5.3 self-review gate keys on `CATEGORY ∈ {correctness, logic, security}`, so
+the class name must never overwrite it.
+
+Skip the subagent for pure `doc` / `nitpick` fixes with no plausible siblings
+(e.g. a typo). When siblings exist, present the expanded scope and let the user
+choose — never widen the blast radius silently:
+
+```
+U1 (add `contents: read`) generalizes to a class: 3 sites
+  - .github/workflows/a.yml:12
+  - .github/workflows/b.yml:8
+  - .github/workflows/c.yml:20
+Apply to: all / original only / select
+```
+
+Record the confirmed sites for 5.2 and the CLASS name for the 5.4 reply.
+
 #### 5.2. Apply Changes
 
 Group accepted fixes by file. For each file (or group of related files), launch a **haiku subagent**:
@@ -439,7 +522,59 @@ After all file subagents complete, run a final verification in the main context:
 uv run ruff check {changed_files}  # if Python files changed
 ```
 
-#### 5.3. Reply on the platform
+#### 5.3. Pre-Push Adversarial Self-Review
+
+Simulate the next reviewer round locally, before the single push — this is what
+stops a fix that shifted the bug into the adjacent case from being discovered one
+push later.
+
+**Gate (by verdict nature):** run this step only if at least one accepted finding
+has `CATEGORY ∈ {correctness, logic, security}`. Skip pure style/nitpick/doc
+rounds — there is no logic to shift. State which applies ("code round → running
+self-review" / "nitpick round → skipping self-review").
+
+**Skeptic:** one fresh **sonnet subagent** over the applied diff. Fresh means it
+did not analyze or apply any of these fixes — it only tries to break the result.
+
+**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
+
+**Subagent prompt:**
+
+```
+You are a fresh skeptic reviewing an applied fix BEFORE it is pushed. Do not
+rubber-stamp — your job is to catch what the next review round would flag.
+
+Applied changes — review ALL of them, including newly created files:
+  git diff                                    (modified files — read every hunk)
+  git status --short --untracked-files=all    (every NEW file marked ?? — the `=all` also lists files INSIDE a brand-new directory, which plain `git status` collapses to a single `dir/` entry)
+  Read each new (??) file in full — it is part of the applied fix too.
+
+Findings this diff was meant to close:
+{list of accepted findings with their file:line}
+
+For EACH finding answer:
+  (a) Does the fix FULLY close it?
+  (b) Does it shift the problem to an adjacent case — other event types, call
+      sites, inputs, or files that share the same defect?
+  (c) What would the next review round most likely flag?
+
+Return ONLY material findings (worth fixing before pushing), each as:
+  {path}:{line} — {specific gap} — {suggested fix}
+If the fixes are complete and don't shift the problem, return exactly:
+  NO MATERIAL FINDINGS
+```
+
+**Handle the result (surface → mini-confirm):**
+
+- `NO MATERIAL FINDINGS` → continue to 5.4 silently.
+- Material findings → present them as an addendum batch (same confirmation UX as
+  5.1). Apply each item the user accepts via a 5.2 apply subagent, then re-run the
+  Phase 5.2 final verification (`ruff check` on the changed files) so the addendum
+  code is checked too. Do **not** re-run the skeptic — a single pass, then proceed.
+
+Runs **before** the reply (5.4) so replies describe the final code.
+
+#### 5.4. Reply on the platform
 
 For each processed comment, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
 
@@ -463,6 +598,7 @@ glab api --method POST \
 | Decision | Reply |
 |----------|-------|
 | Accepted (fixed) | `"Fixed: {brief description of what was changed}"` |
+| Accepted, generalized | `"Fixed: {change}; applied across the class ({class}) at {N} sites."` |
 | Rejected | `"Won't fix: {reasoning}"` |
 | Outdated, already fixed | `"Fixed in subsequent commits"` |
 
@@ -481,10 +617,10 @@ glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{dis
 ```
 
 **Summary / general items:**
-- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its verdict in the Phase 5.6 summary report; do NOT attempt a reply.
+- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its verdict in the Phase 5.7 summary report; do NOT attempt a reply.
 - **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
 
-#### 5.4. Commit
+#### 5.5. Commit
 
 Stage only changed files:
 
@@ -498,7 +634,7 @@ Commit message follows CLAUDE.md scope rules:
 - Changes in `packages/statuskit/` → `fix(statuskit): address PR review feedback`
 - Changes across scopes → separate commits per scope (single-package-commit hook enforces this)
 
-#### 5.5. Push
+#### 5.6. Push
 
 **MANDATORY: Use AskUserQuestion to confirm before pushing** (per CLAUDE.md global instructions).
 
@@ -513,14 +649,16 @@ Options:
 2. Skip
 ```
 
-#### 5.6. Summary Report
+#### 5.7. Summary Report
 
 ```
 Processed: {total} comments
   Fixed: {count} ({list of refs})
+  Generalized: {count} ({ref → class → N sites}, if any)
   Rejected: {count} ({list of refs with brief reason})
   Already fixed: {count} ({list of refs})
   Skipped: {count} ({list of refs user chose to skip})
+Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
 ## Scope Boundaries
@@ -530,10 +668,12 @@ Processed: {total} comments
 - Sync branch with remote
 - Collect all unresolved inline comments and review summaries
 - Categorize by source (human vs bot)
-- Analyze each comment with subagents (parallel)
+- Analyze each comment with parallel sonnet subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Present grouped verdicts for batch confirmation
+- Generalize an accepted fix to its whole class (siblings across event types, call sites, files), with user-confirmed scope
 - Apply accepted fixes grouped by file
+- Run an adversarial pre-push self-review on correctness/logic/security rounds
 - Reply on the platform (GitHub or GitLab) with appropriate messages
 - Commit with proper scope
 - Push with user confirmation
@@ -542,7 +682,7 @@ Processed: {total} comments
 ### This Skill Does NOT:
 - Resolve/dismiss threads on either platform (reply-only — on GitLab it never resolves discussions, even though `resolved` is available)
 - Create beads tasks from comments
-- Modify files outside the scope of comments
+- Modify files outside the scope of comments — **except** sibling sites within a user-confirmed generalized fix (Phase 5.1), which are in scope by definition
 - Handle PR/MR approval or merge
 - Process comments from closed/merged PRs/MRs
 - Auto-push without confirmation
@@ -567,6 +707,11 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I know this fix is right, skip clarification"
 - "Commit all changes in one go regardless of scope"
 - "User already said 'yes' in Phase 3, skip Phase 5 confirmation"
+- "This disagree is obviously right, I'll skip the CLAIM/EVIDENCE" → Every dismissal cites the exact moot code, or it becomes agree.
+- "A related mechanism exists, so it's handled" → Not evidence. Show the code addresses the SPECIFIC claim, not just the topic.
+- "The author's reply says it's handled, so disagree" → A thread reply is a claim to verify against code, not evidence.
+- "Just fix the line the comment points at" → Check for siblings first; fix the class, not the instance.
+- "Code round, but I'll skip the self-review to save time" → Run it whenever a correctness/logic/security fix was applied. That's the round that shifts bugs.
 
 **All of these mean: Follow the workflow. Analyze before acting. User decides.**
 
@@ -588,6 +733,11 @@ If you're thinking any of these, STOP and follow the workflow:
 | "CodeRabbit summary is noise" | Summary may contain valid points not in inline comments. Check it. |
 | "I'll auto-reject bot nitpicks" | Bots catch real issues too. Analyze each comment on merit. |
 | "User approved in Phase 3, skip Phase 5 confirm" | Phase 3 = approve processing. Phase 5 = approve specific fixes. Different decisions. |
+| "This dismissal is clearly correct" | Then citing the moot code is trivial. If you can't cite it, it isn't clear — agree (`agree_obvious`/`agree_unclear`). |
+| "A timestamp/null/guard already exists" | The topic being handled ≠ the claim being handled. Show the code addresses the SPECIFIC claim. |
+| "The author reply already explained it's fine" | A thread reply is a claim to verify, not evidence. Check it against the code. |
+| "Fix the one line the comment names" | One instance of a class re-flags next round. Enumerate siblings, fix the class. |
+| "Fixes applied, push now" | On a code/logic/security round, run the skeptic first — it catches the shifted bug before the reviewer does. |
 
 ## Examples
 
@@ -633,24 +783,28 @@ Agent: [Detects PR #42 from current branch]
 
 User: yes
 
-Agent: [Dispatches 4 parallel haiku subagents]
+Agent: [Dispatches 4 parallel sonnet subagents]
        [Groups U1+C1 for config.py, others separate]
 
        Analysis complete:
 
        Obvious fixes (auto-apply):
-         U1: add type annotation to config_path parameter
-         C1: add None check before accessing .name
+         U1: add type annotation to config_path parameter  [nitpick]
+         C1: add None check before accessing .name  [correctness]
 
        Disagree:
-         U2: current logic is already clear; extracting helper adds
-             indirection without improving readability
+         U2 [style]
+           CLAIM: the parse loop should be extracted into a helper
+           EVIDENCE: parser.py:42-58 — single loop, clear names; a helper adds
+                     indirection without improving readability or testability
 
        Already fixed (outdated):
-         U3: import removed in previous commit
+         U3 [correctness]
+           CLAIM: unused import `os` should be removed
+           EVIDENCE: utils.py:1-8 — import already removed in a previous commit
 
        Low value (nitpick):
-         C2: retry logic is out of scope for this PR
+         C2: retry logic is out of scope for this PR  [nitpick]
 
        ---
 
@@ -694,11 +848,22 @@ User: yes
 
 Agent: [Applies fixes to config.py via subagent]
        [Runs ruff format + check]
+       [Code round (C1 is correctness) → runs pre-push self-review skeptic over the diff]
+
+       Self-review found 1 issue:
+         config.py:30 — the None check guards `.name`, but the sibling access
+         `.label` two lines down is still unguarded — same defect.
+         1. Apply (guard `.label` too)
+         2. Skip
+
+User: 1
+
+Agent: [Applies the self-review fix]
        [Replies on GitHub sequentially:
          U1: "Fixed: added type annotation for config_path"
          U2: "Won't fix: current logic is clear, helper adds indirection"
          U3: "Fixed in subsequent commits"
-         C1: "Fixed: added None check before accessing .name"
+         C1: "Fixed: added None checks before accessing .name and .label"
          C2: "Won't fix: retry logic is out of scope for this PR"]
        [Commits: fix(statuskit): address PR review feedback]
 
@@ -725,10 +890,11 @@ Agent: [Pushes to remote]
 - Used subagent for collection
 - Showed categorized table
 - Asked before processing
-- Used parallel subagents for analysis
-- Showed grouped verdicts
+- Used parallel sonnet subagents for analysis
+- Showed grouped verdicts with CLAIM + EVIDENCE behind each dismissal
 - Asked for each unclear/disagree item
 - Applied skepticism to nitpick (C2)
+- Ran the pre-push self-review on the code round and caught an unguarded sibling before pushing
 - Grouped file changes
 - Replied on GitHub after applying
 - Committed with proper scope
@@ -748,11 +914,42 @@ Agent: C2: "Consider using snake_case for variable 'configPath'"
 
 ```
 Agent: C2: "Consider using snake_case for variable 'configPath'"
-       VERDICT: disagree | Project uses camelCase consistently in this
-       module. Renaming one variable breaks consistency.
+       VERDICT: disagree
+       CLAIM: configPath should be renamed to snake_case
+       EVIDENCE: config.py:1-40 — the module uses camelCase consistently;
+                 renaming one variable breaks that consistency
+       CATEGORY: style
 ```
 
-**Correct because:** Analyzed against project conventions before deciding.
+**Correct because:** Restated the claim, then cited the exact code (the module's consistent camelCase) that makes it a net-negative — not a vague "follows conventions".
+
+### BAD: Shallow dismissal (a related mechanism exists → "handled")
+
+```
+Comment (C3): "committer_date is the wrong signal for freshness — it survives
+rebases. Use the head SHA."
+Thread reply (author): "Already handled — we compare against the latest commit date."
+
+Agent: VERDICT: disagree | The reviewer misunderstands committer_date; comparing
+       against the latest commit date already rejects stale approvals.
+```
+
+**Problem:** Pattern-matched "a date comparison exists" and deferred to the author's
+reply. Never checked WHAT is compared — `committer_date` is exactly the wrong signal
+the comment named. The dismissal invents a rebuttal instead of citing moot code.
+This is the failure that costs a full rework round.
+
+### GOOD: Prove it moot, or agree
+
+```
+Agent: VERDICT: agree_obvious | compare the reviewed head SHA against the PR head
+       SHA instead of max(committer_date), which is rebase-rewritable and stale-prone
+       CATEGORY: correctness
+```
+
+**Correct because:** Tried to cite code that makes the SPECIFIC claim moot, found
+none (the code uses the very signal the comment flags), and agreed. A thread reply
+asserting "already handled" is a claim to verify, not evidence.
 
 ## Edge Cases
 
@@ -788,13 +985,18 @@ Stop. Do not proceed.
 
 ### All Comments Outdated
 
-```
-All 3 unresolved comments are outdated and already fixed in current code.
+"Outdated" means the commented line **moved** in the diff — NOT that the concern
+was addressed. Do **not** skip analysis and bulk-reply "Fixed in subsequent
+commits"; that is the shallow dismissal Phase 4 exists to prevent.
 
-Will reply "Fixed in subsequent commits" to all. OK? (yes / no)
-```
+Run each outdated thread through the Phase 4 `outdated_fixed` path: the verdict
+must cite EVIDENCE (file:line in the current code) that actually fixes the
+concern. Only threads that clear that bar get "Fixed in subsequent commits"; the
+rest are analyzed like any other comment — they may still be valid.
 
-Skip Phase 4 analysis for these. Go directly to reply confirmation.
+```
+3 comments are marked outdated. Verifying each against current code before replying…
+```
 
 ### Platform CLI / API Error
 
@@ -881,9 +1083,13 @@ For PRs with many comments, process in batches:
 
 ## The Bottom Line
 
-**Analyze before acting. Skepticism for nitpicks.**
+**Analyze before acting. Cite code to dismiss. Fix the class. Skeptic pass before push.**
 
 Always collect with subagent. Always show verdicts before applying. Always ask before pushing.
+
+To dismiss a comment, restate its specific claim and cite the exact code that moots it — a related mechanism existing is not enough, and a thread reply is a claim to verify, not evidence. If you can't prove it moot, agree (as `agree_obvious`/`agree_unclear`).
+
+Fix the class, not the instance: enumerate siblings and apply with confirmed scope. On any correctness/logic/security round, run the pre-push self-review — it catches the shifted bug before the next reviewer does.
 
 Nitpicks deserve extra scrutiny — if it doesn't improve readability, correctness, or maintainability, argue against it.
 
