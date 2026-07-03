@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from statuskit.core.models import RenderContext, StatusInput
+from termcolor import colored
 
 from .factories import (
     make_context_window_data,
@@ -93,3 +94,18 @@ def make_render_context(make_status_input):
         return RenderContext(debug=debug, data=make_status_input(data), cache_dir=cache_dir)
 
     return _make
+
+
+@pytest.fixture
+def force_color(monkeypatch):
+    """Force termcolor to emit ANSI codes deterministically within one test.
+
+    termcolor caches its tty check in ``can_colorize`` (an @cache'd function),
+    so we set FORCE_COLOR and clear the cache on both setup and teardown to
+    avoid leaking forced color into other tests.
+    """
+    can_colorize = colored.__globals__["can_colorize"]
+    monkeypatch.setenv("FORCE_COLOR", "1")
+    can_colorize.cache_clear()
+    yield
+    can_colorize.cache_clear()
