@@ -3,6 +3,9 @@ language: "en-US"
 
 reviews:
   profile: "chill"
+  # Suppress the "Review skipped / Auto reviews are disabled" status comment that
+  # CodeRabbit otherwise posts on every PR (auto_review is off — see below).
+  review_status: false
   high_level_summary: true
   high_level_summary_in_walkthrough: true
   collapse_walkthrough: false
