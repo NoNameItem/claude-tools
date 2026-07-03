@@ -1184,6 +1184,7 @@ M  staged_modified.py
         assert colored("myrepo", "cyan") in result
         assert colored("/work/scratch", "red") in result
         assert colored(" → ", "dark_grey") in result
+        assert result == colored("myrepo", "cyan") + colored(" → ", "dark_grey") + colored("/work/scratch", "red")
 
     def test_render_cwd_fallback_case1_relative_common_dir(self, make_render_context, force_color):
         """Case 1: a relative --git-common-dir resolves against project_dir."""
@@ -1272,3 +1273,17 @@ M  staged_modified.py
         assert result is not None
         assert result == colored("myrepo", "cyan")
         assert colored("/work/scratch", "red") not in result
+
+    def test_render_cwd_fallback_case1_both_disabled(self, make_render_context):
+        """Case 1 with show_project=False and show_folder=False → None (empty parts)."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {"show_project": False, "show_folder": False})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "/home/user/myrepo/.git"
+            result = mod._render_cwd_fallback()
+
+        assert result is None
