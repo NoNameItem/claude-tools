@@ -70,4 +70,5 @@ class TestGitModuleIntegration:
         result = mod.render()
 
         assert result is not None
+        assert "\n" not in result
         assert tmp_path.name in result
