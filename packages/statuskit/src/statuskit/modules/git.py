@@ -111,7 +111,8 @@ class GitModule(BaseModule[GitParams]):
                 already relies on).
 
         Returns:
-            Command output stripped, or None on failure/timeout
+            Command output stripped, or None on failure, timeout, or OS-level
+            error (e.g. an invalid ``cwd``, or git not installed)
         """
         cmd = ["git", "--no-optional-locks", *args]
         try:
@@ -126,7 +127,10 @@ class GitModule(BaseModule[GitParams]):
             if result.returncode != 0:
                 return None
             return result.stdout.strip()
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
+            # OSError covers an invalid cwd (FileNotFoundError/NotADirectoryError,
+            # e.g. a stale project_dir) and a missing git binary — degrade to None
+            # rather than crash the whole statusline render.
             return None
 
     def _shorten_path(self, path: str) -> str:

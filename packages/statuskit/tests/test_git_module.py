@@ -52,6 +52,37 @@ class TestGitModule:
 
         assert result is None
 
+    def test_run_git_invalid_cwd_returns_none(self, make_render_context):
+        """_run_git returns None (not raises) when subprocess.run raises OSError.
+
+        A stale/deleted/invalid cwd (e.g. project_dir) makes subprocess.run raise
+        FileNotFoundError/NotADirectoryError before git runs; _run_git must swallow
+        it like any other git failure so callers can degrade gracefully.
+        """
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: '/nope'")
+            result = mod._run_git("rev-parse", "--git-common-dir", cwd="/nope")
+
+        assert result is None
+
+    def test_render_cwd_fallback_invalid_project_dir_degrades_to_case2(self, make_render_context, force_color):
+        """A stale/deleted project_dir must not crash the Case-1 probe — degrade to Case 2."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/nonexistent/xyz"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: '/nonexistent/xyz'")
+            result = mod._render_cwd_fallback()
+
+        assert result == colored("/work/scratch", "light_magenta")
+
     def test_run_git_passes_cwd(self, make_render_context):
         """_run_git forwards cwd to subprocess.run."""
         data = make_input_data(model=make_model_data())
