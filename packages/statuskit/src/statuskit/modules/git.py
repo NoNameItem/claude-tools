@@ -341,6 +341,24 @@ class GitModule(BaseModule[GitParams]):
             parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
         return " ".join(parts) + " ago" if parts else _JUST_NOW
 
+    def _project_name_from_common_dir(self, git_common_dir: str, base: str | None = None) -> str:
+        """Derive the project name from a ``git rev-parse --git-common-dir`` value.
+
+        Args:
+            git_common_dir: Output of ``git rev-parse --git-common-dir``.
+            base: Directory to resolve a *relative* ``git_common_dir`` against.
+                When None, resolution is relative to the process cwd (the
+                behaviour ``_get_location`` relies on).
+
+        Returns:
+            The repository directory name (``.git`` maps to its parent name).
+        """
+        git_path = Path(git_common_dir)
+        if base is not None and not git_path.is_absolute():
+            git_path = Path(base) / git_path
+        git_path = git_path.resolve()
+        return git_path.parent.name if git_path.name == ".git" else git_path.name
+
     def _get_location(self) -> dict[str, str | None] | None:
         """Get project, worktree, and subfolder info.
 
@@ -358,13 +376,8 @@ class GitModule(BaseModule[GitParams]):
         if toplevel is None:
             return None
 
-        # Extract project name from main repo path
-        # resolve() converts relative paths (like ".git" or "../.git") to absolute
-        git_path = Path(git_common_dir).resolve()
-        if git_path.name == ".git":
-            project_name = git_path.parent.name
-        else:
-            project_name = git_path.name
+        # Extract project name from main repo path (resolves relative ".git"/"../.git")
+        project_name = self._project_name_from_common_dir(git_common_dir)
 
         # Detect worktree: .git is a file (not directory) in worktrees
         toplevel_path = Path(toplevel)
