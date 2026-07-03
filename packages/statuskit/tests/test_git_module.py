@@ -4,6 +4,7 @@ import subprocess
 from unittest.mock import patch
 
 from statuskit.modules.git import GitModule
+from termcolor import colored
 
 from .factories import make_input_data, make_model_data
 
@@ -50,6 +51,62 @@ class TestGitModule:
             result = mod._run_git("status")
 
         assert result is None
+
+    def test_run_git_invalid_cwd_returns_none(self, make_render_context):
+        """_run_git returns None (not raises) when subprocess.run raises OSError.
+
+        A stale/deleted/invalid cwd (e.g. project_dir) makes subprocess.run raise
+        FileNotFoundError/NotADirectoryError before git runs; _run_git must swallow
+        it like any other git failure so callers can degrade gracefully.
+        """
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: '/nope'")
+            result = mod._run_git("rev-parse", "--git-common-dir", cwd="/nope")
+
+        assert result is None
+
+    def test_render_cwd_fallback_invalid_project_dir_degrades_to_case2(self, make_render_context, force_color):
+        """A stale/deleted project_dir must not crash the Case-1 probe — degrade to Case 2."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/nonexistent/xyz"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("[Errno 2] No such file or directory: '/nonexistent/xyz'")
+            result = mod._render_cwd_fallback()
+
+        assert result == colored("/work/scratch", "light_magenta")
+
+    def test_run_git_passes_cwd(self, make_render_context):
+        """_run_git forwards cwd to subprocess.run."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr="")
+            result = mod._run_git("rev-parse", "--git-common-dir", cwd="/some/repo")
+
+        assert result == "ok"
+        assert mock_run.call_args.kwargs["cwd"] == "/some/repo"
+
+    def test_run_git_default_cwd_is_none(self, make_render_context):
+        """_run_git defaults cwd to None (process cwd)."""
+        data = make_input_data(model=make_model_data())
+        ctx = make_render_context(data)
+        mod = GitModule(ctx, {})
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="main\n", stderr="")
+            mod._run_git("branch", "--show-current")
+
+        assert mock_run.call_args.kwargs["cwd"] is None
 
     def test_get_branch_name(self, make_render_context):
         """_get_branch returns current branch name."""
@@ -431,6 +488,25 @@ M  staged_modified.py
 
         assert mod._decompose_minutes(0) == (0, 0, 0)
 
+    def test_project_name_from_common_dir_absolute(self, make_render_context):
+        """Derives the project name from an absolute .git path."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._project_name_from_common_dir("/home/user/myrepo/.git") == "myrepo"
+
+    def test_project_name_from_common_dir_relative_uses_base(self, make_render_context):
+        """Resolves a relative --git-common-dir against the supplied base, not the cwd."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        # ".git" relative to base → base's own name (not the test process cwd's name).
+        assert mod._project_name_from_common_dir(".git", base="/home/user/myrepo") == "myrepo"
+
+    def test_project_name_from_common_dir_bare_repo(self, make_render_context):
+        """Uses the directory name when it is not a plain .git dir (bare repo)."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._project_name_from_common_dir("/srv/repos/myrepo.git") == "myrepo.git"
+
     def test_get_location_regular_repo_root(self, make_render_context):
         """_get_location returns project name for regular repo at root."""
         data = make_input_data(
@@ -639,6 +715,16 @@ M  staged_modified.py
         assert "myproject" in result
         assert "→" in result
         assert "src/utils" in result
+
+    def test_render_location_line_subfolder_is_light_magenta(self, make_render_context, force_color):
+        """In-repo subfolder renders in light_magenta (unified folder-leaf color)."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        location = {"project": "myproject", "worktree": None, "subfolder": "src/utils"}
+        result = mod._render_location_line(location)
+
+        assert result is not None
+        assert colored("src/utils", "light_magenta") in result
 
     def test_render_location_line_full(self, make_render_context):
         """_render_location_line shows all components."""
@@ -887,16 +973,66 @@ M  staged_modified.py
         assert result is None
 
     def test_render_not_git_repo(self, make_render_context):
-        """render returns None when not in git repo."""
-        data = make_input_data(model=make_model_data())
+        """render returns None when not in a git repo and there is no workspace to fall back to."""
+        data = make_input_data(model=make_model_data())  # no workspace
         ctx = make_render_context(data)
         mod = GitModule(ctx, {})
 
-        with patch.object(mod, "_get_branch") as mock_branch:
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = None
             mock_branch.return_value = None
             result = mod.render()
 
         assert result is None
+
+    def test_render_branch_unresolved_location_only(self, make_render_context):
+        """When _get_branch() is None but a location resolves, render shows the location line only.
+
+        Reachable when no ref resolves (e.g. an unborn/detached HEAD whose short
+        hash also fails). NOTE: a normal fresh `git init` repo does NOT hit this —
+        modern git's `branch --show-current` returns the unborn branch name, so
+        _get_branch() resolves and render shows two lines.
+        """
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
+            mock_branch.return_value = None
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "project" in result
+
+    def test_render_not_repo_uses_cwd_fallback(self, make_render_context):
+        """Not a repo but workspace present → cwd fallback line, no status line."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/work/scratch"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with (
+            patch.object(mod, "_get_location") as mock_loc,
+            patch.object(mod, "_get_branch") as mock_branch,
+        ):
+            mock_loc.return_value = None
+            mock_branch.return_value = None
+            result = mod.render()
+
+        assert result is not None
+        assert "\n" not in result
+        assert "/work/scratch" in result
 
     def test_render_two_lines(self, make_render_context):
         """render returns two lines of output."""
@@ -1003,5 +1139,182 @@ M  staged_modified.py
             mock_branch.return_value = "main"
 
             result = mod.render()
+
+        assert result is None
+
+    def test_shorten_path_under_home(self, make_render_context, monkeypatch):
+        """_shorten_path replaces a leading $HOME with ~."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/user/projects/x") == "~/projects/x"
+
+    def test_shorten_path_equals_home(self, make_render_context, monkeypatch):
+        """_shorten_path returns ~ when path equals $HOME."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/user") == "~"
+
+    def test_shorten_path_outside_home(self, make_render_context, monkeypatch):
+        """_shorten_path leaves paths outside $HOME unchanged."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/work/scratch") == "/work/scratch"
+
+    def test_shorten_path_home_prefix_not_subdir(self, make_render_context, monkeypatch):
+        """_shorten_path does not shorten a sibling that merely shares the prefix."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/username") == "/home/username"
+
+    def test_render_cwd_fallback_case2_plain_dir(self, make_render_context, force_color):
+        """Case 2: not a repo, project_dir == current_dir → light_magenta path, no probe."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/work/scratch"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            result = mod._render_cwd_fallback()
+
+        mock_git.assert_not_called()
+        assert result == colored("/work/scratch", "light_magenta")
+
+    def test_render_cwd_fallback_case2_empty_project_dir(self, make_render_context, force_color):
+        """Case 2: project_dir empty → light_magenta path, no probe."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": ""},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            result = mod._render_cwd_fallback()
+
+        mock_git.assert_not_called()
+        assert result == colored("/work/scratch", "light_magenta")
+
+    def test_render_cwd_fallback_case1_left_repo(self, make_render_context, force_color):
+        """Case 1: project_dir is a repo we cd'd out of → project[cyan] → path[red]."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "/home/user/myrepo/.git"
+            result = mod._render_cwd_fallback()
+
+        mock_git.assert_called_once_with("rev-parse", "--git-common-dir", cwd="/home/user/myrepo")
+        assert result is not None
+        assert colored("myrepo", "cyan") in result
+        assert colored("/work/scratch", "red") in result
+        assert colored(" → ", "dark_grey") in result
+        assert result == colored("myrepo", "cyan") + colored(" → ", "dark_grey") + colored("/work/scratch", "red")
+
+    def test_render_cwd_fallback_case1_relative_common_dir(self, make_render_context, force_color):
+        """Case 1: a relative --git-common-dir resolves against project_dir."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = ".git"  # relative to project_dir
+            result = mod._render_cwd_fallback()
+
+        assert result is not None
+        assert colored("myrepo", "cyan") in result
+
+    def test_render_cwd_fallback_case1_probe_fails_is_case2(self, make_render_context, force_color):
+        """project_dir differs but is not a repo (probe → None) → Case 2 rendering."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/work/other"},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = None  # project_dir not a repo either
+            result = mod._render_cwd_fallback()
+
+        assert result == colored("/work/scratch", "light_magenta")
+
+    def test_render_cwd_fallback_no_workspace(self, make_render_context):
+        """No workspace → no fallback line."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._render_cwd_fallback() is None
+
+    def test_render_cwd_fallback_empty_current_dir(self, make_render_context):
+        """Empty current_dir → no fallback line."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "", "project_dir": ""},
+        )
+        mod = GitModule(make_render_context(data), {})
+
+        assert mod._render_cwd_fallback() is None
+
+    def test_render_cwd_fallback_case2_folder_disabled(self, make_render_context):
+        """Case 2 with show_folder=False → None."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/work/scratch"},
+        )
+        mod = GitModule(make_render_context(data), {"show_folder": False})
+
+        assert mod._render_cwd_fallback() is None
+
+    def test_render_cwd_fallback_case1_project_disabled(self, make_render_context, force_color):
+        """Case 1 with show_project=False → red path only (no cyan project, no separator)."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {"show_project": False})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "/home/user/myrepo/.git"
+            result = mod._render_cwd_fallback()
+
+        assert result is not None
+        assert result == colored("/work/scratch", "red")
+        assert colored("myrepo", "cyan") not in result
+        assert colored(" → ", "dark_grey") not in result
+
+    def test_render_cwd_fallback_case1_folder_disabled(self, make_render_context, force_color):
+        """Case 1 with show_folder=False → cyan project only (no red path)."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {"show_folder": False})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "/home/user/myrepo/.git"
+            result = mod._render_cwd_fallback()
+
+        assert result is not None
+        assert result == colored("myrepo", "cyan")
+        assert colored("/work/scratch", "red") not in result
+
+    def test_render_cwd_fallback_case1_both_disabled(self, make_render_context):
+        """Case 1 with show_project=False and show_folder=False → None (empty parts)."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/work/scratch", "project_dir": "/home/user/myrepo"},
+        )
+        mod = GitModule(make_render_context(data), {"show_project": False, "show_folder": False})
+
+        with patch.object(mod, "_run_git") as mock_git:
+            mock_git.return_value = "/home/user/myrepo/.git"
+            result = mod._render_cwd_fallback()
 
         assert result is None

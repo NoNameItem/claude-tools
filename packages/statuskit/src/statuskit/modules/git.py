@@ -71,52 +71,54 @@ class GitModule(BaseModule[GitParams]):
     def render(self) -> str | None:
         """Render git status output.
 
+        Line 1 (location) is always attempted: inside a repo it shows the
+        project / worktree / subfolder; outside a repo it falls back to the
+        current directory. Line 2 (git status) renders only when a branch
+        resolves.
+
         Returns:
-            Two-line output (location + status) or None if not a git repo
+            One or two lines, or None if there is nothing to show.
         """
-        # Check if we're in a git repo
-        branch = self._get_branch()
-        if branch is None:
-            return None
+        location = self._get_location()  # None ⟺ current_dir is not in a repo
+        branch = self._get_branch()  # None outside a repo, or when no ref resolves
 
-        lines = []
-
-        # Line 1: Location
-        location = self._get_location()
-        if location:
+        # Line 1: location — always attempted.
+        if location is not None:
             line1 = self._render_location_line(location)
-            if line1:
-                lines.append(line1)
+        else:
+            line1 = self._render_cwd_fallback()
 
-        # Line 2: Git status
-        remote_status = self._get_remote_status()
-        changes = self._get_changes()
-        commit = self._get_last_commit()
-        if commit:
-            commit = (commit[0], self._format_commit_age(commit[1]))
+        # Line 2: git status — only when a branch resolves.
+        line2 = None
+        if branch is not None:
+            remote_status = self._get_remote_status()
+            changes = self._get_changes()
+            commit = self._get_last_commit()
+            if commit:
+                commit = (commit[0], self._format_commit_age(commit[1]))
+            line2 = self._render_status_line(branch, remote_status, changes, commit)
 
-        line2 = self._render_status_line(branch, remote_status, changes, commit)
-        if line2:
-            lines.append(line2)
+        lines = [line for line in (line1, line2) if line]
+        return "\n".join(lines) if lines else None
 
-        if not lines:
-            return None
-
-        return "\n".join(lines)
-
-    def _run_git(self, *args: str) -> str | None:
+    def _run_git(self, *args: str, cwd: str | None = None) -> str | None:
         """Run git command and return output.
 
         Args:
             *args: Git command arguments (without 'git' prefix)
+            cwd: Working directory for the command. Defaults to None (the process
+                cwd, which tracks ``current_dir`` — the behaviour the module
+                already relies on).
 
         Returns:
-            Command output stripped, or None on failure/timeout
+            Command output stripped, or None on failure, timeout, or OS-level
+            error (e.g. an invalid ``cwd``, or git not installed)
         """
         cmd = ["git", "--no-optional-locks", *args]
         try:
             result = subprocess.run(  # noqa: S603
                 cmd,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=_GIT_TIMEOUT,
@@ -125,8 +127,28 @@ class GitModule(BaseModule[GitParams]):
             if result.returncode != 0:
                 return None
             return result.stdout.strip()
-        except subprocess.TimeoutExpired:
+        except (subprocess.TimeoutExpired, OSError):
+            # OSError covers an invalid cwd (FileNotFoundError/NotADirectoryError,
+            # e.g. a stale project_dir) and a missing git binary — degrade to None
+            # rather than crash the whole statusline render.
             return None
+
+    def _shorten_path(self, path: str) -> str:
+        """Shorten an absolute path by replacing a leading $HOME with ``~``.
+
+        Args:
+            path: Absolute filesystem path.
+
+        Returns:
+            ``~`` when ``path`` equals $HOME, ``~/...`` when under $HOME,
+            otherwise ``path`` unchanged.
+        """
+        home = str(Path.home())
+        if path == home:
+            return "~"
+        if path.startswith(home + "/"):
+            return "~" + path[len(home) :]
+        return path
 
     def _get_branch(self) -> str | None:
         """Get current branch name or short hash for detached HEAD.
@@ -320,6 +342,24 @@ class GitModule(BaseModule[GitParams]):
             parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
         return " ".join(parts) + " ago" if parts else _JUST_NOW
 
+    def _project_name_from_common_dir(self, git_common_dir: str, base: str | None = None) -> str:
+        """Derive the project name from a ``git rev-parse --git-common-dir`` value.
+
+        Args:
+            git_common_dir: Output of ``git rev-parse --git-common-dir``.
+            base: Directory to resolve a *relative* ``git_common_dir`` against.
+                When None, resolution is relative to the process cwd (the
+                behaviour ``_get_location`` relies on).
+
+        Returns:
+            The repository directory name (``.git`` maps to its parent name).
+        """
+        git_path = Path(git_common_dir)
+        if base is not None and not git_path.is_absolute():
+            git_path = Path(base) / git_path
+        git_path = git_path.resolve()
+        return git_path.parent.name if git_path.name == ".git" else git_path.name
+
     def _get_location(self) -> dict[str, str | None] | None:
         """Get project, worktree, and subfolder info.
 
@@ -337,13 +377,8 @@ class GitModule(BaseModule[GitParams]):
         if toplevel is None:
             return None
 
-        # Extract project name from main repo path
-        # resolve() converts relative paths (like ".git" or "../.git") to absolute
-        git_path = Path(git_common_dir).resolve()
-        if git_path.name == ".git":
-            project_name = git_path.parent.name
-        else:
-            project_name = git_path.name
+        # Extract project name from main repo path (resolves relative ".git"/"../.git")
+        project_name = self._project_name_from_common_dir(git_common_dir)
 
         # Detect worktree: .git is a file (not directory) in worktrees
         toplevel_path = Path(toplevel)
@@ -386,7 +421,58 @@ class GitModule(BaseModule[GitParams]):
             parts.append(f"🌲 {worktree_name}")
 
         if self.params.show_folder and location["subfolder"]:
-            parts.append(colored(location["subfolder"], "white"))
+            parts.append(colored(location["subfolder"], "light_magenta"))
+
+        if not parts:
+            return None
+
+        return separator.join(parts)
+
+    def _render_cwd_fallback(self) -> str | None:
+        """Render Line 1 when ``current_dir`` is not inside a git repo.
+
+        Two states (see design doc):
+
+        - Case 1 — the session's ``project_dir`` *is* a repo but we have ``cd``'d
+          out of it: ``project``[cyan] → ``current_dir``[red].
+        - Case 2 — never in a repo: ``current_dir``[light_magenta].
+
+        Returns:
+            The fallback location line, or None when there is no workspace,
+            ``current_dir`` is empty, or the relevant segments are disabled.
+        """
+        workspace = self.data.workspace
+        if workspace is None:
+            return None
+
+        current_dir = workspace.current_dir
+        if not current_dir:
+            return None
+
+        project_dir = workspace.project_dir
+
+        # Case 1 detection: project_dir differs from current_dir and is a repo.
+        # Skip the probe (→ Case 2) when project_dir is missing or equal to
+        # current_dir — we already know current_dir is not a repo.
+        project_name = None
+        if project_dir and project_dir != current_dir:
+            git_common_dir = self._run_git("rev-parse", "--git-common-dir", cwd=project_dir)
+            if git_common_dir is not None:
+                project_name = self._project_name_from_common_dir(git_common_dir, base=project_dir)
+
+        shortened = self._shorten_path(current_dir)
+        separator = colored(" → ", "dark_grey")
+        parts = []
+
+        if project_name is not None:
+            # Case 1: stepped out of the project repo.
+            if self.params.show_project:
+                parts.append(colored(project_name, "cyan"))
+            if self.params.show_folder:
+                parts.append(colored(shortened, "red"))
+        # Case 2: plain directory, never in a repo.
+        elif self.params.show_folder:
+            parts.append(colored(shortened, "light_magenta"))
 
         if not parts:
             return None
