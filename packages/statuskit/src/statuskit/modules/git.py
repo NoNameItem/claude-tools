@@ -420,7 +420,7 @@ class GitModule(BaseModule[GitParams]):
             parts.append(f"🌲 {worktree_name}")
 
         if self.params.show_folder and location["subfolder"]:
-            parts.append(colored(location["subfolder"], "white"))
+            parts.append(colored(location["subfolder"], "light_magenta"))
 
         if not parts:
             return None

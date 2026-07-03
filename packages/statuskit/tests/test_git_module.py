@@ -685,6 +685,16 @@ M  staged_modified.py
         assert "→" in result
         assert "src/utils" in result
 
+    def test_render_location_line_subfolder_is_light_magenta(self, make_render_context, force_color):
+        """In-repo subfolder renders in light_magenta (unified folder-leaf color)."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        location = {"project": "myproject", "worktree": None, "subfolder": "src/utils"}
+        result = mod._render_location_line(location)
+
+        assert result is not None
+        assert colored("src/utils", "light_magenta") in result
+
     def test_render_location_line_full(self, make_render_context):
         """_render_location_line shows all components."""
         data = make_input_data(model=make_model_data())
