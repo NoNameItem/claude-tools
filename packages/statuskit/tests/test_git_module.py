@@ -1030,3 +1030,31 @@ M  staged_modified.py
             result = mod.render()
 
         assert result is None
+
+    def test_shorten_path_under_home(self, make_render_context, monkeypatch):
+        """_shorten_path replaces a leading $HOME with ~."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/user/projects/x") == "~/projects/x"
+
+    def test_shorten_path_equals_home(self, make_render_context, monkeypatch):
+        """_shorten_path returns ~ when path equals $HOME."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/user") == "~"
+
+    def test_shorten_path_outside_home(self, make_render_context, monkeypatch):
+        """_shorten_path leaves paths outside $HOME unchanged."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/tmp/scratch") == "/tmp/scratch"  # noqa: S108
+
+    def test_shorten_path_home_prefix_not_subdir(self, make_render_context, monkeypatch):
+        """_shorten_path does not shorten a sibling that merely shares the prefix."""
+        monkeypatch.setenv("HOME", "/home/user")
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._shorten_path("/home/username") == "/home/username"
