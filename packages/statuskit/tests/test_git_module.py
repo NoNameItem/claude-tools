@@ -456,6 +456,25 @@ M  staged_modified.py
 
         assert mod._decompose_minutes(0) == (0, 0, 0)
 
+    def test_project_name_from_common_dir_absolute(self, make_render_context):
+        """Derives the project name from an absolute .git path."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._project_name_from_common_dir("/home/user/myrepo/.git") == "myrepo"
+
+    def test_project_name_from_common_dir_relative_uses_base(self, make_render_context):
+        """Resolves a relative --git-common-dir against the supplied base, not the cwd."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        # ".git" relative to base → base's own name (not the test process cwd's name).
+        assert mod._project_name_from_common_dir(".git", base="/home/user/myrepo") == "myrepo"
+
+    def test_project_name_from_common_dir_bare_repo(self, make_render_context):
+        """Uses the directory name when it is not a plain .git dir (bare repo)."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod._project_name_from_common_dir("/srv/repos/myrepo.git") == "myrepo.git"
+
     def test_get_location_regular_repo_root(self, make_render_context):
         """_get_location returns project name for regular repo at root."""
         data = make_input_data(
