@@ -40,7 +40,9 @@ def test_blocks_while_a_check_is_in_progress(fake_gh):
             ("Python CI", "in_progress", None),
         ),
     )
-    fake_gh.write(SHA, "status", "pending", commit_status("pending", ("review-gate", "success")))
+    # combined status is success (check-runs don't drive the combined commit-status),
+    # so exit-2 comes solely from the "a check-run is still in_progress" rule.
+    fake_gh.write(SHA, "status", "pending", commit_status("success", ("review-gate", "success")))
     r = run_helper("42", SHA, env=fake_gh.env())
     assert r.returncode == 2, r.stdout
 
@@ -59,9 +61,11 @@ def test_blocks_until_anchor_check_run_present(fake_gh):
 
 
 def test_blocks_until_review_gate_status_present(fake_gh):
-    # claude-review completed, but review-gate status still pending -> timeout(2).
+    # review-gate status absent (combined success, all check-runs done) -> anchor 2
+    # missing -> must not conclude -> timeout(2). combined != "pending" so the block
+    # comes solely from the review-gate anchor, not the catch-all.
     fake_gh.write(SHA, "check-runs", "pending", TERMINAL_RUNS)
-    fake_gh.write(SHA, "status", "pending", commit_status("pending", ("review-gate", "pending")))
+    fake_gh.write(SHA, "status", "pending", commit_status("success", ("other-ci", "success")))
     r = run_helper("42", SHA, env=fake_gh.env())
     assert r.returncode == 2, r.stdout
 
