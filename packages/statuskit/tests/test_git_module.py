@@ -1050,7 +1050,7 @@ M  staged_modified.py
         monkeypatch.setenv("HOME", "/home/user")
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
 
-        assert mod._shorten_path("/tmp/scratch") == "/tmp/scratch"  # noqa: S108
+        assert mod._shorten_path("/work/scratch") == "/work/scratch"
 
     def test_shorten_path_home_prefix_not_subdir(self, make_render_context, monkeypatch):
         """_shorten_path does not shorten a sibling that merely shares the prefix."""
