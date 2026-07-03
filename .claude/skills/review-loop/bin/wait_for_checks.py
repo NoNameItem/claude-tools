@@ -104,11 +104,13 @@ def main(argv: list[str]) -> int:
     _pr, sha = argv
     interval = float(os.environ.get("WAIT_INTERVAL", "30"))
     timeout = float(os.environ.get("WAIT_TIMEOUT", "900"))
-    repo = _repo()
     deadline = time.monotonic() + timeout
     while True:
+        # _repo() is inside the retry so a transient `gh` failure here is retried
+        # until the deadline (exit 2), never an uncaught crash (which exits 1 —
+        # the caller's usage-error code).
         try:
-            snap: Snapshot | None = _snapshot(repo, sha)
+            snap: Snapshot | None = _snapshot(_repo(), sha)
         except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
             sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
             snap = None

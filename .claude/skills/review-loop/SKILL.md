@@ -99,9 +99,10 @@ back, its latest author flips and it becomes actionable again:
 ```bash
 ME=$(gh api user -q .login)
 OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-ACTIONABLE=$(gh api "repos/$OWNER_REPO/pulls/<PR>/comments?per_page=100" --paginate \
+ACTIONABLE=$(gh api "repos/$OWNER_REPO/pulls/<PR>/comments?per_page=100" --paginate --slurp \
   | jq --arg me "$ME" '
-      map({root: (.in_reply_to_id // .id), login: .user.login, created_at: .created_at})
+      add                                    # --slurp wraps pages; add merges them
+      | map({root: (.in_reply_to_id // .id), login: .user.login, created_at: .created_at})
       | group_by(.root)
       | map(max_by(.created_at).login)
       | map(select(. != $me))
