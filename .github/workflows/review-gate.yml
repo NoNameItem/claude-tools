@@ -9,25 +9,34 @@ name: Review Gate
 #     "Require conversation resolution before merging" setting.
 #   - This workflow only asserts that *Codex* has reviewed the head commit.
 #
-# Codex signals its state via reactions/reviews (no check run, no commit status):
+# Codex signals its state via reactions/reviews (no check run, no commit status of its own):
 #   - reviewing    -> 👀 (eyes) reaction on the PR, previous 👍 removed
 #   - clean        -> 👍 (+1) reaction, re-added with a fresh timestamp
 #   - has findings -> a PR review whose commit_id == head SHA (+ inline comments)
-# Because a 👍 reaction fires no workflow event, the job polls until Codex settles. The
-# decision (which evidence counts, given the triggering event) lives in review_gate.py.
+# Because a 👍 reaction fires no workflow event, the job polls until Codex settles. Whether the
+# evidence is fresh enough (newer than the head's push / a committer-date cutoff) is decided by
+# review_gate.py.
+#
+# HOW THE REQUIRED CHECK IS PUBLISHED: the job POSTs a commit status with context `review-gate`
+# to the PR *head* SHA (pending -> success/failure). The `master` ruleset requires the context
+# `review-gate`, which is this status. We do NOT rely on the job's own check run: under
+# `pull_request_target` that run is attributed to the base SHA (not the PR head), and a job
+# skipped by `if:` reports "success" — either would let an unreviewed head look green. Posting
+# an explicit status to the head SHA avoids both (Codex #96 C5/C6). The job name below is
+# therefore deliberately NOT `review-gate`.
 #
 # SECURITY (pull_request_target): the workflow definition and review_gate.py always come from
 # the BASE branch, so a PR that edits either cannot alter the gate guarding its own merge.
 # This is SAFE ONLY because the job checks out the BASE branch (never the PR head) and reads
 # PR metadata via `gh api`. NEVER add a checkout of `github.event.pull_request.head.*` or
-# otherwise execute head code here.
+# otherwise execute head code here. `statuses: write` only lets the job post a commit status.
 
 on:
-  # `reopened` is deliberately NOT listed: on reopen the head SHA's prior check result
-  # persists (no re-run), so a still-valid green stays green (no false block) and a reopen
-  # cannot launder stale evidence into a fresh green after a base change or a while-closed
-  # push. A reopened PR whose head genuinely changed has no gate run for the new SHA, so the
-  # required check is missing and merge stays blocked until a push/re-run.
+  # `reopened` is deliberately NOT listed: on reopen the head SHA's prior status persists (no
+  # re-run), so a still-valid green stays green (no false block) and a reopen cannot launder
+  # stale evidence into a fresh green after a base change or a while-closed push. A reopened PR
+  # whose head genuinely changed has no gate run for the new SHA, so the required `review-gate`
+  # status is missing and merge stays blocked until a push/re-run.
   pull_request_target:
     types: [opened, synchronize, ready_for_review, edited]
 
@@ -35,19 +44,25 @@ permissions:
   contents: read
   pull-requests: read
   issues: read # reactions on a PR are read via the Issues API endpoint
+  statuses: write # POST the required `review-gate` status to the PR head SHA
 
-concurrency:
-  group: review-gate-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No `concurrency`: each run posts its status only to its own (frozen) HEAD_SHA, so races are
+# already isolated — a new push starts a fresh run for the new SHA while any in-flight poll for
+# the old SHA harmlessly finishes against the old SHA. `cancel-in-progress: true` would be worse
+# than nothing here: an unrelated event (e.g. a title edit) would cancel a live poll and strand
+# its `pending` status; `cancel-in-progress: false` would serialize and make a new push wait up
+# to the full timeout behind a stale poll.
 
 jobs:
-  review-gate:
-    name: review-gate
-    # Same-repo PRs only (forked PRs get no Codex app review and can't be gated here), and for
-    # `edited` run only when the PR base actually changed (ignore title/body edits).
+  # NOTE: name is NOT `review-gate` on purpose — the required check is the posted status, not
+  # this job's own check run (see the HOW THE REQUIRED CHECK IS PUBLISHED note above).
+  review-gate-poll:
+    name: review-gate-poll
+    # For `edited`, run only when the PR base actually changed (ignore title/body edits): a
+    # non-base edit posts nothing, so the head SHA's prior status persists. Forks are handled
+    # inside the job (they can't be Codex-gated, so they get a success bypass).
     if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.action != 'edited' || github.event.changes.base != null)
+      github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     steps:
       - name: Check out base-branch scripts
@@ -59,27 +74,50 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Wait for Codex to review the head commit
+      - name: Gate on Codex review of the head commit
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PUSHED_AT: ${{ github.event.pull_request.updated_at }}
           EVENT_ACTION: ${{ github.event.action }}
           BASE_CHANGED: ${{ github.event.changes.base != null }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           TIMEOUT=720    # ~12 min (observed Codex latency ~5-8 min)
           INTERVAL=30
 
-          echo "PR #$PR head=$HEAD_SHA event=$EVENT_ACTION base_changed=$BASE_CHANGED updated_at=$PUSHED_AT"
-          echo "Waiting for Codex: 👍 reaction (clean) or a review on the head (findings)."
+          # POST the required `review-gate` commit status to the PR head SHA. $1=state $2=description.
+          post_status() {
+            gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state="$1" -f context="review-gate" -f description="$2" -f target_url="$RUN_URL" >/dev/null
+          }
 
-          base_flag=()
-          if [ "$BASE_CHANGED" = "true" ]; then
-            base_flag=(--base-changed)
+          # Forked PRs get no Codex app review and can't be gated here; pass them (out of scope,
+          # matching the previous skip-as-satisfied behavior) with an honest status.
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            post_status success "Fork PR — Codex gate not applicable"
+            echo "Fork PR ($HEAD_REPO); gate not applicable."
+            exit 0
           fi
+
+          # Freshness cutoff. Content-change events (opened/synchronize/base-change) use the
+          # push/base-change time — pull_request.updated_at, GitHub's own clock, frozen in the
+          # payload. ready_for_review uses the head commit's committer date instead: there
+          # updated_at is the (later) ready-toggle time, which would reject a still-valid 👍;
+          # the committer date is a safe lower bound with no concurrent-push race (marking ready
+          # is not a push).
+          if [ "$EVENT_ACTION" = "ready_for_review" ]; then
+            cutoff=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date')
+          else
+            cutoff="$PUSHED_AT"
+          fi
+
+          echo "PR #$PR head=$HEAD_SHA event=$EVENT_ACTION base_changed=$BASE_CHANGED cutoff=$cutoff"
+          post_status pending "Waiting for Codex to review the head commit"
 
           deadline=$(( $(date +%s) + TIMEOUT ))
           while :; do
@@ -93,14 +131,16 @@ jobs:
               '{reviews: $reviews, reactions: $reactions}')
 
             decision=$(printf '%s' "$payload" | python .github/scripts/review_gate.py \
-              --event-action "$EVENT_ACTION" --updated-at "$PUSHED_AT" --head-sha "$HEAD_SHA" "${base_flag[@]}")
+              --cutoff "$cutoff" --head-sha "$HEAD_SHA")
 
             if [ "$decision" = "pass" ]; then
+              post_status success "Codex has reviewed the head commit"
               echo "Codex has reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
               exit 0
             fi
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
+              post_status failure "Codex has not reviewed the head commit in time — re-run after it finishes"
               echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. This check is NOT re-triggered by Codex comments or reviews — you must re-run it here once Codex finishes (👀 while reviewing, then 👍 or a review). If the PR base branch changed, first comment \`@codex review\` to get a fresh review of the new base, then re-run this check."
               exit 1
             fi

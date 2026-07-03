@@ -1,7 +1,8 @@
 # Harden review-gate: freshness cutoff, base-change, self-modification — Design
 
-**Date:** 2026-07-01 (revised 2026-07-03 after Codex review on PR #96 — see §8)
-**Status:** Implemented on PR #96; revised per Codex round-5 review (§8).
+**Date:** 2026-07-01 (revised 2026-07-03 — see §8 and §9)
+**Status:** Implemented on PR #96; §9 is the current design (publish-mechanism redesign after
+Codex round-6 review). §4 is superseded in part; §8 covered the reopen drop.
 **Scope:** repo (`.github/workflows/review-gate.yml`, `.github/scripts/`)
 **Task:** claude-tools-cna (epic claude-tools-5vg, Repo-level tasks)
 **Supersedes:** the freshness-cutoff caveat in
@@ -69,6 +70,12 @@ Unified rule: **the cutoff advances only on events that change what Codex must r
 push or a base change — and both evidence signals must be newer than it.**
 
 ## 4. Architecture
+
+> **Superseded in part by §9 (Revision 2).** §4.1–§4.4 describe the first implementation
+> (event-aware `decide()`, job-check-run gate). Codex's review of that implementation found
+> the job-check-run gate is bypassable/misplaced under `pull_request_target`; §9 replaces the
+> publish mechanism (explicit head-SHA status) and collapses `decide()` to a single cutoff
+> check. Read §9 for the current design; §4 is kept for history.
 
 ### 4.1 Decision logic — new tested Python script
 
@@ -242,3 +249,66 @@ Residual (accepted): a base change *on a draft* followed by marking it ready cou
 accept a pre-base-change review@head via `ready_for_review`. Very narrow; not worth a durable
 cutoff. `ready_for_review` is kept because it's needed for the draft→ready flow to trigger a
 gate run.
+
+## 9. Revision 2 — 2026-07-03 (Codex round-6 review on PR #96) — CURRENT DESIGN
+
+Codex's next review found three more valid P1 holes, two of them in the *publish* mechanism
+(comments 3518194399 / 3518194401 / 3518194408):
+
+- **C4** — `ready_for_review` accepted a bare 👍 from an earlier head (the §8 residual, now
+  treated as a real bypass): a stale clean reaction can green an unreviewed draft once ready.
+- **C5** — a non-base title/body edit hits the job-level `if:` → **a skipped job reports
+  success, and a skipped required check satisfies branch protection** → a no-op edit replaces
+  a red/pending gate with green for the same head SHA, no Codex evidence.
+- **C6** — under `pull_request_target`, `GITHUB_SHA` is the base branch, so the job's own check
+  run is attributed to the **base** SHA, while required checks are evaluated on the **PR head**
+  SHA. The gate never produces the required result on the head → it can't function as a
+  required check (a regression vs the working `pull_request` gate on `master`).
+
+**Resolution — publish an explicit head-SHA status + a single-cutoff `decide()`:**
+
+1. **The required check is a commit status posted to the head SHA, not the job's check run.**
+   The job `POST`s a status with context `review-gate` to `pull_request.head.sha`
+   (`pending` → `success`/`failure`). This lands on the head SHA regardless of `GITHUB_SHA`
+   (**fixes C6**). The job is renamed `review-gate-poll` so a skipped/absent job can never
+   produce the required `review-gate` context (**fixes C5**); a non-base edit now safely skips
+   (nothing posted → the head SHA's prior status persists). `permissions:` gains
+   `statuses: write` (narrow; still no head-code execution — the `pull_request_target`
+   base-only checkout invariant is unchanged). The `master` ruleset still requires the string
+   `review-gate`; a status with that context satisfies it, so **no ruleset change** is needed.
+2. **`decide()` collapses to one freshness check** — `decide(cutoff, head_sha, reviews,
+   reactions)`: pass iff a Codex review@head or a Codex 👍 is **strictly newer than `cutoff`**.
+   The content/non-content branching (the source of C1/C3/C4) is gone. The workflow computes
+   the cutoff per event: `updated_at` (push / base-change time) for content-change events, and
+   the **head commit's committer date** for `ready_for_review` (**fixes C4** — a stale 👍 from
+   an earlier head predates the current head's committer date and is rejected; the committer
+   date is safe here because marking ready is not a push, so the concurrent-push race that
+   bars committer dates on `synchronize` can't occur). `reopened` remains dropped (§8).
+3. **Forks** are handled inside the job (they can't be Codex-gated): post `success`
+   ("Fork PR — Codex gate not applicable") and exit, preserving the previous
+   skip-as-satisfied behavior now that a skipped job no longer yields the required context.
+4. **No `concurrency`.** Because each run posts its status only to its own frozen `HEAD_SHA`,
+   a commit pushed mid-poll is already race-safe: a new `synchronize` starts a fresh run for
+   the new SHA, and the in-flight poll can only ever settle the *old* SHA (never the head).
+   `cancel-in-progress: true` would be actively harmful — an unrelated `edited` (title/body)
+   event would cancel a live poll and strand its `pending` status; `cancel-in-progress: false`
+   would serialize and make a new push wait up to the full timeout behind a stale poll. So the
+   concurrency block is removed. The tradeoff is that rapid pushes leave superseded polls
+   running to their timeout (they post only to superseded SHAs — harmless).
+
+Updated decision table (replaces §4.2):
+
+| Event | Cutoff | Head-SHA status posted |
+|---|---|---|
+| `opened`, `synchronize`, `edited`+base | `updated_at` | poll → `success` if review@head/👍 `> cutoff`, else `failure` at deadline |
+| `ready_for_review` | head commit committer date | same rule against that cutoff |
+| `edited` without base | — | job skipped → nothing posted → prior status persists |
+| `reopened` | — | not a trigger → prior status persists |
+| fork PR (any event) | — | `success` (out of scope, honest description) |
+
+CLI change: `review_gate.py` now takes `--cutoff` + `--head-sha` (was
+`--event-action/--updated-at/--head-sha/--base-changed`).
+
+Post-merge caveat still applies and is now sharper: because this PR changes the gate's own
+trigger/publish model, the `review-gate` status won't report on #96 itself — verify on the
+first follow-up PR after merge that the head-SHA `review-gate` status posts and blocks.
