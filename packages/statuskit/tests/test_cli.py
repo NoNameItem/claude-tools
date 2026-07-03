@@ -11,6 +11,13 @@ def test_version_returns_string():
     assert version  # not empty
 
 
+def test_get_version_matches_installed_metadata():
+    """get_version() reads the real installed distribution version, not the dev fallback."""
+    from importlib.metadata import version as dist_version
+
+    assert get_version() == dist_version("claude-statuskit")
+
+
 def test_parser_version_action(capsys):
     """--version prints version and exits."""
     parser = create_parser()
