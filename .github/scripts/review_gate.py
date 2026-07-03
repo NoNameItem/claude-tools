@@ -3,15 +3,15 @@
 
 Pure decision function extracted from review-gate.yml so the freshness rule is unit-testable.
 The workflow fetches Codex's reviews and reactions via `gh api`, pipes them in as JSON on
-stdin, passes the head SHA and an event-appropriate freshness cutoff as CLI args, and this
-script prints `pass` or `wait`.
+stdin, and passes the head SHA plus a freshness cutoff (the head's push time,
+`pull_request.updated_at`) as CLI args; this script prints `pass` or `wait`.
 
-The workflow computes the cutoff per event: the push / base-change time (`pull_request.
-updated_at`) for content-change events, and the head commit's committer date for
-`ready_for_review` (where `updated_at` is the later ready-toggle time). `reopened` is not a
-gate trigger at all. Requiring *both* evidence kinds to beat that cutoff — a SHA-pinned
-review@head or a Codex 👍 — is what closes the stale-👍 / stale-review holes (Codex #96
-C1/C3/C4): a bare 👍 or an old review that predates the current head/base is rejected.
+Pass requires *fresh* evidence — a SHA-pinned review@head or a Codex 👍 whose timestamp is
+strictly newer than the cutoff. A missing/`null` timestamp (e.g. a still-pending Codex review,
+which the API returns without `submitted_at`) is treated as not-fresh, never a crash.
+
+`reopened` is not a gate trigger (a reopen's prior head-SHA status persists). Base-change
+re-arm was intentionally dropped — see the spec's §10; a base change is an accepted limitation.
 
 Usage:
     echo '{"reviews": [...], "reactions": [...]}' | python review_gate.py \
@@ -37,9 +37,10 @@ def decide(cutoff: str, head_sha: str, reviews: list[dict], reactions: list[dict
     """Return "pass" if Codex reviewed head_sha with evidence newer than cutoff, else "wait".
 
     Args:
-        cutoff: ISO-8601 UTC "Z" timestamp; evidence must be strictly newer. Timestamps are
-            compared as strings (GitHub emits fixed-format UTC "Z" timestamps that order
-            lexicographically, as the original shell implementation compared them).
+        cutoff: ISO-8601 UTC "Z" timestamp (the head's push time); evidence must be strictly
+            newer. Timestamps are compared as strings — GitHub emits fixed-format UTC "Z"
+            timestamps that order lexicographically. A missing/`null` timestamp is coerced to
+            "" (sorts before any real timestamp) so a pending review can't raise a TypeError.
         head_sha: The PR head commit SHA (the findings path is pinned to it).
         reviews: Codex PR reviews: {"user": {"login": ...}, "commit_id": ..., "submitted_at": ...}.
         reactions: PR reactions: {"user": {"login": ...}, "content": ..., "created_at": ...}.
@@ -47,11 +48,13 @@ def decide(cutoff: str, head_sha: str, reviews: list[dict], reactions: list[dict
     fresh_review = any(
         r.get("user", {}).get("login") == CODEX_BOT
         and r.get("commit_id") == head_sha
-        and r.get("submitted_at", "") > cutoff
+        and (r.get("submitted_at") or "") > cutoff
         for r in reviews
     )
     fresh_thumb = any(
-        r.get("user", {}).get("login") == CODEX_BOT and r.get("content") == "+1" and r.get("created_at", "") > cutoff
+        r.get("user", {}).get("login") == CODEX_BOT
+        and r.get("content") == "+1"
+        and (r.get("created_at") or "") > cutoff
         for r in reactions
     )
     return "pass" if fresh_review or fresh_thumb else "wait"

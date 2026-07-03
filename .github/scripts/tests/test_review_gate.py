@@ -49,6 +49,13 @@ class TestDecide:
     def test_non_codex_review_ignored(self):
         assert decide(CUTOFF, HEAD, [_review(HEAD, AFTER, login="nope")], []) == "wait"
 
+    def test_pending_review_none_submitted_at_waits(self):
+        # A pending Codex review has submitted_at: null — must be "wait", not a TypeError.
+        assert decide(CUTOFF, HEAD, [_review(HEAD, None)], []) == "wait"
+
+    def test_thumb_none_created_at_waits(self):
+        assert decide(CUTOFF, HEAD, [], [_thumb(None)]) == "wait"
+
     def test_fresh_review_and_stale_thumb_passes(self):
         # The fresh SHA-pinned review carries it even if a stale 👍 is present.
         assert decide(CUTOFF, HEAD, [_review(HEAD, AFTER)], [_thumb(BEFORE)]) == "pass"

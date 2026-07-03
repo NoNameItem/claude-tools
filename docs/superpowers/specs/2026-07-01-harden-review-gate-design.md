@@ -1,8 +1,9 @@
 # Harden review-gate: freshness cutoff, base-change, self-modification — Design
 
-**Date:** 2026-07-01 (revised 2026-07-03 — see §8 and §9)
-**Status:** Implemented on PR #96; §9 is the current design (publish-mechanism redesign after
-Codex round-6 review). §4 is superseded in part; §8 covered the reopen drop.
+**Date:** 2026-07-01 (revised 2026-07-03 — see §8, §9, §10)
+**Status:** Implemented on PR #96. **§10 is the current design** (de-scoped to #1 + #3 after
+three rounds of Codex review; base-change #2 dropped as an accepted limitation). §9 = the
+publish-mechanism redesign it builds on; §8 = the reopen drop; §4 = superseded first cut.
 **Scope:** repo (`.github/workflows/review-gate.yml`, `.github/scripts/`)
 **Task:** claude-tools-cna (epic claude-tools-5vg, Repo-level tasks)
 **Supersedes:** the freshness-cutoff caveat in
@@ -312,3 +313,49 @@ CLI change: `review_gate.py` now takes `--cutoff` + `--head-sha` (was
 Post-merge caveat still applies and is now sharper: because this PR changes the gate's own
 trigger/publish model, the `review-gate` status won't report on #96 itself — verify on the
 first follow-up PR after merge that the head-SHA `review-gate` status posts and blocks.
+
+## 10. Revision 3 — 2026-07-03 (Codex round-7) — de-scope base-change (#2). CURRENT DESIGN
+
+Codex's review of the §9 redesign found four more issues, three of them (P1) all rooted in
+**base-change / draft-ready freshness** (comments 3518606809 / 3518606821 / 3518606817) plus
+a real P2 crash (3518606813):
+
+- **809 / 821** — the `ready_for_review` committer-date cutoff is itself unsafe: it can predate
+  a later base change (809) or a pre-existing 👍 whose commit was authored earlier (821), so
+  stale evidence passes.
+- **817** — dropping `concurrency` (§9.4) is unsound *for base changes*: retargeting keeps the
+  same head SHA, so a pre-base-change `synchronize` poll can post a stale `success` that
+  overwrites the base-change run's failure on the same status context.
+- **813 (P2)** — a *pending* Codex review has `submitted_at: null`; `None > cutoff` raised a
+  `TypeError`, killing the poll and stranding the `pending` status.
+
+**Diagnosis:** three review rounds each spawned fresh P1s, all in the base-change (#2) /
+draft-ready freshness area. A correct fix needs a durable, monotonic per-head cutoff with
+read-modify-write on the status — distributed-systems machinery for a *completion* gate whose
+real security is human review + conversation-resolution. Poor ROI, and exactly the endless
+inline-review loop this task (cna) was created to avoid.
+
+**Resolution — de-scope #2:**
+
+1. **Drop the `edited`/base-change trigger and handling** (the committer-date `ready_for_review`
+   cutoff, the base-change `if:` filter, `BASE_CHANGED`). Triggers are now only
+   `[opened, synchronize]`. This removes 809, 821, **and** 817 outright: with no base change,
+   no two runs ever target the same head SHA, so the per-SHA isolation reasoning (no
+   `concurrency`) holds again. **Accepted limitation:** a base-branch change leaves the prior
+   `review-gate` status in place (the original defect #2) — rare on a trusted-collaborator
+   repo, and human review + conversation-resolution still gate; documented, not fixed.
+2. **Drop `ready_for_review`** — there is no safe stateless freshness cutoff for it. A draft is
+   gated by its `opened`/`synchronize` runs; a draft that needs a fresh gate after being marked
+   ready must be pushed again or the check re-run. Accepted limitation.
+3. **Fix P2 (813):** `decide()` coerces a missing/`null` timestamp to `""` (`(x or "") > cutoff`)
+   so a pending review is treated as not-fresh, never a crash. Covered by two new tests.
+
+What survives from the original scope: **#1** (freshness cutoff for the normal push flow),
+**#3** (self-modification defence via `pull_request_target` + base-only checkout, published as
+an explicit head-SHA status per §9), and the reopen drop (§8, closing C1/C3). Only **#2**
+(base-change re-arm) is dropped.
+
+Final design in one line: on `opened`/`synchronize`, `pull_request_target` runs the base
+definition, polls Codex, and POSTs a `review-gate` status to the head SHA — `success` iff a
+Codex review@head or 👍 is newer than the push time, else `failure` at the deadline; forks pass;
+reopen/edited/ready_for_review are not triggers.

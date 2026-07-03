@@ -14,16 +14,15 @@ name: Review Gate
 #   - clean        -> 👍 (+1) reaction, re-added with a fresh timestamp
 #   - has findings -> a PR review whose commit_id == head SHA (+ inline comments)
 # Because a 👍 reaction fires no workflow event, the job polls until Codex settles. Whether the
-# evidence is fresh enough (newer than the head's push / a committer-date cutoff) is decided by
-# review_gate.py.
+# evidence is fresh enough (newer than the head's push time) is decided by review_gate.py.
 #
 # HOW THE REQUIRED CHECK IS PUBLISHED: the job POSTs a commit status with context `review-gate`
 # to the PR *head* SHA (pending -> success/failure). The `master` ruleset requires the context
 # `review-gate`, which is this status. We do NOT rely on the job's own check run: under
 # `pull_request_target` that run is attributed to the base SHA (not the PR head), and a job
 # skipped by `if:` reports "success" — either would let an unreviewed head look green. Posting
-# an explicit status to the head SHA avoids both (Codex #96 C5/C6). The job name below is
-# therefore deliberately NOT `review-gate`.
+# an explicit status to the head SHA avoids both. The job name below is therefore deliberately
+# NOT `review-gate`.
 #
 # SECURITY (pull_request_target): the workflow definition and review_gate.py always come from
 # the BASE branch, so a PR that edits either cannot alter the gate guarding its own merge.
@@ -32,13 +31,17 @@ name: Review Gate
 # otherwise execute head code here. `statuses: write` only lets the job post a commit status.
 
 on:
-  # `reopened` is deliberately NOT listed: on reopen the head SHA's prior status persists (no
-  # re-run), so a still-valid green stays green (no false block) and a reopen cannot launder
-  # stale evidence into a fresh green after a base change or a while-closed push. A reopened PR
-  # whose head genuinely changed has no gate run for the new SHA, so the required `review-gate`
-  # status is missing and merge stays blocked until a push/re-run.
+  # Only `opened`/`synchronize` — the events that define the head content. Deliberately excluded:
+  #   - `reopened`: the head SHA's prior status persists; re-running risks laundering stale
+  #     evidence into a green after a while-closed push (Codex #96 C1/C3).
+  #   - `edited` / base change: base-change re-arm was dropped as a bottomless edge (Codex #96
+  #     round-3). A base change leaves the prior status in place — an accepted limitation (rare
+  #     on a trusted repo; human review + conversation-resolution still gate). See spec §10.
+  #   - `ready_for_review`: no safe stateless freshness cutoff exists (updated_at is inflated,
+  #     the committer date races a pre-push 👍). A draft is gated by its opened/synchronize
+  #     runs; if it needs a fresh gate after being marked ready, push again or re-run. Spec §10.
   pull_request_target:
-    types: [opened, synchronize, ready_for_review, edited]
+    types: [opened, synchronize]
 
 permissions:
   contents: read
@@ -46,23 +49,17 @@ permissions:
   issues: read # reactions on a PR are read via the Issues API endpoint
   statuses: write # POST the required `review-gate` status to the PR head SHA
 
-# No `concurrency`: each run posts its status only to its own (frozen) HEAD_SHA, so races are
-# already isolated — a new push starts a fresh run for the new SHA while any in-flight poll for
-# the old SHA harmlessly finishes against the old SHA. `cancel-in-progress: true` would be worse
-# than nothing here: an unrelated event (e.g. a title edit) would cancel a live poll and strand
-# its `pending` status; `cancel-in-progress: false` would serialize and make a new push wait up
-# to the full timeout behind a stale poll.
+# No `concurrency`: each run posts its status only to its own (frozen) HEAD_SHA, and only
+# `opened`/`synchronize` trigger runs — so no two runs ever target the same head SHA, and a
+# commit pushed mid-poll just starts a fresh run for the new SHA while the stale poll finishes
+# harmlessly against the old SHA. `cancel-in-progress: true` would instead risk an unrelated
+# event cancelling a live poll and stranding its `pending` status.
 
 jobs:
   # NOTE: name is NOT `review-gate` on purpose — the required check is the posted status, not
   # this job's own check run (see the HOW THE REQUIRED CHECK IS PUBLISHED note above).
   review-gate-poll:
     name: review-gate-poll
-    # For `edited`, run only when the PR base actually changed (ignore title/body edits): a
-    # non-base edit posts nothing, so the head SHA's prior status persists. Forks are handled
-    # inside the job (they can't be Codex-gated, so they get a success bypass).
-    if: >-
-      github.event.action != 'edited' || github.event.changes.base != null
     runs-on: ubuntu-latest
     steps:
       - name: Check out base-branch scripts
@@ -82,8 +79,6 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PUSHED_AT: ${{ github.event.pull_request.updated_at }}
-          EVENT_ACTION: ${{ github.event.action }}
-          BASE_CHANGED: ${{ github.event.changes.base != null }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -104,19 +99,12 @@ jobs:
             exit 0
           fi
 
-          # Freshness cutoff. Content-change events (opened/synchronize/base-change) use the
-          # push/base-change time — pull_request.updated_at, GitHub's own clock, frozen in the
-          # payload. ready_for_review uses the head commit's committer date instead: there
-          # updated_at is the (later) ready-toggle time, which would reject a still-valid 👍;
-          # the committer date is a safe lower bound with no concurrent-push race (marking ready
-          # is not a push).
-          if [ "$EVENT_ACTION" = "ready_for_review" ]; then
-            cutoff=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.committer.date')
-          else
-            cutoff="$PUSHED_AT"
-          fi
-
-          echo "PR #$PR head=$HEAD_SHA event=$EVENT_ACTION base_changed=$BASE_CHANGED cutoff=$cutoff"
+          # Freshness cutoff = the head's push time. pull_request.updated_at is GitHub's own
+          # clock, frozen in the event payload (correct across manual re-runs), and for
+          # opened/synchronize it is exactly the push time — NOT the committer date, which can
+          # predate an earlier commit's 👍 and let a stale reaction satisfy the gate.
+          cutoff="$PUSHED_AT"
+          echo "PR #$PR head=$HEAD_SHA cutoff=$cutoff"
           post_status pending "Waiting for Codex to review the head commit"
 
           deadline=$(( $(date +%s) + TIMEOUT ))
@@ -141,7 +129,7 @@ jobs:
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
               post_status failure "Codex has not reviewed the head commit in time — re-run after it finishes"
-              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. This check is NOT re-triggered by Codex comments or reviews — you must re-run it here once Codex finishes (👀 while reviewing, then 👍 or a review). If the PR base branch changed, first comment \`@codex review\` to get a fresh review of the new base, then re-run this check."
+              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. This check is NOT re-triggered by Codex comments or reviews — re-run it here once Codex finishes (👀 while reviewing, then 👍 or a review)."
               exit 1
             fi
             echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
