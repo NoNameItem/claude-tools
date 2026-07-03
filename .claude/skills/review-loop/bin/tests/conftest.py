@@ -91,11 +91,17 @@ def fake_gh(tmp_path):
 # --- fixture builders -------------------------------------------------------
 
 
-def check_runs(*runs):
-    """Build a /check-runs response body. Each run is (name, status, conclusion)."""
+def check_runs(*runs, total_count=None):
+    """Build a /check-runs response body. Each run is (name, status, conclusion).
+
+    total_count defaults to the number of runs (a complete page); pass a larger
+    value to simulate a truncated page.
+    """
     import json
 
-    return json.dumps({"check_runs": [{"name": n, "status": s, "conclusion": c} for (n, s, c) in runs]})
+    items = [{"name": n, "status": s, "conclusion": c} for (n, s, c) in runs]
+    tc = total_count if total_count is not None else len(items)
+    return json.dumps({"check_runs": items, "total_count": tc})
 
 
 def commit_status(state, *statuses):
