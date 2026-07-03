@@ -1,7 +1,7 @@
 """CLI argument parsing for statuskit."""
 
 import argparse
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 MODULES_HELP = """
 Built-in modules:
@@ -13,11 +13,15 @@ Built-in modules:
 
 
 def get_version() -> str:
-    """Get statuskit version from package metadata."""
+    """Get statuskit version from installed package metadata.
+
+    The distribution name (``claude-statuskit``) differs from the import
+    package name (``statuskit``); metadata is keyed by the distribution name.
+    """
     try:
-        return version("statuskit")
-    except Exception:
-        return "0.1.0"  # fallback for development
+        return version("claude-statuskit")
+    except PackageNotFoundError:
+        return "0.0.0+unknown"  # package not installed (e.g. running from source)
 
 
 def create_parser() -> argparse.ArgumentParser:
