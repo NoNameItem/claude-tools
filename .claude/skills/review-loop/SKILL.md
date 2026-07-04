@@ -1,7 +1,7 @@
 ---
 name: review-loop
 description: "Use when you have pushed to a claude-tools GitHub PR and want the automated bot review cycle (Claude claude-review, Codex review-gate, CI ruff/ty lint comments) addressed round after round to convergence, instead of re-invoking flow:review-comments by hand each time. GitHub-only, hard-wired to this repo's review gates. Reply-only: it never resolves threads or merges. Not for GitLab, other repos, or human-reviewer feedback."
-allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(jq:*) Bash(${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py:*) AskUserQuestion Read
+allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(jq:*) Bash(${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py:*) Read
 ---
 
 # Review Loop
@@ -17,9 +17,11 @@ nothing new comes back. Doing that by hand means re-running `flow:review-comment
 every round; this skill runs the cycle for you with one invocation.
 
 It **reuses `flow:review-comments` verbatim** each round (no flags, no
-non-interactive mode). That skill's own confirmations are the control points:
-its Phase 3 ("Process all N?") and Phase 5.6 ("Push?" via `AskUserQuestion`). The
-loop never pushes silently and never processes without your go-ahead.
+non-interactive mode). That skill's own confirmations are the control points: its
+Phase 3 ("Process all N?") and its push confirmation — both **plain-text prompts
+that wait for your typed answer** (it bans structured dialogs for the same
+AFK-safety reason this skill does). The loop never pushes silently and never
+processes without your go-ahead.
 
 ## When to use
 
@@ -77,12 +79,31 @@ ${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py <PR> <HEAD>
 - Exit 0 → prints one line per check (`<name> <conclusion>`); note as `failed`
   any whose conclusion is **not** `success`, `neutral`, or `skipped` (i.e.
   `failure`, `error`, `cancelled`, `timed_out`, `action_required`, `stale`).
-- Exit 2 (timeout) → ask the user (`AskUserQuestion`): **wait more** / **process
-  what's there now** / **stop**. "Process what's there now" marks this round
-  **partial** — the pipeline is *not* terminal, so this round can never be a clean
-  convergence (step e), because lint/bot comments may still arrive.
 - Exit 1 → usage error (a bug in how the skill called it); fix the call, don't
   treat it as a timeout.
+- Exit 2 (timeout) → ask the user with a **plain-text numbered prompt** — **never
+  `AskUserQuestion`**. Its AFK auto-submit would pick an option (e.g. "process") or
+  keep the loop waiting with no explicit answer from the user, who often runs
+  sessions unattended; this repo's prompt policy forbids structured dialogs for
+  consequential confirmations for exactly this reason (see the red flags below).
+  Print:
+
+  ```
+  Проверки для <HEAD:0:7> не завершились за отведённое время. Что делать?
+  1. Подождать ещё
+  2. Обработать то, что есть сейчас
+  3. Остановиться
+  ```
+
+  Wait for a typed reply. **2 (process what's there now)** marks this round
+  **partial** — the pipeline is *not* terminal, so this round can never be a clean
+  convergence (step e), because lint/bot comments may still arrive.
+- Exit 3 (head moved) → the branch advanced during the wait, so `<HEAD>` is stale
+  (an external push, or master auto-merged into the branch). Loop back to step (a)
+  to re-capture HEAD and re-wait on the **new** head — do **not** count threads or
+  converge on the stale head. The helper guarantees this: after the pipeline for
+  `<HEAD>` goes terminal it re-fetches the PR head and exits 3 if it differs, so a
+  branch update mid-wait can't be mistaken for convergence.
 
 Waiting for CI here is **not** because CI gates merge (only `claude-review` and
 `review-gate` do) — it is because CI posts ruff/ty findings as inline review
@@ -147,7 +168,8 @@ ACTIONABLE=$(gh api graphql --paginate --slurp \
     failure with no comment, a failing test, or a plugin-lint failure — plugin
     lint runs plain `ruff check` with no reviewdog, so it posts no comments).
     Report "the bots are quiet, but a check is red: `<failed>`" and ask the user
-    (fix manually / stop). Do **not** declare a clean finish.
+    with a plain-text numbered prompt (`1. fix manually / 2. stop`) — not
+    `AskUserQuestion`. Do **not** declare a clean finish.
 - `ACTIONABLE > 0`: process this round (step f).
 
 **f. Process the round:**
@@ -191,7 +213,7 @@ better.
 | Step | Command / action | Key point |
 |------|------------------|-----------|
 | Head SHA | `gh pr view <PR> --json headRefOid -q .headRefOid` | SHA-keyed, no stale race |
-| Wait | `${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py <PR> <HEAD>` | whole pipeline; don't hand-roll |
+| Wait | `${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py <PR> <HEAD>` | whole pipeline; exit 2=timeout, 3=head moved (restart) |
 | Count | `gh api graphql` reviewThreads + jq | unresolved & latest-not-mine |
 | Converge | actionable 0 & no red check | bots quiet ≠ mergeable |
 | Process | Skill `flow:review-comments <PR>` | verbatim, interactive |
@@ -210,6 +232,14 @@ better.
   pipeline first (step c), or ruff/ty comments land after you've declared clean.
 - "I'll poll a time-based quiet window instead of the gates." → Use
   `wait_for_checks.py`; the gates are a precise per-head signal.
+- "I'll use `AskUserQuestion` for the timeout / red-check prompt — it's cleaner." →
+  **No.** Its AFK auto-submit can act (process / wait / stop) with no real answer
+  from the user, who often runs sessions unattended. Use a plain-text numbered
+  prompt and wait for a typed reply (steps 1c, 1e). This skill declares no
+  `AskUserQuestion` in `allowed-tools`.
+- "The wait returned 0, so the head I captured is still current." → Not
+  guaranteed — the branch can advance mid-wait. The helper exits 3 when it does;
+  on exit 3, restart from step (a). Never count threads on a stale head.
 - "A required check is red but no comments — I'll loop `flow:review-comments`
   until it turns green." → It structurally can't fix a threadless check. Surface
   it as a hand-off (step 1e), don't spin.

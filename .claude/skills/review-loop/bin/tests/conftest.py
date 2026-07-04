@@ -52,10 +52,18 @@ def fake_gh(tmp_path):
         "if a[:2] == ['repo', 'view']:\n"
         "    sys.stdout.write('o/r')\n"
         "    sys.exit(0)\n"
+        "if a[:2] == ['pr', 'view']:\n"
+        # headRefOid lookup: serve pr_head if a test pinned one, else echo the last
+        # polled sha (so the head 'follows' the sha and the recheck matches by default).
+        "    head = (STATE / 'pr_head').read_text() if (STATE / 'pr_head').exists() else (\n"
+        "        (STATE / 'last_sha').read_text() if (STATE / 'last_sha').exists() else '')\n"
+        "    sys.stdout.write(head)\n"
+        "    sys.exit(0)\n"
         "if a and a[0] == 'api':\n"
         "    ep = next((x for x in a if '/commits/' in x), '')\n"
         "    slurp = '--slurp' in a\n"
         "    sha = ep.split('/commits/')[1].split('/')[0]\n"
+        "    (STATE / 'last_sha').write_text(sha)\n"
         "    kind = 'check-runs' if 'check-runs' in ep else 'status'\n"
         "    flip = int((STATE / 'flip_after').read_text())\n"
         "    def other(p):\n"
@@ -91,6 +99,11 @@ def fake_gh(tmp_path):
 
         def set_flip_after(self, n):
             (state / "flip_after").write_text(str(n))
+
+        def set_pr_head(self, sha):
+            """Pin what `gh pr view --json headRefOid` returns (simulates the branch
+            head moving to a new commit while the helper polls)."""
+            (state / "pr_head").write_text(sha)
 
     return Ctl()
 

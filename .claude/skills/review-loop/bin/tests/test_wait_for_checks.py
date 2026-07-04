@@ -126,6 +126,27 @@ def test_usage_error_exits_1(fake_gh):
     assert run_helper("only-one-arg", env=fake_gh.env()).returncode == 1
 
 
+def test_restarts_when_head_moves_during_wait(fake_gh):
+    # The pipeline for SHA is terminal, but the branch head advanced to a NEW commit
+    # during the wait (external push / master auto-merge). Returning 0 here would let
+    # the caller count threads and declare convergence before the new head's
+    # checks/reviews register. Instead the helper re-checks the PR head and exits 3
+    # (distinct from success/timeout/usage) so the caller re-captures HEAD and re-waits.
+    _seed_terminal(fake_gh)
+    fake_gh.set_pr_head("cccccccccccccccccccccccccccccccccccccccc")  # != SHA
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 3, r.stdout
+
+
+def test_returns_0_when_head_unchanged(fake_gh):
+    # Complement to the head-moved test: when the PR head still equals SHA after the
+    # wait, the recheck is a no-op and the helper returns success (0).
+    _seed_terminal(fake_gh)
+    fake_gh.set_pr_head(SHA)  # head unchanged
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+
+
 def test_paginates_check_runs_beyond_one_page(fake_gh):
     # total_count (3) exceeds page 1 (2 runs); page 2 supplies the third. The helper
     # must merge all pages before the completeness check, or a >100-run head would

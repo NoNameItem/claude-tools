@@ -17,12 +17,19 @@ the pipeline (empty, or truncated below total_count):
 
 On success prints one line per signal (`<name/context> <conclusion/state>`) and
 exits 0. Exits 2 on timeout (so the caller can ask the user instead of hanging),
-1 on a usage error. A transient `gh`/JSON failure during a poll is treated as
-"not yet terminal" and retried until the deadline, never crashing the wait.
+1 on a usage error, and 3 when the branch head moved out from under the wait
+(see below). A transient `gh`/JSON failure during a poll is treated as "not yet
+terminal" and retried until the deadline, never crashing the wait.
+
+Head-moved guard: the wait keys on HEAD_SHA, but once the pipeline for it is
+terminal we re-fetch the PR's current head. If the branch advanced during the
+wait (an external push, or this repo's periodic master auto-merge into the
+branch), HEAD_SHA is stale — returning success would let the caller declare
+convergence before the new head's checks/reviews register — so we exit 3 and the
+caller re-captures HEAD and re-waits. PR is used only for this re-check.
 
 Only stdlib + the authenticated `gh` CLI are used. WAIT_INTERVAL (default 30s)
-and WAIT_TIMEOUT (default 900s) are env-overridable (tests set them small). PR
-is accepted for contract symmetry; the wait keys only on HEAD_SHA.
+and WAIT_TIMEOUT (default 900s) are env-overridable (tests set them small).
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ TERMINAL_STATUS_STATES = {"success", "failure", "error"}
 EXPECTED_ARGC = 2
 EXIT_USAGE = 1
 EXIT_TIMEOUT = 2
+EXIT_HEAD_MOVED = 3
 
 
 class Snapshot(NamedTuple):
@@ -72,6 +80,22 @@ def _gh_pages(endpoint: str) -> list[dict]:
 
 def _repo() -> str:
     return _run_gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+
+
+def _head_moved(pr: str, sha: str) -> bool:
+    """True only when the PR's current head is known AND differs from `sha`.
+
+    The wait keys on the `sha` captured before polling; if the branch advances
+    during the (up to 15-minute) wait — an external push, or this repo's periodic
+    master auto-merge into the branch — returning success for the now-stale `sha`
+    would let the caller count threads and declare convergence before the new
+    head's checks/reviews have registered. A failed lookup returns False (a
+    transient `gh` error must not force a spurious restart)."""
+    try:
+        current = _run_gh(["pr", "view", pr, "--json", "headRefOid", "-q", ".headRefOid"])
+    except subprocess.CalledProcessError:
+        return False
+    return bool(current) and current != sha
 
 
 def _snapshot(repo: str, sha: str) -> Snapshot:
@@ -115,7 +139,7 @@ def main(argv: list[str]) -> int:
     if len(argv) != EXPECTED_ARGC:
         sys.stderr.write("usage: wait_for_checks.py <PR> <HEAD_SHA>\n")
         return EXIT_USAGE
-    _pr, sha = argv
+    pr, sha = argv
     interval = float(os.environ.get("WAIT_INTERVAL", "30"))
     timeout = float(os.environ.get("WAIT_TIMEOUT", "900"))
     deadline = time.monotonic() + timeout
@@ -129,6 +153,13 @@ def main(argv: list[str]) -> int:
             sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
             snap = None
         if snap is not None and _pipeline_terminal(snap):
+            # The pipeline for `sha` is terminal, but re-check the PR head first: if the
+            # branch advanced while we polled, `sha` is stale and success would be a lie.
+            if _head_moved(pr, sha):
+                sys.stderr.write(
+                    f"head moved: PR #{pr} head is no longer {sha}; caller should re-capture HEAD and re-wait\n"
+                )
+                return EXIT_HEAD_MOVED
             _emit(snap)
             return 0
         if time.monotonic() >= deadline:
