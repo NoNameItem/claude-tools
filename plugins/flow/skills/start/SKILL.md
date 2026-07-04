@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start working on a beads task — select from the ready tree, create or switch the branch, init a worktree, and show the task card. Use when beginning a work session, after /clear, at session start, or when switching tasks. To resume an already in-progress task, use flow:continue.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill TodoWrite
 ---
 
 # Flow: Start Task
@@ -65,7 +65,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 
 **For task selection:**
 - ✅ Use plain text output (allows user to type `1.2` or `1.1.1`)
-- ❌ DO NOT use `AskUserQuestion` tool (cannot handle hierarchical numbers)
+- ❌ DO NOT use a structured multiple-choice dialog for selection (it can't do hierarchical numbers, and it auto-submits on the AFK timeout — claude-tools-6q4)
 
 ## Quick Reference
 
@@ -78,7 +78,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
-| 6. Ask | `AskUserQuestion` with options matrix | Branch + worktree in one question |
+| 6. Ask | Plain-text numbered prompt; wait for reply | Branch + worktree in one question |
 | 7. Update | `bd update --status=in_progress -a actor` | Confirm first; ask before taking someone else's task |
 | 7.1. Sync | `flow-sync push` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
@@ -159,7 +159,7 @@ The script handles:
 
 **✓ Validation Checkpoint:**
 - [ ] I ran the script (not bd ready/list/show directly)
-- [ ] I'm asking for selection with PLAIN TEXT (not AskUserQuestion tool)
+- [ ] I'm asking for selection with PLAIN TEXT (numbered prompt, never a structured dialog)
 
 **Display the tree output as plain Markdown text, NOT in a code block.** Code blocks (`` ```text ... ``` ``) don't render Markdown — `**bold**` shows as literal asterisks and emoji lose color. Plain text in Claude Code renders as monospace, so tree connector alignment is preserved.
 
@@ -252,64 +252,58 @@ These two cases are mutually exclusive (git doesn't allow a branch to be checked
 
 **If neither case matches**, proceed to Step 6.
 
-### 6. Ask About Branch and Worktree (single AskUserQuestion)
+### 6. Ask About Branch and Worktree (plain text — then wait)
 
-**Use `AskUserQuestion` tool** to present branch and worktree options in one question. The options depend on context (existing branches, IN_WORKTREE, branch type).
+Ask in **plain text**, then **end your turn and wait** for the user's answer (a number, or free-form text — prose is inherently free-form). Do **not** use a structured multiple-choice dialog: it auto-submits its pre-selected option after the AFK idle timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s), which here would create a branch/worktree and change task state **without consent** (claude-tools-6q4). A no-response is **not** consent — never create a branch, worktree, or mutate task/repo state until the user answers. If the turn is force-continued without an answer (an AFK/no-response fallback), briefly restate that you're waiting and take no action.
 
-#### Option Matrix
+Which options to show depends on context (`IN_WORKTREE`, existing branches, branch type). Carry these invariants:
 
-**IN_WORKTREE=false, 0 existing branches:**
+- **Offer the worktree option only when `IN_WORKTREE=false`** (never nest worktrees).
+- **Generic branch** (main/master/develop/trunk): recommend creating/checking out the feature branch (mark it `— рекомендую`); put "остаться на `{branch}`" **last** with a warning (`{branch} держим чистым`).
+- **Feature branch:** neutral tone, no explicit recommendation (drop the `рекомендую` / `не рекомендую` markers).
+- **Existing branches found** (`flow-find-branches` returned matches): use the most probable one as the primary option (prefer local over remote) and surface the rest inline (`также найдены: …`).
 
-| # | Label | Description (generic branch) | Description (feature branch) |
-|---|-------|------------------------------|------------------------------|
-| 1 | Создать ветку (checkout) | `{branch-name}` — checkout в текущем каталоге (Recommended) | `{branch-name}` — checkout в текущем каталоге |
-| 2 | Создать ветку (worktree) | `{branch-name}` — в отдельном worktree для параллельной работы | `{branch-name}` — в отдельном worktree для параллельной работы |
-| 3 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
+#### Templates
 
-**IN_WORKTREE=false, 1+ existing branches:**
-
-Use the most probable existing branch (prefer local over remote). If 2+ branches found, mention others in option descriptions: "Также найдены: `branch-2`, `branch-3`".
-
-| # | Label | Description (generic branch) | Description (feature branch) |
-|---|-------|------------------------------|------------------------------|
-| 1 | Checkout здесь | `{existing-branch}` — checkout в текущем каталоге (Recommended) | `{existing-branch}` — checkout в текущем каталоге |
-| 2 | Checkout в worktree | `{existing-branch}` — в отдельном worktree для параллельной работы | `{existing-branch}` — в отдельном worktree для параллельной работы |
-| 3 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
-
-**IN_WORKTREE=true (no worktree options):**
-
-| # | Label | Description (generic branch) | Description (feature branch) |
-|---|-------|------------------------------|------------------------------|
-| 1 | Создать ветку / Checkout | `{branch-name}` — checkout в текущем worktree (Recommended) | `{branch-name}` — checkout в текущем worktree |
-| 2 | Остаться на {branch} | Не рекомендуется — {branch} лучше держать чистым | Продолжить работу в текущей ветке |
-
-#### Option Ordering
-
-- **Recommended option is always first** (add "(Recommended)" to label on generic branches).
-- **"Остаться на текущей" is always last.**
-- On generic branches: creating/checking out a branch is recommended, staying is marked as not recommended.
-- On feature branches: neutral tone, no explicit recommendation.
-
-#### AskUserQuestion Format
+**`IN_WORKTREE=false`, no existing branch, generic branch:**
 
 ```
-AskUserQuestion(
-  questions=[{
-    "question": "Как продолжить работу с веткой для задачи {task-id}?",
-    "header": "Branch",
-    "options": [<options from matrix above>],
-    "multiSelect": false
-  }]
-)
+Как продолжить работу с веткой для задачи {task-id}?
+
+1. Создать `{branch-name}` здесь (checkout) — рекомендую
+2. Создать `{branch-name}` в отдельном worktree (параллельная работа)
+3. Остаться на `{branch}` — не рекомендую, {branch} держим чистым
+
+Выберите вариант (номер) или опишите своими словами.
 ```
 
-#### Other (Free-Form Input)
+**`IN_WORKTREE=false`, existing branch(es) found, generic branch:**
 
-User can type arbitrary text via the automatic "Other" option. The LLM interprets user intent, extracting:
-- Branch name (if specified)
-- Method: checkout here / worktree
+```
+Для задачи {task-id} уже есть ветка.
 
-If the method is not clear from the text, ask a follow-up `AskUserQuestion` with 2 options: "Checkout здесь" / "В worktree".
+1. Checkout `{existing-branch}` здесь — рекомендую
+2. Checkout `{existing-branch}` в отдельном worktree (параллельная работа)
+3. Остаться на `{branch}` — не рекомендую, {branch} держим чистым
+
+также найдены: `{branch-2}`, `{branch-3}`
+Выберите вариант (номер) или опишите своими словами.
+```
+
+**`IN_WORKTREE=true` (no worktree option):**
+
+```
+Как продолжить работу с веткой для задачи {task-id}?
+
+1. Создать/checkout `{branch-name}` здесь — рекомендую
+2. Остаться на `{branch}` — не рекомендую, {branch} держим чистым
+
+Выберите вариант (номер) или опишите своими словами.
+```
+
+On a **feature branch**, present the same options in a neutral tone (no `рекомендую` / `не рекомендую`).
+
+Free-form answers are supported natively (prose). Interpret the user's intent — branch name and method (checkout here / worktree). If the method is unclear, ask one more plain-text question (`1. Checkout здесь / 2. В worktree`) and wait.
 
 ### 7. Update Task Status
 
@@ -445,8 +439,8 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll format differently" → Script output is the correct format
 
 **Tool violations:**
-- "AskUserQuestion for task selection" → Use plain text for TASK selection (hierarchical numbers). Use AskUserQuestion for BRANCH selection only.
-- "Plain text for branch selection" → Use AskUserQuestion for branch selection. Plain text was the old way.
+- "A structured dialog is faster than typing" → Never for any flow prompt. It auto-submits on the AFK timeout (claude-tools-6q4). Plain-text numbered prompts only — for BOTH task and branch selection.
+- "No answer for 60s means the user is away — proceed" → No. Wait. Never create a branch/worktree or mutate state on a no-response.
 
 **Workflow violations:**
 - "Creating a feature branch is obviously right"
@@ -482,7 +476,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
 | "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| flow-task-tree` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
-| "AskUserQuestion for task selection" | Can't handle hierarchical numbers (1.2, 1.1.1). Use plain text for TASKS, AskUserQuestion for BRANCHES. |
+| "A structured dialog for selection is nicer" | It auto-submits on the AFK timeout (claude-tools-6q4) and can't do hierarchical numbers. Plain text for tasks AND branches. |
 | "Creating branch is obviously right" | Right for this user, this time? Ask. |
 | "User said they're in a hurry" | Consultation is part of the service, not overhead. |
 | "I'll choose a good task for them" | User agency matters. Show options, let them choose. |
@@ -491,7 +485,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "I can skip prefix for simple tasks" | All branches need prefixes. Consistent naming matters. |
 | "feature/ works for everything" | Wrong. Use fix/ for bugs, chore/ for chores. |
 | "--claim is shorter" | It fails on re-claim, even by you. Use the explicit `-a` form. |
-| "I'll ask about worktree separately" | Worktree is an option in Step 6 AskUserQuestion. One question, not two. |
+| "I'll ask about worktree separately" | Worktree is an option in the Step 6 prompt. One question, not two. |
 | "I'll offer worktree in a worktree" | Never offer worktree when IN_WORKTREE=true. Show only 2 options. |
 | "I'll skip auto-resolve" | Always check Step 5.5. Don't ask when the answer is obvious. |
 | "I'll handle init inline" | Use the flow:init-worktree skill. Don't duplicate logic. |
@@ -539,20 +533,22 @@ Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
        └────────────────────────────────────────────────────────────────────────────┘
        ```
 
-       [Calls AskUserQuestion with:]
-       Question: "Как продолжить работу с веткой для задачи claude-tools-c7b?"
-       Options:
-         1. "Создать ветку (checkout) (Recommended)" — feature/claude-tools-c7b-git-module — checkout в текущем каталоге
-         2. "Создать ветку (worktree)" — feature/claude-tools-c7b-git-module — в отдельном worktree
-         3. "Остаться на master" — Не рекомендуется — master лучше держать чистым
+       Как продолжить работу с веткой для задачи claude-tools-c7b?
+
+       1. Создать `feature/claude-tools-c7b-git-module` здесь (checkout) — рекомендую
+       2. Создать `feature/claude-tools-c7b-git-module` в отдельном worktree (параллельная работа)
+       3. Остаться на `master` — не рекомендую, master держим чистым
+
+       Выберите вариант (номер) или опишите своими словами.
+       [ends turn, waits for the answer]
 ```
 
 **Correct because:**
-- Shows hierarchical tree first (plain text, not AskUserQuestion)
+- Shows hierarchical tree first (plain text)
 - Lets user select task by number
 - Shows full context in box format
-- Uses AskUserQuestion for branch selection (not free text)
-- Recommended option is first with "(Recommended)" on generic branch
+- Asks the branch question in plain text, then waits (immune to the AFK timeout)
+- Recommended option is first, marked `— рекомендую` on generic branch
 - "Остаться" is last with warning tone
 - Worktree option included (not in worktree)
 - Uses correct prefix and full format
@@ -563,16 +559,18 @@ Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
 User: "start bug task claude-tools-abc"
 Agent: [shows task description box for bug task]
 
-       [Calls AskUserQuestion with:]
-       Question: "Как продолжить работу с веткой для задачи claude-tools-abc?"
-       Options:
-         1. "Checkout здесь (Recommended)" — fix/claude-tools-abc-login-error — checkout в текущем каталоге. Также найдена: fix/claude-tools-abc-auth-fix (remote)
-         2. "Checkout в worktree" — fix/claude-tools-abc-login-error — в отдельном worktree. Также найдена: fix/claude-tools-abc-auth-fix (remote)
-         3. "Остаться на master" — Не рекомендуется — master лучше держать чистым
+       Для задачи claude-tools-abc уже есть ветка.
+
+       1. Checkout `fix/claude-tools-abc-login-error` здесь — рекомендую
+       2. Checkout `fix/claude-tools-abc-login-error` в отдельном worktree (параллельная работа)
+       3. Остаться на `master` — не рекомендую, master держим чистым
+
+       также найдена: `fix/claude-tools-abc-auth-fix` (remote)
+       Выберите вариант (номер) или опишите своими словами.
 ```
 
 **Correct because:**
-- Uses AskUserQuestion (not free text)
+- Asks in plain text, then waits (immune to the AFK timeout)
 - Uses most probable branch (local preferred) in options 1-2
 - Mentions other found branches in descriptions
 - Recommended option first on generic branch
@@ -594,11 +592,11 @@ Agent: [creates branch immediately without asking]
 User: "start git module, I'm in a hurry"
 Agent: [shows task description]
 
-       [Calls AskUserQuestion — same options as normal, takes 1 click]
+       [asks the same plain-text branch question as normal, then waits for the answer]
 ```
 
 **Correct because:**
-- AskUserQuestion is faster than typing (1 click vs typing)
+- A numbered prompt is quick to answer (type one digit)
 - Still consults — doesn't skip the question
 - Follows workflow
 
@@ -653,7 +651,7 @@ If `bd graph --all --json` returns multiple graphs:
 
 If `IN_WORKTREE=true` (detected in Step 0):
 - **Do NOT offer worktree options** (avoid nesting)
-- Step 6 AskUserQuestion shows only 2 options (no worktree variant) — see IN_WORKTREE=true matrix
+- Step 6 shows only 2 options (no worktree variant) — see the IN_WORKTREE=true template
 - If user wants a new worktree, suggest: "Вернитесь в основной проект и запустите /flow:start оттуда"
 
 ## The Bottom Line
