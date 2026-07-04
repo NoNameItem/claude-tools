@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from statuskit import main
+from statuskit.cli import get_version
 
 
 def test_main_tty_shows_usage(capsys, monkeypatch):
@@ -99,7 +100,8 @@ def test_main_with_version_flag(capsys, monkeypatch):
 
     assert exc_info.value.code == 0
     captured = capsys.readouterr()
-    assert "statuskit" in captured.out.lower() or "0.1.0" in captured.out
+    assert "statuskit" in captured.out.lower()
+    assert get_version() in captured.out
 
 
 def test_main_setup_check(capsys, monkeypatch, tmp_path):
