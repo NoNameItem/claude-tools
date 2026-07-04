@@ -1,5 +1,7 @@
 """Smoke tests for wait_for_checks.py (run manually, not in CI)."""
 
+# INP001: test dir is an implicit namespace package (no __init__.py, matching
+# plugins/flow/bin/tests/); the suppression is intentional, not an oversight.
 # ruff: noqa: INP001
 
 from conftest import check_runs, commit_status, run_helper

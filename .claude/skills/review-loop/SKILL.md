@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: Use when you have pushed to a claude-tools GitHub PR and want the automated bot review cycle (Claude claude-review, Codex review-gate, CI ruff/ty lint comments) addressed round after round to convergence, instead of re-invoking flow:review-comments by hand each time. GitHub-only, hard-wired to this repo's review gates. Reply-only: it never resolves threads or merges. Not for GitLab, other repos, or human-reviewer feedback.
+description: "Use when you have pushed to a claude-tools GitHub PR and want the automated bot review cycle (Claude claude-review, Codex review-gate, CI ruff/ty lint comments) addressed round after round to convergence, instead of re-invoking flow:review-comments by hand each time. GitHub-only, hard-wired to this repo's review gates. Reply-only: it never resolves threads or merges. Not for GitLab, other repos, or human-reviewer feedback."
 allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(jq:*) Bash(${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py:*) AskUserQuestion Read
 ---
 
@@ -109,10 +109,12 @@ ACTIONABLE=$(gh api "repos/$OWNER_REPO/pulls/<PR>/comments?per_page=100" --pagin
       | length')
 ```
 
-> A bot **review body with no inline comment** (a summary-only finding) has no
-> inline reply target and is rare on this repo; the count scopes to inline
-> threads, and `flow:review-comments` surfaces any summary item in its own report
-> when it runs.
+> The count scopes to **inline threads on purpose**: a summary-only finding (a bot
+> review body with no inline comment) has no inline reply target, so
+> `flow:review-comments` can't mark it handled — counting it would keep it
+> "actionable" every round and never converge. Such findings are rare here (the
+> bots post inline comments) and are caught by your **pre-merge review**
+> (convergence ≠ mergeable), not the loop.
 
 **e. Converge or process:**
 
@@ -142,7 +144,10 @@ ACTIONABLE=$(gh api "repos/$OWNER_REPO/pulls/<PR>/comments?per_page=100" --pagin
   processed thread IDs held across iterations; no persistence).
 
 - Invoke `flow:review-comments <PR>` via the **Skill** tool. It is interactive
-  and may push a new head. Answering "no" at its Phase 3 exits the loop.
+  and may push a new head. Answering "no" at its Phase 3 exits the loop. If you
+  **skip its push** (Phase 5.6), the replies are posted but the fixes stay local —
+  the PR head is unchanged, so the next pass converges (the threads are answered)
+  *without those fixes on the PR*. Push them or re-run to get them reviewed.
 
 - Loop back to step (a).
 

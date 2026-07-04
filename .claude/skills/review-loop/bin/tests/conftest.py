@@ -4,6 +4,9 @@ Not run in CI (see the plan's decision #2) — run manually with:
     uv run pytest .claude/skills/review-loop/bin/tests
 """
 
+# INP001: this test dir is an implicit namespace package (no __init__.py, matching
+# plugins/flow/bin/tests/). Adding __init__.py to satisfy INP001 would change how
+# `conftest` is imported by these tests, so the suppression is intentional.
 # ruff: noqa: INP001
 
 import subprocess
