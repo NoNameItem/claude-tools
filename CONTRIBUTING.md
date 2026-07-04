@@ -376,3 +376,26 @@ classifiers = [
    - ✅ test (all Python versions)
    - ✅ sonarcloud
 3. Check PR for SonarCloud status check and summary comment
+
+## Authoring Flow Skills
+
+### Never use `AskUserQuestion` in flow skills
+
+flow skills must ask every interactive question with a **plain-text numbered prompt** that ends
+the turn and waits for the user's reply. Do **not** call the `AskUserQuestion` tool.
+
+Why: the Claude Code `AskUserQuestion` dialog **auto-submits its pre-selected (first) option**
+after the AFK idle timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s; harness v2.1.198+). For a flow
+prompt that gates an irreversible action — creating a branch/worktree, changing task
+status/assignee, or `git push` — that means the action happens **without the user's consent** when
+they are simply busy in another parallel session. Plain-text prose questions and permission prompts
+are never auto-resolved, so they are structurally safe.
+
+- Template: `plugins/flow/skills/continue/SKILL.md` Step 7b (numbered options, then wait).
+- A no-response is **not** consent — never create branches/worktrees, mutate task/repo state, or
+  push until the user actually answers.
+- CI guard: `_reusable-claude-code-plugin-ci.yml` fails if any `plugins/flow/skills/**/SKILL.md`
+  contains the token `AskUserQuestion`.
+- To disable the harness auto-continue on your machine: `/config` or `CLAUDE_AFK_TIMEOUT_MS`.
+
+See `claude-tools-6q4` and `docs/plans/2026-07-04-flow-remove-askuserquestion-design.md`.
