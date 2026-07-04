@@ -90,23 +90,32 @@ converge early.
 On the **first** pass this waits for the current head's first review; if the bots
 already commented, the helper returns immediately.
 
-**d. Count actionable threads** — unresolved inline threads whose latest comment
-is not from us. This mirrors `flow:review-comments`' inline `already_replied` set
-(latest reply author == you), so it carries cross-round state with no state file.
-A thread you already answered ("Fixed" / "Won't fix") drops out; if a bot pushes
-back, its latest author flips and it becomes actionable again:
+**d. Count actionable threads** — unresolved inline review threads whose latest
+comment is not from us. Query `reviewThreads` over GraphQL so **resolution state**
+is authoritative (`isResolved`): a thread you replied to and then resolved drops
+out (plain REST `/comments` has no resolution field and would still return it),
+while a thread a bot re-opens or re-replies to flips back to actionable. This
+carries cross-round state with no state file:
 
 ```bash
 ME=$(gh api user -q .login)
-OWNER_REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
-ACTIONABLE=$(gh api "repos/$OWNER_REPO/pulls/<PR>/comments?per_page=100" --paginate --slurp \
+OWNER=$(gh repo view --json owner -q .owner.login)
+REPO=$(gh repo view --json name -q .name)
+ACTIONABLE=$(gh api graphql -f query='
+  query($owner:String!, $repo:String!, $pr:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first: 100) {
+          nodes { isResolved comments(last: 1) { nodes { author { login } } } }
+        }
+      }
+    }
+  }' -f owner="$OWNER" -f repo="$REPO" -F pr=<PR> \
   | jq --arg me "$ME" '
-      add                                    # --slurp wraps pages; add merges them
-      | map({root: (.in_reply_to_id // .id), login: .user.login, created_at: .created_at})
-      | group_by(.root)
-      | map(max_by(.created_at).login)
-      | map(select(. != $me))
-      | length')
+      [ .data.repository.pullRequest.reviewThreads.nodes[]
+        | select(.isResolved | not)                        # skip resolved threads
+        | select(.comments.nodes[-1].author.login != $me)  # latest comment not ours
+      ] | length')
 ```
 
 > The count scopes to **inline threads on purpose**: a summary-only finding (a bot
@@ -172,7 +181,7 @@ better.
 |------|------------------|-----------|
 | Head SHA | `gh pr view <PR> --json headRefOid -q .headRefOid` | SHA-keyed, no stale race |
 | Wait | `${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py <PR> <HEAD>` | whole pipeline; don't hand-roll |
-| Count | `gh api .../pulls/<PR>/comments` + jq | latest-comment-not-mine |
+| Count | `gh api graphql` reviewThreads + jq | unresolved & latest-not-mine |
 | Converge | actionable 0 & no red check | bots quiet ≠ mergeable |
 | Process | Skill `flow:review-comments <PR>` | verbatim, interactive |
 

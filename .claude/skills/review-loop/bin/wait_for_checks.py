@@ -62,15 +62,29 @@ def _gh_json(args: list[str]) -> dict:
     return json.loads(out) if out else {}
 
 
+def _gh_pages(endpoint: str) -> list[dict]:
+    """Fetch every page of a paginated endpoint. `--paginate --slurp` returns one
+    array element per page; return that list of page objects."""
+    out = _run_gh(["api", "--paginate", "--slurp", endpoint])
+    data = json.loads(out) if out else []
+    return data if isinstance(data, list) else [data]
+
+
 def _repo() -> str:
     return _run_gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
 
 
 def _snapshot(repo: str, sha: str) -> Snapshot:
-    runs = _gh_json(["api", f"repos/{repo}/commits/{sha}/check-runs?per_page=100"])
-    check_runs = runs.get("check_runs", []) if isinstance(runs, dict) else []
-    total = runs.get("total_count", len(check_runs)) if isinstance(runs, dict) else len(check_runs)
-    status = _gh_json(["api", f"repos/{repo}/commits/{sha}/status"])
+    # Fetch ALL check-run pages and merge them so the completeness check below sees
+    # the whole set — a head with >100 check-runs would otherwise look permanently
+    # truncated (len < total_count) and never go terminal.
+    pages = _gh_pages(f"repos/{repo}/commits/{sha}/check-runs?per_page=100")
+    check_runs = [cr for pg in pages if isinstance(pg, dict) for cr in pg.get("check_runs", [])]
+    total = next(
+        (pg["total_count"] for pg in pages if isinstance(pg, dict) and "total_count" in pg),
+        len(check_runs),
+    )
+    status = _gh_json(["api", f"repos/{repo}/commits/{sha}/status?per_page=100"])
     statuses = status.get("statuses", []) if isinstance(status, dict) else []
     combined = status.get("state", "pending") if isinstance(status, dict) else "pending"
     return Snapshot(check_runs, statuses, combined, len(check_runs) >= total)

@@ -124,3 +124,21 @@ def test_blocks_when_check_runs_view_is_truncated(fake_gh):
 def test_usage_error_exits_1(fake_gh):
     # Wrong argc is a caller bug, not a timeout -> exit 1 (distinct from 2).
     assert run_helper("only-one-arg", env=fake_gh.env()).returncode == 1
+
+
+def test_paginates_check_runs_beyond_one_page(fake_gh):
+    # total_count (3) exceeds page 1 (2 runs); page 2 supplies the third. The helper
+    # must merge all pages before the completeness check, or a >100-run head would
+    # look permanently truncated and time out. Merged view is complete -> terminal.
+    two_pages = (
+        '[{"check_runs":['
+        '{"name":"claude-review","status":"completed","conclusion":"success"},'
+        '{"name":"CI-a","status":"completed","conclusion":"success"}],"total_count":3},'
+        '{"check_runs":['
+        '{"name":"CI-b","status":"completed","conclusion":"success"}],"total_count":3}]'
+    )
+    fake_gh.write(SHA, "check-runs", "terminal", two_pages)
+    fake_gh.write(SHA, "status", "terminal", TERMINAL_STATUS)
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    assert "CI-b success" in r.stdout  # a page-2 run made it into the merged/emitted set
