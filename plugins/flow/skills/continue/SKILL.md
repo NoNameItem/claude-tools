@@ -1,7 +1,7 @@
 ---
 name: continue
 description: Fast return to an active in_progress beads task — find it, resolve its saved branch or worktree, and show the task card. Use when resuming work after /clear or a new session. To pick a new task instead, use flow:start.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill AskUserQuestion TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill TodoWrite
 ---
 
 # Flow: Continue
@@ -154,7 +154,7 @@ Unassigned:
 
 User selects by number or task ID. If 'new' → exit.
 
-**For task selection: use plain text, NOT AskUserQuestion.**
+**For task selection: use plain text — never a structured multiple-choice dialog (it auto-submits on the AFK timeout; claude-tools-6q4).**
 
 ### 4. Check Assignee
 
@@ -183,7 +183,7 @@ Compare the task's `assignee` field with the actor:
   ```
 
   Report: "Назначил задачу на вас." Proceed to Step 5.
-- **`assignee` is someone else** → ask in plain text (NOT AskUserQuestion):
+- **`assignee` is someone else** → ask in plain text (never a structured dialog):
 
   ```
   Задача назначена на `<assignee>`. Взять её себе? (yes/no)
@@ -333,11 +333,11 @@ This is the final output. The user sees it and starts working.
 - "I'll also create the branch if it's missing" → Out of scope. Exit with message.
 - "Let me change the task status" → Already in_progress. Don't touch (assignee in Step 4 is the only allowed mutation).
 - "I'll skip the assignee check" → Step 4 is mandatory; it migrates legacy unassigned tasks.
-- "I'll use AskUserQuestion for the takeover question" → Plain text yes/no.
+- "I'll use a structured dialog for the takeover question" → Plain text yes/no.
 - "I'll show the full task tree" → flow:continue is fast path. Use flow:start for tree.
 - "I'll skip the Git: check and just search for branches" → Git: line is the source of truth.
 - "bd ready is a quick way to find tasks" → Use flow-find-leaf script.
-- "AskUserQuestion for task selection" → Plain text. Numbers don't work in structured UI.
+- "A structured dialog for task selection" → Plain text. Numbers don't work in a structured UI.
 - "The card is already displayed" → It is not. The card is visible only if YOU reproduced it verbatim in a code block in your reply.
 
 ## Common Rationalizations

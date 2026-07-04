@@ -39,6 +39,20 @@ jobs:
       - name: Validate plugin structure
         run: python .github/scripts/validate_plugin.py "plugins/${{ matrix.plugin }}"
 
+      # flow skills must never call AskUserQuestion: its dialog auto-submits the
+      # pre-selected option after the AFK idle timeout (CLAUDE_AFK_TIMEOUT_MS,
+      # default 60s; harness v2.1.198+), which for branch/push/status prompts is
+      # an irreversible action taken without the user's consent. Ask via
+      # plain-text numbered prompts instead (template: flow:continue Step 7b).
+      # See claude-tools-6q4.
+      - name: Flow skills must not use AskUserQuestion (AFK auto-submit guard)
+        if: matrix.plugin == 'flow'
+        run: |
+          if grep -rn "AskUserQuestion" plugins/flow/skills/; then
+            echo "::error::flow skills must not reference AskUserQuestion — it auto-submits on the AFK idle timeout (CLAUDE_AFK_TIMEOUT_MS, default 60s), performing branch/push/status actions without consent. Use plain-text numbered prompts (template: flow:continue Step 7b). See claude-tools-6q4."
+            exit 1
+          fi
+
   lint:
     name: Lint (${{ matrix.plugin }})
     runs-on: ubuntu-latest

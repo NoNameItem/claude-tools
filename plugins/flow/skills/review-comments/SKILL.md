@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Agent AskUserQuestion Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -51,7 +51,7 @@ Resolve `PLATFORM` in this order — stop at the first that decides:
    - HOST appears in `glab auth status` → `gitlab`.
    - **This is what makes self-hosted work** — it does not rely on the literal `github.com` / `gitlab.com` strings.
 4. **Fallback heuristic:** HOST contains `github` → `github`; contains `gitlab` → `gitlab`. Warn that the CLI may not be authenticated for that host (and suggest `gh auth login` / `glab auth login --hostname HOST`).
-5. **Still ambiguous / unknown** → ask with `AskUserQuestion` (GitHub / GitLab), or tell the user to pass `--platform`.
+5. **Still ambiguous / unknown** → ask in plain text (GitHub / GitLab?) and wait for the answer, or tell the user to pass `--platform`. (Plain text by design — a structured dialog auto-submits on the AFK timeout; claude-tools-6q4.)
 
 ### GitHub ↔ GitLab mapping
 
@@ -408,7 +408,7 @@ Apply all? (yes / select / no)
 
 **Needs clarification** — ask one by one:
 
-For each `agree_unclear` comment, use AskUserQuestion:
+For each `agree_unclear` comment, ask in plain text and wait for the answer (plain text by design — claude-tools-6q4):
 
 ```
 U2: {comment brief}
@@ -422,7 +422,7 @@ Options:
 
 **Disagree** — ask one by one:
 
-For each `disagree` comment, use AskUserQuestion:
+For each `disagree` comment, ask in plain text and wait for the answer (plain text by design — claude-tools-6q4):
 
 ```
 C3: {comment brief}
@@ -636,7 +636,7 @@ Commit message follows CLAUDE.md scope rules:
 
 #### 5.6. Push
 
-**MANDATORY: Use AskUserQuestion to confirm before pushing** (per CLAUDE.md global instructions).
+**MANDATORY: confirm before pushing with a plain-text prompt, then wait for the answer.** Do **not** use a structured multiple-choice dialog — it auto-submits its pre-selected option after the AFK idle timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s), which on a push prompt is an unattended `git push` without consent (claude-tools-6q4). A no-response is not approval; never push until the user answers.
 
 ```
 Push to origin/{branch}?
@@ -1030,7 +1030,7 @@ Stop. Do not guess credentials or fall back to the other platform.
 
 If detection can't decide (host matches neither CLI's known hosts, or matches both):
 
-- Ask with `AskUserQuestion`: GitHub / GitLab, **or**
+- Ask in plain text (GitHub / GitLab?) and wait for the answer — a structured dialog auto-submits on the AFK timeout (claude-tools-6q4), **or**
 - Tell the user to re-run with `--platform github|gitlab`.
 
 Never silently assume GitHub.
