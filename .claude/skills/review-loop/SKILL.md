@@ -78,7 +78,9 @@ ${CLAUDE_SKILL_DIR}/bin/wait_for_checks.py <PR> <HEAD>
   any whose conclusion is **not** `success`, `neutral`, or `skipped` (i.e.
   `failure`, `error`, `cancelled`, `timed_out`, `action_required`, `stale`).
 - Exit 2 (timeout) → ask the user (`AskUserQuestion`): **wait more** / **process
-  what's there now** / **stop**.
+  what's there now** / **stop**. "Process what's there now" marks this round
+  **partial** — the pipeline is *not* terminal, so this round can never be a clean
+  convergence (step e), because lint/bot comments may still arrive.
 - Exit 1 → usage error (a bug in how the skill called it); fix the call, don't
   treat it as a timeout.
 
@@ -101,18 +103,22 @@ carries cross-round state with no state file:
 ME=$(gh api user -q .login)
 OWNER=$(gh repo view --json owner -q .owner.login)
 REPO=$(gh repo view --json name -q .name)
-ACTIONABLE=$(gh api graphql -f query='
-  query($owner:String!, $repo:String!, $pr:Int!) {
-    repository(owner:$owner, name:$repo) {
-      pullRequest(number:$pr) {
-        reviewThreads(first: 100) {
-          nodes { isResolved comments(last: 1) { nodes { author { login } } } }
+# --paginate + the $endCursor variable + pageInfo make gh walk EVERY page, so a
+# PR with >100 review threads can't hide an actionable one past the first page.
+ACTIONABLE=$(gh api graphql --paginate --slurp \
+  -f query='
+    query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
+      repository(owner:$owner, name:$repo) {
+        pullRequest(number:$pr) {
+          reviewThreads(first: 100, after: $endCursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { isResolved comments(last: 1) { nodes { author { login } } } }
+          }
         }
       }
-    }
-  }' -f owner="$OWNER" -f repo="$REPO" -F pr=<PR> \
+    }' -f owner="$OWNER" -f repo="$REPO" -F pr=<PR> \
   | jq --arg me "$ME" '
-      [ .data.repository.pullRequest.reviewThreads.nodes[]
+      [ .[].data.repository.pullRequest.reviewThreads.nodes[]  # .[] merges all pages
         | select(.isResolved | not)                        # skip resolved threads
         | select(.comments.nodes[-1].author.login != $me)  # latest comment not ours
       ] | length')
@@ -128,9 +134,14 @@ ACTIONABLE=$(gh api graphql -f query='
 **e. Converge or process:**
 
 - `ACTIONABLE == 0`:
-  - `failed` empty → the bots are quiet. Report convergence + a short summary,
-    and remind the user that **resolving the threads and merging are theirs to
-    do** (the loop is reply-only). **STOP.**
+  - the round is **partial** (step c timed out and you chose "process what's
+    there now") → **not** convergence: more checks/comments may still land.
+    Report "processed what was available, but the pipeline for `<HEAD>` hadn't
+    finished (wait timed out) — re-run `/review-loop` once checks complete" and
+    **STOP as a partial hand-off**, not a clean finish.
+  - `failed` empty **and the wait completed** → the bots are quiet. Report
+    convergence + a short summary, and remind the user that **resolving the
+    threads and merging are theirs to do** (the loop is reply-only). **STOP.**
   - `failed` non-empty → a threadless red check: a required check still red with
     no inline thread `flow:review-comments` can fix (a `claude-review`/Codex
     failure with no comment, a failing test, or a plugin-lint failure — plugin
