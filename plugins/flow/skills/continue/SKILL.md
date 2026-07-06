@@ -36,7 +36,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 **What this skill does:**
 - Finds active (in_progress) leaf tasks, grouped by assignee
 - Assigns the task to you if it is unassigned (quietly) or assigned to someone else (after asking)
-- Reads the saved branch name from task description
+- Reads the saved branch name(s) from task description
 - Finds the branch locally or in worktree
 - Switches to it
 - Shows the task card
@@ -209,7 +209,7 @@ Exit skill.
 
 **If exactly one `Git:` line** → use that branch. Proceed to Step 6.
 
-**If more than one `Git:` line** → the task has parallel workstreams (one branch per project/PR). List them with labels and ask in **plain text** which to resume — never a structured dialog (it auto-submits on the AFK timeout). Then wait for the answer:
+**If more than one `Git:` line** → the task has parallel workstreams (one branch per project/PR). List them (with labels where present) and ask in **plain text** which to resume — never a structured dialog (it auto-submits on the AFK timeout). Then wait for the answer:
 
 ```
 У задачи несколько веток:
@@ -425,6 +425,29 @@ Agent: [finds task claude-tools-old]
 
        Ветка не найдена в описании задачи. Задача была создана до flow:continue.
        Используйте `/flow:start claude-tools-old` для настройки ветки.
+```
+
+### ✅ GOOD: Task with multiple branches
+
+```
+User: /flow:continue
+
+Agent: [runs flow-sync pull, flow-find-leaf]
+       [selects task; bd show → two Git: lines]
+
+       У задачи несколько веток:
+       1. feature/claude-tools-elf.18-statuskit (statuskit)
+       2. feature/claude-tools-elf.18-flow (flow)
+
+       Какую ветку продолжить? (номер)
+
+User: 2
+
+Agent: [resolves feature/claude-tools-elf.18-flow via Step 6, switches to it]
+
+       Переключился на ветку `feature/claude-tools-elf.18-flow`.
+
+       [shows task card]
 ```
 
 ### ❌ BAD: Creates branch when missing
