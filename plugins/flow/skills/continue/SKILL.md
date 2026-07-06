@@ -56,7 +56,7 @@ This skill is the fast path for returning to work. Unlike `flow:start` which off
 | 2. Find tasks | Run `flow-find-leaf` script | Grouped by assignee, reproduce verbatim |
 | 3. Select | Auto or user picks | 1 task = confirm, N = pick |
 | 4. Assignee | Compare with `flow-actor` | Empty → assign quietly; other's → ask |
-| 5. Extract branch | Read `Git:` from description | No Git: → exit |
+| 5. Extract branch | Collect all `Git:` lines | 0 → exit; 1 → use it; >1 → ask which |
 | 6. Find branch | worktree → local → remote | Priority order |
 | 7. Switch | cd or checkout | Depends on where branch is |
 | 8. Init | `flow:init-worktree` | Only if new worktree created |
@@ -196,11 +196,9 @@ Do NOT use `bd update --claim` — it fails when the task is already claimed, ev
 
 ### 5. Extract Branch Name
 
-From the Step 4 `bd show` JSON, extract the `description` field and find the line starting with `Git:`.
+From the Step 4 `bd show` JSON, extract the `description` field and collect **every** `Git:` line. Match both bare `Git:` and labeled `Git (label):` lines: the branch name is everything after the colon (trimmed); the label, if present, is the text inside the parentheses.
 
-**If `Git:` line found** → extract branch name (everything after `Git: `, trimmed).
-
-**If no `Git:` line:**
+**If no `Git:` line** — the task predates branch tracking:
 
 ```
 Ветка не найдена в описании задачи. Задача была создана до flow:continue.
@@ -208,6 +206,20 @@ From the Step 4 `bd show` JSON, extract the `description` field and find the lin
 ```
 
 Exit skill.
+
+**If exactly one `Git:` line** → use that branch. Proceed to Step 6.
+
+**If more than one `Git:` line** → the task has parallel workstreams (one branch per project/PR). List them with labels and ask in **plain text** which to resume — never a structured dialog (it auto-submits on the AFK timeout). Then wait for the answer:
+
+```
+У задачи несколько веток:
+1. feature/claude-tools-elf.18-statuskit (statuskit)
+2. feature/claude-tools-elf.18-flow (flow)
+
+Какую ветку продолжить? (номер)
+```
+
+Use the branch the user picks as `<branch-name>` for Step 6. Do not auto-pick a branch on a no-response.
 
 ### 6. Find Branch
 
