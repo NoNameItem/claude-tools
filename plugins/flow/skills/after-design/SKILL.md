@@ -87,7 +87,9 @@ Look for the newest markdown file across **both** `docs/superpowers/specs/`
 
 **This is THE task. The only action.**
 
-**If the task has no `Design:` line yet** — just record it (preserves any `Plan:` line):
+First read the task description (`bd show {task-id}`) and look for existing `Design:` lines — match **both** bare `Design:` and labeled `Design (…):`.
+
+**If there is no `Design:` line at all** (labeled or not) — just record it (preserves any `Plan:` line):
 
 ```bash
 flow-link-doc {task-id} Design {design-path}
@@ -110,7 +112,7 @@ Optional label (helps future readers). Suggestions from this session: {2–3 sho
   (`--append` is a no-op if this exact path is already recorded — an identical path changes nothing.)
 - **Fix to latest (2)** → `flow-link-doc {task-id} Design {design-path} --replace-latest [--label {label}]`
 
-Omit `--label` when the user leaves it blank. Match both `Design:` and `Design (label):` lines when reading the existing designs.
+Omit `--label` when the user leaves it blank.
 
 ### 4. Sync Changes
 
@@ -244,7 +246,7 @@ Is docs/superpowers/specs/2026-02-09-new-design.md:
   1. A new iteration (rework) — keep the old, append the new
   2. A fix to the latest design — replace the newest line
 
-Optional label (blank to skip): _____
+Optional label — suggestions: rework, fix review issues (blank to skip): _____
 ```
 
 ### Has Plan, Adding Design
