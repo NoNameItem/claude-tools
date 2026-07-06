@@ -87,13 +87,30 @@ Look for the newest markdown file across **both** `docs/superpowers/specs/`
 
 **This is THE task. The only action.**
 
+**If the task has no `Design:` line yet** — just record it (preserves any `Plan:` line):
+
 ```bash
 flow-link-doc {task-id} Design {design-path}
 ```
-Replaces an existing `Design:` line or appends one; the `Plan:` line and other content are preserved. (If a Design link already exists, confirm with the user before running this.)
 
-**If Design link already exists:**
-Ask: "Task already has Design link: {old-link}. Update to {new-link}? (yes/no)"
+**If the task already has one or more `Design:` lines** — a design exists, so the new one is either a *rework iteration* (keep the history) or a *fix to the latest design* (overwrite the newest). Ask in **plain text** (never a structured dialog), then wait for the answer:
+
+```
+Task already has a design:
+  {existing Design lines, newest last}
+
+Is {design-path}:
+  1. A new iteration (rework) — keep the old, append the new
+  2. A fix to the latest design — replace the newest line
+
+Optional label (helps future readers). Suggestions from this session: {2–3 short labels inferred from context, e.g. rework, fix review issues}. Type one, your own, or leave blank.
+```
+
+- **New iteration (1)** → `flow-link-doc {task-id} Design {design-path} --append [--label {label}]`
+  (`--append` is a no-op if this exact path is already recorded — an identical path changes nothing.)
+- **Fix to latest (2)** → `flow-link-doc {task-id} Design {design-path} --replace-latest [--label {label}]`
+
+Omit `--label` when the user leaves it blank. Match both `Design:` and `Design (label):` lines when reading the existing designs.
 
 ### 4. Sync Changes
 
@@ -220,9 +237,14 @@ Which task is this design for? (enter 1 or 2, or task ID)
 ### Design Link Already Exists
 
 ```
-Task already has Design link: docs/superpowers/specs/old-design.md
+Task already has a design:
+  Design: docs/superpowers/specs/old-design.md
 
-Update to new design docs/superpowers/specs/2026-02-09-new-design.md? (yes/no)
+Is docs/superpowers/specs/2026-02-09-new-design.md:
+  1. A new iteration (rework) — keep the old, append the new
+  2. A fix to the latest design — replace the newest line
+
+Optional label (blank to skip): _____
 ```
 
 ### Has Plan, Adding Design
