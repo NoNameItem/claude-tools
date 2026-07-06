@@ -5,10 +5,18 @@
 # ruff: noqa: INP001
 
 import importlib.util
+import re
+from pathlib import Path
 
 from conftest import HELPER, check_runs, commit_status, run_helper
 
 SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+# review-gate.yml lives at the repo root; the test dir is 5 levels below it
+# (tests → bin → review-loop → skills → .claude → <root>).
+REVIEW_GATE_YML = Path(__file__).parents[5] / ".github" / "workflows" / "review-gate.yml"
+
+REQUIRED_MARGIN = 300  # design §8: local wait ceiling must clear the gate poll by ≥ 5 min
 
 # A fully-settled pipeline: both anchors terminal + a CI check completed.
 TERMINAL_RUNS = check_runs(
@@ -171,14 +179,27 @@ def _load_helper():
     """Import wait_for_checks.py as a module (its logic is guarded by
     `if __name__ == '__main__'`, so importing does not run main())."""
     spec = importlib.util.spec_from_file_location("wait_for_checks", HELPER)
+    assert spec is not None
+    assert spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
+def _review_gate_timeout():
+    text = REVIEW_GATE_YML.read_text()
+    # Match ONLY the shell assignment `TIMEOUT=<n>`, not prose mentions or the
+    # `DEFAULT_WAIT_TIMEOUT=1800s` inside the comment. `^[ \t]*TIMEOUT=` is anchored
+    # to line start (MULTILINE), so the `#`-prefixed comment lines can't match.
+    m = re.search(r"^[ \t]*TIMEOUT=(\d+)", text, re.MULTILINE)
+    assert m is not None, f"could not find TIMEOUT= assignment in {REVIEW_GATE_YML}"
+    return int(m.group(1))
+
+
 def test_default_wait_timeout_outlasts_review_gate():
     # Coupling invariant (design §8): the local wait ceiling MUST exceed
-    # review-gate.yml's TIMEOUT (1500s / 25 min) plus a margin, or this wait
-    # trips exit-2 (false timeout) before the review-gate status settles.
+    # review-gate.yml's TIMEOUT plus a margin, or this wait trips exit-2 (false
+    # timeout) before the review-gate status settles. Read the gate's TIMEOUT so
+    # raising it without bumping the ceiling here fails this test.
     helper = _load_helper()
-    assert helper.DEFAULT_WAIT_TIMEOUT >= 1500 + 300
+    assert helper.DEFAULT_WAIT_TIMEOUT >= _review_gate_timeout() + REQUIRED_MARGIN
