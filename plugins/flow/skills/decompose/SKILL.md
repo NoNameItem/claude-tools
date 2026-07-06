@@ -48,7 +48,7 @@ If this exits non-zero, **STOP**: print its stderr message and run no further co
 4. If none — suggest `flow:start` first.
 
 **Find the design document:**
-1. Read task description, look for the `Design:` line (path may be under `docs/superpowers/specs/` or `docs/plans/`).
+1. Read task description and collect **all** `Design:` lines (match `Design:` and `Design (label):`; paths may be under `docs/superpowers/specs/` or `docs/plans/`). Use the **latest** (last) design as the one to decompose. If several exist, briefly note it so the user can redirect, e.g. `Задача содержит N дизайнов; беру последний: {path}`.
 2. If no link — ask user for the document path.
 3. Read the design document fully.
 
