@@ -216,6 +216,20 @@ class TestMultiLinkExtract:
         assert links == ["Design #1: a.md", "Design #2 (rework): b.md", "Plan: p.md"]
         assert clean == "Body"
 
+    def test_numbers_repeated_plans(self):
+        _clean, links = extract_links("Plan: p1.md\nPlan: p2.md")
+        assert links == ["Plan #1: p1.md", "Plan #2: p2.md"]
+
+    def test_git_interleaved_preserves_design_order(self):
+        _clean, links = extract_links("Design: a.md\nGit: feature/x\nDesign: b.md")
+        assert links == ["Design #1: a.md", "Design #2: b.md"]
+
+    def test_empty_value_design_stays_in_description(self):
+        # Canonical regex requires a non-empty value, so a bare "Design:" is not a link.
+        clean, links = extract_links("Body\nDesign:")
+        assert links == []
+        assert "Design:" in clean
+
 
 class TestRenderTitleSection:
     def test_top_border_contains_type_word(self):
