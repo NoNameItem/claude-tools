@@ -90,7 +90,7 @@ flow-link-doc {task-id} Plan {plan-path}
 ```
 Replaces an existing `Plan:` line or appends one; the `Design:` line and other content are preserved. (If a Plan link already exists, confirm with the user before running this.)
 
-**If Plan link already exists:**
+**If a `Plan:` (or `Plan (label):`) line already exists:**
 Ask: "Task already has Plan link: {old-link}. Update to {new-link}? (yes/no)"
 
 ### 4. Sync Changes

@@ -112,7 +112,7 @@ After closing the task, check if an implementation plan file exists and offer to
 ```bash
 bd show {task-id}
 ```
-Look for `Plan:` line in description. If found, extract the file path.
+Look for a `Plan:` line (also matches `Plan (label):`) in description. If found, extract the file path.
 
 **Source B — untracked/modified files in the plan directories:**
 
