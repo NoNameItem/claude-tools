@@ -53,6 +53,18 @@ def fake_gh(tmp_path):
         "    sys.stdout.write('o/r')\n"
         "    sys.exit(0)\n"
         "if a[:2] == ['pr', 'view']:\n"
+        # Count every pr-view call (so a test can assert the recheck retried) and,
+        # if a test armed `pr_view_fail`, simulate a transient `gh pr view` outage:
+        # a positive N fails the next N calls; a negative N fails every call.
+        "    calls = int((STATE / 'pr_view_calls').read_text()) if (STATE / 'pr_view_calls').exists() else 0\n"
+        "    (STATE / 'pr_view_calls').write_text(str(calls + 1))\n"
+        "    fp = STATE / 'pr_view_fail'\n"
+        "    if fp.exists():\n"
+        "        n = int(fp.read_text())\n"
+        "        if n != 0:\n"
+        "            if n > 0:\n"
+        "                fp.write_text(str(n - 1))\n"
+        "            sys.exit(1)\n"
         # headRefOid lookup: serve pr_head if a test pinned one, else echo the last
         # polled sha (so the head 'follows' the sha and the recheck matches by default).
         "    head = (STATE / 'pr_head').read_text() if (STATE / 'pr_head').exists() else (\n"
@@ -104,6 +116,12 @@ def fake_gh(tmp_path):
             """Pin what `gh pr view --json headRefOid` returns (simulates the branch
             head moving to a new commit while the helper polls)."""
             (state / "pr_head").write_text(sha)
+
+        def set_pr_view_fail(self, n):
+            """Make the fake `gh pr view` exit non-zero for the next n calls (n < 0
+            = every call), simulating a transient GitHub API outage during the head
+            recheck."""
+            (state / "pr_view_fail").write_text(str(n))
 
     return Ctl()
 

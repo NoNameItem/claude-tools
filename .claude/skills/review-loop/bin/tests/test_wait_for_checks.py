@@ -117,6 +117,22 @@ def test_blocks_when_a_nonanchor_status_is_pending(fake_gh):
     assert r.returncode == 2, r.stdout
 
 
+def test_blocks_when_a_context_pends_under_a_failed_combined_state(fake_gh):
+    # GitHub ranks the combined status `failure` above `pending`, so a failed
+    # review-gate masks a still-pending non-anchor context (combined == "failure",
+    # not "pending"). Gating on the combined state alone would conclude here; the
+    # helper must inspect each context and keep waiting while any is pending -> 2.
+    fake_gh.write(SHA, "check-runs", "pending", TERMINAL_RUNS)
+    fake_gh.write(
+        SHA,
+        "status",
+        "pending",
+        commit_status("failure", ("review-gate", "failure"), ("extra-ci", "pending")),
+    )
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 2, r.stdout
+
+
 def test_blocks_when_check_runs_view_is_truncated(fake_gh):
     # total_count exceeds the returned runs (page truncated) -> incomplete view ->
     # must not conclude even though the visible checks look done -> exit 2.
@@ -155,6 +171,30 @@ def test_returns_0_when_head_unchanged(fake_gh):
     fake_gh.set_pr_head(SHA)  # head unchanged
     r = run_helper("42", SHA, env=fake_gh.env())
     assert r.returncode == 0, r.stderr
+
+
+def test_restarts_when_head_recheck_stays_unknown(fake_gh):
+    # The pipeline for SHA is terminal, but every final `gh pr view` recheck fails
+    # (transient API outage). Swallowing that as "head unchanged" would converge on a
+    # possibly-stale sha; instead the helper retries and, with the head still unknown,
+    # fails safe -> exit 3 so the caller re-captures HEAD and re-waits.
+    _seed_terminal(fake_gh)
+    fake_gh.set_pr_view_fail(-1)  # every recheck call fails
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 3, r.stdout
+
+
+def test_head_recheck_retries_past_a_transient_failure(fake_gh):
+    # A single transient `gh pr view` failure must not be swallowed as "unchanged":
+    # the helper retries, gets the real (unchanged) head, and converges (0). The call
+    # count proves a retry happened rather than a one-shot fail-open.
+    _seed_terminal(fake_gh)
+    fake_gh.set_pr_head(SHA)  # head really is unchanged
+    fake_gh.set_pr_view_fail(1)  # fail once, then succeed
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    calls = int((fake_gh.dir / "pr_view_calls").read_text())
+    assert calls >= 2, f"expected a retry after the transient failure, got {calls} call(s)"
 
 
 def test_paginates_check_runs_beyond_one_page(fake_gh):
