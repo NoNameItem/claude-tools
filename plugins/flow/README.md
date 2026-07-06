@@ -68,7 +68,18 @@ Plan: docs/superpowers/plans/2026-02-10-login-error-impl-plan.md
 
 Paths above use the superpowers 5.x layout — `docs/superpowers/specs/` for designs, `docs/superpowers/plans/` for plans. Pre-v5 projects may still use `docs/plans/` for both; flow reads either.
 
-Each line is written by one skill and read by others:
+`Design:` and `Git:` lines may **repeat**, and any line may carry an optional `(label)`:
+
+```text
+Design: docs/superpowers/specs/2026-07-06-design.md
+Design (rework): docs/superpowers/specs/2026-07-20-rework-design.md
+Git (statuskit): feature/claude-tools-abc-statuskit
+Git (flow): feature/claude-tools-abc-flow
+```
+
+Designs are a **history** — the newest (last) line is the active one, which `/flow:decompose` reads. `Git:` lines are **parallel** branches (one per project/PR); `/flow:continue` lists them and asks which to resume when there is more than one. `Plan:` stays **single**.
+
+Each kind of line is written by one skill and read by others (`Design:` and `Git:` accumulate; `Plan:` is replaced in place):
 
 | Line       | Written by           | Read by                            |
 |------------|----------------------|------------------------------------|
@@ -277,7 +288,7 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-find-leaf` | Leaf in-progress tasks as a grouped list (mine → Unassigned → others) |
 | `flow-actor` | Resolve actor name: `$BD_ACTOR` → git `user.name` → `$USER` |
 | `flow-branch-for <id>` | Compute the branch name for a task |
-| `flow-link-doc <id> <Git\|Design\|Plan> <value>` | Set/remove a link line (empty value removes) |
+| `flow-link-doc <id> <Git\|Design\|Plan> <value> [--label T] [--append\|--replace-latest]` | Set / append / replace-latest / remove a link line (empty value removes all of that key; `--append` dedupes by value) |
 | `flow-find-doc <design\|plan>` | Newest doc across `docs/superpowers/{specs,plans}/` + `docs/plans/` |
 | `flow-current-task [id]` | Extract the task id from the branch, or match the branch against `id` |
 | `flow-in-worktree` | Exit 0 if CWD is inside `.worktrees/` |
