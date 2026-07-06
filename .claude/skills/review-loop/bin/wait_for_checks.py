@@ -29,7 +29,9 @@ convergence before the new head's checks/reviews register — so we exit 3 and t
 caller re-captures HEAD and re-waits. PR is used only for this re-check.
 
 Only stdlib + the authenticated `gh` CLI are used. WAIT_INTERVAL (default 30s)
-and WAIT_TIMEOUT (default 900s) are env-overridable (tests set them small).
+and WAIT_TIMEOUT (default 1800s / 30 min) are env-overridable (tests set them
+small). WAIT_TIMEOUT is coupled to review-gate.yml's TIMEOUT — see
+DEFAULT_WAIT_TIMEOUT below.
 """
 
 from __future__ import annotations
@@ -48,6 +50,14 @@ EXPECTED_ARGC = 2
 EXIT_USAGE = 1
 EXIT_TIMEOUT = 2
 EXIT_HEAD_MOVED = 3
+
+# Poll cadence and ceiling for the whole-pipeline wait. WAIT_INTERVAL / WAIT_TIMEOUT
+# env vars override these (tests set them to 0). COUPLING INVARIANT (design §8):
+# DEFAULT_WAIT_TIMEOUT MUST stay above review-gate.yml's TIMEOUT (1500s / 25 min)
+# plus a margin — otherwise this local wait trips exit-2 (a false timeout) before the
+# review-gate commit status settles. If you change one, change the other.
+DEFAULT_WAIT_INTERVAL = 30
+DEFAULT_WAIT_TIMEOUT = 1800  # 30 min = review-gate TIMEOUT (25 min) + 5 min margin
 
 
 class Snapshot(NamedTuple):
@@ -140,8 +150,8 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("usage: wait_for_checks.py <PR> <HEAD_SHA>\n")
         return EXIT_USAGE
     pr, sha = argv
-    interval = float(os.environ.get("WAIT_INTERVAL", "30"))
-    timeout = float(os.environ.get("WAIT_TIMEOUT", "900"))
+    interval = float(os.environ.get("WAIT_INTERVAL", str(DEFAULT_WAIT_INTERVAL)))
+    timeout = float(os.environ.get("WAIT_TIMEOUT", str(DEFAULT_WAIT_TIMEOUT)))
     deadline = time.monotonic() + timeout
     while True:
         # _repo() is inside the retry so a transient `gh` failure here is retried

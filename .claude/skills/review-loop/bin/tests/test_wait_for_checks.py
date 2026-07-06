@@ -4,7 +4,9 @@
 # plugins/flow/bin/tests/); the suppression is intentional, not an oversight.
 # ruff: noqa: INP001
 
-from conftest import check_runs, commit_status, run_helper
+import importlib.util
+
+from conftest import HELPER, check_runs, commit_status, run_helper
 
 SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -163,3 +165,20 @@ def test_paginates_check_runs_beyond_one_page(fake_gh):
     r = run_helper("42", SHA, env=fake_gh.env())
     assert r.returncode == 0, r.stderr
     assert "CI-b success" in r.stdout  # a page-2 run made it into the merged/emitted set
+
+
+def _load_helper():
+    """Import wait_for_checks.py as a module (its logic is guarded by
+    `if __name__ == '__main__'`, so importing does not run main())."""
+    spec = importlib.util.spec_from_file_location("wait_for_checks", HELPER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_default_wait_timeout_outlasts_review_gate():
+    # Coupling invariant (design §8): the local wait ceiling MUST exceed
+    # review-gate.yml's TIMEOUT (1500s / 25 min) plus a margin, or this wait
+    # trips exit-2 (false timeout) before the review-gate status settles.
+    helper = _load_helper()
+    assert helper.DEFAULT_WAIT_TIMEOUT >= 1500 + 300
