@@ -416,20 +416,20 @@ flow-link-doc <task-id> Git "$(git branch --show-current)" --append
 
 `--append` adds the branch as a new `Git:` line and is a **no-op if that branch is already recorded** — so re-running `/flow:start` on an existing branch changes nothing (this replaces the old "skip if unchanged" check). Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch different from the computed candidate. All other link lines (Design/Plan and any other `Git:` branches) are preserved.
 
-**Adding a second branch to a task?** If the task already has a *different* `Git:` line (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
+**Adding a second branch to a task?** The task description (from Step 3 / the task card) already lists any existing `Git:` lines. If one is a *different* branch (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
 
 ```bash
 flow-link-doc <task-id> Git "$(git branch --show-current)" --append --label <project>
 ```
 
-Do **not** use a structured dialog for the label question — plain text only, and a blank answer is fine (the line is then unlabeled). Never block: the label is optional.
+Do **not** use a structured dialog for the label question — plain text only. A blank answer is fine: run the plain `--append` (omit `--label`) and the line stays unlabeled. Never block — the label is optional.
 
 **Then sync to propagate:**
 ```bash
 flow-sync push
 ```
 
-Because `--append` is idempotent, always run it — there is no separate "skip if unchanged" case; it self-deduplicates by branch name.
+Always run it — `--append` self-deduplicates by branch name, so there is no "skip if unchanged" case.
 
 ## Red Flags - STOP
 
