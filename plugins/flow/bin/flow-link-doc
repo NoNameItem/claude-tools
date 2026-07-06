@@ -115,11 +115,8 @@ def main():
             if ns.value in _values(pattern, desc):
                 return 0  # already recorded — no-op, no bd update
             new_desc = _append(desc, line)
-        elif ns.replace_latest:
-            replaced = _replace_match(pattern, line, desc, last=True)
-            new_desc = replaced if replaced is not None else _append(desc, line)
-        else:
-            replaced = _replace_match(pattern, line, desc, last=False)
+        else:  # default replace-first, or --replace-latest
+            replaced = _replace_match(pattern, line, desc, last=ns.replace_latest)
             new_desc = replaced if replaced is not None else _append(desc, line)
 
     upd = subprocess.run(

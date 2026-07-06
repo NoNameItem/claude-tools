@@ -124,3 +124,18 @@ def test_append_and_replace_latest_are_mutually_exclusive(fake_bd):
     r = run_helper("flow-link-doc", "claude-tools-uaj", "Git", "x", "--append", "--replace-latest", env=fake_bd.env)
     assert r.returncode == 2  # argparse error
     assert fake_bd.captured_description() is None
+
+
+def test_default_replace_keeps_parens_in_value(fake_bd):
+    fake_bd.set_show(_desc("Body.\n\nGit: v1 (old)"))
+    run_helper("flow-link-doc", "claude-tools-uaj", "Git", "v2", env=fake_bd.env)
+    assert fake_bd.captured_description() == "Body.\n\nGit: v2"
+
+
+def test_replace_latest_targets_labeled_last_line(fake_bd):
+    fake_bd.set_show(_desc("Body.\n\nDesign: a.md\n\nDesign (rework): b.md"))
+    run_helper("flow-link-doc", "claude-tools-uaj", "Design", "c.md", "--replace-latest", env=fake_bd.env)
+    desc = fake_bd.captured_description()
+    assert "Design: a.md" in desc  # earlier unlabeled design kept
+    assert "b.md" not in desc  # latest (labeled) replaced
+    assert "Design: c.md" in desc
