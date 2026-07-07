@@ -29,13 +29,26 @@ jobs:
       id-token: write
 
     steps:
+      - name: Waive review for release-please PR
+        # release-please PRs are bot-generated version bumps / CHANGELOG / marketplace-ref
+        # pins with no review value; Codex is waived too (review-gate.yml). This step runs
+        # only for them so the job still concludes success and the required `claude-review`
+        # check stays green without invoking the Claude action. HEAD_REF is passed via env
+        # (never spliced into the command) to avoid shell injection from the branch name.
+        if: ${{ startsWith(github.event.pull_request.head.ref, 'release-please--') }}
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: echo "release-please PR ($HEAD_REF) — Claude review not required; job passes to satisfy the required 'claude-review' check."
+
       - name: Checkout repository
+        if: ${{ !startsWith(github.event.pull_request.head.ref, 'release-please--') }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Run Claude Code Review
+        if: ${{ !startsWith(github.event.pull_request.head.ref, 'release-please--') }}
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
