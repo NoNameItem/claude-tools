@@ -47,7 +47,7 @@ bump + CHANGELOG + marketplace-ref pins. There is no value in either AI reviewin
 |---|---|
 | Detection | A PR is a release PR **iff** `github.event.pull_request.head.ref` starts with `release-please--` (release-please's deterministic branch naming). Read as an expression / env var — **never** interpolated into a shell `run:`. |
 | `review-gate` | Required context is a **posted status**, so the job must run and post it. Early-exit **before the poll loop**: on a release ref, `post_status success` and `exit 0`. |
-| `claude-review` | Required context is the **job's own check run**, so keep the job running and let it go **green** without work: an always-run "waive" step for release PRs + guard checkout / action steps with the negation. |
+| `claude-review` | Required context is the **job's own check run**, so keep the job running and let it go **green** without work: a "waive" step that runs (and passes) for release PRs + guard checkout / action steps with the negation. |
 | Ruleset | **Unchanged** — both contexts stay required for all PRs; release PRs satisfy them via the two workflow edits. |
 | `review_gate.py` | **Untouched** — the exemption is workflow orchestration (skip the poll), not a Codex-freshness decision. Keeping it out of `decide()` preserves that function's single responsibility. |
 
