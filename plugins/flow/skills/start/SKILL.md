@@ -83,7 +83,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 7.1. Sync | `flow-sync push` | Persist status change |
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` or `git worktree add` | Based on user's choice |
-| 8.1. Git Info | `bd update` + `flow-sync push` | Save branch name for flow:continue |
+| 8.1. Git Info | `flow-link-doc … Git … --append` + `flow-sync push` | Append branch (append-if-new) for flow:continue |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -408,21 +408,28 @@ No branch action, proceed to Step 8.1.
 
 ### 8.1. Save Branch Info
 
-**After branch is created or checked out**, save the branch name in the task description so `flow:continue` can find it later.
+**After branch is created or checked out**, record the branch in the task description so `flow:continue` can find it later. A task may span **several** branches (one per project/PR), so this **appends** rather than overwrites.
 
 ```bash
-flow-link-doc <task-id> Git "$(git branch --show-current)"
+flow-link-doc <task-id> Git "$(git branch --show-current)" --append
 ```
-This sets (or replaces) the `Git:` line in the task description; other link lines are preserved. Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch that differs from the computed candidate.
+
+`--append` adds the branch as a new `Git:` line and is a **no-op if that branch is already recorded** — so re-running `/flow:start` on an existing branch changes nothing (this replaces the old "skip if unchanged" check). Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch different from the computed candidate. All other link lines (Design/Plan and any other `Git:` branches) are preserved.
+
+**Adding a second branch to a task?** The task description (from Step 3 / the task card) already lists any existing `Git:` lines. If one is a *different* branch (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
+
+```bash
+flow-link-doc <task-id> Git "$(git branch --show-current)" --append --label "<project>"
+```
+
+Do **not** use a structured dialog for the label question — plain text only. A blank answer is fine: run the plain `--append` (omit `--label`) and the line stays unlabeled. Never block — the label is optional.
 
 **Then sync to propagate:**
 ```bash
 flow-sync push
 ```
 
-**Skip this step if:**
-- User chose to continue on existing branch without creating a new one (branch was already in the description from a previous `/flow:start`)
-- Check if the branch in the description matches the current branch — if so, no update needed
+Always run it — `--append` self-deduplicates by branch name, so there is no "skip if unchanged" case.
 
 ## Red Flags - STOP
 

@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import unicodedata
 
@@ -107,21 +108,50 @@ def bottom_border(card_width: int = CARD_WIDTH) -> str:
     return "└" + "─" * (card_width - 2) + "┘"
 
 
-def extract_links(description: str) -> tuple[str, list[str]]:
-    """Extract Design:/Plan:/Git: lines from description.
+LINK_RE = re.compile(r"^\s*(Git|Design|Plan)(?:\s*\(([^)]*)\))?:\s*(.+?)\s*$")
 
-    Returns (cleaned_description, link_lines).
-    Design: and Plan: go to links. Git: is removed but not shown.
+
+def _format_links(entries: list[tuple[str, str | None, str]]) -> list[str]:
+    """Render visible (non-Git) link lines, grouped by key, numbering a key that repeats.
+
+    Keys appear in first-appearance order; entries within a key keep their order.
+    Grouping keeps a design history contiguous even if a Plan line sits between two
+    designs in the raw description (the writer always appends to the end).
     """
-    links: list[str] = []
+    order: list[str] = []
+    groups: dict[str, list[tuple[str | None, str]]] = {}
+    for k, lbl, v in entries:
+        if k == "Git":
+            continue
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append((lbl, v))
+
+    out: list[str] = []
+    for k in order:
+        items = groups[k]
+        for i, (lbl, v) in enumerate(items, start=1):
+            num = f" #{i}" if len(items) > 1 else ""
+            label = f" ({lbl})" if lbl else ""
+            out.append(f"{k}{num}{label}: {v}")
+    return out
+
+
+def extract_links(description: str) -> tuple[str, list[str]]:
+    """Extract Design:/Plan:/Git: link lines from description (label-aware).
+
+    Returns (cleaned_description, formatted_link_lines). Collects every Design/Plan
+    line, numbering a key when it repeats (`Design #1`, `Design #2`) and rendering
+    an optional `(label)`. Git lines are removed from the description but never shown.
+    """
+    entries: list[tuple[str, str | None, str]] = []
     clean_lines: list[str] = []
 
     for line in description.split("\n"):
-        stripped = line.strip()
-        if stripped.startswith(("Design:", "Plan:")):
-            links.append(stripped)
-        elif stripped.startswith("Git:"):
-            pass  # Remove from description, don't add to links
+        m = LINK_RE.match(line)
+        if m:
+            entries.append((m.group(1), m.group(2), m.group(3)))
         else:
             clean_lines.append(line)
 
@@ -129,7 +159,7 @@ def extract_links(description: str) -> tuple[str, list[str]]:
     while clean_lines and not clean_lines[-1].strip():
         clean_lines.pop()
 
-    return "\n".join(clean_lines), links
+    return "\n".join(clean_lines), _format_links(entries)
 
 
 def render_title_section(title: str, issue_type: str, card_width: int = CARD_WIDTH) -> list[str]:
