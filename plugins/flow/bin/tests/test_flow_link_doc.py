@@ -139,3 +139,30 @@ def test_replace_latest_targets_labeled_last_line(fake_bd):
     assert "Design: a.md" in desc  # earlier unlabeled design kept
     assert "b.md" not in desc  # latest (labeled) replaced
     assert "Design: c.md" in desc
+
+
+def test_label_with_closing_paren_rejected(fake_bd):
+    # A ')' in the label would close the parse rule's label group early, making the
+    # written line unreadable by the shared regex — reject it instead of writing junk.
+    fake_bd.set_show(_desc("Body."))
+    r = run_helper(
+        "flow-link-doc", "claude-tools-uaj", "Git", "feature/x", "--append", "--label", "phase 2 (api)", env=fake_bd.env
+    )
+    assert r.returncode == 1
+    assert fake_bd.captured_description() is None  # nothing written
+
+
+def test_multiword_label_accepted(fake_bd):
+    # A multi-word label (no ')') round-trips fine when passed as a single argument.
+    fake_bd.set_show(_desc("Body."))
+    run_helper(
+        "flow-link-doc",
+        "claude-tools-uaj",
+        "Design",
+        "d.md",
+        "--append",
+        "--label",
+        "fix review issues",
+        env=fake_bd.env,
+    )
+    assert fake_bd.captured_description() == "Body.\n\nDesign (fix review issues): d.md"

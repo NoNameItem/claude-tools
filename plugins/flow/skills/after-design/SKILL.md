@@ -108,11 +108,13 @@ Is {design-path}:
 Optional label (helps future readers). Suggestions from this session: {2–3 short labels inferred from context, e.g. rework, fix review issues}. Type one, your own, or leave blank.
 ```
 
-- **New iteration (1)** → `flow-link-doc {task-id} Design {design-path} --append [--label {label}]`
+- **New iteration (1)** → `flow-link-doc {task-id} Design {design-path} --append [--label "{label}"]`
   (`--append` is a no-op if this exact path is already recorded — an identical path changes nothing.)
-- **Fix to latest (2)** → `flow-link-doc {task-id} Design {design-path} --replace-latest [--label {label}]`
+- **Fix to latest (2)** → `flow-link-doc {task-id} Design {design-path} --replace-latest [--label "{label}"]`
 
-Omit `--label` when the user leaves it blank.
+Quote the label — the suggestions include multi-word labels (e.g. `fix review issues`), and an
+unquoted `--label fix review issues` makes `argparse` reject the extra words. Omit `--label`
+entirely when the user leaves it blank.
 
 ### 4. Sync Changes
 

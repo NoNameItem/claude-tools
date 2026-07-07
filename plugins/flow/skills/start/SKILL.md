@@ -419,7 +419,7 @@ flow-link-doc <task-id> Git "$(git branch --show-current)" --append
 **Adding a second branch to a task?** The task description (from Step 3 / the task card) already lists any existing `Git:` lines. If one is a *different* branch (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
 
 ```bash
-flow-link-doc <task-id> Git "$(git branch --show-current)" --append --label <project>
+flow-link-doc <task-id> Git "$(git branch --show-current)" --append --label "<project>"
 ```
 
 Do **not** use a structured dialog for the label question — plain text only. A blank answer is fine: run the plain `--append` (omit `--label`) and the line stays unlabeled. Never block — the label is optional.

@@ -13,9 +13,10 @@ Modes:
 
 Matching for replace/remove ignores an optional "(label)": it matches both
 `Key:` and `Key (...):` lines. With --label TEXT the written line is `Key (TEXT): value`;
---append dedupes by value only (label is not considered).
+--append dedupes by value only (label is not considered). A label must not contain
+`)` or a newline (they break the shared parse rule) — such labels are rejected.
 
-Exit: 0 ok | 1 invalid key | 2 task not found / bd error
+Exit: 0 ok | 1 invalid key / invalid label | 2 task not found / bd error
 """
 
 from __future__ import annotations
@@ -103,6 +104,11 @@ def main():
     ns = parser.parse_args()
     if ns.key not in KEYS:
         sys.stderr.write(f"invalid key {ns.key!r}; expected one of {', '.join(KEYS)}\n")
+        return 1
+    if ns.label is not None and (")" in ns.label or "\n" in ns.label):
+        # The parse rule's label group is `\(([^)]*)\)`, so a ')' (or a newline) would
+        # break round-tripping — the written line becomes unreadable. Reject it.
+        sys.stderr.write("invalid label: must not contain ')' or a newline\n")
         return 1
 
     desc, err = _fetch_desc(ns.task_id)
