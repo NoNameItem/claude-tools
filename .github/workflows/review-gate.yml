@@ -89,7 +89,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          TIMEOUT=720    # ~12 min (observed Codex latency ~5-8 min)
+          # ~25 min (Codex latency ~5-8 min norm; weekend spikes ~14 min). COUPLING
+          # INVARIANT (design §8): the review-loop helper wait_for_checks.py caps its
+          # local wait at DEFAULT_WAIT_TIMEOUT=1800s (30 min) > this TIMEOUT + margin,
+          # so a slow-but-live Codex review is never mistaken for a timeout. Keep both in sync.
+          TIMEOUT=1500
           INTERVAL=30
 
           # POST the required `review-gate` commit status to the PR head SHA. $1=state $2=description.
