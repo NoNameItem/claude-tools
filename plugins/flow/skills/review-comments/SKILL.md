@@ -60,11 +60,11 @@ Resolve `PLATFORM` in this order — stop at the first that decides:
 | Unit | Pull Request, number | Merge Request, **iid** (the `!42` number) |
 | Repo identifier | `owner/repo` (`gh repo view --json nameWithOwner -q .nameWithOwner`) | **URL-encoded** project path `group%2Frepo` (from remote URL path; `/` → `%2F`) |
 | Detect unit for current branch | `gh pr view --json number,title,headRefName,url` | `glab mr view <iid> --output json` (fields: `iid`, `title`, `source_branch`, `web_url`, `state`) |
-| Fetch threads | `gh api repos/{o}/{r}/pulls/{n}/comments --paginate` + `…/reviews` | `glab api --paginate "projects/{id}/merge_requests/{iid}/discussions"` (one endpoint returns all) |
+| Fetch threads | `gh api repos/{o}/{r}/pulls/{n}/comments --paginate` + `…/reviews` + `gh api graphql` `reviewThreads` (resolve-state) | `glab api --paginate "projects/{id}/merge_requests/{iid}/discussions"` (one endpoint returns all) |
 | Thread model | flat comments linked by `in_reply_to_id` | each `discussion.notes[]` IS the thread; `notes[0]` = root, `notes[1:]` = replies |
 | Authenticated user | `gh api user -q .login` | `glab api user -q .username` |
 | Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{comment_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body=…` — keyed by **`discussion_id`, not comment id** |
-| Skip as already-done | `already_replied` heuristic | `resolved == true` **or** `already_replied` |
+| Skip as already-done | `isResolved` (GraphQL `reviewThreads`) **or** `already_replied` | `resolved == true` **or** `already_replied` |
 | Outdated detection | `line == null && original_line` set | diff note where `position.new_line == null` (with `old_line` set) — the line no longer exists in the latest version; a note with no `position` is a general comment, not outdated. Do **not** use `head_sha` — it over-flags after a pull |
 | Bot / summary | `user.login` is `coderabbitai` / contains `[bot]` | `author.username` matches `coderabbit` / contains `bot`; a bot's summary/walkthrough is just a non-`position` discussion → `(summary)` bucket |
 | System notes | n/a | skip notes where `system == true` (e.g. "changed the description") |
@@ -179,6 +179,18 @@ If Platform is github:
   b. Reviews (for bot summary):
      gh api repos/{owner}/{repo}/pulls/{number}/reviews
   c. Authenticated user: gh api user -q .login
+  d. Thread resolve-state (REST comments has NO resolve field — GraphQL is the only source):
+     gh api graphql --paginate -f query='
+       query($owner:String!,$repo:String!,$num:Int!,$endCursor:String){
+         repository(owner:$owner,name:$repo){ pullRequest(number:$num){
+           reviewThreads(first:100, after:$endCursor){
+             nodes{ isResolved comments(first:1){ nodes{ databaseId } } }
+             pageInfo{ hasNextPage endCursor } }}}}' \
+       -F owner={owner} -F repo={repo} -F num={number}
+     --paginate follows pageInfo and emits ONE JSON object PER PAGE; union
+     reviewThreads.nodes[] across every page. If this call errors (e.g. token scope,
+     transient), proceed with NO resolved ids — i.e. fall back to already_replied only.
+     NEVER abort collection over this side-query.
 
 If Platform is gitlab:
   a. Discussions (inline + general + system notes, all in one):
@@ -189,7 +201,13 @@ If Platform is gitlab:
 
 If Platform is github:
   - Keep only root comments (in_reply_to_id is null or absent).
-  - For each root, collect thread replies (comments with in_reply_to_id == root.id).
+  - resolved_root_ids = { comments.nodes[0].databaseId for every reviewThreads node
+    (Step 1d, unioned across pages) whose isResolved == true }. A thread's first comment
+    is its root, so that databaseId equals the REST root comment id.
+  - SKIP resolved threads: drop any root whose id ∈ resolved_root_ids — mirror of the
+    GitLab branch below. Resolved roots are removed ENTIRELY: not in the TABLE, not in
+    METADATA. (This is a HARDER skip than already_replied, which stays visible-and-marked.)
+  - For each remaining root, collect thread replies (comments with in_reply_to_id == root.id).
   - Outdated: comment has "original_line" but "line" is null.
   - Source: user.login contains "[bot]" or equals "coderabbitai" → bot; else human.
   - Lines: single → "file.py:42"; range → "file.py:42-58" (use start_line and line).
@@ -252,7 +270,8 @@ Rules for METADATA JSON:
 - "body": truncate to ~200 chars
 - "thread": array of {user, body} for all replies in the thread
 - "already_replied": true if the latest thread reply is from the authenticated user
-- Include ALL root comments/threads, even if already_replied is true (table will mark them)
+- Include ALL root comments/threads, even if already_replied is true (table will mark them) —
+  EXCEPT roots dropped as resolved in Step 2 (GitHub) / Step 2 (GitLab), which are excluded entirely
 - One JSON array, valid JSON, on a single line after "METADATA:"
 
 If there are NO unresolved comments, return:
