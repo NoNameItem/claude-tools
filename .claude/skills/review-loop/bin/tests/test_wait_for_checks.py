@@ -215,6 +215,26 @@ def test_paginates_check_runs_beyond_one_page(fake_gh):
     assert "CI-b success" in r.stdout  # a page-2 run made it into the merged/emitted set
 
 
+def test_paginates_status_beyond_one_page(fake_gh):
+    # The combined-status endpoint paginates too: page 1 carries the review-gate
+    # anchor, page 2 a second (settled) context. `_pipeline_terminal` checks the
+    # per-context `statuses` for `pending`, so a >100-context head with a page-2
+    # pending context would look terminal unless the helper merges all status pages
+    # (mirroring the check-runs pagination). Merged view is complete + all-settled
+    # -> terminal. Without pagination the page-2 context is invisible.
+    fake_gh.write(SHA, "check-runs", "terminal", TERMINAL_RUNS)
+    two_status_pages = (
+        '[{"state":"success","statuses":['
+        '{"context":"review-gate","state":"success"}]},'
+        '{"state":"success","statuses":['
+        '{"context":"page2-ci","state":"success"}]}]'
+    )
+    fake_gh.write(SHA, "status", "terminal", two_status_pages)
+    r = run_helper("42", SHA, env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    assert "page2-ci success" in r.stdout  # a page-2 status made it into the emitted set
+
+
 def _load_helper():
     """Import wait_for_checks.py as a module (its logic is guarded by
     `if __name__ == '__main__'`, so importing does not run main())."""

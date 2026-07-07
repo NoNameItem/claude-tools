@@ -78,11 +78,6 @@ def _run_gh(args: list[str]) -> str:
     return proc.stdout.strip()
 
 
-def _gh_json(args: list[str]) -> dict:
-    out = _run_gh(args)
-    return json.loads(out) if out else {}
-
-
 def _gh_pages(endpoint: str) -> list[dict]:
     """Fetch every page of a paginated endpoint. `--paginate --slurp` returns one
     array element per page; return that list of page objects."""
@@ -130,8 +125,12 @@ def _snapshot(repo: str, sha: str) -> Snapshot:
         (pg["total_count"] for pg in pages if isinstance(pg, dict) and "total_count" in pg),
         len(check_runs),
     )
-    status = _gh_json(["api", f"repos/{repo}/commits/{sha}/status?per_page=100"])
-    statuses = status.get("statuses", []) if isinstance(status, dict) else []
+    # Paginate the combined-status endpoint too and merge every page's `statuses`:
+    # `_pipeline_terminal` gates on the per-context states, so a head with >100
+    # status contexts would otherwise hide a later-page `pending` context and look
+    # terminal early (same failure mode the check-runs pagination above prevents).
+    status_pages = _gh_pages(f"repos/{repo}/commits/{sha}/status?per_page=100")
+    statuses = [s for pg in status_pages if isinstance(pg, dict) for s in pg.get("statuses", [])]
     return Snapshot(check_runs, statuses, len(check_runs) >= total)
 
 
