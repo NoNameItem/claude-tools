@@ -1,7 +1,7 @@
 ---
 name: decompose
 description: Break a beads task into subtasks from its linked design document — discuss the approach, preview the split, then bulk-create children. Use when a designed task is too large for one branch. Triggered by /flow:decompose or "break down this task".
-allowed-tools: Bash(bd:*) Bash(git:*) Read Edit
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(sort:*) Bash(uniq:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Read Edit
 ---
 
 # Flow: Decompose Task

@@ -1,7 +1,7 @@
 ---
 name: continue
 description: Fast return to an active in_progress beads task — find it, resolve its saved branch or worktree, and show the task card. Use when resuming work after /clear or a new session. To pick a new task instead, use flow:start.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(python3:*) Skill TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(sort:*) Bash(uniq:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
 ---
 
 # Flow: Continue
