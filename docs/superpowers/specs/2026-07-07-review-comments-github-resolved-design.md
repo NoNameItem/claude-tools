@@ -62,7 +62,7 @@ query($owner:String!,$repo:String!,$num:Int!,$endCursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$num){
       reviewThreads(first:100, after:$endCursor){
-        nodes{ isResolved comments(first:1){ nodes{ databaseId } } }
+        nodes{ isResolved comments(first:1){ nodes{ fullDatabaseId } } }
         pageInfo{ hasNextPage endCursor }
       }
     }
@@ -78,9 +78,12 @@ query($owner:String!,$repo:String!,$num:Int!,$endCursor:String){
 
 ### Change 2 — Drop resolved roots (STEP 2, GitHub block)
 
-Build `resolved_root_ids` = { `comments.nodes[0].databaseId` for every thread node where
-`isResolved == true`, unioned across pages }. A review thread's first comment is always its
-root, so that `databaseId` equals the REST root comment `id`.
+Build `resolved_root_ids` = { `str(comments.nodes[0].fullDatabaseId)` for every thread node
+where `isResolved == true`, unioned across pages }. A review thread's first comment is always
+its root, so that id equals the REST root comment `id`. Use **`fullDatabaseId`** (a `BigInt`
+returned as a **string**), not the deprecated `Int32` `databaseId` — GitHub review-comment ids
+already exceed 2³¹, which `databaseId` can't represent reliably. The REST `id` is a JSON
+number, so compare **as strings** (normalize both).
 
 **Drop any root comment whose `id ∈ resolved_root_ids` before building threads** — a direct
 mirror of the GitLab line-202 skip. Resolved roots are removed **entirely**: they appear in
@@ -126,9 +129,9 @@ RED→GREEN→REFACTOR, nothing committed:
 
 ## Risks
 
-- **Correlation assumption.** `comments(first:1).databaseId` is treated as the thread root's
-  REST `id`. This holds because a review thread's first comment is always its root; a thread
-  cannot begin with a reply. Low risk.
+- **Correlation assumption.** `comments(first:1).fullDatabaseId` is treated as the thread
+  root's REST `id`. This holds because a review thread's first comment is always its root; a
+  thread cannot begin with a reply. Low risk.
 - **Extra API call per collection.** One additional (paginated) GraphQL request on GitHub.
   Bounded and off the main context (runs inside the haiku collection subagent).
 - **GraphQL/REST divergence.** If a thread exists in GraphQL but its root id is absent from the

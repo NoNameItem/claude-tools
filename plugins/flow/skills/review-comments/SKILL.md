@@ -184,7 +184,7 @@ If Platform is github:
        query($owner:String!,$repo:String!,$num:Int!,$endCursor:String){
          repository(owner:$owner,name:$repo){ pullRequest(number:$num){
            reviewThreads(first:100, after:$endCursor){
-             nodes{ isResolved comments(first:1){ nodes{ databaseId } } }
+             nodes{ isResolved comments(first:1){ nodes{ fullDatabaseId } } }
              pageInfo{ hasNextPage endCursor } }}}}' \
        -F owner={owner} -F repo={repo} -F num={number}
      --paginate follows pageInfo and emits ONE JSON object PER PAGE; union
@@ -201,10 +201,13 @@ If Platform is gitlab:
 
 If Platform is github:
   - Keep only root comments (in_reply_to_id is null or absent).
-  - resolved_root_ids = { comments.nodes[0].databaseId for every reviewThreads node
-    (Step 1d, unioned across pages) whose isResolved == true }. A thread's first comment
-    is its root, so that databaseId equals the REST root comment id.
-  - SKIP resolved threads: drop any root whose id ∈ resolved_root_ids — mirror of the
+  - resolved_root_ids = { str(comments.nodes[0].fullDatabaseId) for every reviewThreads
+    node (Step 1d, unioned across pages) whose isResolved == true }. A thread's first
+    comment is its root, so that id equals the REST root comment id. Use fullDatabaseId
+    (a BigInt returned as a STRING), NOT the deprecated Int32 databaseId — GitHub review
+    comment ids already exceed 2^31 and databaseId can't represent them reliably.
+  - SKIP resolved threads: drop any root whose str(id) ∈ resolved_root_ids — compare as
+    STRINGS (REST id is a number, fullDatabaseId a string; normalize both). Mirror of the
     GitLab branch below. Resolved roots are removed ENTIRELY: not in the TABLE, not in
     METADATA. (This is a HARDER skip than already_replied, which stays visible-and-marked.)
   - For each remaining root, collect thread replies (comments with in_reply_to_id == root.id).
