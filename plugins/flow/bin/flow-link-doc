@@ -41,7 +41,11 @@ def _extract_issue(data):
 
 
 def _key_re(key: str) -> re.Pattern[str]:
-    """Match a full link line for `key`, ignoring an optional (label); capture the value."""
+    """Match a full link line for `key`, ignoring an optional (label); capture the value.
+
+    Uses `.*?` (not the design doc's `.+?`) so an empty-value bare `Key:` still matches —
+    the removal path needs that to sweep a stray line. Writers never emit empty values.
+    """
     return re.compile(rf"(?m)^[ \t]*{re.escape(key)}(?:[ \t]*\([^)]*\))?:[ \t]*(.*?)[ \t]*$")
 
 

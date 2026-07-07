@@ -112,18 +112,29 @@ LINK_RE = re.compile(r"^\s*(Git|Design|Plan)(?:\s*\(([^)]*)\))?:\s*(.+?)\s*$")
 
 
 def _format_links(entries: list[tuple[str, str | None, str]]) -> list[str]:
-    """Render visible (non-Git) link lines, numbering a key only when it repeats."""
-    visible = [(k, lbl, v) for (k, lbl, v) in entries if k != "Git"]
-    counts: dict[str, int] = {}
-    for k, _lbl, _v in visible:
-        counts[k] = counts.get(k, 0) + 1
-    seen: dict[str, int] = {}
+    """Render visible (non-Git) link lines, grouped by key, numbering a key that repeats.
+
+    Keys appear in first-appearance order; entries within a key keep their order.
+    Grouping keeps a design history contiguous even if a Plan line sits between two
+    designs in the raw description (the writer always appends to the end).
+    """
+    order: list[str] = []
+    groups: dict[str, list[tuple[str | None, str]]] = {}
+    for k, lbl, v in entries:
+        if k == "Git":
+            continue
+        if k not in groups:
+            groups[k] = []
+            order.append(k)
+        groups[k].append((lbl, v))
+
     out: list[str] = []
-    for k, lbl, v in visible:
-        seen[k] = seen.get(k, 0) + 1
-        num = f" #{seen[k]}" if counts[k] > 1 else ""
-        label = f" ({lbl})" if lbl else ""
-        out.append(f"{k}{num}{label}: {v}")
+    for k in order:
+        items = groups[k]
+        for i, (lbl, v) in enumerate(items, start=1):
+            num = f" #{i}" if len(items) > 1 else ""
+            label = f" ({lbl})" if lbl else ""
+            out.append(f"{k}{num}{label}: {v}")
     return out
 
 

@@ -224,6 +224,12 @@ class TestMultiLinkExtract:
         _clean, links = extract_links("Design: a.md\nGit: feature/x\nDesign: b.md")
         assert links == ["Design #1: a.md", "Design #2: b.md"]
 
+    def test_groups_designs_before_plan_when_interleaved(self):
+        # Lifecycle after-design/after-plan/after-design --append stores Design/Plan/Design;
+        # the card groups all designs (numbered), then the plan.
+        _clean, links = extract_links("Design: a.md\nPlan: p.md\nDesign (rework): b.md")
+        assert links == ["Design #1: a.md", "Design #2 (rework): b.md", "Plan: p.md"]
+
     def test_empty_value_design_stays_in_description(self):
         # Canonical regex requires a non-empty value, so a bare "Design:" is not a link.
         clean, links = extract_links("Body\nDesign:")
