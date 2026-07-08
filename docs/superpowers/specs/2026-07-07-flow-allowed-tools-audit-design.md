@@ -145,6 +145,21 @@ Consequences worth noting:
 - `after-design`/`after-plan`'s current `Bash(ls:*) Bash(head:*)` are absorbed into the
   baseline (kept, not removed).
 
+## Known limitations
+
+- **Command-substitution captures still prompt.** `Bash(flow-*)` matches a command whose *first
+  token* is `flow-…`. Helpers whose stdout is captured — `WORKTREE_DIR=$(flow-worktree-dir …)`,
+  `BRANCH=$(flow-branch-for …)`, `WT=$(flow-find-worktree … | head -1)`, `"$(flow-actor)"` in
+  `start`/`continue` — are matched as commands starting with `VAR=$(…)` (Claude Code does not
+  split on `$(…)` — only `&&`/`||`/`;`/`|`/`|&`/`&`/newlines — nor recurse into substitutions),
+  so `Bash(flow-*)` does not cover them and they still prompt in enforcing sessions. Capturing
+  output inherently needs `$(…)`, so this can't be fixed by "making helpers standalone." Affected:
+  `flow-branch-for`, `flow-find-worktree`, `flow-worktree-dir`, `flow-actor`. Tracked as a
+  follow-up (a PreToolUse hook or restructured capture) — out of scope for a frontmatter audit.
+- **Not a capability sandbox.** As noted above, shell redirection (`echo x > f`) can write on any
+  allowed command and any read tool can read any file; command-allowlisting only bounds a
+  command's own arguments. The permission system + human are the real boundary.
+
 ## Verification
 
 - For each edited skill, confirm the frontmatter parses and that `flow-*` helpers plus the
