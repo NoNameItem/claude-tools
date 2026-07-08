@@ -225,8 +225,8 @@ Follow existing statuskit patterns (`patch.object(mod, "_run_git")`-style dispat
 - **Fetch/classify:** no-PR-normal vs timeout/OSError/nonzero-error split; state
   mapping for both providers; multi-PR selection precedence.
 - **Rendering:** per-state color and glyph; OSC 8 wrapping on/off.
-- **Cache:** round-trip, throttle, invalidation on HEAD/branch change, per-host
-  provider cache, atomic-write behavior.
+- **Cache:** round-trip, throttle, fresh lookup on branch change, TTL reuse within
+  the same branch, per-host provider cache, atomic-write behavior.
 
 ## Debug
 
