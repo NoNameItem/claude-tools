@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -332,6 +333,41 @@ class GitModule(BaseModule[GitParams]):
         if candidates is None:
             return None, "malformed CLI JSON"
         return _select_pr(candidates), None
+
+    def _host_authenticated(self, provider: str, host: str) -> bool:
+        """Whether `<cli> auth status` reports the host as authenticated.
+
+        Substring match over both streams — `gh`/`glab` place host info on stdout or
+        stderr depending on version (mirrors the flow:review-comments detection).
+        """
+        result = self._run_cli(provider, "auth", "status")
+        return result.ok and host in f"{result.stdout}\n{result.stderr}"
+
+    def _detect_provider(self, host: str) -> str | None:  # noqa: PLR0911
+        """Resolve host → provider via literal shortcut, auth-status match, name heuristic.
+
+        Cheap gates first: literal github.com/gitlab.com need no subprocess; `auth status`
+        runs only for self-hosted hosts and only for CLIs that are installed. Owned by
+        exactly one CLI wins; owned by both is ambiguous (None); otherwise a name
+        heuristic; otherwise give up (None).
+        """
+        if host == "github.com":
+            return "github"
+        if host == "gitlab.com":
+            return "gitlab"
+        in_gh = shutil.which("gh") is not None and self._host_authenticated("github", host)
+        in_glab = shutil.which("glab") is not None and self._host_authenticated("gitlab", host)
+        if in_gh and not in_glab:
+            return "github"
+        if in_glab and not in_gh:
+            return "gitlab"
+        if in_gh and in_glab:
+            return None
+        if "github" in host:
+            return "github"
+        if "gitlab" in host:
+            return "gitlab"
+        return None
 
     def _shorten_path(self, path: str) -> str:
         """Shorten an absolute path by replacing a leading $HOME with ``~``.

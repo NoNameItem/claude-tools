@@ -1599,3 +1599,93 @@ class TestFetchPr:
             info, _error = mod._fetch_pr("gitlab", "feature/x")
         assert info == PrInfo("gitlab", 7, "open", "u")
         assert "--source-branch" in mock_cli.call_args[0]
+
+
+class TestDetectProvider:
+    """Tests for _detect_provider: literal hosts, self-hosted auth, name heuristic, give-up."""
+
+    def _mod(self, make_render_context):
+        return GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+    def test_github_com_literal_no_subprocess(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("statuskit.modules.git.shutil.which") as which, patch.object(mod, "_run_cli") as cli:
+            assert mod._detect_provider("github.com") == "github"
+        which.assert_not_called()
+        cli.assert_not_called()
+
+    def test_gitlab_com_literal(self, make_render_context):
+        mod = self._mod(make_render_context)
+        assert mod._detect_provider("gitlab.com") == "gitlab"
+
+    def test_self_hosted_authed_in_gh_only(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with (
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_host_authenticated", side_effect=lambda p, h: p == "github"),
+        ):
+            assert mod._detect_provider("git.corp.example") == "github"
+
+    def test_self_hosted_authed_in_glab_only(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with (
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_host_authenticated", side_effect=lambda p, h: p == "gitlab"),
+        ):
+            assert mod._detect_provider("git.corp.example") == "gitlab"
+
+    def test_self_hosted_authed_in_both_is_ambiguous(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with (
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_host_authenticated", return_value=True),
+        ):
+            assert mod._detect_provider("git.corp.example") is None
+
+    def test_name_heuristic_when_not_authed(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with (
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_host_authenticated", return_value=False),
+        ):
+            assert mod._detect_provider("gitlab.corp.example") == "gitlab"
+            assert mod._detect_provider("github.corp.example") == "github"
+
+    def test_give_up_unknown_host(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with (
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_host_authenticated", return_value=False),
+        ):
+            assert mod._detect_provider("scm.corp.example") is None
+
+
+class TestHostAuthenticated:
+    """Tests for _host_authenticated (substring match over combined streams)."""
+
+    def _mod(self, make_render_context):
+        return GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+    def test_matches_host_in_stdout(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="git.corp.example\n  logged in", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli):
+            assert mod._host_authenticated("github", "git.corp.example") is True
+
+    def test_matches_host_in_stderr(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="", stderr="Logged in to git.corp.example", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli):
+            assert mod._host_authenticated("gitlab", "git.corp.example") is True
+
+    def test_false_when_cli_failed(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=False, stdout="", stderr="not logged in", reason="not logged in")
+        with patch.object(mod, "_run_cli", return_value=cli):
+            assert mod._host_authenticated("github", "git.corp.example") is False
+
+    def test_false_when_host_absent(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="github.com logged in", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli):
+            assert mod._host_authenticated("github", "git.corp.example") is False
