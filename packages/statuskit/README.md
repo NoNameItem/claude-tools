@@ -142,6 +142,10 @@ Displays git branch, remote status, changes, last commit, and project/worktree l
 | `show_changes` | bool | `true` | Show staged/modified/untracked counts |
 | `show_commit` | bool | `true` | Show last commit hash and age |
 | `commit_age_format` | string | `"relative"` | Commit age format (see below) |
+| `show_pr` | bool | `true` | Show the current branch's PR (GitHub) / MR (GitLab) |
+| `pr_provider` | string | `"auto"` | Provider detection: `"auto"`, `"github"`, `"gitlab"` |
+| `pr_link` | bool | `true` | Wrap the PR/MR token in a clickable OSC 8 hyperlink |
+| `pr_cache_ttl` | int | `300` | Minimum seconds between PR/MR network lookups |
 
 **`commit_age_format` values:**
 
@@ -149,6 +153,30 @@ Displays git branch, remote status, changes, last commit, and project/worktree l
 |-------|----------------|
 | `"relative"` | `2 hours ago` |
 | `"compact"` | `2h` |
+
+**PR / MR display:**
+
+The git module can show the current branch's pull request (GitHub) or merge request
+(GitLab), rendered between the branch name and the sync indicator as a state-colored
+token — `PR #42 ●` (GitHub) or `MR !7 ○` (GitLab):
+
+| State  | Glyph | Color   |
+|--------|-------|---------|
+| open   | `●`   | green   |
+| draft  | `○`   | yellow  |
+| merged | `✓`   | magenta |
+| closed | `✗`   | red     |
+
+**Optional dependencies:** this feature shells out to the official CLIs —
+[`gh`](https://cli.github.com/) for GitHub and [`glab`](https://gitlab.com/gitlab-org/cli)
+for GitLab — reusing their authentication and host configuration (so self-hosted /
+Enterprise instances work with no extra setup). Neither CLI is required to install
+statuskit; when the relevant CLI is missing or unauthenticated the PR/MR segment is
+simply omitted. Lookups are cached (`pr_cache_ttl`, default 300s) so the status line
+never hits the network on every render. Set `pr_provider` to force a provider, or
+`show_pr = false` to disable the segment entirely. When `pr_link` is on, supporting
+terminals (iTerm2, Kitty, WezTerm) make the token Cmd/Ctrl-clickable; others show it
+as plain text.
 
 ### `usage_limits` Module
 
