@@ -1,11 +1,16 @@
 """Tests for statuskit.modules.git."""
 
+import json
 import subprocess
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 from statuskit.modules.git import (
     CliResult,
     GitModule,
+    PrCache,
+    PrCacheDoc,
+    PrCacheEntry,
     PrInfo,
     parse_github_pr_list,
     parse_gitlab_mr_list,
@@ -1689,3 +1694,59 @@ class TestHostAuthenticated:
         cli = CliResult(ok=True, stdout="github.com logged in", stderr="", reason=None)
         with patch.object(mod, "_run_cli", return_value=cli):
             assert mod._host_authenticated("github", "git.corp.example") is False
+
+
+class TestPrCache:
+    """Tests for PrCache: round-trip, negative entries, corrupt file, atomic write."""
+
+    def test_load_missing_returns_empty_doc(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        doc = cache.load()
+        assert doc.providers == {}
+        assert doc.entries == {}
+
+    def test_save_and_load_round_trip(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        now = datetime.now(UTC)
+        doc = PrCacheDoc(
+            providers={"git.corp.example": "github"},
+            entries={"git.corp.example\tmain": PrCacheEntry(PrInfo("github", 42, "open", "u"), now)},
+        )
+        cache.save(doc)
+
+        loaded = cache.load()
+        assert loaded.providers == {"git.corp.example": "github"}
+        entry = loaded.entries["git.corp.example\tmain"]
+        assert entry.info == PrInfo("github", 42, "open", "u")
+        assert entry.last_attempt_at == now
+
+    def test_negative_entry_round_trips(self, tmp_path):
+        """A cached 'no PR' (info=None) survives a save/load cycle."""
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        now = datetime.now(UTC)
+        doc = PrCacheDoc(providers={}, entries={"h\tb": PrCacheEntry(None, now)})
+        cache.save(doc)
+
+        loaded = cache.load()
+        assert "h\tb" in loaded.entries
+        assert loaded.entries["h\tb"].info is None
+
+    def test_corrupt_file_returns_empty_doc(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        cache.cache_file.write_text("{ not json")
+        doc = cache.load()
+        assert doc.providers == {}
+        assert doc.entries == {}
+
+    def test_load_drops_bad_provider_values(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        cache.cache_file.write_text(json.dumps({"providers": {"h": "bitbucket"}, "entries": {}}))
+        assert cache.load().providers == {}
+
+    def test_save_is_atomic_no_partial_file(self, tmp_path):
+        """A failed replace leaves no stray temp files behind."""
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        doc = PrCacheDoc(providers={}, entries={})
+        with patch("pathlib.Path.replace", side_effect=OSError("boom")):
+            cache.save(doc)  # must not raise
+        assert list(tmp_path.glob("*.tmp")) == []

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,6 +38,96 @@ class CliResult:
     stdout: str
     stderr: str
     reason: str | None
+
+
+@dataclass
+class PrCacheEntry:
+    """A cached PR lookup for one (host, branch): the result and when it was last attempted."""
+
+    info: PrInfo | None  # None = cached negative ("no PR")
+    last_attempt_at: datetime
+
+
+@dataclass
+class PrCacheDoc:
+    """The whole git_pr.json document: per-host resolved providers + per-key PR entries."""
+
+    providers: dict[str, str]  # host -> "github" | "gitlab" (positive resolutions only)
+    entries: dict[str, PrCacheEntry]  # "host\tbranch" -> entry
+
+    @classmethod
+    def empty(cls) -> PrCacheDoc:
+        return cls(providers={}, entries={})
+
+
+def _serialize_pr_info(info: PrInfo | None) -> dict | None:
+    if info is None:
+        return None
+    return {"provider": info.provider, "number": info.number, "state": info.state, "url": info.url}
+
+
+def _deserialize_pr_info(data: dict | None) -> PrInfo | None:
+    if not data:
+        return None
+    return PrInfo(
+        provider=data["provider"],
+        number=data["number"],
+        state=data["state"],
+        url=data.get("url", ""),
+    )
+
+
+class PrCache:
+    """File-backed cache for PR lookups + resolved providers, mirroring UsageCache.
+
+    Load never raises (returns an empty doc on missing/corrupt); save is atomic
+    (temp file + Path.replace) and never raises.
+    """
+
+    def __init__(self, cache_dir: Path, ttl: int = 300):
+        self.cache_dir = cache_dir
+        self.ttl = ttl
+        self.cache_file = cache_dir / PR_CACHE_FILENAME
+
+    def load(self) -> PrCacheDoc:
+        try:
+            if not self.cache_file.exists():
+                return PrCacheDoc.empty()
+            raw = json.loads(self.cache_file.read_text())
+            providers = {host: prov for host, prov in raw.get("providers", {}).items() if prov in ("github", "gitlab")}
+            entries: dict[str, PrCacheEntry] = {}
+            for key, entry in raw.get("entries", {}).items():
+                last_attempt_at = datetime.fromisoformat(entry["last_attempt_at"])
+                entries[key] = PrCacheEntry(
+                    info=_deserialize_pr_info(entry.get("info")), last_attempt_at=last_attempt_at
+                )
+            return PrCacheDoc(providers=providers, entries=entries)
+        except (json.JSONDecodeError, KeyError, ValueError, OSError):
+            return PrCacheDoc.empty()
+
+    def save(self, doc: PrCacheDoc) -> None:
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "providers": doc.providers,
+                "entries": {
+                    key: {
+                        "info": _serialize_pr_info(entry.info),
+                        "last_attempt_at": entry.last_attempt_at.isoformat(),
+                    }
+                    for key, entry in doc.entries.items()
+                },
+            }
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
+                f.write(json.dumps(payload))
+                temp_path = Path(f.name)
+            try:
+                temp_path.replace(self.cache_file)
+            except OSError:
+                temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def parse_remote_host(remote_url: str) -> str | None:
@@ -142,6 +234,7 @@ _CLI_TIMEOUT = 3  # seconds — gh/glab may touch the network
 _CLI_BINARY: dict[str, str] = {"github": "gh", "gitlab": "glab"}
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
+PR_CACHE_FILENAME = "git_pr.json"
 
 # Time conversion constants
 _MINUTES_PER_HOUR = 60
