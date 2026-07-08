@@ -53,7 +53,7 @@ Per-platform primitives used below:
 
 | | GitHub (`gh`) | GitLab (`glab`) |
 |---|---|---|
-| Head SHA | `gh pr view <n> --json headRefOid -q .headRefOid` | `glab mr view <iid> --output json` → `.sha` (the MR diff head SHA; matches what `flow-wait-ci` polls) |
+| Head SHA | `gh pr view <n> --json headRefOid -q .headRefOid` | `glab mr view <iid> --output json` → `.sha` (the MR diff head SHA; matches what `flow-wait-ci` polls — may be `null` on a brand-new MR, see step 1a) |
 | State | `gh pr view <n> --json state -q .state` → `OPEN`/`MERGED`/`CLOSED` | `glab mr view <iid> --output json` → `.state` → `opened`/`merged`/`closed` |
 | Local head | `git rev-parse HEAD` | `git rev-parse HEAD` |
 
@@ -70,6 +70,14 @@ title, URL; set `ROUND = 0` and continue.
 stale-data race; a brand-new SHA simply starts with no checks yet). Use the platform's
 head-SHA command above.
 
+> **GitLab fresh-MR caveat:** a just-created MR can return `.sha == null` until GitLab
+> finishes preparing its diff. Do **not** pass a null/empty SHA to `flow-wait-ci` — it would
+> poll a head that does not exist yet and mis-report "no CI". Instead, poll `glab mr view <iid>
+> --output json` until `.sha` is non-empty (the same "wait for materialization" idea
+> `flow-wait-ci` applies to a not-yet-created pipeline), with a short grace. If `.sha` stays
+> null past that grace, report "MR diff not ready yet — retry `/flow:review-loop` shortly" and
+> stop, rather than polling a bad SHA.
+
 **b. Stop if the PR/MR is closed/merged.** Use the platform's state command. GitHub: not
 `OPEN` → stop. GitLab: not `opened` → stop.
 
@@ -80,12 +88,16 @@ helper by **bare name** — do NOT hand-roll the poll and do NOT reference any a
 flow-wait-ci <number> <HEAD_before> --platform <PLATFORM>
 ```
 
-- **Exit 0** → prints one line per check. Compute `failed`:
-  - GitHub (`<name> <conclusion>`): record as `failed` any whose second token is **not**
-    `SUCCESS`/`NEUTRAL`/`SKIPPED` (case-insensitive) — i.e. failure/error/cancelled/etc.
-  - GitLab (`pipeline <status>` + `<job> failed`): record as `failed` any line whose second
-    token is **not** `success`/`skipped`/`manual`/`scheduled` — i.e. `failed`/`canceled`.
-    (Blocking `manual`/`scheduled` are terminal-for-waiting but do **not** trip the red-gate.)
+- **Exit 0** → prints one line per check as `<status>\t<name>` — the status/conclusion (the
+  explicit API field) first, then a **tab**, then the name (which may contain spaces, so the
+  tab keeps the split unambiguous). Compute `failed` from the status, i.e. the text **before
+  the first tab** — never positionally by word, since names like `Lint (flow)` have spaces:
+  - GitHub: record as `failed` any line whose status is **not** `SUCCESS`/`NEUTRAL`/`SKIPPED`
+    (case-insensitive) — i.e. failure/error/cancelled/timed_out/action_required/stale.
+  - GitLab (`<status>\tpipeline`, plus `failed\t<job>` for each failed job): record as `failed`
+    any line whose status is **not** `success`/`skipped`/`manual`/`scheduled` — i.e.
+    `failed`/`canceled`. (Blocking `manual`/`scheduled` are terminal-for-waiting but do **not**
+    trip the red-gate.)
 - **Exit 1** → usage error (a bug in how the skill called it), not a timeout. **Stop the
   loop** and report the malformed `flow-wait-ci` invocation to the user; do **not** retry
   automatically — retrying the same bad call just fails again.
