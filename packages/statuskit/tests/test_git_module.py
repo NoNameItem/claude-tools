@@ -3,7 +3,7 @@
 import subprocess
 from unittest.mock import patch
 
-from statuskit.modules.git import GitModule
+from statuskit.modules.git import GitModule, PrInfo
 from termcolor import colored
 
 from .factories import make_input_data, make_model_data
@@ -1318,3 +1318,46 @@ M  staged_modified.py
             result = mod._render_cwd_fallback()
 
         assert result is None
+
+
+class TestPrParams:
+    """Tests for the PR-related GitParams and the PrInfo value type."""
+
+    def test_pr_params_defaults(self, make_render_context):
+        """show_pr/pr_link default on, pr_provider auto, pr_cache_ttl 300."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        assert mod.params.show_pr is True
+        assert mod.params.pr_provider == "auto"
+        assert mod.params.pr_link is True
+        assert mod.params.pr_cache_ttl == 300
+
+    def test_pr_params_override(self, make_render_context):
+        """PR params are configurable from the raw TOML section."""
+        mod = GitModule(
+            make_render_context(make_input_data(model=make_model_data())),
+            {"show_pr": False, "pr_provider": "gitlab", "pr_link": False, "pr_cache_ttl": 60},
+        )
+
+        assert mod.params.show_pr is False
+        assert mod.params.pr_provider == "gitlab"
+        assert mod.params.pr_link is False
+        assert mod.params.pr_cache_ttl == 60
+
+    def test_pr_provider_invalid_falls_back_to_default(self, make_render_context):
+        """An out-of-choices pr_provider is dropped, default 'auto' applies."""
+        mod = GitModule(
+            make_render_context(make_input_data(model=make_model_data())),
+            {"pr_provider": "bitbucket"},
+        )
+
+        assert mod.params.pr_provider == "auto"
+
+    def test_pr_info_holds_fields(self):
+        """PrInfo stores provider, number, state, url."""
+        info = PrInfo(provider="github", number=42, state="open", url="https://example/pr/42")
+
+        assert info.provider == "github"
+        assert info.number == 42
+        assert info.state == "open"
+        assert info.url == "https://example/pr/42"

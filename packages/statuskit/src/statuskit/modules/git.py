@@ -1,13 +1,30 @@
 """Git module for statuskit."""
 
+from __future__ import annotations
+
 import subprocess
-from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from termcolor import colored
 
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+
+@dataclass
+class PrInfo:
+    """A branch's pull/merge request: provider, reference number, state, web URL."""
+
+    provider: str  # "github" | "gitlab"
+    number: int
+    state: str  # "open" | "draft" | "merged" | "closed"
+    url: str
+
 
 _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
@@ -60,6 +77,18 @@ class GitParams:
     show_remote_status: bool = param(True, "Show remote tracking status")
     show_changes: bool = param(True, "Show working tree change counts")
     show_commit: bool = param(True, "Show last commit hash and age")
+    show_pr: bool = param(True, "Show the current branch's PR (GitHub) / MR (GitLab)")
+    pr_provider: str = param(
+        "auto",
+        "PR provider detection",
+        choices={
+            "auto": "detect from the remote host and CLI auth",
+            "github": "force GitHub (`gh`)",
+            "gitlab": "force GitLab (`glab`)",
+        },
+    )
+    pr_link: bool = param(True, "Wrap the PR/MR token in an OSC 8 terminal hyperlink")
+    pr_cache_ttl: int = param(300, "Minimum seconds between PR/MR network lookups")
 
 
 class GitModule(BaseModule[GitParams]):
