@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,80 @@ def parse_remote_host(remote_url: str) -> str | None:
     return None
 
 
+def _github_state(state: str | None, is_draft: bool) -> str | None:
+    """Map a `gh` PR state (+isDraft) to our state vocabulary, or None if unrecognized."""
+    if state == "OPEN":
+        return "draft" if is_draft else "open"
+    if state == "MERGED":
+        return "merged"
+    if state == "CLOSED":
+        return "closed"
+    return None
+
+
+def _gitlab_state(state: str | None, is_draft: bool) -> str | None:
+    """Map a `glab` MR state (+draft) to our state vocabulary, or None if unrecognized."""
+    if state == "opened":
+        return "draft" if is_draft else "open"
+    if state == "merged":
+        return "merged"
+    if state in ("closed", "locked"):
+        return "closed"
+    return None
+
+
+def parse_github_pr_list(stdout: str) -> list[PrInfo] | None:
+    """Parse `gh pr list --json …` output.
+
+    Returns a list of PrInfo (empty = no PR, a normal result), or None when the
+    payload is not a JSON array (a malformed/error result the caller reports).
+    """
+    try:
+        items = json.loads(stdout or "[]")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    result: list[PrInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("number")
+        state = _github_state(item.get("state"), bool(item.get("isDraft", False)))
+        if not isinstance(number, int) or state is None:
+            continue
+        result.append(PrInfo(provider="github", number=number, state=state, url=item.get("url", "") or ""))
+    return result
+
+
+def parse_gitlab_mr_list(stdout: str) -> list[PrInfo] | None:
+    """Parse `glab mr list --output json` output. Same contract as parse_github_pr_list."""
+    try:
+        items = json.loads(stdout or "[]")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    result: list[PrInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        number = item.get("iid")
+        is_draft = bool(item.get("draft", item.get("work_in_progress", False)))
+        state = _gitlab_state(item.get("state"), is_draft)
+        if not isinstance(number, int) or state is None:
+            continue
+        result.append(PrInfo(provider="gitlab", number=number, state=state, url=item.get("web_url", "") or ""))
+    return result
+
+
+def _select_pr(candidates: list[PrInfo]) -> PrInfo | None:
+    """Pick one PR when a branch has several: open>draft>merged>closed, then highest number."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda p: (_PR_STATE_PRECEDENCE.get(p.state, 99), -p.number))
+
+
 _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
@@ -64,6 +139,8 @@ _MINUTES_PER_YEAR = 525600  # 365 * 1440
 
 # Age format constant
 _JUST_NOW = "just now"
+
+_PR_STATE_PRECEDENCE: dict[str, int] = {"open": 0, "draft": 1, "merged": 2, "closed": 3}
 
 # Git age unit to minutes mapping
 _UNIT_TO_MINUTES: dict[str, int] = {

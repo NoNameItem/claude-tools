@@ -3,7 +3,13 @@
 import subprocess
 from unittest.mock import patch
 
-from statuskit.modules.git import GitModule, PrInfo, parse_remote_host
+from statuskit.modules.git import (
+    GitModule,
+    PrInfo,
+    parse_github_pr_list,
+    parse_gitlab_mr_list,
+    parse_remote_host,
+)
 from termcolor import colored
 
 from .factories import make_input_data, make_model_data
@@ -1394,3 +1400,96 @@ class TestParseRemoteHost:
     def test_host_is_lowercased(self):
         assert parse_remote_host("git@GitHub.com:o/r.git") == "github.com"
         assert parse_remote_host("https://GitLab.example.COM/g/r.git") == "gitlab.example.com"
+
+
+class TestParseGithubPrList:
+    """Tests for parse_github_pr_list: state mapping, empty, malformed."""
+
+    def test_open_pr(self):
+        stdout = '[{"number": 42, "state": "OPEN", "isDraft": false, "title": "t", "url": "u"}]'
+        result = parse_github_pr_list(stdout)
+        assert result == [PrInfo(provider="github", number=42, state="open", url="u")]
+
+    def test_draft_pr(self):
+        stdout = '[{"number": 7, "state": "OPEN", "isDraft": true, "url": "u"}]'
+        assert parse_github_pr_list(stdout) == [PrInfo("github", 7, "draft", "u")]
+
+    def test_merged_pr(self):
+        stdout = '[{"number": 5, "state": "MERGED", "isDraft": false, "url": "u"}]'
+        assert parse_github_pr_list(stdout) == [PrInfo("github", 5, "merged", "u")]
+
+    def test_closed_pr(self):
+        stdout = '[{"number": 9, "state": "CLOSED", "isDraft": false, "url": "u"}]'
+        assert parse_github_pr_list(stdout) == [PrInfo("github", 9, "closed", "u")]
+
+    def test_empty_list_is_no_pr(self):
+        """An empty JSON array is a valid 'no PR' result, not an error."""
+        assert parse_github_pr_list("[]") == []
+
+    def test_malformed_json_is_none(self):
+        """Non-JSON stdout on a supposedly-ok result is an error signalled by None."""
+        assert parse_github_pr_list("not json") is None
+
+    def test_non_list_json_is_none(self):
+        assert parse_github_pr_list('{"number": 1}') is None
+
+    def test_unknown_state_row_skipped(self):
+        stdout = '[{"number": 1, "state": "WEIRD", "isDraft": false, "url": "u"}]'
+        assert parse_github_pr_list(stdout) == []
+
+
+class TestParseGitlabMrList:
+    """Tests for parse_gitlab_mr_list."""
+
+    def test_opened_mr(self):
+        stdout = '[{"iid": 42, "state": "opened", "draft": false, "web_url": "u"}]'
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 42, "open", "u")]
+
+    def test_draft_mr_via_draft_field(self):
+        stdout = '[{"iid": 3, "state": "opened", "draft": true, "web_url": "u"}]'
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 3, "draft", "u")]
+
+    def test_draft_mr_via_work_in_progress_fallback(self):
+        stdout = '[{"iid": 4, "state": "opened", "work_in_progress": true, "web_url": "u"}]'
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 4, "draft", "u")]
+
+    def test_merged_mr(self):
+        stdout = '[{"iid": 5, "state": "merged", "web_url": "u"}]'
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 5, "merged", "u")]
+
+    def test_locked_maps_to_closed(self):
+        stdout = '[{"iid": 6, "state": "locked", "web_url": "u"}]'
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 6, "closed", "u")]
+
+    def test_empty_is_no_mr(self):
+        assert parse_gitlab_mr_list("[]") == []
+
+    def test_malformed_is_none(self):
+        assert parse_gitlab_mr_list("<html>") is None
+
+
+class TestSelectPr:
+    """Tests for _select_pr precedence: open>draft>merged>closed, then highest number."""
+
+    def test_prefers_open_over_merged(self):
+        from statuskit.modules.git import _select_pr
+
+        candidates = [PrInfo("github", 1, "merged", "u"), PrInfo("github", 2, "open", "u")]
+        assert _select_pr(candidates) == PrInfo("github", 2, "open", "u")
+
+    def test_prefers_draft_over_closed(self):
+        from statuskit.modules.git import _select_pr
+
+        candidates = [PrInfo("github", 9, "closed", "u"), PrInfo("github", 3, "draft", "u")]
+        assert _select_pr(candidates) == PrInfo("github", 3, "draft", "u")
+
+    def test_ties_broken_by_highest_number(self):
+        from statuskit.modules.git import _select_pr
+
+        candidates = [PrInfo("github", 10, "open", "a"), PrInfo("github", 20, "open", "b")]
+        assert _select_pr(candidates) == PrInfo("github", 20, "open", "b")
+
+    def test_empty_is_none(self):
+        from statuskit.modules.git import _select_pr
+
+        assert _select_pr([]) is None
