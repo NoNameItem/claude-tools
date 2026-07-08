@@ -1390,3 +1390,7 @@ class TestParseRemoteHost:
 
     def test_unparseable(self):
         assert parse_remote_host("not-a-url") is None
+
+    def test_host_is_lowercased(self):
+        assert parse_remote_host("git@GitHub.com:o/r.git") == "github.com"
+        assert parse_remote_host("https://GitLab.example.COM/g/r.git") == "gitlab.example.com"

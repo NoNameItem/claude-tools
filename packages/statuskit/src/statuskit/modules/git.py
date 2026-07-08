@@ -32,6 +32,7 @@ def parse_remote_host(remote_url: str) -> str | None:
     Handles both the scheme-based form (``https://HOST/…``, ``ssh://git@HOST:port/…``)
     and the scp-like SSH form (``[user@]HOST:group/repo.git``). Strips any userinfo
     (``user@``) and port (``:8443``). Returns None for empty or unparseable input.
+    The returned host is lowercased, since hostnames are case-insensitive.
     """
     url = remote_url.strip()
     if not url:
@@ -40,13 +41,13 @@ def parse_remote_host(remote_url: str) -> str | None:
         authority = url.split("://", 1)[1].split("/", 1)[0]
         if "@" in authority:
             authority = authority.rsplit("@", 1)[1]
-        return authority.split(":", 1)[0] or None
+        return authority.split(":", 1)[0].lower() or None
     # scp-like SSH: [user@]host:path
     if ":" in url:
         before_colon = url.split(":", 1)[0]
         if "@" in before_colon:
             before_colon = before_colon.rsplit("@", 1)[1]
-        return before_colon or None
+        return before_colon.lower() or None
     return None
 
 
