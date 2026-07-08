@@ -3,7 +3,7 @@
 import subprocess
 from unittest.mock import patch
 
-from statuskit.modules.git import GitModule, PrInfo
+from statuskit.modules.git import GitModule, PrInfo, parse_remote_host
 from termcolor import colored
 
 from .factories import make_input_data, make_model_data
@@ -1361,3 +1361,32 @@ class TestPrParams:
         assert info.number == 42
         assert info.state == "open"
         assert info.url == "https://example/pr/42"
+
+
+class TestParseRemoteHost:
+    """Tests for parse_remote_host (SSH scp-form, URL-form, edge cases)."""
+
+    def test_scp_ssh_with_user(self):
+        assert parse_remote_host("git@github.com:NoNameItem/claude-tools.git") == "github.com"
+
+    def test_scp_ssh_self_hosted(self):
+        assert parse_remote_host("git@gitlab.example.com:group/sub/repo.git") == "gitlab.example.com"
+
+    def test_scp_ssh_without_user(self):
+        assert parse_remote_host("github.com:owner/repo.git") == "github.com"
+
+    def test_https(self):
+        assert parse_remote_host("https://github.com/owner/repo.git") == "github.com"
+
+    def test_https_with_userinfo_and_port(self):
+        assert parse_remote_host("https://user@git.example.com:8443/group/repo.git") == "git.example.com"
+
+    def test_ssh_scheme_with_port(self):
+        assert parse_remote_host("ssh://git@gitlab.example.com:2222/group/repo.git") == "gitlab.example.com"
+
+    def test_empty_or_whitespace(self):
+        assert parse_remote_host("") is None
+        assert parse_remote_host("   ") is None
+
+    def test_unparseable(self):
+        assert parse_remote_host("not-a-url") is None

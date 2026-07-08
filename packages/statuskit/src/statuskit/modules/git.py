@@ -26,6 +26,30 @@ class PrInfo:
     url: str
 
 
+def parse_remote_host(remote_url: str) -> str | None:
+    """Extract the host from a git remote URL.
+
+    Handles both the scheme-based form (``https://HOST/…``, ``ssh://git@HOST:port/…``)
+    and the scp-like SSH form (``[user@]HOST:group/repo.git``). Strips any userinfo
+    (``user@``) and port (``:8443``). Returns None for empty or unparseable input.
+    """
+    url = remote_url.strip()
+    if not url:
+        return None
+    if "://" in url:
+        authority = url.split("://", 1)[1].split("/", 1)[0]
+        if "@" in authority:
+            authority = authority.rsplit("@", 1)[1]
+        return authority.split(":", 1)[0] or None
+    # scp-like SSH: [user@]host:path
+    if ":" in url:
+        before_colon = url.split(":", 1)[0]
+        if "@" in before_colon:
+            before_colon = before_colon.rsplit("@", 1)[1]
+        return before_colon or None
+    return None
+
+
 _GIT_TIMEOUT = 2  # seconds
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
