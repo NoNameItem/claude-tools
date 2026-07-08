@@ -186,6 +186,57 @@ class TestExtractLinks:
         assert len(links) == 2
 
 
+class TestMultiLinkExtract:
+    def test_numbers_repeated_designs(self):
+        _clean, links = extract_links("Design: a.md\nDesign: b.md")
+        assert links == ["Design #1: a.md", "Design #2: b.md"]
+
+    def test_single_design_has_no_number(self):
+        _clean, links = extract_links("Design: a.md")
+        assert links == ["Design: a.md"]
+
+    def test_label_rendered_in_parens(self):
+        _clean, links = extract_links("Design: a.md\nDesign (rework): b.md")
+        assert links == ["Design #1: a.md", "Design #2 (rework): b.md"]
+
+    def test_plan_with_label_single(self):
+        _clean, links = extract_links("Plan (v2): p.md")
+        assert links == ["Plan (v2): p.md"]
+
+    def test_git_hidden_even_with_label(self):
+        clean, links = extract_links("Text\nGit (statuskit): feature/x\nGit (flow): feature/y\nMore")
+        assert links == []
+        assert "Git" not in clean
+        assert "Text" in clean
+        assert "More" in clean
+
+    def test_mixed_designs_and_plan_order_preserved(self):
+        desc = "Body\nDesign: a.md\nDesign (rework): b.md\nPlan: p.md"
+        clean, links = extract_links(desc)
+        assert links == ["Design #1: a.md", "Design #2 (rework): b.md", "Plan: p.md"]
+        assert clean == "Body"
+
+    def test_numbers_repeated_plans(self):
+        _clean, links = extract_links("Plan: p1.md\nPlan: p2.md")
+        assert links == ["Plan #1: p1.md", "Plan #2: p2.md"]
+
+    def test_git_interleaved_preserves_design_order(self):
+        _clean, links = extract_links("Design: a.md\nGit: feature/x\nDesign: b.md")
+        assert links == ["Design #1: a.md", "Design #2: b.md"]
+
+    def test_groups_designs_before_plan_when_interleaved(self):
+        # Lifecycle after-design/after-plan/after-design --append stores Design/Plan/Design;
+        # the card groups all designs (numbered), then the plan.
+        _clean, links = extract_links("Design: a.md\nPlan: p.md\nDesign (rework): b.md")
+        assert links == ["Design #1: a.md", "Design #2 (rework): b.md", "Plan: p.md"]
+
+    def test_empty_value_design_stays_in_description(self):
+        # Canonical regex requires a non-empty value, so a bare "Design:" is not a link.
+        clean, links = extract_links("Body\nDesign:")
+        assert links == []
+        assert "Design:" in clean
+
+
 class TestRenderTitleSection:
     def test_top_border_contains_type_word(self):
         lines = render_title_section("Add dark mode", "feature")
@@ -428,6 +479,17 @@ class TestRenderCard:
         task["description"] = "Text\nGit: feature/branch\nMore text"
         output = render_card(task)
         assert "Git:" not in output
+
+    def test_card_renders_multiple_designs_with_labels(self):
+        task = dict(self.FULL_TASK)
+        task["description"] = "Body.\n\nDesign: a.md\nDesign (rework): b.md\nPlan: p.md"
+        output = render_card(task)
+        assert "Design #1: a.md" in output
+        assert "Design #2 (rework): b.md" in output
+        assert "Plan: p.md" in output
+        # All lines must still align to the card width.
+        for line in output.split("\n"):
+            assert str_width(line) == compute_card_width(task)
 
     def test_starts_with_top_border(self):
         output = render_card(self.FULL_TASK)

@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Set or remove a link line (Git:/Design:/Plan:) in a beads task description.
+"""Set, append, replace, or remove a link line (Git:/Design:/Plan:) in a beads task description.
 
 Usage:
-    flow-link-doc <task-id> <Git|Design|Plan> <value>   # set (replace existing or append)
-    flow-link-doc <task-id> <Git|Design|Plan> ""        # remove the line
-Exit: 0 ok | 1 invalid key | 2 task not found / bd error
+    flow-link-doc <task-id> <Git|Design|Plan> <value> [--label TEXT] [--append | --replace-latest]
+    flow-link-doc <task-id> <Git|Design|Plan> ""      # remove all lines of that key
+
+Modes:
+    (default)         replace the FIRST matching line, else append (single-value)
+    --append          append a new line; no-op if that exact value already exists
+    --replace-latest  replace the LAST matching line, else append
+    value ""          remove ALL lines of that key
+
+Matching for replace/remove ignores an optional "(label)": it matches both
+`Key:` and `Key (...):` lines. With --label TEXT the written line is `Key (TEXT): value`;
+--append dedupes by value only (label is not considered). A label must not contain
+`)` or a newline (they break the shared parse rule) — such labels are rejected.
+
+Exit: 0 ok | 1 invalid key / invalid label | 2 task not found / bd error
 """
 
 from __future__ import annotations
@@ -29,37 +41,93 @@ def _extract_issue(data):
     return data if data else None
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Set or remove a Git/Design/Plan link line.")
-    parser.add_argument("task_id")
-    parser.add_argument("key")
-    parser.add_argument("value")
-    ns = parser.parse_args()
-    if ns.key not in KEYS:
-        sys.stderr.write(f"invalid key {ns.key!r}; expected one of {', '.join(KEYS)}\n")
-        return 1
+def _key_re(key: str) -> re.Pattern[str]:
+    """Match a full link line for `key`, ignoring an optional (label); capture the value.
 
-    show = subprocess.run([BD, "show", ns.task_id, "--json"], capture_output=True, text=True, check=False)
+    Uses `.*?` (not the design doc's `.+?`) so an empty-value bare `Key:` still matches —
+    the removal path needs that to sweep a stray line. Writers never emit empty values.
+    """
+    return re.compile(rf"(?m)^[ \t]*{re.escape(key)}(?:[ \t]*\([^)]*\))?:[ \t]*(.*?)[ \t]*$")
+
+
+def _values(pattern: re.Pattern[str], desc: str) -> list[str]:
+    """Return the value of every line matching `pattern`, in order."""
+    return [m.group(1) for m in pattern.finditer(desc)]
+
+
+def _replace_match(pattern: re.Pattern[str], repl: str, desc: str, *, last: bool) -> str | None:
+    """Replace the first (or last) match of `pattern` with `repl`. None if no match."""
+    matches = list(pattern.finditer(desc))
+    if not matches:
+        return None
+    m = matches[-1] if last else matches[0]
+    return desc[: m.start()] + repl + desc[m.end() :]
+
+
+def _append(desc: str, line: str) -> str:
+    """Append `line` as a new paragraph to `desc`."""
+    return f"{desc.rstrip()}\n\n{line}".strip()
+
+
+def _tidy(desc: str) -> str:
+    """Collapse 3+ consecutive newlines to one blank line and strip ends."""
+    return re.sub(r"\n{3,}", "\n\n", desc).strip()
+
+
+def _fetch_desc(task_id: str) -> tuple[str | None, int | None]:
+    """Return (description, None) on success, or (None, exit_code) on any bd failure."""
+    show = subprocess.run([BD, "show", task_id, "--json"], capture_output=True, text=True, check=False)
     if show.returncode != 0:
         sys.stderr.write(show.stderr.strip() + "\n")
-        return 2
+        return None, 2
     try:
         data = json.loads(show.stdout)
     except json.JSONDecodeError:
         sys.stderr.write("malformed bd json\n")
-        return 2
+        return None, 2
     issue = _extract_issue(data)
     if not issue:
-        sys.stderr.write(f"task not found: {ns.task_id}\n")
-        return 2
+        sys.stderr.write(f"task not found: {task_id}\n")
+        return None, 2
+    return issue.get("description") or "", None
 
-    desc = issue.get("description") or ""
-    line_re = re.compile(rf"(?m)^{re.escape(ns.key)}:.*$")
+
+def main():
+    parser = argparse.ArgumentParser(description="Set, append, replace, or remove a Git/Design/Plan link line.")
+    parser.add_argument("task_id")
+    parser.add_argument("key")
+    parser.add_argument("value")
+    parser.add_argument("--label", default=None, help="Optional label, written as 'Key (LABEL): value'.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--append", action="store_true", help="Append a new line; no-op if value already present.")
+    mode.add_argument("--replace-latest", action="store_true", help="Replace the last matching line, else append.")
+    ns = parser.parse_args()
+    if ns.key not in KEYS:
+        sys.stderr.write(f"invalid key {ns.key!r}; expected one of {', '.join(KEYS)}\n")
+        return 1
+    if ns.label is not None and (")" in ns.label or "\n" in ns.label):
+        # The parse rule's label group is `\(([^)]*)\)`, so a ')' (or a newline) would
+        # break round-tripping — the written line becomes unreadable. Reject it.
+        sys.stderr.write("invalid label: must not contain ')' or a newline\n")
+        return 1
+
+    desc, err = _fetch_desc(ns.task_id)
+    if err is not None:
+        return err
+    desc = desc or ""  # err is None ⇒ desc is a str; keep the type checker happy
+    pattern = _key_re(ns.key)
+
     if ns.value == "":
-        new_desc = re.sub(r"\n{3,}", "\n\n", line_re.sub("", desc)).strip()
+        new_desc = _tidy(pattern.sub("", desc))
     else:
-        line = f"{ns.key}: {ns.value}"
-        new_desc = line_re.sub(line, desc, count=1) if line_re.search(desc) else f"{desc.rstrip()}\n\n{line}".strip()
+        line = f"{ns.key} ({ns.label}): {ns.value}" if ns.label else f"{ns.key}: {ns.value}"
+        if ns.append:
+            if ns.value in _values(pattern, desc):
+                return 0  # already recorded — no-op, no bd update
+            new_desc = _append(desc, line)
+        else:  # default replace-first, or --replace-latest
+            replaced = _replace_match(pattern, line, desc, last=ns.replace_latest)
+            new_desc = replaced if replaced is not None else _append(desc, line)
 
     upd = subprocess.run(
         [BD, "update", ns.task_id, "--description", new_desc], capture_output=True, text=True, check=False

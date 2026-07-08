@@ -85,6 +85,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PUSHED_AT: ${{ github.event.pull_request.updated_at }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -107,6 +108,18 @@ jobs:
           # `error` so branch protection reports a real, re-runnable failure instead of pending.
           RESULT_POSTED=0
           trap 'rc=$?; if [ "$rc" -ne 0 ] && [ "$RESULT_POSTED" = "0" ]; then post_status error "review-gate run failed — re-run this check" || true; fi' EXIT
+
+          # release-please PRs are bot-generated version bumps / CHANGELOG / marketplace-ref
+          # pins that Codex never reviews; Claude's review is waived too (claude-code-review.yml).
+          # They stay gated by Python CI + conversation resolution + manual merge. Pass now,
+          # before the poll loop. Detect by release-please's deterministic branch prefix; HEAD_REF
+          # is read-only data (never checked out / executed), so reading it here is safe.
+          if [[ "$HEAD_REF" == release-please--* ]]; then
+            post_status success "release-please PR — AI review not required"
+            RESULT_POSTED=1
+            echo "release-please PR (head=$HEAD_REF) — review-gate waived."
+            exit 0
+          fi
 
           # Freshness cutoff = the head's push time. pull_request.updated_at is GitHub's own
           # clock, frozen in the event payload (correct across manual re-runs), and for
