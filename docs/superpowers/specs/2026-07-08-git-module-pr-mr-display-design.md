@@ -91,7 +91,7 @@ Extends `GitModule` in `modules/git.py`. No new registered module.
 | `show_pr`       | bool | `true`   | Master toggle for the PR/MR segment.                |
 | `pr_provider`   | str  | `"auto"` | `auto` / `github` / `gitlab` — override detection.  |
 | `pr_link`       | bool | `true`   | Wrap the token in an OSC 8 hyperlink.               |
-| `pr_cache_ttl`  | int  | `90`     | Min seconds between network lookups (throttle).     |
+| `pr_cache_ttl`  | int  | `300`    | Min seconds between network lookups (throttle).     |
 
 ### Methods
 
@@ -190,10 +190,18 @@ Case summary for the tricky combinations:
   (`tempfile.NamedTemporaryFile` in the cache dir + `Path.replace`), `mkdir(parents=True)`.
   Load returns `None` on missing / `JSONDecodeError` / `KeyError` / `OSError` —
   never raises. Safe under concurrent renders from multiple windows.
-- **Refresh-first throttle** keyed on **`host + branch + HEAD sha`**: a commit or a
-  branch switch invalidates the entry; otherwise reuse within `pr_cache_ttl`
-  (default 90s). On a fetch error, keep any stale value but advance the attempt
-  timestamp so the next render still throttles.
+- **Refresh-first throttle** keyed on **`host + branch`**, with a single
+  `pr_cache_ttl` (default 300s) for all states. Switching branches uses a different
+  entry (immediate fresh lookup); otherwise the entry is reused within the TTL. On a
+  fetch error, keep any stale value but advance the attempt timestamp so the next
+  render still throttles.
+- **HEAD / commits are deliberately not in the key.** A branch's PR is slow-changing,
+  event-driven data — the number is fixed once the PR exists, state changes only on
+  discrete human/CI events (draft→ready, open→merged), and the url never changes. A
+  new commit changes none of that, so keying on HEAD would re-query on every commit
+  for zero benefit. The real invalidation signal is a branch switch (in the key); a
+  just-pushed branch is also picked up promptly because it transitions from
+  local-only (skipped) to having an upstream (queried).
 - Negative results ("no PR") are cached too, so a fresh branch does not re-query
   every render.
 - The resolved provider is cached per host (see detection).
