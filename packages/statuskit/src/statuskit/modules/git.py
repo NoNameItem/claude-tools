@@ -90,19 +90,29 @@ class PrCache:
         self.cache_file = cache_dir / PR_CACHE_FILENAME
 
     def load(self) -> PrCacheDoc:
+        """Read the cache document, degrading silently on any corruption.
+
+        A missing, unreadable, non-JSON, or wrong-shaped file yields an empty
+        doc rather than raising. A single unparseable entry is skipped so the
+        remaining valid entries and all providers survive (per-row degradation,
+        mirroring UsageCache).
+        """
         try:
             if not self.cache_file.exists():
                 return PrCacheDoc.empty()
             raw = json.loads(self.cache_file.read_text())
-            providers = {host: prov for host, prov in raw.get("providers", {}).items() if prov in ("github", "gitlab")}
+            providers = {host: prov for host, prov in raw.get("providers", {}).items() if prov in _CLI_BINARY}
             entries: dict[str, PrCacheEntry] = {}
             for key, entry in raw.get("entries", {}).items():
-                last_attempt_at = datetime.fromisoformat(entry["last_attempt_at"])
-                entries[key] = PrCacheEntry(
-                    info=_deserialize_pr_info(entry.get("info")), last_attempt_at=last_attempt_at
-                )
+                try:
+                    last_attempt_at = datetime.fromisoformat(entry["last_attempt_at"])
+                    entries[key] = PrCacheEntry(
+                        info=_deserialize_pr_info(entry.get("info")), last_attempt_at=last_attempt_at
+                    )
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    continue
             return PrCacheDoc(providers=providers, entries=entries)
-        except (json.JSONDecodeError, KeyError, ValueError, OSError):
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError, OSError):
             return PrCacheDoc.empty()
 
     def save(self, doc: PrCacheDoc) -> None:

@@ -1750,3 +1750,43 @@ class TestPrCache:
         with patch("pathlib.Path.replace", side_effect=OSError("boom")):
             cache.save(doc)  # must not raise
         assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_load_wrong_shape_returns_empty_doc(self, tmp_path):
+        """Well-formed JSON of the wrong shape degrades to empty, never raises."""
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        wrong_shapes = [
+            [1, 2, 3],  # top-level array
+            "hello",  # top-level string
+            {"entries": ["a", "b"]},  # entries is a list, not a mapping
+            {"entries": {"h\tb": "oops"}},  # entry value is a string
+            {"entries": {"h\tb": None}},  # entry value is null
+            {"providers": ["x"]},  # providers is a list, not a mapping
+        ]
+        for payload in wrong_shapes:
+            cache.cache_file.write_text(json.dumps(payload))
+            doc = cache.load()
+            assert doc.providers == {}, payload
+            assert doc.entries == {}, payload
+
+    def test_load_skips_bad_entry_keeps_good(self, tmp_path):
+        """One unparseable entry is dropped; every valid entry and all providers survive."""
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        now = datetime.now(UTC)
+        payload = {
+            "providers": {"git.corp.example": "github"},
+            "entries": {
+                "git.corp.example\tmain": {
+                    "info": {"provider": "github", "number": 7, "state": "open", "url": "u"},
+                    "last_attempt_at": now.isoformat(),
+                },
+                "git.corp.example\tbad": {"info": None, "last_attempt_at": "not-a-date"},
+            },
+        }
+        cache.cache_file.write_text(json.dumps(payload))
+
+        doc = cache.load()
+        assert doc.providers == {"git.corp.example": "github"}
+        assert "git.corp.example\tbad" not in doc.entries
+        good = doc.entries["git.corp.example\tmain"]
+        assert good.info == PrInfo("github", 7, "open", "u")
+        assert good.last_attempt_at == now
