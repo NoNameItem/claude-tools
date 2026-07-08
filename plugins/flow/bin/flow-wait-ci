@@ -40,6 +40,7 @@ EXIT_NO_CI = 4
 DEFAULT_WAIT_INTERVAL = 30
 DEFAULT_WAIT_TIMEOUT = 1800  # 30 min: "check in with the human", not "give up"
 DEFAULT_WAIT_GRACE = 180  # 3 min: absorb slow pipeline creation before exit 4
+SUBPROCESS_TIMEOUT = 60  # bound each gh call so a hung CLI degrades to a retry, not a hang
 
 # GitHub non-terminal states (keep waiting while any check/status is in these).
 GH_ACTIVE_CHECK_STATES = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"}
@@ -67,7 +68,7 @@ query($owner:String!, $repo:String!, $pr:Int!, $sha:GitObjectID!) {
 
 
 def _run(cmd: list[str]) -> str:
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=SUBPROCESS_TIMEOUT)
     return proc.stdout.strip()
 
 
@@ -80,11 +81,20 @@ class GHSnap(NamedTuple):
     nodes: list[tuple[str, str, str]]  # (kind, label, value)
 
 
-def _gh_poll(pr: int, sha: str) -> GHSnap | None:
-    """One GitHub rollup poll; None on any transient failure (caller retries)."""
+def _gh_repo() -> tuple[str, str] | None:
+    """Resolve the current repo's (owner, repo); None on failure (caller retries)."""
     try:
         nwo = _run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
-        owner, _, repo = nwo.partition("/")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        sys.stderr.write(f"warning: gh repo view failed ({exc}); retrying until deadline\n")
+        return None
+    owner, _, repo = nwo.partition("/")
+    return owner, repo
+
+
+def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
+    """One GitHub rollup poll; None on any transient failure (caller retries)."""
+    try:
         out = _run(
             [
                 "gh",
@@ -103,7 +113,8 @@ def _gh_poll(pr: int, sha: str) -> GHSnap | None:
             ]
         )
         data = json.loads(out)["data"]["repository"]
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, TypeError):
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
         return None
 
     pr_obj = data.get("pullRequest") or {}
@@ -117,7 +128,8 @@ def _gh_poll(pr: int, sha: str) -> GHSnap | None:
     check_counts = {c["state"]: c["count"] for c in contexts.get("checkRunCountsByState") or []}
     status_counts = {c["state"]: c["count"] for c in contexts.get("statusContextCountsByState") or []}
     active = (
-        rollup.get("state") == "EXPECTED"
+        # rollup `state` uses the same StatusState enum as per-context checks; PENDING/EXPECTED are non-terminal.
+        rollup.get("state") in {"EXPECTED", "PENDING"}
         or any(s in GH_ACTIVE_CHECK_STATES for s in check_counts)
         or any(s in GH_ACTIVE_STATUS_STATES for s in status_counts)
     )
@@ -147,14 +159,22 @@ def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: floa
     deadline = start + timeout
     grace_deadline = start + grace
     prev_sig: tuple | None = None
+    repo: tuple[str, str] | None = None  # resolved once, then cached across polls
     while True:
-        snap = _gh_poll(pr, sha)
+        if repo is None:
+            repo = _gh_repo()
+        snap = _gh_poll(*repo, pr, sha) if repo else None
         if snap is not None:
             if not snap.rollup_present:
+                # Rollup vanished (flap): drop any stored signature so a null poll can't
+                # bridge two populated polls into a false "stable" window.
+                prev_sig = None
                 if time.monotonic() >= grace_deadline:
                     sys.stderr.write(f"no CI: no checks for PR #{pr} head {sha} after grace\n")
                     return EXIT_NO_CI
             else:
+                # Terminal = merge state resolved (not UNKNOWN) AND nothing active AND
+                # the count/node signature is stable vs. the previous poll.
                 terminal = snap.merge_state != "UNKNOWN" and not snap.active and snap.signature == prev_sig
                 if terminal:
                     if snap.head_oid and snap.head_oid != sha:
@@ -177,7 +197,7 @@ def _wait_gitlab(_iid: str, _sha: str, _interval: float, _timeout: float, _grace
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="flow-wait-ci")
-    parser.add_argument("number")
+    parser.add_argument("number", type=int)
     parser.add_argument("sha")
     parser.add_argument("--platform", required=True, choices=["github", "gitlab"])
     try:
@@ -190,7 +210,7 @@ def main(argv: list[str]) -> int:
     grace = float(os.environ.get("WAIT_GRACE", DEFAULT_WAIT_GRACE))
 
     if args.platform == "github":
-        return _wait_github(int(args.number), args.sha, interval, timeout, grace)
+        return _wait_github(args.number, args.sha, interval, timeout, grace)
     return _wait_gitlab(args.number, args.sha, interval, timeout, grace)
 
 

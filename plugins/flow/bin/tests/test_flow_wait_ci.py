@@ -108,3 +108,12 @@ def test_github_unknown_merge_state_blocks(fake_gh):
     r = _gh("42", SHA, "--platform", "github", env=fake_gh.env())
     assert r.returncode == 0, r.stderr
     assert fake_gh.poll_count() >= 4, f"concluded too early ({fake_gh.poll_count()} polls)"
+
+
+def test_github_survives_transient_poll_failure(fake_gh):
+    # A garbage/non-JSON poll -> _gh_poll returns None -> the loop retries rather than
+    # crashing; the next (terminal) poll converges. Proves transient-failure resilience.
+    fake_gh.queue(["not valid json", gh_response(nodes=[("check", "CI", "COMPLETED", "SUCCESS")])])
+    r = run_helper("flow-wait-ci", "42", SHA, "--platform", "github", env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    assert "CI SUCCESS" in r.stdout
