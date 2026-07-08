@@ -2119,6 +2119,21 @@ class TestRenderStatusLineWithPr:
         assert result is not None
         assert "PR #42" not in result
 
+    def test_unknown_state_pr_omitted_line_intact(self, make_render_context, force_color):
+        """An unrenderable PR (unknown state) is silently dropped; the rest of line 2 stays."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {"pr_link": False})
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("ahead", 2),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+            pr=PrInfo("github", 1, "weird", "u"),
+        )
+        assert result is not None
+        assert "PR #1" not in result
+        assert "main" in result  # branch still rendered
+        assert "↑2" in result  # sync indicator still rendered
+
 
 class TestRenderWithPr:
     """render() wires _get_pr into line 2 and surfaces debug messages."""
