@@ -86,9 +86,18 @@ Every flow skill except `init-worktree` gets this baseline:
 Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ```
 
-`Bash(flow-*)` is included only in skills that actually invoke helpers. `review-comments` is the
-exception — it calls no `flow-*` helper, so it does **not** get `Bash(flow-*)`: pre-approving the
-push-capable `flow-sync` in the one skill whose ethos is "never push without asking" would be wrong.
+`Bash(flow-*)` is included only in skills that actually invoke helpers — and blanket `flow-*` only
+where those helpers include `flow-sync` (which pushes beads state). Two skills are narrowed so the
+push-capable `flow-sync` is not pre-approved where it isn't used (limiting the prompt-injection
+blast radius):
+
+- `review-comments` calls no `flow-*` helper → it gets **none**.
+- `sonar-sync` uses only `flow-require-bd` and `flow-current-task`; its body defers `flow-sync push`
+  to the user ("separate concern; user runs after if needed"), so it enumerates
+  `Bash(flow-require-bd:*) Bash(flow-current-task:*)` instead of blanket `flow-*`.
+
+(The `:*` form matches the bare command as a complete token *and* the command-with-args, so
+`flow-require-bd` with no args is covered.)
 
 `sort` and `uniq` are deliberately **excluded**: both write files through their own arguments
 (`sort -o FILE`, `uniq [INPUT [OUTPUT]]`), so a `Bash(sort:*)` / `Bash(uniq:*)` rule would
@@ -125,8 +134,8 @@ carried over unchanged. `BASELINE` = the safe baseline string above.
 | decompose | `Bash(bd:*) Bash(git:*) BASELINE Read Edit` |
 | done | `Bash(bd:*) Bash(git:*) Bash(gh:*) BASELINE` |
 | init-worktree | `Bash Read` (unchanged) |
-| review-comments | `Bash(git:*) Bash(gh:*) Bash(glab:*) BASELINE Agent Read` |
-| sonar-sync | `Bash(bd:*) Bash(gh:*) BASELINE Agent mcp__sonarqube__search_my_sonarqube_projects mcp__sonarqube__search_sonar_issues_in_projects` |
+| review-comments | `Bash(git:*) Bash(gh:*) Bash(glab:*) BASELINE Agent Read` (BASELINE **minus** `Bash(flow-*)` — no helper calls) |
+| sonar-sync | `Bash(bd:*) Bash(gh:*) BASELINE Agent mcp__sonarqube__search_my_sonarqube_projects mcp__sonarqube__search_sonar_issues_in_projects` (BASELINE's `Bash(flow-*)` **replaced by** `Bash(flow-require-bd:*) Bash(flow-current-task:*)` — no `flow-sync`) |
 | start | `Bash(bd:*) Bash(git:*) BASELINE Skill TodoWrite` (−`python3`) |
 
 Consequences worth noting:
