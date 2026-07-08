@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -333,6 +333,67 @@ class GitModule(BaseModule[GitParams]):
         if not url:
             return None
         return parse_remote_host(url)
+
+    def _resolve_provider(self, host: str, doc: PrCacheDoc) -> str | None:
+        """Provider for host: explicit override → cached positive → detection (cached if positive)."""
+        if self.params.pr_provider in ("github", "gitlab"):
+            return self.params.pr_provider
+        cached = doc.providers.get(host)
+        if cached in ("github", "gitlab"):
+            return cached
+        provider = self._detect_provider(host)
+        if provider is not None:
+            doc.providers[host] = provider  # cache positive resolutions only
+        return provider
+
+    def _get_pr(self, branch: str, remote_status: tuple[str, int]) -> PrInfo | None:
+        """Resolve the branch's PR/MR, or None. Degrades silently; notes debug reasons.
+
+        Loads the cache once, delegates the gated/throttled lookup to _pr_lookup (which
+        mutates the doc), then persists the doc once.
+        """
+        if not self.params.show_pr:
+            return None  # feature off — no debug
+        if remote_status[0] == "no_upstream":
+            return None  # local-only branch: no which(), no network
+        host = self._get_remote_host()
+        if host is None:
+            self._note_debug("PR: could not resolve remote host")
+            return None
+        doc = self.cache.load() if self.cache else PrCacheDoc.empty()
+        info = self._pr_lookup(host, branch, doc)
+        if self.cache is not None:
+            self.cache.save(doc)
+        return info
+
+    def _pr_lookup(self, host: str, branch: str, doc: PrCacheDoc) -> PrInfo | None:
+        """CLI gates + provider resolution + cached/throttled fetch. Mutates ``doc``."""
+        if shutil.which("gh") is None and shutil.which("glab") is None:
+            self._note_debug("PR: neither gh nor glab installed")
+            return None
+        provider = self._resolve_provider(host, doc)
+        if provider is None:
+            self._note_debug(f"PR: could not resolve provider for {host}; set pr_provider")
+            return None
+        binary = _CLI_BINARY[provider]
+        if shutil.which(binary) is None:
+            self._note_debug(f"PR: {provider} for {host} but {binary} not installed")
+            return None
+        key = f"{host}\t{branch}"
+        entry = doc.entries.get(key)
+        now = datetime.now(UTC)
+        if entry is not None and (now - entry.last_attempt_at).total_seconds() < self.params.pr_cache_ttl:
+            return entry.info  # throttled: reuse cached value (may be None = no PR)
+        info, error = self._fetch_pr(provider, branch)
+        if error is not None:
+            self._note_debug(f"PR: {provider} fetch failed: {error}")
+            stale = entry.info if entry is not None else None
+            doc.entries[key] = PrCacheEntry(info=stale, last_attempt_at=now)
+            return stale
+        if info is None:
+            self._note_debug("PR: no PR/MR for branch")  # normal, not an error
+        doc.entries[key] = PrCacheEntry(info=info, last_attempt_at=now)
+        return info
 
     def render(self) -> str | None:
         """Render git status output.
