@@ -2,7 +2,7 @@
 
 # ruff: noqa: INP001
 
-from conftest import SHA, gh_response, run_helper
+from conftest import SHA, gh_response, gl_jobs, gl_mr, run_helper
 
 
 def _gh(*args, env):
@@ -117,3 +117,77 @@ def test_github_survives_transient_poll_failure(fake_gh):
     r = run_helper("flow-wait-ci", "42", SHA, "--platform", "github", env=fake_gh.env())
     assert r.returncode == 0, r.stderr
     assert "CI SUCCESS" in r.stdout
+
+
+# --- gitlab backend -----------------------------------------------------------
+
+
+def _gl(*args, env):
+    return run_helper("flow-wait-ci", *args, env=env)
+
+
+def test_gitlab_terminal_success(fake_glab):
+    fake_glab.queue([gl_mr(status="success")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+    assert "pipeline success" in r.stdout
+
+
+def test_gitlab_waits_while_running(fake_glab):
+    # poll-1 running (active) -> wait; poll-2 success -> terminal. No stability window
+    # needed: the head pipeline is a single authoritative status.
+    fake_glab.queue([gl_mr(status="running"), gl_mr(status="success")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+
+
+def test_gitlab_no_pipeline_exits_4(fake_glab):
+    # workflow:rules may never create a pipeline -> grace elapses -> exit 4.
+    fake_glab.queue([gl_mr(present=False)])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env(WAIT_GRACE="0"))
+    assert r.returncode == 4, r.stdout
+
+
+def test_gitlab_manual_is_terminal(fake_glab):
+    # A blocking `manual` pipeline never reaches success; waiting forever is wrong ->
+    # terminal-for-waiting. The skill treats `pipeline manual` as green (does not trip
+    # the red-gate), so exit 0.
+    fake_glab.queue([gl_mr(status="manual")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+    assert "pipeline manual" in r.stdout
+
+
+def test_gitlab_failed_emits_failed_jobs(fake_glab):
+    # A red pipeline: emit `pipeline failed` + one line per failed job with allow_failure
+    # false. allow_failure jobs are excluded (they don't block).
+    fake_glab.queue([gl_mr(status="failed", pid=7)])
+    fake_glab.set_jobs(gl_jobs(("lint", False), ("flaky", True)))
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+    assert "pipeline failed" in r.stdout
+    assert "lint failed" in r.stdout
+    assert "flaky failed" not in r.stdout
+
+
+def test_gitlab_head_moved_exits_3(fake_glab):
+    # The pipeline for SHA finished, but the MR diff head advanced (mr.sha != SHA) -> exit 3.
+    fake_glab.queue(
+        [
+            gl_mr(
+                status="success",
+                head="dddddddddddddddddddddddddddddddddddddddd",
+                pipeline_sha=SHA,
+            )
+        ]
+    )
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 3, r.stdout
+
+
+def test_gitlab_ignores_pipeline_for_other_sha(fake_glab):
+    # head_pipeline exists but is for a different sha (a stale pipeline object). Treated as
+    # "no pipeline for this head yet" -> waits, then exit 4 once grace elapses.
+    fake_glab.queue([gl_mr(status="success", head=SHA, pipeline_sha="0000000000000000000000000000000000000000")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env(WAIT_GRACE="0"))
+    assert r.returncode == 4, r.stdout

@@ -30,6 +30,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 from typing import NamedTuple
 
 EXIT_USAGE = 1
@@ -40,11 +41,14 @@ EXIT_NO_CI = 4
 DEFAULT_WAIT_INTERVAL = 30
 DEFAULT_WAIT_TIMEOUT = 1800  # 30 min: "check in with the human", not "give up"
 DEFAULT_WAIT_GRACE = 180  # 3 min: absorb slow pipeline creation before exit 4
-SUBPROCESS_TIMEOUT = 60  # bound each gh call so a hung CLI degrades to a retry, not a hang
+SUBPROCESS_TIMEOUT = 60  # bound each gh/glab call so a hung CLI degrades to a retry, not a hang
 
 # GitHub non-terminal states (keep waiting while any check/status is in these).
 GH_ACTIVE_CHECK_STATES = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"}
 GH_ACTIVE_STATUS_STATES = {"PENDING", "EXPECTED"}
+
+# GitLab active pipeline statuses (REST enum, lowercase).
+GL_ACTIVE_STATES = {"created", "waiting_for_resource", "preparing", "pending", "running"}
 
 GH_QUERY = """
 query($owner:String!, $repo:String!, $pr:Int!, $sha:GitObjectID!) {
@@ -189,10 +193,79 @@ def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: floa
         time.sleep(interval)
 
 
-def _wait_gitlab(_iid: str, _sha: str, _interval: float, _timeout: float, _grace: float) -> int:
-    # Placeholder — the GitLab backend is added in the follow-up task (design §9 #2).
-    sys.stderr.write("gitlab backend not yet implemented\n")
-    return EXIT_USAGE
+class GLSnap(NamedTuple):
+    pipeline_present: bool
+    status: str
+    head_sha: str
+    failed_jobs: list[str]
+
+
+def _gl_project() -> str | None:
+    """Resolve the current repo's URL-encoded project path; None on failure (caller retries)."""
+    try:
+        view = _run(["glab", "repo", "view", "--output", "json"])
+        path = json.loads(view)["path_with_namespace"]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"warning: glab repo view failed ({exc}); retrying until deadline\n")
+        return None
+    return urllib.parse.quote(path, safe="")
+
+
+def _gl_poll(project: str, iid: int, sha: str) -> GLSnap | None:
+    """One GitLab head-pipeline poll; None on any transient failure (caller retries)."""
+    try:
+        out = _run(["glab", "api", f"projects/{project}/merge_requests/{iid}"])
+        mr = json.loads(out)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"warning: glab poll failed ({exc}); retrying until deadline\n")
+        return None
+
+    head_sha = mr.get("sha") or ""
+    pipeline = mr.get("head_pipeline")
+    # Filter by sha, never by ref: a detached MR pipeline runs on refs/merge-requests/:iid/head.
+    if not pipeline or (pipeline.get("sha") and pipeline.get("sha") != sha):
+        return GLSnap(False, "", head_sha, [])
+
+    status = (pipeline.get("status") or "").lower()
+    failed: list[str] = []
+    pid = pipeline.get("id")
+    if status in {"failed", "canceled"} and pid is not None:
+        try:
+            jobs_out = _run(["glab", "api", f"projects/{project}/pipelines/{pid}/jobs?scope=failed&per_page=100"])
+            jobs = json.loads(jobs_out)
+            failed = [j.get("name") or "" for j in jobs if not j.get("allow_failure")]
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+            failed = []
+    return GLSnap(True, status, head_sha, failed)
+
+
+def _wait_gitlab(iid: int, sha: str, interval: float, timeout: float, grace: float) -> int:
+    start = time.monotonic()
+    deadline = start + timeout
+    grace_deadline = start + grace
+    project: str | None = None  # resolved once, then cached across polls
+    while True:
+        if project is None:
+            project = _gl_project()
+        snap = _gl_poll(project, iid, sha) if project else None
+        if snap is not None:
+            if not snap.pipeline_present:
+                if time.monotonic() >= grace_deadline:
+                    sys.stderr.write(f"no CI: no pipeline for MR !{iid} head {sha} after grace\n")
+                    return EXIT_NO_CI
+            elif snap.status not in GL_ACTIVE_STATES:
+                # terminal: success/failed/canceled/skipped + blocking manual/scheduled.
+                if snap.head_sha and snap.head_sha != sha:
+                    sys.stderr.write(f"head moved: MR !{iid} head is no longer {sha}\n")
+                    return EXIT_HEAD_MOVED
+                print(f"pipeline {snap.status}")
+                for name in snap.failed_jobs:
+                    print(f"{name} failed")
+                return 0
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"timeout: pipeline for {sha} not terminal after {timeout:.0f}s\n")
+            return EXIT_TIMEOUT
+        time.sleep(interval)
 
 
 def main(argv: list[str]) -> int:

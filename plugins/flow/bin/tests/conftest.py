@@ -186,3 +186,87 @@ def gh_response(*, nodes=None, merge="CLEAN", head=SHA, rollup_state="SUCCESS", 
             }
         }
     )
+
+
+_GLAB_FAKE = """#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+STATE = Path({state!r})
+a = sys.argv[1:]
+if a[:2] == ["repo", "view"]:
+    p = STATE / "project"
+    path = p.read_text() if p.exists() else "g/r"
+    sys.stdout.write(json.dumps({{"path_with_namespace": path}}))
+    sys.exit(0)
+if a and a[0] == "api":
+    ep = a[1] if len(a) > 1 else ""
+    if "/jobs" in ep:
+        p = STATE / "jobs"
+        sys.stdout.write(p.read_text() if p.exists() else "[]")
+        sys.exit(0)
+    n = int((STATE / "count").read_text())
+    (STATE / "count").write_text(str(n + 1))
+    queue = json.loads((STATE / "queue").read_text())
+    sys.stdout.write(queue[n] if n < len(queue) else queue[-1])
+    sys.exit(0)
+sys.exit(0)
+"""
+
+
+@pytest.fixture
+def fake_glab(tmp_path):
+    """Fake `glab` on PATH: `repo view` -> project path; `api .../merge_requests/iid` ->
+    next queued MR response; `api .../jobs...` -> the canned failed-jobs list."""
+    state = tmp_path / "glab-state"
+    state.mkdir()
+    (state / "count").write_text("0")
+    (state / "queue").write_text("[]")
+    glab = tmp_path / "glab"
+    glab.write_text(_GLAB_FAKE.format(state=str(state)))
+    glab.chmod(0o755)
+
+    class Ctl:
+        dir = state
+
+        def env(self, **overrides):
+            base = {
+                "PATH": f"{tmp_path}:/usr/bin:/bin",
+                "WAIT_INTERVAL": "0",
+                "WAIT_TIMEOUT": "30",
+                "WAIT_GRACE": "30",
+            }
+            base.update(overrides)
+            return base
+
+        def set_project(self, path):
+            (state / "project").write_text(path)
+
+        def queue(self, responses):
+            (state / "queue").write_text(_json.dumps(list(responses)))
+            (state / "count").write_text("0")
+
+        def set_jobs(self, response):
+            (state / "jobs").write_text(response)
+
+        def poll_count(self):
+            return int((state / "count").read_text())
+
+    return Ctl()
+
+
+def gl_mr(*, status="success", head=SHA, pipeline_sha=None, pid=1, present=True):
+    """Build one GitLab MR response string (`glab api .../merge_requests/:iid`).
+
+    head = MR diff head sha; pipeline_sha defaults to head; present=False -> no pipeline yet.
+    For a head-moved case set head != SHA but pipeline_sha == SHA (the pipeline for the
+    requested sha finished, but the MR head advanced).
+    """
+    pipeline = None
+    if present:
+        pipeline = {"id": pid, "sha": pipeline_sha or head, "status": status}
+    return _json.dumps({"sha": head, "head_pipeline": pipeline})
+
+
+def gl_jobs(*jobs):
+    """Build a failed-jobs list. Each job is (name, allow_failure)."""
+    return _json.dumps([{"name": n, "status": "failed", "allow_failure": af} for (n, af) in jobs])
