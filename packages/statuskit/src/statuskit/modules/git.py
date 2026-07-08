@@ -108,6 +108,8 @@ class PrCache:
             for key, entry in raw.get("entries", {}).items():
                 try:
                     last_attempt_at = datetime.fromisoformat(entry["last_attempt_at"])
+                    if last_attempt_at.tzinfo is None:
+                        continue  # naive timestamp — treat row as corrupt, skip it
                     entries[key] = PrCacheEntry(
                         info=_deserialize_pr_info(entry.get("info")), last_attempt_at=last_attempt_at
                     )
@@ -350,7 +352,7 @@ class GitModule(BaseModule[GitParams]):
         """Resolve the branch's PR/MR, or None. Degrades silently; notes debug reasons.
 
         Loads the cache once, delegates the gated/throttled lookup to _pr_lookup (which
-        mutates the doc), then persists the doc once.
+        mutates the doc and reports whether it changed), then persists only when needed.
         """
         if not self.params.show_pr:
             return None  # feature off — no debug
@@ -361,39 +363,46 @@ class GitModule(BaseModule[GitParams]):
             self._note_debug("PR: could not resolve remote host")
             return None
         doc = self.cache.load() if self.cache else PrCacheDoc.empty()
-        info = self._pr_lookup(host, branch, doc)
-        if self.cache is not None:
-            self.cache.save(doc)
+        info, changed = self._pr_lookup(host, branch, doc)
+        if self.cache is not None and changed:
+            self.cache.save(doc)  # only when a provider was cached or an entry written
         return info
 
-    def _pr_lookup(self, host: str, branch: str, doc: PrCacheDoc) -> PrInfo | None:
-        """CLI gates + provider resolution + cached/throttled fetch. Mutates ``doc``."""
+    def _pr_lookup(self, host: str, branch: str, doc: PrCacheDoc) -> tuple[PrInfo | None, bool]:
+        """CLI gates + provider resolution + cached/throttled fetch. Mutates ``doc``.
+
+        Returns ``(info, changed)`` where ``changed`` is True iff ``doc`` was mutated
+        (a provider was newly cached or an entry written), so the caller can skip an
+        otherwise-pointless cache write on the throttled and early-return paths.
+        """
         if shutil.which("gh") is None and shutil.which("glab") is None:
             self._note_debug("PR: neither gh nor glab installed")
-            return None
+            return None, False
+        had_provider = host in doc.providers
         provider = self._resolve_provider(host, doc)
         if provider is None:
             self._note_debug(f"PR: could not resolve provider for {host}; set pr_provider")
-            return None
+            return None, False
+        changed = host in doc.providers and not had_provider  # provider newly cached
         binary = _CLI_BINARY[provider]
         if shutil.which(binary) is None:
             self._note_debug(f"PR: {provider} for {host} but {binary} not installed")
-            return None
+            return None, changed
         key = f"{host}\t{branch}"
         entry = doc.entries.get(key)
         now = datetime.now(UTC)
         if entry is not None and (now - entry.last_attempt_at).total_seconds() < self.params.pr_cache_ttl:
-            return entry.info  # throttled: reuse cached value (may be None = no PR)
+            return entry.info, changed  # throttled: reuse cached value, no entry write
         info, error = self._fetch_pr(provider, branch)
         if error is not None:
             self._note_debug(f"PR: {provider} fetch failed: {error}")
             stale = entry.info if entry is not None else None
             doc.entries[key] = PrCacheEntry(info=stale, last_attempt_at=now)
-            return stale
+            return stale, True
         if info is None:
             self._note_debug("PR: no PR/MR for branch")  # normal, not an error
         doc.entries[key] = PrCacheEntry(info=info, last_attempt_at=now)
-        return info
+        return info, True
 
     def render(self) -> str | None:
         """Render git status output.

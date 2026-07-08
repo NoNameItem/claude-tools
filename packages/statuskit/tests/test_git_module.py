@@ -1791,6 +1791,28 @@ class TestPrCache:
         assert good.info == PrInfo("github", 7, "open", "u")
         assert good.last_attempt_at == now
 
+    def test_load_skips_naive_timestamp_entry(self, tmp_path):
+        """A naive last_attempt_at (no tz) is dropped so aware minus naive never raises later."""
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        now = datetime.now(UTC)
+        payload = {
+            "providers": {},
+            "entries": {
+                "h\tgood": {
+                    "info": {"provider": "github", "number": 7, "state": "open", "url": "u"},
+                    "last_attempt_at": now.isoformat(),
+                },
+                "h\tnaive": {"info": None, "last_attempt_at": "2026-01-01T00:00:00"},
+            },
+        }
+        cache.cache_file.write_text(json.dumps(payload))
+
+        doc = cache.load()
+        assert "h\tnaive" not in doc.entries
+        good = doc.entries["h\tgood"]
+        assert good.info == PrInfo("github", 7, "open", "u")
+        assert good.last_attempt_at == now
+
 
 class TestGitInitAndRemoteHost:
     """Tests for the __init__ cache wiring, debug channel, and _get_remote_host."""
@@ -1993,3 +2015,37 @@ class TestGetPr:
         ):
             assert mod._get_pr("main", ("synced", 0)) is None
         assert "github.com\tmain" in mod.cache.load().entries
+
+    def test_throttle_hit_does_not_rewrite_cache(self, make_render_context, tmp_path):
+        """Throttled hit reuses the cached PrInfo without an atomic cache rewrite."""
+        mod = self._mod(make_render_context, tmp_path, {"pr_cache_ttl": 300})
+        cached = PrInfo("github", 42, "open", "u")
+        doc = PrCacheDoc(
+            providers={"github.com": "github"},
+            entries={"github.com\tmain": PrCacheEntry(cached, datetime.now(UTC))},
+        )
+        mod.cache.save(doc)
+        with (
+            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
+            patch.object(mod, "_fetch_pr") as fetch,
+            patch.object(mod.cache, "save") as save_mock,
+        ):
+            assert mod._get_pr("main", ("synced", 0)) == cached
+            fetch.assert_not_called()
+            save_mock.assert_not_called()
+
+    def test_first_fetch_error_no_prior_entry(self, make_render_context, tmp_path):
+        """Fetch error with no prior entry persists a negative entry and keeps the git line."""
+        mod = self._mod(make_render_context, tmp_path)
+        with (
+            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
+            patch.object(mod, "_resolve_provider", return_value="github"),
+            patch.object(mod, "_fetch_pr", return_value=(None, "boom")),
+        ):
+            assert mod._get_pr("main", ("synced", 0)) is None
+        assert any("fetch failed" in m for m in mod._debug_messages)
+        entry = mod.cache.load().entries["github.com\tmain"]
+        assert entry.info is None
+        assert entry.last_attempt_at is not None
