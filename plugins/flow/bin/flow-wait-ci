@@ -222,7 +222,9 @@ def _gl_poll(project: str, iid: int, sha: str) -> GLSnap | None:
 
     head_sha = mr.get("sha") or ""
     pipeline = mr.get("head_pipeline")
-    # Filter by sha, never by ref: a detached MR pipeline runs on refs/merge-requests/:iid/head.
+    # Filter by sha, not ref (detached MR pipelines share a ref). A present pipeline whose sha
+    # differs is treated as "not yet materialized"; an absent sha is trusted as ours (the GitLab
+    # API always populates head_pipeline.sha).
     if not pipeline or (pipeline.get("sha") and pipeline.get("sha") != sha):
         return GLSnap(False, "", head_sha, [])
 
@@ -234,7 +236,8 @@ def _gl_poll(project: str, iid: int, sha: str) -> GLSnap | None:
             jobs_out = _run(["glab", "api", f"projects/{project}/pipelines/{pid}/jobs?scope=failed&per_page=100"])
             jobs = json.loads(jobs_out)
             failed = [j.get("name") or "" for j in jobs if not j.get("allow_failure")]
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError) as exc:
+            sys.stderr.write(f"warning: glab jobs fetch failed ({exc}); reporting pipeline status without job detail\n")
             failed = []
     return GLSnap(True, status, head_sha, failed)
 

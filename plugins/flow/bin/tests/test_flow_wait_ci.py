@@ -170,6 +170,26 @@ def test_gitlab_failed_emits_failed_jobs(fake_glab):
     assert "flaky failed" not in r.stdout
 
 
+def test_gitlab_canceled_emits_failed_jobs(fake_glab):
+    # `canceled` is terminal AND (with `failed`) triggers the jobs fetch — a distinct
+    # branch from the `failed` test. Emits `pipeline canceled` + the blocking failed jobs.
+    fake_glab.queue([gl_mr(status="canceled", pid=9)])
+    fake_glab.set_jobs(gl_jobs(("build", False)))
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+    assert "pipeline canceled" in r.stdout
+    assert "build failed" in r.stdout
+
+
+def test_gitlab_scheduled_is_terminal(fake_glab):
+    # `scheduled` (like `manual`) is a blocking status that never reaches success ->
+    # terminal-for-waiting, exit 0. The code comments claim this but only `manual` was tested.
+    fake_glab.queue([gl_mr(status="scheduled")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
+    assert r.returncode == 0, r.stderr
+    assert "pipeline scheduled" in r.stdout
+
+
 def test_gitlab_head_moved_exits_3(fake_glab):
     # The pipeline for SHA finished, but the MR diff head advanced (mr.sha != SHA) -> exit 3.
     fake_glab.queue(
