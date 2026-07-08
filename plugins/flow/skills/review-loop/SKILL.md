@@ -89,8 +89,8 @@ flow-wait-ci <number> <HEAD_before> --platform <PLATFORM>
 - **Exit 1** → usage error (a bug in how the skill called it), not a timeout. **Stop the
   loop** and report the malformed `flow-wait-ci` invocation to the user; do **not** retry
   automatically — retrying the same bad call just fails again.
-- **Exit 2 (timeout)** → ask with a **plain-text numbered prompt** — **never
-  `AskUserQuestion`** (its AFK auto-submit would act with no real answer). Print:
+- **Exit 2 (timeout)** → ask with a **plain-text numbered prompt** — **never a structured
+  dialog** (its AFK auto-submit would act with no real answer; claude-tools-6q4). Print:
 
   ```
   Проверки для <HEAD_before:0:7> не завершились за отведённое время. Что делать?
@@ -128,7 +128,7 @@ review; if the bots already commented, the helper returns immediately.
 
 **d. Red-pipeline gate.** If `failed` is **empty**, continue silently to (e). If `failed` is
 **non-empty**, the pipeline for this head has a red check. Surface the red checks and ask
-with a **plain-text numbered prompt** (never `AskUserQuestion`):
+with a **plain-text numbered prompt** (never a structured dialog):
 
 ```
 Пайплайн для <HEAD_before:0:7> завершился с красными проверками:
@@ -249,9 +249,9 @@ decision is better.
   Stop with the exit-4 explanation.
 - "A required check is red but no comments — I'll loop until it turns green." → It
   structurally can't fix a threadless red check. Surface it at (1d), let it color the report.
-- "I'll use `AskUserQuestion` for the timeout / red-gate / exit-4 prompt — it's cleaner." →
-  **No.** Its AFK auto-submit can act with no real answer. Use plain-text prompts. This skill
-  declares no `AskUserQuestion` in `allowed-tools`.
+- "I'll use a structured multiple-choice dialog for the timeout / red-gate / exit-4 prompt —
+  it's cleaner." → **No.** Its AFK auto-submit can act with no real answer (claude-tools-6q4).
+  Use plain-text prompts; this skill grants no such dialog tool in `allowed-tools`.
 - "I'll hardcode the wait helper path / a specific gate name." → **No.** Call `flow-wait-ci`
   by bare name; it is gate-name-agnostic.
 
