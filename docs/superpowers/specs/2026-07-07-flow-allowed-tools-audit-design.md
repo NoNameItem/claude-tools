@@ -78,11 +78,18 @@ Tools are sorted by capability, not by "is it used today":
 Every flow skill except `init-worktree` gets this baseline:
 
 ```
-Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(sort:*) Bash(uniq:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ```
 
 `Bash(flow-*)` is included uniformly for consistency and future-proofing, even in a skill that
 uses no helper today (`review-comments`) — the helpers are trusted first-party scripts.
+
+`sort` and `uniq` are deliberately **excluded** from the baseline: both can write files through
+their own arguments (`sort -o FILE`, `uniq [INPUT [OUTPUT]]`), so they are not purely read-only
+and a `Bash(sort:*)`/`Bash(uniq:*)` rule would pre-approve file writes. No skill uses them.
+`echo` **is** included — `start` (and others) run it in compound status commands
+(`flow-in-worktree && echo … || echo …`), and per-segment matching means it needs its own rule;
+it is a safe stdout-only builtin.
 
 ### The one removal: `python3` → `jq`
 
