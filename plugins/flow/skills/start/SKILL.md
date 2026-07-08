@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start working on a beads task — select from the ready tree, create or switch the branch, init a worktree, and show the task card. Use when beginning a work session, after /clear, at session start, or when switching tasks. To resume an already in-progress task, use flow:continue.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
 ---
 
 # Flow: Start Task
@@ -241,7 +241,7 @@ If matched: skip to Step 7, report:
 Check if any worktree uses a branch matching the task ID:
 ```bash
 WT=$(flow-find-worktree {task-id} | head -1)
-[ -n "$WT" ] && echo "AUTO_RESOLVE=worktree path=$WT"
+test -n "$WT" && echo "AUTO_RESOLVE=worktree path=$WT"
 ```
 Anchored match — like Case 1, a subtask branch (`{task-id}.N-…`) no longer false-positives against the parent ID.
 

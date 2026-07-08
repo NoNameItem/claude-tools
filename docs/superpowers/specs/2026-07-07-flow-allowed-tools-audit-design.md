@@ -63,9 +63,14 @@ question — enumerate vs. wildcard, and how wide to grant — needed deciding.
 
 Tools are sorted by capability, not by "is it used today":
 
-- **Pre-approve — internal + clearly-safe read-only.** `Bash(flow-*)` plus a fixed baseline of
-  read-only/inspection utilities. None of these can mutate files, execute arbitrary code, or
-  touch the network, so granting them generously is harmless and kills the prompts.
+- **Pre-approve — internal + clearly-safe read-only.** `Bash(flow-*)` (only in skills that call
+  helpers) plus a fixed baseline of read-only/inspection utilities. None of these write files,
+  exec code, or reach the network **through their own arguments** — the property that
+  command-allowlisting can actually enforce (it is why `sort -o` / `uniq OUTPUT` are excluded).
+  This is deliberately *not* a capability sandbox: shell redirection (`echo x > f`) can write on
+  **any** allowed command, and any read tool (`cat`, `tail`, `jq`) can read any file — the
+  permission system plus the human remain the real boundary. Within that bound these tools are
+  benign, so pre-approving them cuts prompts.
 - **Pre-approve — domain/service tools per skill.** `bd`, `git`, `gh`, `glab`,
   `mcp__sonarqube__*`. These can mutate, but that is the skill's declared job, and listing
   them documents which services the skill touches. Kept as already present (add-only).
@@ -78,18 +83,19 @@ Tools are sorted by capability, not by "is it used today":
 Every flow skill except `init-worktree` gets this baseline:
 
 ```
-Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ```
 
-`Bash(flow-*)` is included uniformly for consistency and future-proofing, even in a skill that
-uses no helper today (`review-comments`) — the helpers are trusted first-party scripts.
+`Bash(flow-*)` is included only in skills that actually invoke helpers. `review-comments` is the
+exception — it calls no `flow-*` helper, so it does **not** get `Bash(flow-*)`: pre-approving the
+push-capable `flow-sync` in the one skill whose ethos is "never push without asking" would be wrong.
 
-`sort` and `uniq` are deliberately **excluded** from the baseline: both can write files through
-their own arguments (`sort -o FILE`, `uniq [INPUT [OUTPUT]]`), so they are not purely read-only
-and a `Bash(sort:*)`/`Bash(uniq:*)` rule would pre-approve file writes. No skill uses them.
-`echo` **is** included — `start` (and others) run it in compound status commands
-(`flow-in-worktree && echo … || echo …`), and per-segment matching means it needs its own rule;
-it is a safe stdout-only builtin.
+`sort` and `uniq` are deliberately **excluded**: both write files through their own arguments
+(`sort -o FILE`, `uniq [INPUT [OUTPUT]]`), so a `Bash(sort:*)` / `Bash(uniq:*)` rule would
+pre-approve file writes. No skill uses them. `echo` and `test` **are** included — `start`'s
+worktree auto-resolve runs `test -n "$WT" && echo …` (the `[ … ]` form was normalized to `test`
+so a plain command name can be allow-listed), and per-segment matching means each needs its own
+rule; both are safe builtins (stdout / condition-eval only).
 
 ### The one removal: `python3` → `jq`
 

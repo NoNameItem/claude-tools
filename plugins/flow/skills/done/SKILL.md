@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
 # Flow: Done
