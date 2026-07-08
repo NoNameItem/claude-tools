@@ -27,6 +27,16 @@ class PrInfo:
     url: str
 
 
+@dataclass
+class CliResult:
+    """Outcome of a `gh`/`glab` invocation. `ok` is exit-0; `reason` explains a failure."""
+
+    ok: bool
+    stdout: str
+    stderr: str
+    reason: str | None
+
+
 def parse_remote_host(remote_url: str) -> str | None:
     """Extract the host from a git remote URL.
 
@@ -127,6 +137,8 @@ def _select_pr(candidates: list[PrInfo]) -> PrInfo | None:
 
 
 _GIT_TIMEOUT = 2  # seconds
+_CLI_TIMEOUT = 3  # seconds — gh/glab may touch the network
+_CLI_BINARY: dict[str, str] = {"github": "gh", "gitlab": "glab"}
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
 
@@ -263,6 +275,33 @@ class GitModule(BaseModule[GitParams]):
             # e.g. a stale project_dir) and a missing git binary — degrade to None
             # rather than crash the whole statusline render.
             return None
+
+    def _run_cli(self, provider: str, *args: str) -> CliResult:
+        """Run `gh`/`glab` and classify the outcome.
+
+        Builds the command as a local list so only S603 applies (S607's partial-path
+        check does not fire on a variable). Captures both streams: `auth status` may
+        print host info to stdout or stderr depending on CLI version.
+        """
+        binary = _CLI_BINARY[provider]
+        cmd = [binary, *args]
+        try:
+            result = subprocess.run(  # noqa: S603
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_CLI_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return CliResult(ok=False, stdout="", stderr="", reason="timeout")
+        except OSError:
+            return CliResult(ok=False, stdout="", stderr="", reason=f"{binary} not runnable")
+        stdout = result.stdout.strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            return CliResult(ok=False, stdout=stdout, stderr=stderr, reason=stderr or f"exit {result.returncode}")
+        return CliResult(ok=True, stdout=stdout, stderr=stderr, reason=None)
 
     def _shorten_path(self, path: str) -> str:
         """Shorten an absolute path by replacing a leading $HOME with ``~``.

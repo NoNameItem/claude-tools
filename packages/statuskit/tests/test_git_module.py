@@ -4,6 +4,7 @@ import subprocess
 from unittest.mock import patch
 
 from statuskit.modules.git import (
+    CliResult,
     GitModule,
     PrInfo,
     parse_github_pr_list,
@@ -1493,3 +1494,52 @@ class TestSelectPr:
         from statuskit.modules.git import _select_pr
 
         assert _select_pr([]) is None
+
+
+class TestRunCli:
+    """Tests for _run_cli: ok, nonzero, timeout, OSError classification."""
+
+    def _mod(self, make_render_context):
+        return GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+    def test_ok(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]\n", stderr="")
+            result = mod._run_cli("github", "pr", "list")
+        assert result == CliResult(ok=True, stdout="[]", stderr="", reason=None)
+        assert mock_run.call_args[0][0][0] == "gh"
+
+    def test_gitlab_uses_glab_binary(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="[]", stderr="")
+            mod._run_cli("gitlab", "mr", "list")
+        assert mock_run.call_args[0][0][0] == "glab"
+
+    def test_nonzero_returns_error_reason_from_stderr(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="not authenticated\n"
+            )
+            result = mod._run_cli("github", "pr", "list")
+        assert result.ok is False
+        assert result.reason == "not authenticated"
+
+    def test_timeout_returns_timeout_reason(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.TimeoutExpired(cmd="gh", timeout=3)
+            result = mod._run_cli("github", "pr", "list")
+        assert result.ok is False
+        assert result.reason == "timeout"
+
+    def test_oserror_returns_not_runnable_reason(self, make_render_context):
+        mod = self._mod(make_render_context)
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError("no gh")
+            result = mod._run_cli("github", "pr", "list")
+        assert result.ok is False
+        assert result.reason is not None
+        assert "gh" in result.reason
