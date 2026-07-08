@@ -1790,3 +1790,34 @@ class TestPrCache:
         good = doc.entries["git.corp.example\tmain"]
         assert good.info == PrInfo("github", 7, "open", "u")
         assert good.last_attempt_at == now
+
+
+class TestGitInitAndRemoteHost:
+    """Tests for the __init__ cache wiring, debug channel, and _get_remote_host."""
+
+    def test_cache_built_when_cache_dir_set(self, make_render_context, tmp_path):
+        ctx = make_render_context(make_input_data(model=make_model_data()), cache_dir=tmp_path)
+        mod = GitModule(ctx, {"pr_cache_ttl": 120})
+        assert mod.cache is not None
+        assert mod.cache.ttl == 120
+        assert mod._debug_messages == []
+
+    def test_cache_none_without_cache_dir(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        assert mod.cache is None
+
+    def test_note_debug_appends(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        mod._note_debug("hello")
+        assert mod._debug_messages == ["hello"]
+
+    def test_get_remote_host_parses_origin(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        with patch.object(mod, "_run_git", return_value="git@github.com:o/r.git") as mock_git:
+            assert mod._get_remote_host() == "github.com"
+        mock_git.assert_called_once_with("remote", "get-url", "origin")
+
+    def test_get_remote_host_none_when_no_remote(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        with patch.object(mod, "_run_git", return_value=None):
+            assert mod._get_remote_host() is None

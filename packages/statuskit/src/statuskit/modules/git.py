@@ -19,6 +19,8 @@ from statuskit.modules.base import BaseModule
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from statuskit.core.models import RenderContext
+
 
 @dataclass
 class PrInfo:
@@ -314,6 +316,23 @@ class GitModule(BaseModule[GitParams]):
 
     name = "git"
     description = "Git branch, status, and location"
+
+    def __init__(self, ctx: RenderContext, raw_section: dict) -> None:
+        """Initialize module: parse params, then set up the PR cache and debug channel."""
+        super().__init__(ctx, raw_section)
+        self.cache = PrCache(cache_dir=ctx.cache_dir, ttl=self.params.pr_cache_ttl) if ctx.cache_dir else None
+        self._debug_messages: list[str] = []
+
+    def _note_debug(self, message: str) -> None:
+        """Record a debug reason; surfaced (in debug mode) at the end of render()."""
+        self._debug_messages.append(message)
+
+    def _get_remote_host(self) -> str | None:
+        """Host of `origin`, or None when there is no origin remote."""
+        url = self._run_git("remote", "get-url", "origin")
+        if not url:
+            return None
+        return parse_remote_host(url)
 
     def render(self) -> str | None:
         """Render git status output.
