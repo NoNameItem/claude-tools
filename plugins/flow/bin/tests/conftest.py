@@ -81,3 +81,108 @@ def git_repo(tmp_path):
     subprocess.run(["git", "add", "."], **common)
     subprocess.run(["git", "commit", "-qm", "init"], **common)
     return tmp_path
+
+
+# --- review-loop wait helper: fake gh / glab -------------------------------
+
+import json as _json  # noqa: E402  (local alias; module-level json used by callers too)
+
+SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+_GH_FAKE = """#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+STATE = Path({state!r})
+a = sys.argv[1:]
+if a[:2] == ["repo", "view"]:
+    p = STATE / "repo"
+    sys.stdout.write(p.read_text() if p.exists() else "o/r")
+    sys.exit(0)
+if a[:2] == ["api", "graphql"]:
+    n = int((STATE / "count").read_text())
+    (STATE / "count").write_text(str(n + 1))
+    queue = json.loads((STATE / "queue").read_text())
+    sys.stdout.write(queue[n] if n < len(queue) else queue[-1])
+    sys.exit(0)
+sys.exit(0)
+"""
+
+
+@pytest.fixture
+def fake_gh(tmp_path):
+    """Fake `gh` on PATH: `repo view` -> owner/repo; `api graphql` -> next queued response."""
+    state = tmp_path / "gh-state"
+    state.mkdir()
+    (state / "count").write_text("0")
+    (state / "queue").write_text("[]")
+    gh = tmp_path / "gh"
+    gh.write_text(_GH_FAKE.format(state=str(state)))
+    gh.chmod(0o755)
+
+    class Ctl:
+        dir = state
+
+        def env(self, **overrides):
+            base = {
+                "PATH": f"{tmp_path}:/usr/bin:/bin",
+                "WAIT_INTERVAL": "0",
+                "WAIT_TIMEOUT": "30",
+                "WAIT_GRACE": "30",
+            }
+            base.update(overrides)
+            return base
+
+        def set_repo(self, nwo):
+            (state / "repo").write_text(nwo)
+
+        def queue(self, responses):
+            (state / "queue").write_text(_json.dumps(list(responses)))
+            (state / "count").write_text("0")
+
+        def poll_count(self):
+            return int((state / "count").read_text())
+
+    return Ctl()
+
+
+def gh_response(*, nodes=None, merge="CLEAN", head=SHA, rollup_state="SUCCESS", rollup=True):
+    """Build one GitHub `statusCheckRollup` GraphQL response string.
+
+    nodes: list of ("check", name, status, conclusion) or ("status", context, state).
+    rollup=False emits a null rollup (fresh head / no checks registered).
+    """
+    if not rollup:
+        obj = {"statusCheckRollup": None}
+    else:
+        check_counts, status_counts, node_list = {}, {}, []
+        for n in nodes or []:
+            if n[0] == "check":
+                _, name, st, concl = n
+                node_list.append({"__typename": "CheckRun", "name": name, "status": st, "conclusion": concl})
+                check_counts[st] = check_counts.get(st, 0) + 1
+            else:
+                _, ctx, state = n
+                node_list.append({"__typename": "StatusContext", "context": ctx, "state": state})
+                status_counts[state] = status_counts.get(state, 0) + 1
+        obj = {
+            "statusCheckRollup": {
+                "state": rollup_state,
+                "contexts": {
+                    "checkRunCount": sum(check_counts.values()),
+                    "checkRunCountsByState": [{"state": k, "count": v} for k, v in check_counts.items()],
+                    "statusContextCount": sum(status_counts.values()),
+                    "statusContextCountsByState": [{"state": k, "count": v} for k, v in status_counts.items()],
+                    "nodes": node_list,
+                },
+            }
+        }
+    return _json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {"mergeStateStatus": merge, "headRefOid": head},
+                    "object": obj,
+                }
+            }
+        }
+    )
