@@ -261,6 +261,16 @@ _MINUTES_PER_YEAR = 525600  # 365 * 1440
 _JUST_NOW = "just now"
 
 _PR_STATE_PRECEDENCE: dict[str, int] = {"open": 0, "draft": 1, "merged": 2, "closed": 3}
+_PR_STATE_STYLE: dict[str, tuple[str, str]] = {
+    "open": ("●", "green"),
+    "draft": ("○", "yellow"),
+    "merged": ("✓", "magenta"),
+    "closed": ("✗", "red"),
+}
+_PR_LABEL: dict[str, tuple[str, str]] = {
+    "github": ("PR", "#"),
+    "gitlab": ("MR", "!"),
+}
 
 # Git age unit to minutes mapping
 _UNIT_TO_MINUTES: dict[str, int] = {
@@ -432,9 +442,12 @@ class GitModule(BaseModule[GitParams]):
             commit = self._get_last_commit()
             if commit:
                 commit = (commit[0], self._format_commit_age(commit[1]))
-            line2 = self._render_status_line(branch, remote_status, changes, commit)
+            pr = self._get_pr(branch, remote_status)
+            line2 = self._render_status_line(branch, remote_status, changes, commit, pr=pr)
 
         lines = [line for line in (line1, line2) if line]
+        if self.debug and self._debug_messages:
+            lines.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
         return "\n".join(lines) if lines else None
 
     def _run_git(self, *args: str, cwd: str | None = None) -> str | None:
@@ -947,12 +960,28 @@ class GitModule(BaseModule[GitParams]):
         change_parts = [colored(f"{prefix}{count}", color) for count, prefix, color in indicators if count > 0]
         return "[" + " ".join(change_parts) + "]" if change_parts else None
 
+    def _render_pr(self, info: PrInfo) -> str | None:
+        """Format the PR/MR token: `PR #42 ●` / `MR !7 ○`, state-colored, optional OSC 8 link."""
+        style = _PR_STATE_STYLE.get(info.state)
+        label = _PR_LABEL.get(info.provider)
+        if style is None or label is None:
+            return None
+        glyph, color = style
+        name, sigil = label
+        token = colored(f"{name} {sigil}{info.number} {glyph}", color)
+        if self.params.pr_link and info.url:
+            # BEL-terminated OSC 8 hyperlink; passed through by the CC statusline,
+            # clickable in supporting terminals, plain text elsewhere.
+            return f"\033]8;;{info.url}\a{token}\033]8;;\a"
+        return token
+
     def _render_status_line(
         self,
         branch: str,
         remote_status: tuple[str, int],
         changes: dict[str, int],
         commit: tuple[str, str] | None,
+        pr: PrInfo | None = None,
     ) -> str | None:
         """Render the status line (Line 2).
 
@@ -961,6 +990,7 @@ class GitModule(BaseModule[GitParams]):
             remote_status: Tuple of (status, count)
             changes: Dict with staged, modified, untracked counts
             commit: Tuple of (hash, age) or None
+            pr: Resolved PR/MR info, or None
 
         Returns:
             Formatted status string or None if all disabled
@@ -969,6 +999,11 @@ class GitModule(BaseModule[GitParams]):
 
         if self.params.show_branch:
             parts.append(colored(branch, "magenta"))
+
+        if self.params.show_pr and pr is not None:
+            pr_str = self._render_pr(pr)
+            if pr_str:
+                parts.append(pr_str)
 
         if self.params.show_remote_status:
             remote = self._render_remote_status(remote_status)

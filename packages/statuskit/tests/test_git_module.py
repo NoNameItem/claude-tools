@@ -1061,6 +1061,7 @@ M  staged_modified.py
             patch.object(mod, "_get_remote_status") as mock_remote,
             patch.object(mod, "_get_changes") as mock_changes,
             patch.object(mod, "_get_last_commit") as mock_commit,
+            patch.object(mod, "_get_pr", return_value=None),
         ):
             mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
             mock_branch.return_value = "main"
@@ -1091,6 +1092,7 @@ M  staged_modified.py
         with (
             patch.object(mod, "_get_location") as mock_loc,
             patch.object(mod, "_get_branch") as mock_branch,
+            patch.object(mod, "_get_pr", return_value=None),
         ):
             mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
             mock_branch.return_value = "main"
@@ -1113,6 +1115,7 @@ M  staged_modified.py
             patch.object(mod, "_get_remote_status") as mock_remote,
             patch.object(mod, "_get_changes") as mock_changes,
             patch.object(mod, "_get_last_commit") as mock_commit,
+            patch.object(mod, "_get_pr", return_value=None),
         ):
             mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
             mock_branch.return_value = "main"
@@ -1146,6 +1149,7 @@ M  staged_modified.py
         with (
             patch.object(mod, "_get_location") as mock_loc,
             patch.object(mod, "_get_branch") as mock_branch,
+            patch.object(mod, "_get_pr", return_value=None),
         ):
             mock_loc.return_value = {"project": "project", "worktree": None, "subfolder": None}
             mock_branch.return_value = "main"
@@ -2049,3 +2053,112 @@ class TestGetPr:
         entry = mod.cache.load().entries["github.com\tmain"]
         assert entry.info is None
         assert entry.last_attempt_at is not None
+
+
+class TestRenderPr:
+    """Tests for _render_pr: label, sigil, glyph, color, OSC 8 wrapping."""
+
+    def _mod(self, make_render_context, config=None):
+        return GitModule(make_render_context(make_input_data(model=make_model_data())), config or {})
+
+    def test_open_github_token(self, make_render_context, force_color):
+        mod = self._mod(make_render_context, {"pr_link": False})
+        result = mod._render_pr(PrInfo("github", 42, "open", "u"))
+        assert result == colored("PR #42 ●", "green")
+
+    def test_draft_gitlab_token(self, make_render_context, force_color):
+        mod = self._mod(make_render_context, {"pr_link": False})
+        result = mod._render_pr(PrInfo("gitlab", 7, "draft", "u"))
+        assert result == colored("MR !7 ○", "yellow")
+
+    def test_merged_and_closed_colors(self, make_render_context, force_color):
+        mod = self._mod(make_render_context, {"pr_link": False})
+        assert mod._render_pr(PrInfo("github", 1, "merged", "u")) == colored("PR #1 ✓", "magenta")
+        assert mod._render_pr(PrInfo("github", 2, "closed", "u")) == colored("PR #2 ✗", "red")
+
+    def test_osc8_wrapping_when_pr_link_on(self, make_render_context, force_color):
+        mod = self._mod(make_render_context, {"pr_link": True})
+        result = mod._render_pr(PrInfo("github", 42, "open", "https://x/42"))
+        token = colored("PR #42 ●", "green")
+        assert result == f"\033]8;;https://x/42\a{token}\033]8;;\a"
+
+    def test_no_osc8_when_url_empty(self, make_render_context, force_color):
+        mod = self._mod(make_render_context, {"pr_link": True})
+        result = mod._render_pr(PrInfo("github", 42, "open", ""))
+        assert result == colored("PR #42 ●", "green")
+
+    def test_unknown_state_returns_none(self, make_render_context):
+        mod = self._mod(make_render_context)
+        assert mod._render_pr(PrInfo("github", 1, "weird", "u")) is None
+
+
+class TestRenderStatusLineWithPr:
+    """PR token sits between branch and remote status."""
+
+    def test_pr_inserted_before_sync(self, make_render_context, force_color):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {"pr_link": False})
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("ahead", 2),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+            pr=PrInfo("github", 42, "open", "u"),
+        )
+        assert result is not None
+        assert result.index("PR #42") < result.index("↑2")
+
+    def test_pr_hidden_when_show_pr_false(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {"show_pr": False})
+        result = mod._render_status_line(
+            branch="main",
+            remote_status=("synced", 0),
+            changes={"staged": 0, "modified": 0, "untracked": 0},
+            commit=None,
+            pr=PrInfo("github", 42, "open", "u"),
+        )
+        assert result is not None
+        assert "PR #42" not in result
+
+
+class TestRenderWithPr:
+    """render() wires _get_pr into line 2 and surfaces debug messages."""
+
+    def test_render_includes_pr(self, make_render_context, force_color):
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        mod = GitModule(make_render_context(data), {"pr_link": False})
+        with (
+            patch.object(mod, "_get_location", return_value={"project": "p", "worktree": None, "subfolder": None}),
+            patch.object(mod, "_get_branch", return_value="main"),
+            patch.object(mod, "_get_remote_status", return_value=("synced", 0)),
+            patch.object(mod, "_get_changes", return_value={"staged": 0, "modified": 0, "untracked": 0}),
+            patch.object(mod, "_get_last_commit", return_value=None),
+            patch.object(mod, "_get_pr", return_value=PrInfo("github", 42, "open", "u")),
+        ):
+            result = mod.render()
+        assert result is not None
+        assert "PR #42" in result.split("\n")[1]
+
+    def test_render_appends_debug_messages(self, make_render_context):
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        mod = GitModule(make_render_context(data, debug=True), {})
+
+        def fake_get_pr(_branch, _remote):
+            mod._note_debug("PR: neither gh nor glab installed")
+
+        with (
+            patch.object(mod, "_get_location", return_value={"project": "p", "worktree": None, "subfolder": None}),
+            patch.object(mod, "_get_branch", return_value="main"),
+            patch.object(mod, "_get_remote_status", return_value=("synced", 0)),
+            patch.object(mod, "_get_changes", return_value={"staged": 0, "modified": 0, "untracked": 0}),
+            patch.object(mod, "_get_last_commit", return_value=None),
+            patch.object(mod, "_get_pr", side_effect=fake_get_pr),
+        ):
+            result = mod.render()
+        assert result is not None
+        assert "[git] PR: neither gh nor glab installed" in result
