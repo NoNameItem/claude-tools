@@ -86,8 +86,9 @@ flow-wait-ci <number> <HEAD_before> --platform <PLATFORM>
   - GitLab (`pipeline <status>` + `<job> failed`): record as `failed` any line whose second
     token is **not** `success`/`skipped`/`manual`/`scheduled` — i.e. `failed`/`canceled`.
     (Blocking `manual`/`scheduled` are terminal-for-waiting but do **not** trip the red-gate.)
-- **Exit 1** → usage error (a bug in how the skill called it); fix the call, don't treat it
-  as a timeout.
+- **Exit 1** → usage error (a bug in how the skill called it), not a timeout. **Stop the
+  loop** and report the malformed `flow-wait-ci` invocation to the user; do **not** retry
+  automatically — retrying the same bad call just fails again.
 - **Exit 2 (timeout)** → ask with a **plain-text numbered prompt** — **never
   `AskUserQuestion`** (its AFK auto-submit would act with no real answer). Print:
 
@@ -100,7 +101,10 @@ flow-wait-ci <number> <HEAD_before> --platform <PLATFORM>
 
   Wait for a typed reply. **1** → re-run `flow-wait-ci` (loop step c). **2** marks this
   round **PARTIAL** (the pipeline is not terminal, so this round can never be a clean
-  convergence — lint/bot comments may still arrive). **3** → stop.
+  convergence — lint/bot comments may still arrive). Because the pipeline never went
+  terminal, `flow-wait-ci` emitted **no** per-check lines, so `failed` is empty/unknown for
+  this round → **skip the red-gate (d)** (do not consult `failed`) and go straight to (e);
+  the **PARTIAL** flag alone colors the final report at (g). **3** → stop.
 - **Exit 3 (head moved)** → the branch advanced during the wait, so `HEAD_before` is stale
   (an external push, or an automatic merge into the branch). Loop back to step (a) to
   re-capture the head and re-wait on the **new** head — do not run review-comments or
@@ -122,9 +126,9 @@ as inline review comments, so running review-comments before the lint job finish
 miss them and converge early. On the **first** pass this waits for the current head's first
 review; if the bots already commented, the helper returns immediately.
 
-**d. Red-pipeline gate.** If `failed` is **non-empty**, the pipeline for this head has a red
-check. Surface the red checks and ask with a **plain-text numbered prompt** (never
-`AskUserQuestion`):
+**d. Red-pipeline gate.** If `failed` is **empty**, continue silently to (e). If `failed` is
+**non-empty**, the pipeline for this head has a red check. Surface the red checks and ask
+with a **plain-text numbered prompt** (never `AskUserQuestion`):
 
 ```
 Пайплайн для <HEAD_before:0:7> завершился с красными проверками:
@@ -198,9 +202,9 @@ hand-off, and it colors the final report at (g).
 ### Terminators
 
 No open PR/MR at resolve (0) · clean convergence (1g) · partial hand-off (1g) · red-check
-hand-off (1g) · no CI (`exit 4`, 1c) · PR/MR merged/closed (1b) · user "stop" at the timeout
-prompt (1c) · user "stop" at the red-pipeline gate (1d) · user "no" at `flow:review-comments`
-Phase 3 · user Esc.
+hand-off (1g) · no CI (`exit 4`, 1c) · internal usage error from `flow-wait-ci` (`exit 1`,
+1c) · PR/MR merged/closed (1b) · user "stop" at the timeout prompt (1c) · user "stop" at the
+red-pipeline gate (1d) · user "no" at `flow:review-comments` Phase 3 · user Esc.
 
 ## Round indicator (replaces a hard cap)
 
