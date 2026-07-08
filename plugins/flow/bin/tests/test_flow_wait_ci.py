@@ -1,6 +1,10 @@
 """Tests for flow-wait-ci (GitHub + GitLab backends of the review-loop wait)."""
 
+# INP001: test dir is an implicit namespace package (no __init__.py, matching the
+# other plugins/flow/bin/tests/ files); the suppression is intentional, not an oversight.
 # ruff: noqa: INP001
+
+import json
 
 from conftest import SHA, gh_response, gl_jobs, gl_mr, run_helper
 
@@ -46,8 +50,8 @@ def test_github_terminal_emits_check_lines(fake_gh):
     )
     r = _gh("42", SHA, "--platform", "github", env=fake_gh.env())
     assert r.returncode == 0, r.stderr
-    assert "CI SUCCESS" in r.stdout
-    assert "gate SUCCESS" in r.stdout
+    assert "SUCCESS\tCI" in r.stdout
+    assert "SUCCESS\tgate" in r.stdout
 
 
 def test_github_timeout_exits_2(fake_gh):
@@ -64,6 +68,15 @@ def test_github_no_ci_exits_4(fake_gh):
     fake_gh.queue([gh_response(rollup=False)])
     r = _gh("42", SHA, "--platform", "github", env=fake_gh.env(WAIT_GRACE="0"))
     assert r.returncode == 4, r.stdout
+
+
+def test_github_no_ci_head_moved_exits_3(fake_gh):
+    # No rollup yet AND the head already advanced (headRefOid != SHA). Head-move detection
+    # is universal, so this must exit 3 (recapture HEAD), NOT 4 -- even though grace elapsed
+    # and there is no CI. headRefOid is populated from pullRequest even with a null rollup.
+    fake_gh.queue([gh_response(rollup=False, head="cccccccccccccccccccccccccccccccccccccccc")])
+    r = _gh("42", SHA, "--platform", "github", env=fake_gh.env(WAIT_GRACE="0"))
+    assert r.returncode == 3, r.stdout
 
 
 def test_github_head_moved_exits_3(fake_gh):
@@ -95,7 +108,7 @@ def test_github_waits_for_count_stability(fake_gh):
     fake_gh.queue([one, two, two])
     r = _gh("42", SHA, "--platform", "github", env=fake_gh.env())
     assert r.returncode == 0, r.stderr
-    assert "CI2 SUCCESS" in r.stdout
+    assert "SUCCESS\tCI2" in r.stdout
 
 
 def test_github_unknown_merge_state_blocks(fake_gh):
@@ -116,7 +129,72 @@ def test_github_survives_transient_poll_failure(fake_gh):
     fake_gh.queue(["not valid json", gh_response(nodes=[("check", "CI", "COMPLETED", "SUCCESS")])])
     r = run_helper("flow-wait-ci", "42", SHA, "--platform", "github", env=fake_gh.env())
     assert r.returncode == 0, r.stderr
-    assert "CI SUCCESS" in r.stdout
+    assert "SUCCESS\tCI" in r.stdout
+
+
+def _gh_page(nodes, *, check_counts, has_next, end_cursor=None, merge="CLEAN", head=SHA):
+    """Build one PAGE of a GitHub rollup response, with pageInfo (for the pagination test).
+
+    check_counts are the AGGREGATE totals GitHub repeats on every page; `nodes` is only this
+    page's slice. Lets a >100-context PR be simulated with two small pages.
+    """
+    node_list = []
+    for kind, *rest in nodes:
+        if kind == "check":
+            name, st, concl = rest
+            node_list.append({"__typename": "CheckRun", "name": name, "status": st, "conclusion": concl})
+        else:
+            ctx, state = rest
+            node_list.append({"__typename": "StatusContext", "context": ctx, "state": state})
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {"mergeStateStatus": merge, "headRefOid": head},
+                    "object": {
+                        "statusCheckRollup": {
+                            "state": "SUCCESS",
+                            "contexts": {
+                                "checkRunCount": sum(check_counts.values()),
+                                "checkRunCountsByState": [{"state": k, "count": v} for k, v in check_counts.items()],
+                                "statusContextCount": 0,
+                                "statusContextCountsByState": [],
+                                "nodes": node_list,
+                                "pageInfo": {"hasNextPage": has_next, "endCursor": end_cursor},
+                            },
+                        }
+                    },
+                }
+            }
+        }
+    )
+
+
+def test_github_paginates_rollup_contexts(fake_gh):
+    # A >100-context PR splits across pages: page 1 (green check, hasNextPage) + page 2 (a
+    # FAILURE check, last page). _gh_poll must fetch BOTH and accumulate nodes, else the page-2
+    # failure is dropped and the skill reads false-green. Aggregate counts (COMPLETED:2) repeat
+    # on both pages so `active` is false. The fake serves one response per api call and repeats
+    # the last once exhausted, so queue all four calls of the 2-poll stability window.
+    page1 = _gh_page(
+        [("check", "CI", "COMPLETED", "SUCCESS")],
+        check_counts={"COMPLETED": 2},
+        has_next=True,
+        end_cursor="CURSOR1",
+    )
+    page2 = _gh_page(
+        [("check", "deploy", "COMPLETED", "FAILURE")],
+        check_counts={"COMPLETED": 2},
+        has_next=False,
+    )
+    fake_gh.queue([page1, page2, page1, page2])
+    r = _gh("42", SHA, "--platform", "github", env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    # Both pages' checks must appear in ONE emit -> proves pagination merged them. Without it,
+    # only whichever page stabilizes last is emitted (page 2 via the queue-repeat), so the
+    # page-1 line would be missing -> this is a genuine RED for the no-pagination code.
+    assert "SUCCESS\tCI" in r.stdout
+    assert "FAILURE\tdeploy" in r.stdout
 
 
 # --- gitlab backend -----------------------------------------------------------
@@ -130,7 +208,7 @@ def test_gitlab_terminal_success(fake_glab):
     fake_glab.queue([gl_mr(status="success")])
     r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
     assert r.returncode == 0, r.stderr
-    assert "pipeline success" in r.stdout
+    assert "success\tpipeline" in r.stdout
 
 
 def test_gitlab_waits_while_running(fake_glab):
@@ -148,6 +226,15 @@ def test_gitlab_no_pipeline_exits_4(fake_glab):
     assert r.returncode == 4, r.stdout
 
 
+def test_gitlab_no_pipeline_head_moved_exits_3(fake_glab):
+    # No pipeline yet AND the MR diff head already advanced (mr.sha != SHA). Head-move
+    # detection is universal -> exit 3 (recapture), NOT 4, even with grace elapsed. mr.sha is
+    # populated even when head_pipeline is null.
+    fake_glab.queue([gl_mr(present=False, head="dddddddddddddddddddddddddddddddddddddddd")])
+    r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env(WAIT_GRACE="0"))
+    assert r.returncode == 3, r.stdout
+
+
 def test_gitlab_manual_is_terminal(fake_glab):
     # A blocking `manual` pipeline never reaches success; waiting forever is wrong ->
     # terminal-for-waiting. The skill treats `pipeline manual` as green (does not trip
@@ -155,7 +242,7 @@ def test_gitlab_manual_is_terminal(fake_glab):
     fake_glab.queue([gl_mr(status="manual")])
     r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
     assert r.returncode == 0, r.stderr
-    assert "pipeline manual" in r.stdout
+    assert "manual\tpipeline" in r.stdout
 
 
 def test_gitlab_failed_emits_failed_jobs(fake_glab):
@@ -165,9 +252,9 @@ def test_gitlab_failed_emits_failed_jobs(fake_glab):
     fake_glab.set_jobs(gl_jobs(("lint", False), ("flaky", True)))
     r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
     assert r.returncode == 0, r.stderr
-    assert "pipeline failed" in r.stdout
-    assert "lint failed" in r.stdout
-    assert "flaky failed" not in r.stdout
+    assert "failed\tpipeline" in r.stdout
+    assert "failed\tlint" in r.stdout
+    assert "failed\tflaky" not in r.stdout
 
 
 def test_gitlab_canceled_emits_failed_jobs(fake_glab):
@@ -177,8 +264,8 @@ def test_gitlab_canceled_emits_failed_jobs(fake_glab):
     fake_glab.set_jobs(gl_jobs(("build", False)))
     r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
     assert r.returncode == 0, r.stderr
-    assert "pipeline canceled" in r.stdout
-    assert "build failed" in r.stdout
+    assert "canceled\tpipeline" in r.stdout
+    assert "failed\tbuild" in r.stdout
 
 
 def test_gitlab_scheduled_is_terminal(fake_glab):
@@ -187,7 +274,7 @@ def test_gitlab_scheduled_is_terminal(fake_glab):
     fake_glab.queue([gl_mr(status="scheduled")])
     r = _gl("42", SHA, "--platform", "gitlab", env=fake_glab.env())
     assert r.returncode == 0, r.stderr
-    assert "pipeline scheduled" in r.stdout
+    assert "scheduled\tpipeline" in r.stdout
 
 
 def test_gitlab_head_moved_exits_3(fake_glab):

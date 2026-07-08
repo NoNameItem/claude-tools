@@ -8,8 +8,10 @@ Polls the platform (GitHub via `gh api graphql`, GitLab via `glab api`) until th
 checks/pipeline for <sha> have settled, WITHOUT hardcoding any check or gate name.
 
 Exit codes:
-  0  materialized and terminal; stdout has one line per check "<name> <conclusion/status>"
-     (GitHub) or "pipeline <status>" + one line per failed job (GitLab). The CALLER
+  0  materialized and terminal; stdout has one line per check, TAB-delimited with the
+     conclusion/status token FIRST -- "<status><TAB><name>" (GitHub) or "<status><TAB>pipeline"
+     plus one "failed<TAB><job>" line per failed job (GitLab). Status-first + tab-delimited so
+     a check name containing spaces (e.g. "Lint (flow)") cannot be misparsed. The CALLER
      computes red/green from these lines.
   2  timeout (deadline before terminal) — the caller asks the user.
   3  head moved during the wait — the caller re-captures HEAD and re-waits.
@@ -51,14 +53,15 @@ GH_ACTIVE_STATUS_STATES = {"PENDING", "EXPECTED"}
 GL_ACTIVE_STATES = {"created", "waiting_for_resource", "preparing", "pending", "running"}
 
 GH_QUERY = """
-query($owner:String!, $repo:String!, $pr:Int!, $sha:GitObjectID!) {
+query($owner:String!, $repo:String!, $pr:Int!, $sha:GitObjectID!, $cursor:String) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$pr) { mergeStateStatus headRefOid }
     object(oid:$sha) { ... on Commit { statusCheckRollup {
       state
-      contexts(first:100) {
+      contexts(first:100, after:$cursor) {
         checkRunCount    checkRunCountsByState    { state count }
         statusContextCount statusContextCountsByState { state count }
+        pageInfo { hasNextPage endCursor }
         nodes {
           __typename
           ... on CheckRun     { name status conclusion }
@@ -97,34 +100,66 @@ def _gh_repo() -> tuple[str, str] | None:
 
 
 def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
-    """One GitHub rollup poll; None on any transient failure (caller retries)."""
-    try:
-        out = _run(
-            [
-                "gh",
-                "api",
-                "graphql",
-                "-f",
-                f"query={GH_QUERY}",
-                "-f",
-                f"owner={owner}",
-                "-f",
-                f"repo={repo}",
-                "-F",
-                f"pr={pr}",
-                "-f",
-                f"sha={sha}",
-            ]
-        )
-        data = json.loads(out)["data"]["repository"]
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
-        sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
-        return None
+    """One GitHub rollup poll; None on any transient failure (caller retries).
 
-    pr_obj = data.get("pullRequest") or {}
+    Paginates `contexts` so a check on page 2+ of a >100-context PR is never dropped
+    (dropping a failing check would let the skill read false-green). Aggregate counts and
+    the pullRequest fields are identical on every page, so they are taken from page 1;
+    `nodes` accumulate across all pages. A fetch failure on ANY page aborts the whole poll.
+    """
+    cursor: str | None = None
+    first: dict | None = None
+    nodes: list[tuple[str, str, str]] = []
+    while True:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={GH_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={repo}",
+            "-F",
+            f"pr={pr}",
+            "-f",
+            f"sha={sha}",
+        ]
+        if cursor is not None:
+            cmd += ["-f", f"cursor={cursor}"]
+        try:
+            data = json.loads(_run(cmd))["data"]["repository"]
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ) as exc:
+            sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
+            return None
+        if first is None:
+            first = data
+        rollup = (data.get("object") or {}).get("statusCheckRollup")
+        if not rollup:
+            break
+        contexts = rollup.get("contexts") or {}
+        for n in contexts.get("nodes") or []:
+            if n.get("__typename") == "CheckRun":
+                nodes.append(("check", n.get("name") or "", n.get("conclusion") or n.get("status") or ""))
+            elif n.get("__typename") == "StatusContext":
+                nodes.append(("status", n.get("context") or "", n.get("state") or ""))
+        page_info = contexts.get("pageInfo") or {}
+        if page_info.get("hasNextPage"):
+            cursor = page_info.get("endCursor")
+            continue
+        break
+
+    pr_obj = first.get("pullRequest") or {}
     merge_state = pr_obj.get("mergeStateStatus") or ""
     head_oid = pr_obj.get("headRefOid") or ""
-    rollup = (data.get("object") or {}).get("statusCheckRollup")
+    rollup = (first.get("object") or {}).get("statusCheckRollup")
     if not rollup:
         return GHSnap(False, merge_state, head_oid, False, (), [])
 
@@ -137,12 +172,6 @@ def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
         or any(s in GH_ACTIVE_CHECK_STATES for s in check_counts)
         or any(s in GH_ACTIVE_STATUS_STATES for s in status_counts)
     )
-    nodes: list[tuple[str, str, str]] = []
-    for n in contexts.get("nodes") or []:
-        if n.get("__typename") == "CheckRun":
-            nodes.append(("check", n.get("name") or "", n.get("conclusion") or n.get("status") or ""))
-        elif n.get("__typename") == "StatusContext":
-            nodes.append(("status", n.get("context") or "", n.get("state") or ""))
     signature = (
         contexts.get("checkRunCount"),
         contexts.get("statusContextCount"),
@@ -154,8 +183,10 @@ def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
 
 
 def _emit_github(nodes: list[tuple[str, str, str]]) -> None:
+    # Status token FIRST, tab-delimited: check names can contain spaces, so a positional
+    # "<name> <status>" split would misread them. value = conclusion/state, label = name.
     for _kind, label, value in nodes:
-        print(f"{label} {value}")
+        print(f"{value}\t{label}")
 
 
 def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: float) -> int:
@@ -169,6 +200,12 @@ def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: floa
             repo = _gh_repo()
         snap = _gh_poll(*repo, pr, sha) if repo else None
         if snap is not None:
+            # Head-move detection is universal: check it in EVERY branch (headRefOid is
+            # populated even with a null rollup), so an external push during materialization
+            # yields exit 3 (recapture) rather than a misleading "no CI" exit 4.
+            if snap.head_oid and snap.head_oid != sha:
+                sys.stderr.write(f"head moved: PR #{pr} head is no longer {sha}\n")
+                return EXIT_HEAD_MOVED
             if not snap.rollup_present:
                 # Rollup vanished (flap): drop any stored signature so a null poll can't
                 # bridge two populated polls into a false "stable" window.
@@ -181,9 +218,6 @@ def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: floa
                 # the count/node signature is stable vs. the previous poll.
                 terminal = snap.merge_state != "UNKNOWN" and not snap.active and snap.signature == prev_sig
                 if terminal:
-                    if snap.head_oid and snap.head_oid != sha:
-                        sys.stderr.write(f"head moved: PR #{pr} head is no longer {sha}\n")
-                        return EXIT_HEAD_MOVED
                     _emit_github(snap.nodes)
                     return 0
                 prev_sig = snap.signature
@@ -252,18 +286,22 @@ def _wait_gitlab(iid: int, sha: str, interval: float, timeout: float, grace: flo
             project = _gl_project()
         snap = _gl_poll(project, iid, sha) if project else None
         if snap is not None:
+            # Head-move detection is universal (mirror _wait_github): mr.sha is populated even
+            # with a null pipeline, so an external push mid-materialization yields exit 3
+            # (recapture) rather than a misleading "no CI" exit 4.
+            if snap.head_sha and snap.head_sha != sha:
+                sys.stderr.write(f"head moved: MR !{iid} head is no longer {sha}\n")
+                return EXIT_HEAD_MOVED
             if not snap.pipeline_present:
                 if time.monotonic() >= grace_deadline:
                     sys.stderr.write(f"no CI: no pipeline for MR !{iid} head {sha} after grace\n")
                     return EXIT_NO_CI
             elif snap.status not in GL_ACTIVE_STATES:
                 # terminal: success/failed/canceled/skipped + blocking manual/scheduled.
-                if snap.head_sha and snap.head_sha != sha:
-                    sys.stderr.write(f"head moved: MR !{iid} head is no longer {sha}\n")
-                    return EXIT_HEAD_MOVED
-                print(f"pipeline {snap.status}")
+                # Status FIRST, tab-delimited (mirror the GitHub emitter).
+                print(f"{snap.status}\tpipeline")
                 for name in snap.failed_jobs:
-                    print(f"{name} failed")
+                    print(f"failed\t{name}")
                 return 0
         if time.monotonic() >= deadline:
             sys.stderr.write(f"timeout: pipeline for {sha} not terminal after {timeout:.0f}s\n")
