@@ -1543,3 +1543,59 @@ class TestRunCli:
         assert result.ok is False
         assert result.reason is not None
         assert "gh" in result.reason
+
+
+class TestFetchPr:
+    """Tests for _fetch_pr: found, no-PR-normal, error, malformed."""
+
+    def _mod(self, make_render_context):
+        return GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+    def test_github_found(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(
+            ok=True, stdout='[{"number": 42, "state": "OPEN", "isDraft": false, "url": "u"}]', stderr="", reason=None
+        )
+        with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
+            info, error = mod._fetch_pr("github", "feature/x")
+        assert error is None
+        assert info == PrInfo("github", 42, "open", "u")
+        # correct gh invocation
+        assert mock_cli.call_args[0][0] == "github"
+        assert "--head" in mock_cli.call_args[0]
+        assert "feature/x" in mock_cli.call_args[0]
+
+    def test_no_pr_is_normal(self, make_render_context):
+        """Empty list → (None, None): no PR, not an error."""
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="[]", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli):
+            info, error = mod._fetch_pr("github", "feature/x")
+        assert info is None
+        assert error is None
+
+    def test_cli_error_propagates_reason(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=False, stdout="", stderr="boom", reason="boom")
+        with patch.object(mod, "_run_cli", return_value=cli):
+            info, error = mod._fetch_pr("github", "feature/x")
+        assert info is None
+        assert error == "boom"
+
+    def test_malformed_json_is_error(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="<html>", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli):
+            info, error = mod._fetch_pr("github", "feature/x")
+        assert info is None
+        assert error == "malformed CLI JSON"
+
+    def test_gitlab_uses_source_branch(self, make_render_context):
+        mod = self._mod(make_render_context)
+        cli = CliResult(
+            ok=True, stdout='[{"iid": 7, "state": "opened", "draft": false, "web_url": "u"}]', stderr="", reason=None
+        )
+        with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
+            info, _error = mod._fetch_pr("gitlab", "feature/x")
+        assert info == PrInfo("gitlab", 7, "open", "u")
+        assert "--source-branch" in mock_cli.call_args[0]

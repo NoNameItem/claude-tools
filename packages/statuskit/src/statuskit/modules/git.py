@@ -303,6 +303,36 @@ class GitModule(BaseModule[GitParams]):
             return CliResult(ok=False, stdout=stdout, stderr=stderr, reason=stderr or f"exit {result.returncode}")
         return CliResult(ok=True, stdout=stdout, stderr=stderr, reason=None)
 
+    def _fetch_pr(self, provider: str, branch: str) -> tuple[PrInfo | None, str | None]:
+        """Fetch and classify the branch's PR/MR via the list form.
+
+        Returns ``(info, error)``:
+        - ``(None, None)`` — no PR/MR for the branch (a normal, non-error result).
+        - ``(PrInfo, None)`` — the selected PR/MR.
+        - ``(None, reason)`` — an error (CLI failure or malformed JSON) to log in debug.
+        """
+        if provider == "github":
+            result = self._run_cli(
+                "github",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                "number,state,isDraft,title,url",
+            )
+            candidates = parse_github_pr_list(result.stdout) if result.ok else None
+        else:
+            result = self._run_cli("gitlab", "mr", "list", "--source-branch", branch, "--output", "json")
+            candidates = parse_gitlab_mr_list(result.stdout) if result.ok else None
+        if not result.ok:
+            return None, result.reason
+        if candidates is None:
+            return None, "malformed CLI JSON"
+        return _select_pr(candidates), None
+
     def _shorten_path(self, path: str) -> str:
         """Shorten an absolute path by replacing a leading $HOME with ``~``.
 
