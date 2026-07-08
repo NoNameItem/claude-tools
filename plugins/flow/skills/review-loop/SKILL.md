@@ -53,7 +53,7 @@ Per-platform primitives used below:
 
 | | GitHub (`gh`) | GitLab (`glab`) |
 |---|---|---|
-| Head SHA | `gh pr view <n> --json headRefOid -q .headRefOid` | `glab mr view <iid> --output json` → `.sha` (fallback `.diff_head_sha`) |
+| Head SHA | `gh pr view <n> --json headRefOid -q .headRefOid` | `glab mr view <iid> --output json` → `.sha` (the MR diff head SHA; matches what `flow-wait-ci` polls) |
 | State | `gh pr view <n> --json state -q .state` → `OPEN`/`MERGED`/`CLOSED` | `glab mr view <iid> --output json` → `.state` → `opened`/`merged`/`closed` |
 | Local head | `git rev-parse HEAD` | `git rev-parse HEAD` |
 
