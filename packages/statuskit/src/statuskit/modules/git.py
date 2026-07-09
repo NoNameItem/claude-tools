@@ -472,7 +472,7 @@ class GitModule(BaseModule[GitParams]):
         now = datetime.now(UTC)
         if entry is not None and (now - entry.last_attempt_at).total_seconds() < self.params.pr_cache_ttl:
             return entry.info, changed  # throttled: reuse cached value, no entry write
-        info, error = self._fetch_pr(provider, branch)
+        info, error = self._fetch_pr(provider, slug, branch)
         if error is not None:
             self._note_debug(f"PR: {provider} fetch failed: {error}")
             stale = entry.info if entry is not None else None
@@ -578,8 +578,12 @@ class GitModule(BaseModule[GitParams]):
             return CliResult(ok=False, stdout=stdout, stderr=stderr, reason=stderr or f"exit {result.returncode}")
         return CliResult(ok=True, stdout=stdout, stderr=stderr, reason=None)
 
-    def _fetch_pr(self, provider: str, branch: str) -> tuple[PrInfo | None, str | None]:
+    def _fetch_pr(self, provider: str, slug: str, branch: str) -> tuple[PrInfo | None, str | None]:
         """Fetch and classify the branch's PR/MR via the list form.
+
+        ``slug`` ('host/owner/repo') targets the branch's upstream repository explicitly
+        via ``--repo``, so the CLI queries that repo rather than whatever it would default
+        to from the current directory (which can differ when the branch tracks a fork).
 
         Returns ``(info, error)``:
         - ``(None, None)`` — no PR/MR for the branch (a normal, non-error result).
@@ -587,10 +591,13 @@ class GitModule(BaseModule[GitParams]):
         - ``(None, reason)`` — an error (CLI failure or malformed JSON) to log in debug.
         """
         if provider == "github":
+            # gh accepts a HOST/OWNER/REPO slug directly (works for github.com and GHE).
             result = self._run_cli(
                 "github",
                 "pr",
                 "list",
+                "--repo",
+                slug,
                 "--head",
                 branch,
                 "--state",
@@ -600,7 +607,11 @@ class GitModule(BaseModule[GitParams]):
             )
             candidates = parse_github_pr_list(result.stdout) if result.ok else None
         else:
-            result = self._run_cli("gitlab", "mr", "list", "--source-branch", branch, "--all", "--output", "json")
+            # glab --repo wants OWNER/REPO (no host); it resolves the host from its auth.
+            repo = slug.split("/", 1)[1] if "/" in slug else slug
+            result = self._run_cli(
+                "gitlab", "mr", "list", "--repo", repo, "--source-branch", branch, "--all", "--output", "json"
+            )
             candidates = parse_gitlab_mr_list(result.stdout) if result.ok else None
         if not result.ok:
             return None, result.reason
@@ -609,12 +620,14 @@ class GitModule(BaseModule[GitParams]):
         return _select_pr(candidates), None
 
     def _host_authenticated(self, provider: str, host: str) -> bool:
-        """Whether `<cli> auth status` reports the host as authenticated.
+        """Whether `<cli> auth status --hostname <host>` reports the host authenticated.
 
-        Substring match over both streams — `gh`/`glab` place host info on stdout or
-        stderr depending on version (mirrors the flow:review-comments detection).
+        Scoping to ``--hostname`` avoids a global `auth status` returning nonzero just
+        because some OTHER configured host is unauthenticated. Still substring-matches the
+        host over both streams — `gh`/`glab` place host info on stdout or stderr depending
+        on version (mirrors the flow:review-comments detection).
         """
-        result = self._run_cli(provider, "auth", "status")
+        result = self._run_cli(provider, "auth", "status", "--hostname", host)
         return result.ok and host in f"{result.stdout}\n{result.stderr}"
 
     def _detect_provider(self, host: str) -> str | None:  # noqa: PLR0911 - 8 intentional returns: literal/auth-status/name-heuristic ladder

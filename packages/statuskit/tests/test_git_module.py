@@ -1586,20 +1586,22 @@ class TestFetchPr:
             ok=True, stdout='[{"number": 42, "state": "OPEN", "isDraft": false, "url": "u"}]', stderr="", reason=None
         )
         with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
-            info, error = mod._fetch_pr("github", "feature/x")
+            info, error = mod._fetch_pr("github", "github.com/o/r", "feature/x")
         assert error is None
         assert info == PrInfo("github", 42, "open", "u")
-        # correct gh invocation
+        # correct gh invocation, targeting the resolved repo
         assert mock_cli.call_args[0][0] == "github"
         assert "--head" in mock_cli.call_args[0]
         assert "feature/x" in mock_cli.call_args[0]
+        assert "--repo" in mock_cli.call_args[0]
+        assert "github.com/o/r" in mock_cli.call_args[0]
 
     def test_no_pr_is_normal(self, make_render_context):
         """Empty list → (None, None): no PR, not an error."""
         mod = self._mod(make_render_context)
         cli = CliResult(ok=True, stdout="[]", stderr="", reason=None)
         with patch.object(mod, "_run_cli", return_value=cli):
-            info, error = mod._fetch_pr("github", "feature/x")
+            info, error = mod._fetch_pr("github", "github.com/o/r", "feature/x")
         assert info is None
         assert error is None
 
@@ -1607,7 +1609,7 @@ class TestFetchPr:
         mod = self._mod(make_render_context)
         cli = CliResult(ok=False, stdout="", stderr="boom", reason="boom")
         with patch.object(mod, "_run_cli", return_value=cli):
-            info, error = mod._fetch_pr("github", "feature/x")
+            info, error = mod._fetch_pr("github", "github.com/o/r", "feature/x")
         assert info is None
         assert error == "boom"
 
@@ -1615,7 +1617,7 @@ class TestFetchPr:
         mod = self._mod(make_render_context)
         cli = CliResult(ok=True, stdout="<html>", stderr="", reason=None)
         with patch.object(mod, "_run_cli", return_value=cli):
-            info, error = mod._fetch_pr("github", "feature/x")
+            info, error = mod._fetch_pr("github", "github.com/o/r", "feature/x")
         assert info is None
         assert error == "malformed CLI JSON"
 
@@ -1624,10 +1626,12 @@ class TestFetchPr:
         mod = self._mod(make_render_context)
         cli = CliResult(ok=True, stdout="[]", stderr="", reason=None)
         with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
-            mod._fetch_pr("gitlab", "feature/x")
+            mod._fetch_pr("gitlab", "gitlab.com/g/p", "feature/x")
         assert mock_cli.call_args[0][0] == "gitlab"
         assert "--all" in mock_cli.call_args[0]
         assert "--source-branch" in mock_cli.call_args[0]
+        assert "--repo" in mock_cli.call_args[0]
+        assert "g/p" in mock_cli.call_args[0]  # host stripped for glab --repo
 
     def test_gitlab_uses_source_branch(self, make_render_context):
         mod = self._mod(make_render_context)
@@ -1635,7 +1639,7 @@ class TestFetchPr:
             ok=True, stdout='[{"iid": 7, "state": "opened", "draft": false, "web_url": "u"}]', stderr="", reason=None
         )
         with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
-            info, _error = mod._fetch_pr("gitlab", "feature/x")
+            info, _error = mod._fetch_pr("gitlab", "gitlab.com/g/p", "feature/x")
         assert info == PrInfo("gitlab", 7, "open", "u")
         assert "--source-branch" in mock_cli.call_args[0]
 
@@ -1728,6 +1732,14 @@ class TestHostAuthenticated:
         cli = CliResult(ok=True, stdout="github.com logged in", stderr="", reason=None)
         with patch.object(mod, "_run_cli", return_value=cli):
             assert mod._host_authenticated("github", "git.corp.example") is False
+
+    def test_scopes_auth_status_to_hostname(self, make_render_context):
+        """auth status is scoped with --hostname so an unrelated unauthed host can't fail it."""
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="git.corp.example logged in", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
+            mod._host_authenticated("github", "git.corp.example")
+        assert mock_cli.call_args[0] == ("github", "auth", "status", "--hostname", "git.corp.example")
 
 
 class TestPrCache:
