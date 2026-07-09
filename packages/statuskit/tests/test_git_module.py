@@ -1847,6 +1847,27 @@ class TestPrCache:
         assert good.info == PrInfo("github", 7, "open", "u")
         assert good.last_attempt_at == now
 
+    def test_provider_misses_round_trip(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        now = datetime.now(UTC)
+        cache.save(PrCacheDoc(providers={}, entries={}, provider_misses={"scm.corp": now}))
+        assert cache.load().provider_misses["scm.corp"] == now
+
+    def test_load_skips_naive_provider_miss(self, tmp_path):
+        cache = PrCache(cache_dir=tmp_path, ttl=300)
+        cache.cache_file.write_text(
+            json.dumps(
+                {
+                    "providers": {},
+                    "entries": {},
+                    "provider_misses": {"good": datetime.now(UTC).isoformat(), "bad": "2026-01-01T00:00:00"},
+                }
+            )
+        )
+        loaded = cache.load()
+        assert "good" in loaded.provider_misses
+        assert "bad" not in loaded.provider_misses
+
 
 class TestGitInitAndRemoteHost:
     """Tests for the __init__ cache wiring, debug channel, and _get_remote."""
@@ -1929,6 +1950,29 @@ class TestResolveProvider:
         with patch.object(mod, "_detect_provider", return_value=None):
             assert mod._resolve_provider("h", doc) is None
         assert "h" not in doc.providers
+
+    def test_recent_miss_skips_reprobe(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {"pr_cache_ttl": 300})
+        doc = PrCacheDoc(providers={}, entries={}, provider_misses={"h": datetime.now(UTC)})
+        with patch.object(mod, "_detect_provider") as detect:
+            assert mod._resolve_provider("h", doc) is None
+        detect.assert_not_called()
+
+    def test_stale_miss_reprobes_and_caches(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {"pr_cache_ttl": 300})
+        doc = PrCacheDoc(providers={}, entries={}, provider_misses={"h": datetime.now(UTC) - timedelta(seconds=600)})
+        with patch.object(mod, "_detect_provider", return_value="github") as detect:
+            assert mod._resolve_provider("h", doc) == "github"
+        detect.assert_called_once()
+        assert doc.providers["h"] == "github"
+        assert "h" not in doc.provider_misses  # cleared on success
+
+    def test_give_up_records_miss(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        doc = PrCacheDoc.empty()
+        with patch.object(mod, "_detect_provider", return_value=None):
+            assert mod._resolve_provider("h", doc) is None
+        assert "h" in doc.provider_misses
 
 
 class TestGetPr:
@@ -2125,6 +2169,19 @@ class TestGetPr:
         ):
             assert mod._get_pr("feature/login", ("synced", 0)) == pr_b  # NOT aliased to repo A
             fetch_b.assert_called_once()
+
+    def test_provider_miss_is_persisted(self, make_render_context, tmp_path):
+        """A failed detection is recorded so the next render can throttle re-probing (C2)."""
+        ctx = make_render_context(make_input_data(model=make_model_data()), cache_dir=tmp_path, debug=True)
+        mod = GitModule(ctx, {})
+        assert mod.cache is not None
+        with (
+            patch.object(mod, "_get_remote", return_value=("scm.corp.example", "scm.corp.example/o/r")),
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
+            patch.object(mod, "_detect_provider", return_value=None),
+        ):
+            assert mod._get_pr("main", ("synced", 0)) is None
+        assert "scm.corp.example" in mod.cache.load().provider_misses
 
 
 class TestRenderPr:
