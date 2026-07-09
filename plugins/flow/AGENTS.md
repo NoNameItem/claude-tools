@@ -13,15 +13,18 @@ repo-wide agent and review guidance.
   (fast resume of an active leaf task), `after-design` / `after-plan` (link the newest
   spec/plan doc into the task), `decompose` (discuss → create subtasks), `done` (verify PR,
   close task, walk up to parents, sync), `init-worktree` (sub-skill: init a fresh worktree),
-  `review-comments` (process all PR/MR review threads — GitHub & GitLab), `sonar-sync`
-  (pull Sonar issues into beads tasks).
+  `review-comments` (process all PR/MR review threads — GitHub & GitLab), `review-loop`
+  (ride the bot/CI review cycle to convergence — calls review-comments + flow-wait-ci),
+  `sonar-sync` (pull Sonar issues into beads tasks).
 - **Helpers (`bin/flow-*`):** `flow-actor` (resolve actor: `BD_ACTOR` → git user → `$USER`),
   `flow-find-leaf` / `flow-task-tree` (render task lists/trees from `bd graph --json`),
   `flow-task-card` (Unicode-aware card renderer), `flow-branch-for` (task → branch name),
   `flow-find-branches` / `flow-current-task` / `flow-in-worktree` / `flow-worktree-dir`
   (branch & worktree resolution), `flow-link-doc` (set `Git:`/`Design:`/`Plan:` lines),
   `flow-find-doc` (newest spec/plan), `flow-require-bd` (enforce a minimum bd version),
-  `flow-sync` (best-effort `bd dolt` commit + push/pull wrapper).
+  `flow-sync` (best-effort `bd dolt` commit + push/pull wrapper), `flow-wait-ci`
+  (block until a PR/MR CI pipeline for an exact head SHA is terminal; GitHub + GitLab,
+  gate-name-agnostic).
 
 **Principles:**
 - **bd only via the CLI** — helpers shell out to `bd` (`bd graph`, `bd show`, `bd create`,
