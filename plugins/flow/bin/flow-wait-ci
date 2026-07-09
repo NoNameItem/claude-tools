@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Block until the CI pipeline for an exact PR/MR head SHA is terminal — platform-agnostic.
+
+Contract:
+    flow-wait-ci <PR/MR-number> <sha> --platform <github|gitlab>
+
+Polls the platform (GitHub via `gh api graphql`, GitLab via `glab api`) until the
+checks/pipeline for <sha> have settled, WITHOUT hardcoding any check or gate name.
+
+Exit codes:
+  0  materialized and terminal; stdout has one line per check, TAB-delimited with the
+     conclusion/status token FIRST -- "<status><TAB><name>" (GitHub) or "<status><TAB>pipeline"
+     plus one "failed<TAB><job>" line per failed job (GitLab). Status-first + tab-delimited so
+     a check name containing spaces (e.g. "Lint (flow)") cannot be misparsed. The CALLER
+     computes red/green from these lines.
+  2  timeout (deadline before terminal) — the caller asks the user.
+  3  head moved during the wait — the caller re-captures HEAD and re-waits.
+  4  after the grace window there is no pipeline/checks at all — "no CI on this PR/MR".
+  1  usage error (a call bug; not a timeout).
+
+Only stdlib + the authenticated `gh` / `glab` CLI are used. WAIT_INTERVAL (30s),
+WAIT_TIMEOUT (1800s), WAIT_GRACE (180s) are env-overridable — a TEST SEAM only (tests
+set them to 0/small), not a user config surface. An under-estimated timeout never
+yields a wrong result: it degrades to exit 2 (the caller's interactive prompt).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.parse
+from typing import NamedTuple
+
+EXIT_USAGE = 1
+EXIT_TIMEOUT = 2
+EXIT_HEAD_MOVED = 3
+EXIT_NO_CI = 4
+
+DEFAULT_WAIT_INTERVAL = 30
+DEFAULT_WAIT_TIMEOUT = 1800  # 30 min: "check in with the human", not "give up"
+DEFAULT_WAIT_GRACE = 180  # 3 min: absorb slow pipeline creation before exit 4
+SUBPROCESS_TIMEOUT = 60  # bound each gh/glab call so a hung CLI degrades to a retry, not a hang
+
+# GitHub non-terminal states (keep waiting while any check/status is in these).
+GH_ACTIVE_CHECK_STATES = {"QUEUED", "IN_PROGRESS", "PENDING", "WAITING", "REQUESTED"}
+GH_ACTIVE_STATUS_STATES = {"PENDING", "EXPECTED"}
+
+# GitLab active pipeline statuses (REST enum, lowercase).
+GL_ACTIVE_STATES = {"created", "waiting_for_resource", "preparing", "pending", "running"}
+
+GH_QUERY = """
+query($owner:String!, $repo:String!, $pr:Int!, $sha:GitObjectID!, $cursor:String) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$pr) { mergeStateStatus headRefOid }
+    object(oid:$sha) { ... on Commit { statusCheckRollup {
+      state
+      contexts(first:100, after:$cursor) {
+        checkRunCount    checkRunCountsByState    { state count }
+        statusContextCount statusContextCountsByState { state count }
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          __typename
+          ... on CheckRun     { name status conclusion }
+          ... on StatusContext { context state }
+        }
+      }
+    }}}
+  }
+}
+"""
+
+
+def _run(cmd: list[str]) -> str:
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=SUBPROCESS_TIMEOUT)
+    return proc.stdout.strip()
+
+
+class GHSnap(NamedTuple):
+    rollup_present: bool
+    merge_state: str
+    head_oid: str
+    active: bool
+    signature: tuple
+    nodes: list[tuple[str, str, str]]  # (kind, label, value)
+
+
+def _gh_repo() -> tuple[str, str] | None:
+    """Resolve the current repo's (owner, repo); None on failure (caller retries)."""
+    try:
+        nwo = _run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        sys.stderr.write(f"warning: gh repo view failed ({exc}); retrying until deadline\n")
+        return None
+    owner, _, repo = nwo.partition("/")
+    return owner, repo
+
+
+def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
+    """One GitHub rollup poll; None on any transient failure (caller retries).
+
+    Paginates `contexts` so a check on page 2+ of a >100-context PR is never dropped
+    (dropping a failing check would let the skill read false-green). Aggregate counts and
+    the pullRequest fields are identical on every page, so they are taken from page 1;
+    `nodes` accumulate across all pages. A fetch failure on ANY page aborts the whole poll.
+    """
+    cursor: str | None = None
+    first: dict | None = None
+    nodes: list[tuple[str, str, str]] = []
+    while True:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={GH_QUERY}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={repo}",
+            "-F",
+            f"pr={pr}",
+            "-f",
+            f"sha={sha}",
+        ]
+        if cursor is not None:
+            cmd += ["-f", f"cursor={cursor}"]
+        try:
+            data = json.loads(_run(cmd))["data"]["repository"]
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ) as exc:
+            sys.stderr.write(f"warning: gh poll failed ({exc}); retrying until deadline\n")
+            return None
+        if first is None:
+            first = data
+        rollup = (data.get("object") or {}).get("statusCheckRollup")
+        if not rollup:
+            break
+        contexts = rollup.get("contexts") or {}
+        for n in contexts.get("nodes") or []:
+            if n.get("__typename") == "CheckRun":
+                nodes.append(("check", n.get("name") or "", n.get("conclusion") or n.get("status") or ""))
+            elif n.get("__typename") == "StatusContext":
+                nodes.append(("status", n.get("context") or "", n.get("state") or ""))
+        page_info = contexts.get("pageInfo") or {}
+        if page_info.get("hasNextPage"):
+            cursor = page_info.get("endCursor")
+            continue
+        break
+
+    pr_obj = first.get("pullRequest") or {}
+    merge_state = pr_obj.get("mergeStateStatus") or ""
+    head_oid = pr_obj.get("headRefOid") or ""
+    rollup = (first.get("object") or {}).get("statusCheckRollup")
+    if not rollup:
+        return GHSnap(False, merge_state, head_oid, False, (), [])
+
+    contexts = rollup.get("contexts") or {}
+    check_counts = {c["state"]: c["count"] for c in contexts.get("checkRunCountsByState") or []}
+    status_counts = {c["state"]: c["count"] for c in contexts.get("statusContextCountsByState") or []}
+    active = (
+        # rollup `state` uses the same StatusState enum as per-context checks; PENDING/EXPECTED are non-terminal.
+        rollup.get("state") in {"EXPECTED", "PENDING"}
+        or any(s in GH_ACTIVE_CHECK_STATES for s in check_counts)
+        or any(s in GH_ACTIVE_STATUS_STATES for s in status_counts)
+    )
+    signature = (
+        contexts.get("checkRunCount"),
+        contexts.get("statusContextCount"),
+        tuple(sorted(check_counts.items())),
+        tuple(sorted(status_counts.items())),
+        tuple(sorted(nodes)),
+    )
+    return GHSnap(True, merge_state, head_oid, active, signature, nodes)
+
+
+def _emit_github(nodes: list[tuple[str, str, str]]) -> None:
+    # Status token FIRST, tab-delimited: check names can contain spaces, so a positional
+    # "<name> <status>" split would misread them. value = conclusion/state, label = name.
+    for _kind, label, value in nodes:
+        print(f"{value}\t{label}")
+
+
+def _wait_github(pr: int, sha: str, interval: float, timeout: float, grace: float) -> int:
+    start = time.monotonic()
+    deadline = start + timeout
+    grace_deadline = start + grace
+    prev_sig: tuple | None = None
+    repo: tuple[str, str] | None = None  # resolved once, then cached across polls
+    while True:
+        if repo is None:
+            repo = _gh_repo()
+        snap = _gh_poll(*repo, pr, sha) if repo else None
+        if snap is not None:
+            # Head-move detection is universal: check it in EVERY branch (headRefOid is
+            # populated even with a null rollup), so an external push during materialization
+            # yields exit 3 (recapture) rather than a misleading "no CI" exit 4.
+            if snap.head_oid and snap.head_oid != sha:
+                sys.stderr.write(f"head moved: PR #{pr} head is no longer {sha}\n")
+                return EXIT_HEAD_MOVED
+            if not snap.rollup_present:
+                # Rollup vanished (flap): drop any stored signature so a null poll can't
+                # bridge two populated polls into a false "stable" window.
+                prev_sig = None
+                if time.monotonic() >= grace_deadline:
+                    sys.stderr.write(f"no CI: no checks for PR #{pr} head {sha} after grace\n")
+                    return EXIT_NO_CI
+            else:
+                # Terminal = merge state resolved (not UNKNOWN) AND nothing active AND
+                # the count/node signature is stable vs. the previous poll.
+                terminal = snap.merge_state != "UNKNOWN" and not snap.active and snap.signature == prev_sig
+                if terminal:
+                    _emit_github(snap.nodes)
+                    return 0
+                prev_sig = snap.signature
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"timeout: pipeline for {sha} not terminal after {timeout:.0f}s\n")
+            return EXIT_TIMEOUT
+        time.sleep(interval)
+
+
+class GLSnap(NamedTuple):
+    pipeline_present: bool
+    status: str
+    head_sha: str
+    failed_jobs: list[str]
+
+
+def _gl_project() -> str | None:
+    """Resolve the current repo's URL-encoded project path; None on failure (caller retries)."""
+    try:
+        view = _run(["glab", "repo", "view", "--output", "json"])
+        path = json.loads(view)["path_with_namespace"]
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"warning: glab repo view failed ({exc}); retrying until deadline\n")
+        return None
+    return urllib.parse.quote(path, safe="")
+
+
+def _gl_poll(project: str, iid: int, sha: str) -> GLSnap | None:
+    """One GitLab head-pipeline poll; None on any transient failure (caller retries)."""
+    try:
+        out = _run(["glab", "api", f"projects/{project}/merge_requests/{iid}"])
+        mr = json.loads(out)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, TypeError) as exc:
+        sys.stderr.write(f"warning: glab poll failed ({exc}); retrying until deadline\n")
+        return None
+
+    head_sha = mr.get("sha") or ""
+    pipeline = mr.get("head_pipeline")
+    # Filter by sha, not ref (detached MR pipelines share a ref). A present pipeline whose sha
+    # differs is treated as "not yet materialized"; an absent sha is trusted as ours (the GitLab
+    # API always populates head_pipeline.sha).
+    if not pipeline or (pipeline.get("sha") and pipeline.get("sha") != sha):
+        return GLSnap(False, "", head_sha, [])
+
+    status = (pipeline.get("status") or "").lower()
+    failed: list[str] = []
+    pid = pipeline.get("id")
+    if status in {"failed", "canceled"} and pid is not None:
+        try:
+            jobs_out = _run(["glab", "api", f"projects/{project}/pipelines/{pid}/jobs?scope=failed&per_page=100"])
+            jobs = json.loads(jobs_out)
+            failed = [j.get("name") or "" for j in jobs if not j.get("allow_failure")]
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, json.JSONDecodeError, TypeError) as exc:
+            sys.stderr.write(f"warning: glab jobs fetch failed ({exc}); reporting pipeline status without job detail\n")
+            failed = []
+    return GLSnap(True, status, head_sha, failed)
+
+
+def _wait_gitlab(iid: int, sha: str, interval: float, timeout: float, grace: float) -> int:
+    start = time.monotonic()
+    deadline = start + timeout
+    grace_deadline = start + grace
+    project: str | None = None  # resolved once, then cached across polls
+    while True:
+        if project is None:
+            project = _gl_project()
+        snap = _gl_poll(project, iid, sha) if project else None
+        if snap is not None:
+            # Head-move detection is universal (mirror _wait_github): mr.sha is populated even
+            # with a null pipeline, so an external push mid-materialization yields exit 3
+            # (recapture) rather than a misleading "no CI" exit 4.
+            if snap.head_sha and snap.head_sha != sha:
+                sys.stderr.write(f"head moved: MR !{iid} head is no longer {sha}\n")
+                return EXIT_HEAD_MOVED
+            if not snap.pipeline_present:
+                if time.monotonic() >= grace_deadline:
+                    sys.stderr.write(f"no CI: no pipeline for MR !{iid} head {sha} after grace\n")
+                    return EXIT_NO_CI
+            elif snap.status not in GL_ACTIVE_STATES:
+                # terminal: success/failed/canceled/skipped + blocking manual/scheduled.
+                # Status FIRST, tab-delimited (mirror the GitHub emitter).
+                print(f"{snap.status}\tpipeline")
+                for name in snap.failed_jobs:
+                    print(f"failed\t{name}")
+                return 0
+        if time.monotonic() >= deadline:
+            sys.stderr.write(f"timeout: pipeline for {sha} not terminal after {timeout:.0f}s\n")
+            return EXIT_TIMEOUT
+        time.sleep(interval)
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="flow-wait-ci")
+    parser.add_argument("number", type=int)
+    parser.add_argument("sha")
+    parser.add_argument("--platform", required=True, choices=["github", "gitlab"])
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return 0 if exc.code in (0, None) else EXIT_USAGE
+
+    interval = float(os.environ.get("WAIT_INTERVAL", DEFAULT_WAIT_INTERVAL))
+    timeout = float(os.environ.get("WAIT_TIMEOUT", DEFAULT_WAIT_TIMEOUT))
+    grace = float(os.environ.get("WAIT_GRACE", DEFAULT_WAIT_GRACE))
+
+    if args.platform == "github":
+        return _wait_github(args.number, args.sha, interval, timeout, grace)
+    return _wait_gitlab(args.number, args.sha, interval, timeout, grace)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

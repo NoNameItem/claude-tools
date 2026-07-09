@@ -239,6 +239,19 @@ When to use: after pushing a PR and receiving review comments.
 /flow:review-comments
 ```
 
+#### `/flow:review-loop`
+
+Rides the automated bot/CI review cycle on a GitHub PR or GitLab MR to convergence:
+waits for the checks on the current head, runs `/flow:review-comments`, and repeats each
+time a fix is pushed — until no new comments come back. Gate-name-agnostic and
+cross-platform; reply-only (never resolves threads or merges).
+
+When to use: after pushing to a PR/MR, to ride the bot review rounds without babysitting.
+
+```bash
+/flow:review-loop
+```
+
 #### `/flow:sonar-sync`
 
 Syncs SonarQube/SonarCloud issues with beads tasks. Two modes: on main branch — bulk import of tech debt issues; on PR branch — fix now or defer as subtasks. Shows a preview table and lets you select which issues to import.
@@ -271,6 +284,7 @@ When to use: when implementation is complete, PR is merged, and you're ready to 
 | `/flow:decompose`       | Break task into subtasks from design               |
 | `/flow:after-plan`      | Link implementation plan to current task           |
 | `/flow:review-comments` | Process GitHub PR review comments                  |
+| `/flow:review-loop`     | Ride the bot/CI review cycle to convergence         |
 | `/flow:sonar-sync`      | Sync SonarCloud issues with beads tasks            |
 | `/flow:done`            | Close task, clean up branch and plan files         |
 
@@ -294,6 +308,7 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-in-worktree` | Exit 0 if CWD is inside `.worktrees/` |
 | `flow-worktree-dir <branch>` | Map a branch to its `.worktrees/` directory |
 | `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
+| `flow-wait-ci <n> <sha> --platform <github\|gitlab>` | Block until the PR/MR CI pipeline for an exact head SHA is terminal (exit 0/2/3/4); gate-name-agnostic |
 
 Run the tests: `uv run pytest plugins/flow/bin/tests/`. CI runs them too — the
 plugin-CI `test` job executes any plugin's `bin/tests/` on every PR.
