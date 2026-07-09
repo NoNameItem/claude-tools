@@ -492,7 +492,7 @@ class GitModule(BaseModule[GitParams]):
         binary = _CLI_BINARY[provider]
         cmd = [binary, *args]
         try:
-            result = subprocess.run(  # noqa: S603
+            result = subprocess.run(  # noqa: S603 - cmd is a fixed [binary, *args] list; no shell, no user-controlled executable
                 cmd,
                 capture_output=True,
                 text=True,
@@ -531,7 +531,7 @@ class GitModule(BaseModule[GitParams]):
             )
             candidates = parse_github_pr_list(result.stdout) if result.ok else None
         else:
-            result = self._run_cli("gitlab", "mr", "list", "--source-branch", branch, "--output", "json")
+            result = self._run_cli("gitlab", "mr", "list", "--source-branch", branch, "--all", "--output", "json")
             candidates = parse_gitlab_mr_list(result.stdout) if result.ok else None
         if not result.ok:
             return None, result.reason
@@ -548,7 +548,7 @@ class GitModule(BaseModule[GitParams]):
         result = self._run_cli(provider, "auth", "status")
         return result.ok and host in f"{result.stdout}\n{result.stderr}"
 
-    def _detect_provider(self, host: str) -> str | None:  # noqa: PLR0911
+    def _detect_provider(self, host: str) -> str | None:  # noqa: PLR0911 - 8 intentional returns: literal/auth-status/name-heuristic ladder
         """Resolve host → provider via literal shortcut, auth-status match, name heuristic.
 
         Cheap gates first: literal github.com/gitlab.com need no subprocess; `auth status`

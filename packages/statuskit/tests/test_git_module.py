@@ -1599,6 +1599,16 @@ class TestFetchPr:
         assert info is None
         assert error == "malformed CLI JSON"
 
+    def test_gitlab_requests_all_states(self, make_render_context):
+        """glab mr list must pass --all so merged/closed MRs are included, not just open."""
+        mod = self._mod(make_render_context)
+        cli = CliResult(ok=True, stdout="[]", stderr="", reason=None)
+        with patch.object(mod, "_run_cli", return_value=cli) as mock_cli:
+            mod._fetch_pr("gitlab", "feature/x")
+        assert mock_cli.call_args[0][0] == "gitlab"
+        assert "--all" in mock_cli.call_args[0]
+        assert "--source-branch" in mock_cli.call_args[0]
+
     def test_gitlab_uses_source_branch(self, make_render_context):
         mod = self._mod(make_render_context)
         cli = CliResult(
