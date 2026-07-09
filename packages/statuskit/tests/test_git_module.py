@@ -1855,15 +1855,12 @@ class TestPrCache:
 
     def test_load_skips_naive_provider_miss(self, tmp_path):
         cache = PrCache(cache_dir=tmp_path, ttl=300)
-        cache.cache_file.write_text(
-            json.dumps(
-                {
-                    "providers": {},
-                    "entries": {},
-                    "provider_misses": {"good": datetime.now(UTC).isoformat(), "bad": "2026-01-01T00:00:00"},
-                }
-            )
-        )
+        payload = {
+            "providers": {},
+            "entries": {},
+            "provider_misses": {"good": datetime.now(UTC).isoformat(), "bad": "2026-01-01T00:00:00"},
+        }
+        cache.cache_file.write_text(json.dumps(payload))
         loaded = cache.load()
         assert "good" in loaded.provider_misses
         assert "bad" not in loaded.provider_misses
