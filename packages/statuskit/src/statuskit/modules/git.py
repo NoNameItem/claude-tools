@@ -6,7 +6,7 @@ import json
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,14 +52,15 @@ class PrCacheEntry:
 
 @dataclass
 class PrCacheDoc:
-    """The whole git_pr.json document: per-host resolved providers + per-key PR entries."""
+    """The whole git_pr.json document: per-host providers + per-key PR entries + detection misses."""
 
     providers: dict[str, str]  # host -> "github" | "gitlab" (positive resolutions only)
-    entries: dict[str, PrCacheEntry]  # "host\tbranch" -> entry
+    entries: dict[str, PrCacheEntry]  # "slug\tbranch" -> entry (slug = host/owner/repo)
+    provider_misses: dict[str, datetime] = field(default_factory=dict)  # host -> last failed-detection time
 
     @classmethod
     def empty(cls) -> PrCacheDoc:
-        return cls(providers={}, entries={})
+        return cls(providers={}, entries={}, provider_misses={})
 
 
 def _serialize_pr_info(info: PrInfo | None) -> dict | None:
@@ -115,7 +116,16 @@ class PrCache:
                     )
                 except (KeyError, ValueError, TypeError, AttributeError):
                     continue
-            return PrCacheDoc(providers=providers, entries=entries)
+            provider_misses: dict[str, datetime] = {}
+            for host, ts in raw.get("provider_misses", {}).items():
+                try:
+                    parsed = datetime.fromisoformat(ts)
+                    if parsed.tzinfo is None:
+                        continue  # naive timestamp — treat row as corrupt, skip it
+                    provider_misses[host] = parsed
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    continue
+            return PrCacheDoc(providers=providers, entries=entries, provider_misses=provider_misses)
         except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError, OSError):
             return PrCacheDoc.empty()
 
@@ -132,6 +142,7 @@ class PrCache:
                     }
                     for key, entry in doc.entries.items()
                 },
+                "provider_misses": {host: ts.isoformat() for host, ts in doc.provider_misses.items()},
             }
             with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
                 f.write(json.dumps(payload))
@@ -167,6 +178,28 @@ def parse_remote_host(remote_url: str) -> str | None:
             before_colon = before_colon.rsplit("@", 1)[1]
         return before_colon.lower() or None
     return None
+
+
+def parse_remote_slug(remote_url: str) -> str | None:
+    """Stable per-repository identity ``host/path`` from a git remote URL.
+
+    ``git@github.com:Org/Repo.git`` and ``https://github.com/Org/Repo`` both yield
+    ``github.com/Org/Repo``. Host is lowercased (case-insensitive); the path keeps its
+    case and drops a trailing ``.git``. Returns None for empty/unparseable input.
+    """
+    url = remote_url.strip()
+    host = parse_remote_host(url)
+    if not url or host is None:
+        return None
+    if "://" in url:
+        after = url.split("://", 1)[1]
+        path = after.split("/", 1)[1] if "/" in after else ""
+    elif ":" in url:
+        path = url.split(":", 1)[1]
+    else:
+        return None
+    path = path.strip("/").removesuffix(".git")
+    return f"{host}/{path}" if path else None
 
 
 def _github_state(state: str | None, is_draft: bool) -> str | None:
@@ -339,23 +372,55 @@ class GitModule(BaseModule[GitParams]):
         """Record a debug reason; surfaced (in debug mode) at the end of render()."""
         self._debug_messages.append(message)
 
-    def _get_remote_host(self) -> str | None:
-        """Host of `origin`, or None when there is no origin remote."""
-        url = self._run_git("remote", "get-url", "origin")
+    def _upstream_remote(self) -> str | None:
+        """Name of the remote the current branch tracks (e.g. 'origin'), or None."""
+        ref = self._run_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+        if not ref or "/" not in ref:
+            return None
+        return ref.split("/", 1)[0]
+
+    def _get_remote(self) -> tuple[str, str] | None:
+        """(host, slug) of the branch's upstream remote, falling back to 'origin'.
+
+        ``host`` drives provider detection (cached per host); ``slug`` ('host/owner/repo')
+        is the per-repository cache identity so two repos on one host that share a branch
+        name don't alias each other's PR/MR lookups. Reading @{upstream} (not a hard-coded
+        origin) matches the sync indicator's remote and works when the branch tracks a fork.
+        """
+        remote = self._upstream_remote() or "origin"
+        url = self._run_git("remote", "get-url", remote)
         if not url:
             return None
-        return parse_remote_host(url)
+        host = parse_remote_host(url)
+        slug = parse_remote_slug(url)
+        if host is None or slug is None:
+            return None
+        return host, slug
 
     def _resolve_provider(self, host: str, doc: PrCacheDoc) -> str | None:
-        """Provider for host: explicit override → cached positive → detection (cached if positive)."""
+        """Provider for host: explicit override → cached positive → throttled detection.
+
+        Detection may run `gh`/`glab auth status` (each with a CLI timeout). After a failed
+        detection the host is recorded in ``doc.provider_misses`` and not re-probed for
+        ``pr_cache_ttl`` seconds, so an unknown self-hosted host does not re-run auth-status
+        on every render. A positive resolution is cached in ``doc.providers`` and clears any
+        recorded miss, so fixing CLI auth is re-detected on the next render past the TTL.
+        """
         if self.params.pr_provider in ("github", "gitlab"):
             return self.params.pr_provider
         cached = doc.providers.get(host)
         if cached in ("github", "gitlab"):
             return cached
+        now = datetime.now(UTC)
+        last_miss = doc.provider_misses.get(host)
+        if last_miss is not None and (now - last_miss).total_seconds() < self.params.pr_cache_ttl:
+            return None  # recently probed and still unknown — skip re-probing
         provider = self._detect_provider(host)
         if provider is not None:
             doc.providers[host] = provider  # cache positive resolutions only
+            doc.provider_misses.pop(host, None)  # resolved — clear any miss marker
+        else:
+            doc.provider_misses[host] = now  # remember the miss to throttle re-probing
         return provider
 
     def _get_pr(self, branch: str, remote_status: tuple[str, int]) -> PrInfo | None:
@@ -368,37 +433,41 @@ class GitModule(BaseModule[GitParams]):
             return None  # feature off — no debug
         if remote_status[0] == "no_upstream":
             return None  # local-only branch: no which(), no network
-        host = self._get_remote_host()
-        if host is None:
+        remote = self._get_remote()
+        if remote is None:
             self._note_debug("PR: could not resolve remote host")
             return None
+        host, slug = remote
         doc = self.cache.load() if self.cache else PrCacheDoc.empty()
-        info, changed = self._pr_lookup(host, branch, doc)
+        info, changed = self._pr_lookup(host, slug, branch, doc)
         if self.cache is not None and changed:
-            self.cache.save(doc)  # only when a provider was cached or an entry written
+            self.cache.save(doc)  # only when a provider/miss was cached or an entry written
         return info
 
-    def _pr_lookup(self, host: str, branch: str, doc: PrCacheDoc) -> tuple[PrInfo | None, bool]:
+    def _pr_lookup(self, host: str, slug: str, branch: str, doc: PrCacheDoc) -> tuple[PrInfo | None, bool]:
         """CLI gates + provider resolution + cached/throttled fetch. Mutates ``doc``.
 
         Returns ``(info, changed)`` where ``changed`` is True iff ``doc`` was mutated
-        (a provider was newly cached or an entry written), so the caller can skip an
-        otherwise-pointless cache write on the throttled and early-return paths.
+        (a provider cached, a detection miss recorded, or an entry written), so the caller
+        can skip an otherwise-pointless cache write on throttled/early-return paths.
+        Entries are keyed by ``slug`` (per repository); providers/misses by ``host``.
         """
         if shutil.which("gh") is None and shutil.which("glab") is None:
             self._note_debug("PR: neither gh nor glab installed")
             return None, False
+        miss_before = doc.provider_misses.get(host)
         had_provider = host in doc.providers
         provider = self._resolve_provider(host, doc)
         if provider is None:
             self._note_debug(f"PR: could not resolve provider for {host}; set pr_provider")
-            return None, False
+            miss_after = doc.provider_misses.get(host)
+            return None, miss_after is not None and miss_after != miss_before
         changed = host in doc.providers and not had_provider  # provider newly cached
         binary = _CLI_BINARY[provider]
         if shutil.which(binary) is None:
             self._note_debug(f"PR: {provider} for {host} but {binary} not installed")
             return None, changed
-        key = f"{host}\t{branch}"
+        key = f"{slug}\t{branch}"
         entry = doc.entries.get(key)
         now = datetime.now(UTC)
         if entry is not None and (now - entry.last_attempt_at).total_seconds() < self.params.pr_cache_ttl:

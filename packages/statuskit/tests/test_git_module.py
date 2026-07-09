@@ -15,6 +15,7 @@ from statuskit.modules.git import (
     parse_github_pr_list,
     parse_gitlab_mr_list,
     parse_remote_host,
+    parse_remote_slug,
 )
 from termcolor import colored
 
@@ -1412,6 +1413,25 @@ class TestParseRemoteHost:
         assert parse_remote_host("https://GitLab.example.COM/g/r.git") == "gitlab.example.com"
 
 
+class TestParseRemoteSlug:
+    """Tests for parse_remote_slug: scp/https forms, .git stripping, subgroups."""
+
+    def test_scp_form(self):
+        assert parse_remote_slug("git@github.com:Org/Repo.git") == "github.com/Org/Repo"
+
+    def test_https_form(self):
+        assert parse_remote_slug("https://github.com/Org/Repo") == "github.com/Org/Repo"
+
+    def test_gitlab_subgroup(self):
+        assert parse_remote_slug("git@gitlab.com:group/sub/repo.git") == "gitlab.com/group/sub/repo"
+
+    def test_empty_returns_none(self):
+        assert parse_remote_slug("") is None
+
+    def test_no_path_returns_none(self):
+        assert parse_remote_slug("git@github.com:") is None
+
+
 class TestParseGithubPrList:
     """Tests for parse_github_pr_list: state mapping, empty, malformed."""
 
@@ -1829,7 +1849,7 @@ class TestPrCache:
 
 
 class TestGitInitAndRemoteHost:
-    """Tests for the __init__ cache wiring, debug channel, and _get_remote_host."""
+    """Tests for the __init__ cache wiring, debug channel, and _get_remote."""
 
     def test_cache_built_when_cache_dir_set(self, make_render_context, tmp_path):
         ctx = make_render_context(make_input_data(model=make_model_data()), cache_dir=tmp_path)
@@ -1847,16 +1867,36 @@ class TestGitInitAndRemoteHost:
         mod._note_debug("hello")
         assert mod._debug_messages == ["hello"]
 
-    def test_get_remote_host_parses_origin(self, make_render_context):
+    def test_get_remote_uses_upstream_remote(self, make_render_context):
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
-        with patch.object(mod, "_run_git", return_value="git@github.com:o/r.git") as mock_git:
-            assert mod._get_remote_host() == "github.com"
-        mock_git.assert_called_once_with("remote", "get-url", "origin")
 
-    def test_get_remote_host_none_when_no_remote(self, make_render_context):
+        def fake_git(*args):
+            if args[:2] == ("rev-parse", "--abbrev-ref"):
+                return "upstream/main"
+            if args == ("remote", "get-url", "upstream"):
+                return "git@github.com:o/r.git"
+            return None
+
+        with patch.object(mod, "_run_git", side_effect=fake_git):
+            assert mod._get_remote() == ("github.com", "github.com/o/r")
+
+    def test_get_remote_falls_back_to_origin(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        def fake_git(*args):
+            if args[:2] == ("rev-parse", "--abbrev-ref"):
+                return None
+            if args == ("remote", "get-url", "origin"):
+                return "https://gitlab.com/g/p.git"
+            return None
+
+        with patch.object(mod, "_run_git", side_effect=fake_git):
+            assert mod._get_remote() == ("gitlab.com", "gitlab.com/g/p")
+
+    def test_get_remote_none_when_no_remote(self, make_render_context):
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
         with patch.object(mod, "_run_git", return_value=None):
-            assert mod._get_remote_host() is None
+            assert mod._get_remote() is None
 
 
 class TestResolveProvider:
@@ -1900,27 +1940,27 @@ class TestGetPr:
 
     def test_show_pr_false_skips_silently(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path, {"show_pr": False})
-        with patch.object(mod, "_get_remote_host") as host:
+        with patch.object(mod, "_get_remote") as remote:
             assert mod._get_pr("main", ("synced", 0)) is None
-        host.assert_not_called()
+        remote.assert_not_called()
         assert mod._debug_messages == []
 
     def test_local_only_branch_skips(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path)
-        with patch.object(mod, "_get_remote_host") as host:
+        with patch.object(mod, "_get_remote") as remote:
             assert mod._get_pr("main", ("no_upstream", 0)) is None
-        host.assert_not_called()
+        remote.assert_not_called()
 
     def test_no_host_degrades_with_debug(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path)
-        with patch.object(mod, "_get_remote_host", return_value=None):
+        with patch.object(mod, "_get_remote", return_value=None):
             assert mod._get_pr("main", ("synced", 0)) is None
         assert any("host" in m for m in mod._debug_messages)
 
     def test_neither_cli_degrades_with_debug(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value=None),
         ):
             assert mod._get_pr("main", ("synced", 0)) is None
@@ -1929,7 +1969,7 @@ class TestGetPr:
     def test_provider_give_up_degrades_with_debug(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path)
         with (
-            patch.object(mod, "_get_remote_host", return_value="scm.corp.example"),
+            patch.object(mod, "_get_remote", return_value=("scm.corp.example", "scm.corp.example/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/x"),
             patch.object(mod, "_resolve_provider", return_value=None),
         ):
@@ -1944,7 +1984,7 @@ class TestGetPr:
             return "/bin/gh" if binary == "gh" else None
 
         with (
-            patch.object(mod, "_get_remote_host", return_value="gitlab.com"),
+            patch.object(mod, "_get_remote", return_value=("gitlab.com", "gitlab.com/o/r")),
             patch("statuskit.modules.git.shutil.which", side_effect=which),
             patch.object(mod, "_resolve_provider", return_value="gitlab"),
         ):
@@ -1955,7 +1995,7 @@ class TestGetPr:
         mod = self._mod(make_render_context, tmp_path)
         found = PrInfo("github", 42, "open", "u")
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_resolve_provider", return_value="github"),
             patch.object(mod, "_fetch_pr", return_value=(found, None)) as fetch,
@@ -1963,7 +2003,7 @@ class TestGetPr:
             assert mod._get_pr("main", ("synced", 0)) == found
             fetch.assert_called_once()
         # persisted entry
-        entry = mod.cache.load().entries["github.com\tmain"]
+        entry = mod.cache.load().entries["github.com/o/r\tmain"]
         assert entry.info == found
 
     def test_throttle_reuses_cached_entry(self, make_render_context, tmp_path):
@@ -1971,11 +2011,11 @@ class TestGetPr:
         cached = PrInfo("github", 42, "open", "u")
         doc = PrCacheDoc(
             providers={"github.com": "github"},
-            entries={"github.com\tmain": PrCacheEntry(cached, datetime.now(UTC))},
+            entries={"github.com/o/r\tmain": PrCacheEntry(cached, datetime.now(UTC))},
         )
         mod.cache.save(doc)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_fetch_pr") as fetch,
         ):
@@ -1987,12 +2027,12 @@ class TestGetPr:
         old = PrInfo("github", 1, "open", "u")
         doc = PrCacheDoc(
             providers={"github.com": "github"},
-            entries={"github.com\tmain": PrCacheEntry(old, datetime.now(UTC) - timedelta(seconds=600))},
+            entries={"github.com/o/r\tmain": PrCacheEntry(old, datetime.now(UTC) - timedelta(seconds=600))},
         )
         mod.cache.save(doc)
         fresh = PrInfo("github", 1, "merged", "u")
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_fetch_pr", return_value=(fresh, None)) as fetch,
         ):
@@ -2005,16 +2045,16 @@ class TestGetPr:
         old_ts = datetime.now(UTC) - timedelta(seconds=600)
         doc = PrCacheDoc(
             providers={"github.com": "github"},
-            entries={"github.com\tmain": PrCacheEntry(stale, old_ts)},
+            entries={"github.com/o/r\tmain": PrCacheEntry(stale, old_ts)},
         )
         mod.cache.save(doc)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_fetch_pr", return_value=(None, "network down")),
         ):
             assert mod._get_pr("main", ("synced", 0)) == stale
-        reloaded = mod.cache.load().entries["github.com\tmain"]
+        reloaded = mod.cache.load().entries["github.com/o/r\tmain"]
         assert reloaded.info == stale
         assert reloaded.last_attempt_at > old_ts
         assert any("fetch failed" in m for m in mod._debug_messages)
@@ -2022,13 +2062,13 @@ class TestGetPr:
     def test_no_pr_caches_negative(self, make_render_context, tmp_path):
         mod = self._mod(make_render_context, tmp_path)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_resolve_provider", return_value="github"),
             patch.object(mod, "_fetch_pr", return_value=(None, None)),
         ):
             assert mod._get_pr("main", ("synced", 0)) is None
-        assert "github.com\tmain" in mod.cache.load().entries
+        assert "github.com/o/r\tmain" in mod.cache.load().entries
 
     def test_throttle_hit_does_not_rewrite_cache(self, make_render_context, tmp_path):
         """Throttled hit reuses the cached PrInfo without an atomic cache rewrite."""
@@ -2036,11 +2076,11 @@ class TestGetPr:
         cached = PrInfo("github", 42, "open", "u")
         doc = PrCacheDoc(
             providers={"github.com": "github"},
-            entries={"github.com\tmain": PrCacheEntry(cached, datetime.now(UTC))},
+            entries={"github.com/o/r\tmain": PrCacheEntry(cached, datetime.now(UTC))},
         )
         mod.cache.save(doc)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_fetch_pr") as fetch,
             patch.object(mod.cache, "save") as save_mock,
@@ -2053,16 +2093,38 @@ class TestGetPr:
         """Fetch error with no prior entry persists a negative entry and keeps the git line."""
         mod = self._mod(make_render_context, tmp_path)
         with (
-            patch.object(mod, "_get_remote_host", return_value="github.com"),
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/o/r")),
             patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
             patch.object(mod, "_resolve_provider", return_value="github"),
             patch.object(mod, "_fetch_pr", return_value=(None, "boom")),
         ):
             assert mod._get_pr("main", ("synced", 0)) is None
         assert any("fetch failed" in m for m in mod._debug_messages)
-        entry = mod.cache.load().entries["github.com\tmain"]
+        entry = mod.cache.load().entries["github.com/o/r\tmain"]
         assert entry.info is None
         assert entry.last_attempt_at is not None
+
+    def test_cache_key_scoped_per_repo(self, make_render_context, tmp_path):
+        """Same branch name in two repos on one host must not alias cached PRs (C3)."""
+        ctx = make_render_context(make_input_data(model=make_model_data()), cache_dir=tmp_path, debug=True)
+        mod = GitModule(ctx, {})
+        pr_a = PrInfo("github", 1, "open", "a")
+        with (
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/org/a")),
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
+            patch.object(mod, "_resolve_provider", return_value="github"),
+            patch.object(mod, "_fetch_pr", return_value=(pr_a, None)),
+        ):
+            assert mod._get_pr("feature/login", ("synced", 0)) == pr_a
+        pr_b = PrInfo("github", 2, "open", "b")
+        with (
+            patch.object(mod, "_get_remote", return_value=("github.com", "github.com/org/b")),
+            patch("statuskit.modules.git.shutil.which", return_value="/bin/gh"),
+            patch.object(mod, "_resolve_provider", return_value="github"),
+            patch.object(mod, "_fetch_pr", return_value=(pr_b, None)) as fetch_b,
+        ):
+            assert mod._get_pr("feature/login", ("synced", 0)) == pr_b  # NOT aliased to repo A
+            fetch_b.assert_called_once()
 
 
 class TestRenderPr:
