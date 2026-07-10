@@ -813,6 +813,9 @@ After all file subagents complete, run a final verification in the main context:
 uv run ruff check {changed_files}  # if Python files changed
 ```
 
+After the apply subagents return, prune `APPLIED_FILES` to the files they actually reported as changed
+(drop any whose apply failed), so a failed apply leaves no phantom path for 5.6 to stage.
+
 #### 5.3. Pre-Push Adversarial Self-Review
 
 Simulate the next reviewer round locally, before the single push — this is what
@@ -1004,9 +1007,10 @@ glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{dis
 **First, gate on whether the apply phase changed anything.** If `APPLIED_FILES` (Phase 5.1) is
 **empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up / skip
 decisions — there is nothing to commit. Skip **both** 5.6 and 5.7 and go straight to the 5.8 summary
-(replies and follow-ups are already posted). Gate on the apply-set, NOT the git working tree: a tree
-check wrongly proceeds when the session has unrelated pre-existing edits, and wrongly skips a fix that
-creates only a new untracked file. Otherwise, stage exactly `APPLIED_FILES`:
+(replies and follow-ups are already posted). Gate on the apply-set, NOT the git working tree:
+`git status --porcelain` over-includes unrelated pre-existing edits, while a tracked-diff check
+(`git diff`) drops a fix that only creates a new untracked file — the apply-set has neither failure.
+Otherwise, stage exactly `APPLIED_FILES`:
 
 ```bash
 # skip commit + push when APPLIED_FILES is empty; otherwise stage exactly the applied set:
