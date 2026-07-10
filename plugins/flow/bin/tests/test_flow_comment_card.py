@@ -252,3 +252,81 @@ class TestMain:
         card = {"ref": "C1", "category": "doc", "author": "a", "body": "hi"}
         result = _run(json.dumps(card))
         assert not result.stdout.startswith("```")
+
+
+import pytest  # noqa: E402
+
+
+class TestGoldenCards:
+    def test_gitlab_inline_reconstructed_snippet(self):
+        card = {
+            "ref": "C2",
+            "author": "alice",
+            "body": "Prefer a constant here.",
+            "path": "plugins/flow/bin/flow-sync",
+            "start_line": 10,
+            "line": 12,
+            "category": "style",
+            "snippet": {"lang": "python", "text": "TIMEOUT = 30\ndef sync():\n    ..."},
+            "thought": "Minor; the literal is used once.",
+            "suggested": "won't-fix",
+        }
+        assert render_card(card) == (
+            "### 🟡 C2 · style · plugins/flow/bin/flow-sync:10-12\n"
+            "\n"
+            "> **@alice:** Prefer a constant here.\n"
+            "\n"
+            "```python\n"
+            "TIMEOUT = 30\n"
+            "def sync():\n"
+            "    ...\n"
+            "```\n"
+            "\n"
+            "**Thought:** Minor; the literal is used once.\n"
+            "**Suggested:** won't-fix"
+        )
+
+    def test_outdated_card_keeps_diff_and_marks_warning(self):
+        card = {
+            "ref": "C3",
+            "author": "bob",
+            "body": "Off-by-one here.",
+            "path": "a/b.py",
+            "line": 5,
+            "outdated": True,
+            "category": "logic",
+            "diff_hunk": "@@ -4,3 +4,3 @@\n-    for i in range(n):\n+    for i in range(n + 1):",
+            "thought": "Line moved in current code, but the reasoning still holds.",
+            "suggested": "follow-up",
+        }
+        assert render_card(card) == (
+            "### 🔴 C3 · logic · a/b.py:5 ⚠️ outdated\n"
+            "\n"
+            "> **@bob:** Off-by-one here.\n"
+            "\n"
+            "```diff\n"
+            "@@ -4,3 +4,3 @@\n"
+            "-    for i in range(n):\n"
+            "+    for i in range(n + 1):\n"
+            "```\n"
+            "\n"
+            "**Thought:** Line moved in current code, but the reasoning still holds.\n"
+            "**Suggested:** follow-up"
+        )
+
+    @pytest.mark.parametrize(
+        ("category", "emoji"),
+        [
+            ("correctness", "🔴"),
+            ("security", "🔴"),
+            ("logic", "🔴"),
+            ("style", "🟡"),
+            ("nitpick", "🟡"),
+            ("doc", "🔵"),
+            ("unknown", "⚪"),
+        ],
+    )
+    def test_category_emoji_in_header(self, category, emoji):
+        card = {"ref": "C1", "category": category, "path": "a/b.py", "line": 1}
+        label = category if category != "unknown" else "unknown"
+        assert render_header(card) == f"### {emoji} C1 · {label} · a/b.py:1"
