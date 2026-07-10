@@ -370,6 +370,15 @@ GitHub: the root comment id equals a pair's comment_id; GitLab: discussion.id eq
 discussion_id. Label each kept item with the ref from its matching pair. Do NOT emit the TABLE, and
 emit nothing for comments outside the working set.
 
+**`(summary)` items are the exception — carry them, do NOT re-match by comment_id.** A GitHub
+`(summary)` item comes from the *reviews* endpoint, not an inline thread, so it has **no root
+comment id** (`comment_id: null`) and can never equal a pair's `comment_id`. Re-matching would
+silently drop it — or collide two null-id summaries into one — so actionable bot-summary items
+would never reach analysis/triage. For any `(summary)` ref in the working set, carry its Phase 2.1
+record straight through to this pass's METADATA, keyed by its ref (diff_hunk = null, position =
+null, snippet = null); if you need the full review body, re-read it from the reviews endpoint by its
+review id. Only inline threads are matched by stable id.
+
 Platform: {PLATFORM}            (github or gitlab — do ONLY the block for this platform)
 GitHub identifiers: owner/repo = {owner}/{repo}, PR number = {number}
 GitLab identifiers: project (URL-encoded) = {project}, MR iid = {iid}
@@ -479,10 +488,12 @@ Steps:
 5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. Judge the reviewer diff_hunk
    shown above: if the comment is NOT outdated and that diff_hunk is absent ("(none)") or too thin
    to understand the change on its own, ALSO return a SNIPPET: read the current file at the
-   commented lines with a little
-   context (e.g. `sed -n '{start-4},{end+4}p' "{path}"` — double-quote the untrusted path; prefer
-   the Read tool) and return it as a fenced block tagged
-   with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
+   commented lines with a little context — prefer the Read tool; if you fall back to `sed`, **clamp
+   the start to at least 1** (`sed -n '{max(1, start-4)},{end+4}p' "{path}"`) and double-quote the
+   untrusted path. The clamp matters for the same reason as Phase 2.3: a comment on lines 1–4 gives
+   `start-4 ≤ 0`, and `sed` prints nothing for `0,Np` / rejects `-3,Np` as a bad option, so the card
+   would lose current-file context exactly when the thin hunk needs it. Return it as a fenced block
+   tagged with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
    file/lines no longer exist.
    GitLab: do NOT re-run `sed` here — Phase 2.3 already reconstructed a `snippet` into the
    metadata for GitLab notes (their diff_hunk is always null). Leave SNIPPET empty and let the
@@ -604,13 +615,22 @@ THOUGHT=$(cat <<'FLOW_RC_EOF'
 Agrees — real crash on detached HEAD; the guard is one frame too low.
 FLOW_RC_EOF
 )
-# Phase 3 returns SNIPPET as a fenced markdown block, not JSON. Turn its text + language into the
-# object --argjson wants (set SNIPPET_JSON=null when the verdict has no SNIPPET):
+# Phase 3 returns SNIPPET as a fenced markdown block, not JSON. Pick ONE branch from the verdict —
+# it either carried a SNIPPET fence or it did not. This null is load-bearing: the merge below falls
+# back to $meta.snippet ONLY when $snippet is null, so an empty {lang, text:""} object (what the jq
+# yields on empty text) would WIN over $meta.snippet and blank out the Phase 2.3 reconstructed code
+# — which is the normal GitLab case (Phase 3 defers to that reconstructed snippet, returning no
+# SNIPPET of its own).
+#
+# (a) verdict HAS a Phase 3 SNIPPET fence → build the object:
 SNIPPET_TEXT=$(cat <<'FLOW_RC_EOF'
 <the lines inside the Phase 3 SNIPPET fence, verbatim>
 FLOW_RC_EOF
 )
 SNIPPET_JSON=$(printf '%s' "$SNIPPET_TEXT" | jq -Rs --arg lang "python" '{lang: $lang, text: .}')
+#
+# (b) verdict has NO Phase 3 SNIPPET (the normal GitLab case) → use this line INSTEAD of (a):
+#     SNIPPET_JSON=null   # let $meta.snippet win in the merge
 
 card=$(jq -n \
   --argjson meta "$(jq '.[] | select(.ref=="C1")' <<<"$METADATA")" \
@@ -649,16 +669,24 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
 - **agree_unclear:** the take is genuinely ambiguous — present the 2-3 fix options inline here
   (from the verdict's `agree_unclear | A OR B OR C`) and let the user pick which fix (or skip)
   **before** moving to the next card. Record the chosen option with the `fix` decision.
+- **disagree → fix (accept-anyway):** a `disagree` verdict carries only CLAIM / EVIDENCE / THOUGHT —
+  it explains why NOT to apply, so it has **no fix action**. If the user overrides it to `fix`, Phase
+  5.1 would otherwise call the apply flow with an empty patch plan. Before recording the `fix`
+  decision, ask — plain text — WHAT the accept-anyway change should be, and record that concrete
+  action alongside the decision (Phase 5.1 uses it as the fix description). Never carry a `disagree`
+  into apply without a patch plan.
 
-Record `{ref → decision}` (and the chosen option for `agree_unclear`), then show the next card.
+Record `{ref → decision}` (and the chosen option for `agree_unclear`, or the accept-anyway action
+for an overridden `disagree`), then show the next card.
 Do **not** apply, reply, or commit during the loop.
 
 ### Phase 5: Batch Execution
 
 The Phase 4 decisions are now executed **once**, grouped by outcome. Order matters: apply all
 fixes first (so replies describe the final code), create follow-ups, then reply to every
-comment, then commit and push. This preserves fix-the-class, a single skeptic pass, and one
-commit/push — the reason triage and execution are split.
+comment, then commit and push (**commit/push are skipped when no files changed** — 5.6). This
+preserves fix-the-class, a single skeptic pass, and one commit/push — the reason triage and
+execution are split.
 
 #### 5.1. Fix — generalize the class (fix the class, not the instance)
 
@@ -832,15 +860,21 @@ Proceed? (yes / edit / no)
 ```
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
-`bd create`). The reviewer's comment text is **untrusted** — it routinely contains backticks,
-`$HOME`, or `$(...)`. **Never inline `{full comment text}` into a double-quoted `--description`:**
-the shell runs the command substitution and expands the variables *before* `bd create` sees them,
-corrupting the task body (or executing whatever the reviewer wrote). Materialize the description
-with a **quoted heredoc** — the `<<'FLOW_RC_EOF'` quotes stop ALL expansion, so backticks / `$HOME` /
-`$(...)` reach `bd` verbatim — then pass it as a variable (equivalently, pipe the heredoc into
-`bd create … --body-file -`, the stdin form):
+`bd create`). **Both the title and the description derive from the reviewer's comment** (the title
+from its substance — see above), and that text is **untrusted** — it routinely contains backticks,
+`$HOME`, or `$(...)`. **Never inline the reviewer-derived title or comment text into a double-quoted
+`--title` / `--description`:** the shell runs the command substitution and expands the variables
+*before* `bd create` sees them, corrupting the task (or executing whatever the reviewer wrote).
+Materialize **each** free-text value with a **quoted heredoc** — the `<<'FLOW_RC_EOF'` quotes stop
+ALL expansion, so backticks / `$HOME` / `$(...)` reach `bd` verbatim — then pass it as a variable
+(for the description you can equivalently pipe the heredoc into `bd create … --body-file -`, the
+stdin form):
 
 ```bash
+TITLE=$(cat <<'FLOW_RC_EOF'
+Guard branch_name against detached HEAD
+FLOW_RC_EOF
+)
 DESC=$(cat <<'FLOW_RC_EOF'
 **PR:** {url}
 **Location:** packages/statuskit/src/statuskit/modules/git.py:42
@@ -849,7 +883,7 @@ DESC=$(cat <<'FLOW_RC_EOF'
 **Take:** real crash on detached HEAD; deferred to its own task.
 FLOW_RC_EOF
 )
-bd create --title "Guard branch_name against detached HEAD" --type bug --priority 2 \
+bd create --title "$TITLE" --type bug --priority 2 \
   --parent claude-tools-5dl --description "$DESC"
 ```
 
@@ -916,7 +950,21 @@ glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{dis
 
 #### 5.6. Commit
 
-Stage only changed files:
+**First, gate on whether anything was actually applied.** If Phase 5.1 changed no files — the fix
+bucket was empty, or held only `outdated_fixed` / won't-fix / follow-up decisions — there is nothing
+to stage. Running `git add` + commit here would fail (no pathspec match / "nothing to commit")
+*after* replies and follow-ups are already posted, dropping the workflow into an error path. Check
+the working tree and, when it is clean, **skip both 5.6 and 5.7** — go straight to the 5.8 summary:
+
+```bash
+[ -z "$(git status --porcelain)" ] && echo "no file changes — skip commit + push"
+```
+
+Use `git status --porcelain` (not `git diff --quiet`): a fix that adds a **new** file leaves the
+tracked-file diff empty but shows the file as `??`, and 5.3 explicitly allows newly-created files —
+`git diff` alone would wrongly skip and lose it.
+
+Otherwise (the tree has changes), stage only changed files:
 
 ```bash
 git add {specific files that were modified}
