@@ -78,3 +78,15 @@ def render_comment(card: dict) -> str:
     for reply in card.get("thread") or []:
         lines.extend(_blockquote("↳ ", reply.get("user", "?"), reply.get("body", "")))
     return "\n".join(lines)
+
+
+def render_code(card: dict) -> str:
+    """diff_hunk as a ```diff fence; else snippet as a ```{lang} fence; else ''."""
+    diff_hunk = card.get("diff_hunk")
+    if diff_hunk:
+        return f"```diff\n{diff_hunk}\n```"
+    snippet = card.get("snippet")
+    if snippet and snippet.get("text"):
+        lang = snippet.get("lang") or ""
+        return f"```{lang}\n{snippet['text']}\n```"
+    return ""

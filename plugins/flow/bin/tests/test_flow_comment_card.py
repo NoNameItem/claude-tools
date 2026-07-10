@@ -21,6 +21,7 @@ format_lines = _mod.format_lines
 format_location = _mod.format_location
 render_header = _mod.render_header
 render_comment = _mod.render_comment
+render_code = _mod.render_code
 
 
 class TestCategoryEmoji:
@@ -124,3 +125,25 @@ class TestRenderComment:
     def test_multiline_body_each_line_quoted(self):
         card = {"author": "alice", "body": "line one\nline two"}
         assert render_comment(card) == "> **@alice:** line one\n> line two"
+
+
+class TestRenderCode:
+    def test_diff_hunk_is_preferred(self):
+        card = {
+            "diff_hunk": "@@ -40,7 +40,7 @@\n-    old\n+    new",
+            "snippet": {"lang": "python", "text": "ignored"},
+        }
+        assert render_code(card) == "```diff\n@@ -40,7 +40,7 @@\n-    old\n+    new\n```"
+
+    def test_snippet_when_no_diff_hunk(self):
+        card = {"snippet": {"lang": "python", "text": "def f():\n    return 1"}}
+        assert render_code(card) == "```python\ndef f():\n    return 1\n```"
+
+    def test_snippet_without_lang(self):
+        card = {"snippet": {"text": "plain text"}}
+        assert render_code(card) == "```\nplain text\n```"
+
+    def test_no_code_returns_empty_string(self):
+        assert render_code({}) == ""
+        assert render_code({"diff_hunk": None, "snippet": None}) == ""
+        assert render_code({"snippet": {"text": ""}}) == ""
