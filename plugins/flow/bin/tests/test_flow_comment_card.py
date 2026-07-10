@@ -3,6 +3,9 @@
 # ruff: noqa: INP001
 
 import importlib.util
+import json
+import subprocess
+import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
@@ -23,6 +26,17 @@ render_header = _mod.render_header
 render_comment = _mod.render_comment
 render_code = _mod.render_code
 render_take = _mod.render_take
+render_card = _mod.render_card
+
+
+def _run(stdin: str):
+    return subprocess.run(
+        [sys.executable, str(_HELPER)],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 class TestCategoryEmoji:
@@ -163,3 +177,78 @@ class TestRenderTake:
 
     def test_neither(self):
         assert render_take({}) == ""
+
+
+class TestRenderCard:
+    def test_full_card_with_diff(self):
+        card = {
+            "ref": "C1",
+            "author": "coderabbitai",
+            "body": "This crashes on detached HEAD.",
+            "thread": [{"user": "you", "body": "already handled?"}],
+            "path": "packages/statuskit/src/git.py",
+            "line": 42,
+            "category": "correctness",
+            "diff_hunk": (
+                "@@ -40,7 +40,7 @@\n-    return repo.head.name\n+    return repo.head.name if repo.head else None"
+            ),
+            "thought": "Real crash on detached HEAD; fix is obvious.",
+            "suggested": "fix",
+        }
+        assert render_card(card) == (
+            "### 🔴 C1 · correctness · packages/statuskit/src/git.py:42\n"
+            "\n"
+            "> **@coderabbitai:** This crashes on detached HEAD.\n"
+            "> ↳ **@you:** already handled?\n"
+            "\n"
+            "```diff\n"
+            "@@ -40,7 +40,7 @@\n"
+            "-    return repo.head.name\n"
+            "+    return repo.head.name if repo.head else None\n"
+            "```\n"
+            "\n"
+            "**Thought:** Real crash on detached HEAD; fix is obvious.\n"
+            "**Suggested:** fix"
+        )
+
+    def test_summary_card_has_no_code_block(self):
+        card = {
+            "ref": "C4",
+            "author": "coderabbitai",
+            "body": "Overall the PR looks good.",
+            "category": "doc",
+            "thought": "Informational summary; nothing to change.",
+            "suggested": "won't-fix",
+        }
+        assert render_card(card) == (
+            "### 🔵 C4 · doc · (summary)\n"
+            "\n"
+            "> **@coderabbitai:** Overall the PR looks good.\n"
+            "\n"
+            "**Thought:** Informational summary; nothing to change.\n"
+            "**Suggested:** won't-fix"
+        )
+
+
+class TestMain:
+    def test_reads_object_from_stdin(self):
+        card = {"ref": "C1", "category": "doc", "author": "a", "body": "hi", "thought": "t"}
+        result = _run(json.dumps(card))
+        assert result.returncode == 0
+        assert result.stdout.rstrip("\n") == ("### 🔵 C1 · doc · (summary)\n\n> **@a:** hi\n\n**Thought:** t")
+
+    def test_accepts_single_element_array(self):
+        card = {"ref": "C1", "category": "doc", "author": "a", "body": "hi"}
+        result = _run(json.dumps([card]))
+        assert result.returncode == 0
+        assert result.stdout.startswith("### 🔵 C1 · doc · (summary)")
+
+    def test_empty_stdin_errors(self):
+        result = _run("")
+        assert result.returncode == 1
+
+    def test_output_is_not_wrapped_in_an_outer_fence(self):
+        # The card must NOT be wrapped: it already contains ```-fences.
+        card = {"ref": "C1", "category": "doc", "author": "a", "body": "hi"}
+        result = _run(json.dumps(card))
+        assert not result.stdout.startswith("```")

@@ -13,6 +13,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import sys
+
 CATEGORY_EMOJI = {
     "correctness": "🔴",
     "security": "🔴",
@@ -100,3 +103,31 @@ def render_take(card: dict) -> str:
     if card.get("suggested"):
         lines.append(f"**Suggested:** {card['suggested']}")
     return "\n".join(lines)
+
+
+def render_card(card: dict) -> str:
+    """Assemble the full markdown card; non-empty sections joined by one blank line."""
+    sections = [
+        render_header(card),
+        render_comment(card),
+        render_code(card),
+        render_take(card),
+    ]
+    return "\n\n".join(section for section in sections if section)
+
+
+def main() -> None:
+    try:
+        data = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not data:
+        print("No comment data.", file=sys.stderr)
+        sys.exit(1)
+    card = data[0] if isinstance(data, list) else data
+    print(render_card(card))
+
+
+if __name__ == "__main__":
+    main()
