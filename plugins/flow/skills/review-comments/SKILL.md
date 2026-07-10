@@ -389,12 +389,15 @@ Steps:
    correctness, or maintainability? If not → disagree (still fill CLAIM +
    EVIDENCE showing why the current code is fine or the suggestion is worse).
 
-5. If the comment is NOT outdated and the reviewer's diff_hunk is absent or too thin to
-   understand the change on its own, ALSO return a SNIPPET: read the current file at the
-   commented lines with a little context (e.g. `sed -n '{start-4},{end+4}p' {path}`) and
-   return it as a fenced block tagged with the file's language. This is the current-file
-   context the card shows when there is no usable diff_hunk. Omit SNIPPET if the diff_hunk
-   is already clear, or if the file/lines no longer exist.
+5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. If the comment is NOT
+   outdated and the reviewer's diff_hunk is absent or too thin to understand the change on its
+   own, ALSO return a SNIPPET: read the current file at the commented lines with a little
+   context (e.g. `sed -n '{start-4},{end+4}p' {path}`) and return it as a fenced block tagged
+   with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
+   file/lines no longer exist.
+   GitLab: do NOT re-run `sed` here — Phase 2 already reconstructed a `snippet` into the
+   metadata for GitLab notes (their diff_hunk is always null). Leave SNIPPET empty and let the
+   Phase 4.2 fallback use that Phase-2 snippet. Re-reading the file here would just duplicate it.
 
 6. Return the verdict in this EXACT structured form. Every verdict has CATEGORY, THOUGHT,
    and SUGGESTED lines. `disagree` and `outdated_fixed` ALSO need CLAIM and EVIDENCE lines.
@@ -494,22 +497,45 @@ snippet is the fuller context you want to show. **Rule: if the assembled card ha
 The `source` value (`bot`/`human`) is computed only for the Phase 4.1 TOC ordering (humans first,
 bots second) — it is **not** a card field the renderer reads, so do **not** put it in the card JSON.
 
-Build one JSON object and pipe it in (`$snippet` below is the Phase 3 SNIPPET as JSON, or `null`).
-Any equivalent assembly works — the helper reads one comment object on stdin:
+Build one JSON object and pipe it in. **Every free-text field must reach `jq` through a
+double-quoted shell VARIABLE — NEVER inline it as a literal.** Raw reviewer `body`/`thread` and
+the LLM-authored `THOUGHT` routinely contain `'`, backticks, and `$`; inlined as a literal those
+trigger command substitution / variable expansion and silently corrupt or break the command
+(`--arg thought "…\`repo.head\`…$HOME…"` runs `repo.head` and expands `$HOME`). Materialize each
+free-text value with the **quoted-heredoc** pattern (the same one Phase 5.5 uses for replies), and
+turn Phase 3's fenced SNIPPET block into the JSON `--argjson snippet` needs. Any equivalent
+assembly works — the helper reads one comment object on stdin:
 
 ```bash
+# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal:
+THOUGHT=$(cat <<'EOF'
+Agrees — real crash on detached HEAD; the guard is one frame too low.
+EOF
+)
+# Phase 3 returns SNIPPET as a fenced markdown block, not JSON. Turn its text + language into the
+# object --argjson wants (set SNIPPET_JSON=null when the verdict has no SNIPPET):
+SNIPPET_TEXT=$(cat <<'EOF'
+<the lines inside the Phase 3 SNIPPET fence, verbatim>
+EOF
+)
+SNIPPET_JSON=$(printf '%s' "$SNIPPET_TEXT" | jq -Rs --arg lang "python" '{lang: $lang, text: .}')
+
 card=$(jq -n \
   --argjson meta "$(jq '.[] | select(.ref=="C1")' <<<"$METADATA")" \
   --arg category  "correctness" \
-  --arg thought   "Agrees — real crash on detached HEAD; the guard is one frame too low." \
+  --arg thought   "$THOUGHT" \
   --arg suggested "fix" \
-  --argjson snippet "null" \
+  --argjson snippet "$SNIPPET_JSON" \
   '$meta
    + {author: $meta.user, category: $category, thought: $thought, suggested: $suggested}
    + (if $snippet != null then {snippet: $snippet} else {snippet: $meta.snippet} end)
    | if (.snippet.text // "") != "" then del(.diff_hunk) else . end')
 echo "$card" | flow-comment-card
 ```
+
+The reviewer `body`/`thread` need no manual escaping here: they arrive already JSON-escaped inside
+`$METADATA` and travel through `--argjson meta`, so `jq` parses them as **data**, never as shell
+text. The rule above is about the fields you add by hand — above all `THOUGHT`.
 
 **⚠️ NO OUTER FENCE — emit the card UNWRAPPED.** `flow-comment-card` output already *contains*
 ```` ```diff ````/```` ```lang ```` fences and markdown blockquotes. Print its output **directly
