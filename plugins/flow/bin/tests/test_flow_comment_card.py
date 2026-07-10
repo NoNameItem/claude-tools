@@ -1,6 +1,6 @@
 """Tests for flow-comment-card."""
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # INP001: bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
 import json
@@ -29,6 +29,7 @@ render_comment = _mod.render_comment
 render_code = _mod.render_code
 render_take = _mod.render_take
 render_card = _mod.render_card
+_fence = _mod._fence
 
 
 def _run(stdin: str):
@@ -164,6 +165,37 @@ class TestRenderCode:
         assert render_code({}) == ""
         assert render_code({"diff_hunk": None, "snippet": None}) == ""
         assert render_code({"snippet": {"text": ""}}) == ""
+
+    def test_diff_hunk_with_triple_backtick_widens_fence(self):
+        # A bare ``` inside the diff_hunk must not be able to close a 3-backtick
+        # fence early; the fence should widen to 4 backticks and the inner ```
+        # must survive untouched.
+        card = {"diff_hunk": "@@ -1,3 +1,3 @@\n-old\n+```\n+new"}
+        result = render_code(card)
+        assert result == "````diff\n@@ -1,3 +1,3 @@\n-old\n+```\n+new\n````"
+
+    def test_snippet_with_triple_backtick_widens_fence(self):
+        card = {"snippet": {"lang": "markdown", "text": "Some code:\n```\nnested\n```"}}
+        result = render_code(card)
+        assert result == "````markdown\nSome code:\n```\nnested\n```\n````"
+
+    def test_content_with_four_backtick_run_widens_fence_to_five(self):
+        card = {"snippet": {"text": "````"}}
+        result = render_code(card)
+        assert result == "`````\n````\n`````"
+
+
+class TestFence:
+    def test_no_backticks_returns_three(self):
+        assert _fence("") == "```"
+        assert _fence("no backticks here") == "```"
+
+    def test_one_triple_backtick_run_returns_four(self):
+        assert _fence("```") == "````"
+        assert _fence("text\n```\nmore") == "````"
+
+    def test_four_backtick_run_returns_five(self):
+        assert _fence("````") == "`````"
 
 
 class TestRenderTake:

@@ -83,15 +83,34 @@ def render_comment(card: dict) -> str:
     return "\n".join(lines)
 
 
+def _fence(content: str) -> str:
+    """Return a backtick fence longer than any backtick run in content (min 3)."""
+    longest = run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return "`" * max(3, longest + 1)
+
+
 def render_code(card: dict) -> str:
-    """diff_hunk as a ```diff fence; else snippet as a ```{lang} fence; else ''."""
+    """diff_hunk as a fenced ```diff block; else snippet as a fenced ```{lang} block; else ''.
+
+    The fence is widened past any backtick run inside the content (CommonMark rule)
+    so a literal ``` in the diff/snippet text can't prematurely close the fence.
+    """
     diff_hunk = card.get("diff_hunk")
     if diff_hunk:
-        return f"```diff\n{diff_hunk}\n```"
+        fence = _fence(diff_hunk)
+        return f"{fence}diff\n{diff_hunk}\n{fence}"
     snippet = card.get("snippet")
     if snippet and snippet.get("text"):
         lang = snippet.get("lang") or ""
-        return f"```{lang}\n{snippet['text']}\n```"
+        text = snippet["text"]
+        fence = _fence(text)
+        return f"{fence}{lang}\n{text}\n{fence}"
     return ""
 
 
