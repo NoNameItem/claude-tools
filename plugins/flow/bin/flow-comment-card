@@ -62,3 +62,19 @@ def render_header(card: dict) -> str:
     if card.get("outdated"):
         header += " ⚠️ outdated"
     return header
+
+
+def _blockquote(prefix: str, author: str, body: str) -> list[str]:
+    """Blockquote a body across its physical lines; first line carries the author."""
+    body_lines = (body or "").split("\n")
+    first = f"> {prefix}**@{author}:** {body_lines[0]}"
+    rest = [f"> {ln}" for ln in body_lines[1:]]
+    return [first, *rest]
+
+
+def render_comment(card: dict) -> str:
+    """Render the comment blockquote plus each reply in its thread."""
+    lines = _blockquote("", card.get("author", "?"), card.get("body", ""))
+    for reply in card.get("thread") or []:
+        lines.extend(_blockquote("↳ ", reply.get("user", "?"), reply.get("body", "")))
+    return "\n".join(lines)

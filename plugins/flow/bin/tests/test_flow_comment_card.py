@@ -20,6 +20,7 @@ category_emoji = _mod.category_emoji
 format_lines = _mod.format_lines
 format_location = _mod.format_location
 render_header = _mod.render_header
+render_comment = _mod.render_comment
 
 
 class TestCategoryEmoji:
@@ -92,3 +93,34 @@ class TestRenderHeader:
     def test_unknown_category_uses_fallback_emoji_and_none_label(self):
         card = {"ref": "C5", "path": "a/b.py", "line": 1}
         assert render_header(card) == "### ⚪ C5 · none · a/b.py:1"
+
+
+class TestRenderComment:
+    def test_single_body_no_thread(self):
+        card = {"author": "alice", "body": "Prefer a constant here."}
+        assert render_comment(card) == "> **@alice:** Prefer a constant here."
+
+    def test_body_with_one_reply(self):
+        card = {
+            "author": "coderabbitai",
+            "body": "This crashes on detached HEAD.",
+            "thread": [{"user": "you", "body": "already handled?"}],
+        }
+        assert render_comment(card) == (
+            "> **@coderabbitai:** This crashes on detached HEAD.\n> ↳ **@you:** already handled?"
+        )
+
+    def test_multiple_replies(self):
+        card = {
+            "author": "bob",
+            "body": "See below.",
+            "thread": [
+                {"user": "you", "body": "why?"},
+                {"user": "bob", "body": "perf."},
+            ],
+        }
+        assert render_comment(card) == ("> **@bob:** See below.\n> ↳ **@you:** why?\n> ↳ **@bob:** perf.")
+
+    def test_multiline_body_each_line_quoted(self):
+        card = {"author": "alice", "body": "line one\nline two"}
+        assert render_comment(card) == "> **@alice:** line one\n> line two"
