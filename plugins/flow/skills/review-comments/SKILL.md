@@ -617,7 +617,7 @@ turn Phase 3's fenced SNIPPET block into the JSON `--argjson snippet` needs. Any
 assembly works — the helper reads one comment object on stdin:
 
 ```bash
-# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal. Use a DISTINCTIVE (untrusted-data rule, 2.3)
+# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal (untrusted-data rule, 2.3). Use a DISTINCTIVE
 # delimiter (FLOW_RC_EOF): quoting stops expansion but NOT delimiter collision — a plain 'EOF'
 # terminates early if the captured text contains a line that is exactly EOF (common in code/shell
 # snippets and review text). The delimiter MUST be a token that does not appear in the content.
