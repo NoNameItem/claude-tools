@@ -18,6 +18,8 @@ _spec.loader.exec_module(_mod)
 
 category_emoji = _mod.category_emoji
 format_lines = _mod.format_lines
+format_location = _mod.format_location
+render_header = _mod.render_header
 
 
 class TestCategoryEmoji:
@@ -54,3 +56,39 @@ class TestFormatLines:
 
     def test_no_position(self):
         assert format_lines(None, None) is None
+
+
+class TestFormatLocation:
+    def test_path_with_single_line(self):
+        assert format_location({"path": "a/b.py", "line": 42}) == "a/b.py:42"
+
+    def test_path_with_range(self):
+        assert format_location({"path": "a/b.py", "start_line": 10, "line": 12}) == "a/b.py:10-12"
+
+    def test_path_without_line(self):
+        assert format_location({"path": "a/b.py"}) == "a/b.py"
+
+    def test_no_path_is_summary(self):
+        assert format_location({}) == "(summary)"
+
+
+class TestRenderHeader:
+    def test_inline_single_line(self):
+        card = {"ref": "C1", "category": "correctness", "path": "a/b.py", "line": 42}
+        assert render_header(card) == "### 🔴 C1 · correctness · a/b.py:42"
+
+    def test_range(self):
+        card = {"ref": "C2", "category": "style", "path": "a/b.py", "start_line": 10, "line": 12}
+        assert render_header(card) == "### 🟡 C2 · style · a/b.py:10-12"
+
+    def test_outdated_marker(self):
+        card = {"ref": "C3", "category": "logic", "path": "a/b.py", "line": 5, "outdated": True}
+        assert render_header(card) == "### 🔴 C3 · logic · a/b.py:5 ⚠️ outdated"
+
+    def test_summary_no_position(self):
+        card = {"ref": "C4", "category": "doc"}
+        assert render_header(card) == "### 🔵 C4 · doc · (summary)"
+
+    def test_unknown_category_uses_fallback_emoji_and_none_label(self):
+        card = {"ref": "C5", "path": "a/b.py", "line": 1}
+        assert render_header(card) == "### ⚪ C5 · none · a/b.py:1"

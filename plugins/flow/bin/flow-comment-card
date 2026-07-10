@@ -40,3 +40,25 @@ def format_lines(start_line, line) -> str | None:
     if start_line is not None:
         return str(start_line)
     return None
+
+
+def format_location(card: dict) -> str:
+    """Return the '{path}:{lines}' / '{path}' / '(summary)' location segment."""
+    path = card.get("path")
+    lines = format_lines(card.get("start_line"), card.get("line"))
+    if path and lines:
+        return f"{path}:{lines}"
+    if path:
+        return path
+    return "(summary)"
+
+
+def render_header(card: dict) -> str:
+    """Render '### {emoji} {ref} · {category} · {location}' (+ ' ⚠️ outdated')."""
+    emoji = category_emoji(card.get("category"))
+    ref = card.get("ref", "?")
+    category = card.get("category") or "none"
+    header = f"### {emoji} {ref} · {category} · {format_location(card)}"
+    if card.get("outdated"):
+        header += " ⚠️ outdated"
+    return header
