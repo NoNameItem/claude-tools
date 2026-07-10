@@ -683,7 +683,8 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
 - Empty / Enter → take the default (`suggested`).
 - **agree_unclear:** the take is genuinely ambiguous — present the 2-3 fix options inline here
   (from the verdict's `agree_unclear | A OR B OR C`) and let the user pick which fix (or skip)
-  **before** moving to the next card. Record the chosen option with the `fix` decision.
+  **before** moving to the next card. If the user picks a fix option, record it with the `fix`
+  decision; if the user picks "skip", record the decision as `skip` (invariant 3), not `fix`.
 - **disagree → fix (accept-anyway):** a `disagree` verdict carries only CLAIM / EVIDENCE / THOUGHT —
   it explains why NOT to apply, so it has **no fix action**. If the user overrides it to `fix`, Phase
   5.1 would otherwise call the apply flow with an empty patch plan. Before recording the `fix`
@@ -693,6 +694,29 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
 
 Record `{ref → decision}` (and the chosen option for `agree_unclear`, or the accept-anyway action
 for an overridden `disagree`), then show the next card.
+
+**Decision invariants (verdict ≠ decision ≠ reply source).** The verdict is the analysis; the
+decision is the user's choice (`fix` / `won't-fix` / `follow-up` / `skip`); the reply text has its
+own source. Record per decision:
+
+1. `fix` ⇒ a concrete **action** exists: `agree_obvious` → the verdict one-liner; `agree_unclear` →
+   the option the user picked; `disagree` → the accept-anyway action collected above. Never enter
+   apply without one.
+2. `won't-fix` ⇒ a **rejection reason** exists. Reuse the card's `thought` as that reason ONLY when
+   the verdict was `disagree` (there the thought is already anti-fix). For any other verdict
+   overridden to `won't-fix`, ask — plain text — for an explicit reason and record THAT.
+3. `skip` ⇒ its own outcome: no apply, no reply, recorded skipped. An `agree_unclear` where the user
+   picks "skip" is recorded as `skip`, not `fix`.
+4. `follow-up` ⇒ a **task-id must exist** before 5.5 posts "Filed as follow-up: {task-id}". If 5.4 is
+   answered `edit`/`no` and a ref gets no task, record that ref as skipped and post no follow-up reply.
+
+| verdict → decision (override) | extra data to record at triage |
+|---|---|
+| `disagree` → `fix` | accept-anyway action |
+| `agree_*` → `won't-fix` | explicit rejection reason (thought is pro-fix) |
+| `agree_unclear` → `skip` | none — record outcome = skip |
+| any → `follow-up`, task not created | record outcome = skip; no reply |
+
 Do **not** apply, reply, or commit during the loop.
 
 ### Phase 5: Batch Execution
@@ -874,6 +898,10 @@ Creating {N} follow-ups:
 Proceed? (yes / edit / no)
 ```
 
+- **edit** → adjust the batch (drop/retarget refs) per the user, then re-confirm. Any ref removed
+  from the batch is recorded as `skip` (invariant 3/4) — it gets no task and no follow-up reply.
+- **no** → create nothing; record every ref in the batch as `skip`.
+
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
 `bd create`). **Both the title and the description derive from the reviewer's comment** (the title
 from its substance — see above), and that text is **untrusted** (untrusted-data rule, 2.3) — it routinely contains backticks,
@@ -942,7 +970,7 @@ glab api --method POST \
 | fix (change applied) | `"Fixed: {brief description of what was changed}"` |
 | fix, generalized | `"Fixed: {change}; applied across the class ({class}) at {N} sites."` |
 | fix, but `outdated_fixed` (already fixed in current code, nothing applied) | `"Fixed in subsequent commits"` |
-| won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the card's `thought` |
+| won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the **recorded rejection reason** (= the card's `thought` only when the verdict was `disagree`; otherwise the explicit reason collected at triage, invariant 2) |
 | follow-up | `"Filed as follow-up: {task-id}"` (the beads task from 5.4) |
 
 **Do NOT reply to comments where `already_replied` is true.**
