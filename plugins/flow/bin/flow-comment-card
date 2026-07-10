@@ -90,3 +90,13 @@ def render_code(card: dict) -> str:
         lang = snippet.get("lang") or ""
         return f"```{lang}\n{snippet['text']}\n```"
     return ""
+
+
+def render_take(card: dict) -> str:
+    """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields)."""
+    lines = []
+    if card.get("thought"):
+        lines.append(f"**Thought:** {card['thought']}")
+    if card.get("suggested"):
+        lines.append(f"**Suggested:** {card['suggested']}")
+    return "\n".join(lines)

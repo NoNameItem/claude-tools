@@ -22,6 +22,7 @@ format_location = _mod.format_location
 render_header = _mod.render_header
 render_comment = _mod.render_comment
 render_code = _mod.render_code
+render_take = _mod.render_take
 
 
 class TestCategoryEmoji:
@@ -147,3 +148,18 @@ class TestRenderCode:
         assert render_code({}) == ""
         assert render_code({"diff_hunk": None, "snippet": None}) == ""
         assert render_code({"snippet": {"text": ""}}) == ""
+
+
+class TestRenderTake:
+    def test_both_lines(self):
+        card = {"thought": "Real crash on detached HEAD.", "suggested": "fix"}
+        assert render_take(card) == ("**Thought:** Real crash on detached HEAD.\n**Suggested:** fix")
+
+    def test_thought_only(self):
+        assert render_take({"thought": "Informational."}) == "**Thought:** Informational."
+
+    def test_suggested_only(self):
+        assert render_take({"suggested": "won't-fix"}) == "**Suggested:** won't-fix"
+
+    def test_neither(self):
+        assert render_take({}) == ""
