@@ -276,7 +276,7 @@ TABLE:
 
 METADATA:
 [
-  {"platform": "github", "id": 12345, "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "Add contents: read for the whole job — the full, untruncated comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
+  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "Add contents: read for the whole job — the full, untruncated comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
   ...
 ]
 
@@ -347,7 +347,7 @@ a misdiagnosed dismissal costs a full rework round — so it runs on **sonnet**,
 
 **Subagent prompt (per comment/group):**
 
-```
+````
 Analyze this PR/MR review comment and return a structured verdict.
 
 Comment ref: {ref} (by {user})
@@ -438,7 +438,7 @@ Steps:
 
 Return ONLY the verdict block (VERDICT/CLAIM/EVIDENCE/CATEGORY/THOUGHT/SUGGESTED and the
 optional SNIPPET). No other output.
-```
+````
 
 **Launch all subagents in parallel** (independent comments have no dependencies).
 
@@ -480,12 +480,22 @@ item with its Phase 3 verdict, then render it with `flow-comment-card`. The card
 
 | Card field | Source |
 |------------|--------|
-| `ref`, `path`, `start_line`, `line`, `outdated`, `body`, `thread`, `diff_hunk`, `snippet` | Phase 2 metadata (map `author` = metadata `user`; `source` = "bot" if `is_bot` else "human") |
+| `ref`, `path`, `start_line`, `line`, `outdated`, `body`, `thread`, `diff_hunk` | Phase 2 metadata (map `author` = metadata `user`) |
 | `category`, `thought`, `suggested` | Phase 3 verdict |
-| `snippet` | Phase 3 verdict's SNIPPET if present, else Phase 2 metadata `snippet` (GitLab) |
+| `snippet` | Phase 3 verdict's SNIPPET if present, else Phase 2 metadata `snippet` (GitLab). **When the card has a `snippet`, OMIT `diff_hunk` — see the override below.** |
 
-Build one JSON object and pipe it in. Example (any equivalent assembly works — the helper reads
-one comment object on stdin):
+**Thin-hunk override — a `snippet` on the card means DROP `diff_hunk`.** `flow-comment-card`'s
+`render_code` always prefers a non-empty `diff_hunk` over `snippet`, so a card carrying **both**
+never shows the snippet. But the Phase 3 subagent emits a SNIPPET *precisely* when it judged the
+reviewer's `diff_hunk` absent or **too thin** (and GitLab has no `diff_hunk` at all) — so the
+snippet is the fuller context you want to show. **Rule: if the assembled card has a non-empty
+`snippet`, remove `diff_hunk` from the card JSON.** No snippet → keep `diff_hunk`.
+
+The `source` value (`bot`/`human`) is computed only for the Phase 4.1 TOC ordering (humans first,
+bots second) — it is **not** a card field the renderer reads, so do **not** put it in the card JSON.
+
+Build one JSON object and pipe it in (`$snippet` below is the Phase 3 SNIPPET as JSON, or `null`).
+Any equivalent assembly works — the helper reads one comment object on stdin:
 
 ```bash
 card=$(jq -n \
@@ -493,9 +503,11 @@ card=$(jq -n \
   --arg category  "correctness" \
   --arg thought   "Agrees — real crash on detached HEAD; the guard is one frame too low." \
   --arg suggested "fix" \
-  '$meta + {author: $meta.user,
-            source: (if $meta.is_bot then "bot" else "human" end),
-            category: $category, thought: $thought, suggested: $suggested}')
+  --argjson snippet "null" \
+  '$meta
+   + {author: $meta.user, category: $category, thought: $thought, suggested: $suggested}
+   + (if $snippet != null then {snippet: $snippet} else {snippet: $meta.snippet} end)
+   | if (.snippet.text // "") != "" then del(.diff_hunk) else . end')
 echo "$card" | flow-comment-card
 ```
 
@@ -564,7 +576,7 @@ CLASS: (instance only)
 SITES: none
 ```
 
-`CLASS` is deliberately a separate field from the Phase 4 verdict `CATEGORY` —
+`CLASS` is deliberately a separate field from the Phase 3 verdict `CATEGORY` —
 the 5.3 self-review gate keys on `CATEGORY ∈ {correctness, logic, security}`, so
 the class name must never overwrite it.
 
