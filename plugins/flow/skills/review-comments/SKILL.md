@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-comment-card:*) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -12,7 +12,7 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-comment-
 
 This skill makes every unresolved review comment reviewable and triageable **inside Claude Code**: for each comment it shows the **anchored code** (syntax-highlighted), the **full comment text + thread**, and the **agent's take** (category + short honest assessment) as a per-comment **card**, then lets the user decide **fix / won't-fix / follow-up** per comment. It applies accepted fixes, argues against invalid comments, files follow-ups as beads tasks, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Flow shape:** Phase 2 collects comments **with their code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) and the **full** body. Phase 3 analyzes **all** non-replied comments up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
+**Flow shape:** Phase 2 collects in two passes — first a lightweight **TABLE + index**, then, after the large-PR **cap** (Phase 2.2) has selected a working set, the **full** bodies **with their code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) **only for that set** — so a large review never floods the context. Phase 3 analyzes the whole working set up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -27,8 +27,8 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 |------|--------|-----------|
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
-| 2. Collect **+ capture code** | Subagent: fetch + parse threads, keep `diff_hunk`/`position` + **full** body | Haiku subagent; code + full text reach main context |
-| 3. Analyze **all** | Parallel sonnet subagents over all non-replied comments | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; large-PR cap only |
+| 2. Collect **(cap before code)** | Pass 1: TABLE + lightweight index. Cap selects a working set. Pass 2: **full** body + `diff_hunk`/`position` **for the working set only** | Two haiku subagents; heavy payload reaches main context only AFTER the cap, for the selected set |
+| 3. Analyze the **working set** | Parallel sonnet subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → reply → commit → push | Fix the class; skeptic pass before push; follow-up = a beads task |
 
@@ -159,9 +159,20 @@ In all cases after PR/MR detection:
 git pull origin <branch>
 ```
 
-### Phase 2: Collect Comments + Capture Code (Single Haiku Subagent)
+### Phase 2: Collect Comments + Capture Code
 
-Use a **single haiku subagent** to fetch all comments and return structured data. This keeps raw API responses out of the main context. Unlike the old flow, this phase now **captures the code each comment is anchored to** and returns the **full** comment body — the card in Phase 4 shows both, so the user never opens the web UI.
+Collect in **two passes with the large-PR cap between them**, so a big review can never flood the
+main context: pass 1 (2.1) returns only the lightweight **TABLE + a per-ref index**; the cap (2.2)
+selects a working set from that TABLE; pass 2 (2.3) materializes the **full** bodies + code **only
+for the selected set**. The heavy payload — untruncated bodies, threads, `diff_hunk`s,
+reconstructed snippets — enters the main context in 2.3, *after* the cap has bounded how much of it
+there is.
+
+#### 2.1. Collect the lightweight TABLE + index (single haiku subagent)
+
+Use a **single haiku subagent** to fetch all comments and return **only** the TABLE and a
+lightweight per-ref index — **not** the full bodies, threads, `diff_hunk`s, or snippets. This keeps
+both the raw API responses and the heavy payload out of the main context until the cap has run.
 
 **Subagent:** `subagent_type="Bash"`, `model="haiku"`
 
@@ -212,17 +223,16 @@ If Platform is github:
   - SKIP resolved threads: drop any root whose str(id) ∈ resolved_root_ids — compare as
     STRINGS (REST id is a number, fullDatabaseId a string; normalize both). Mirror of the
     GitLab branch below. Resolved roots are removed ENTIRELY: not in the TABLE, not in
-    METADATA. (This is a HARDER skip than already_replied, which stays visible-and-marked.)
+    the INDEX (so 2.3 never materializes them). (This is a HARDER skip than already_replied,
+    which stays visible-and-marked.)
   - For each remaining root, collect thread replies (comments with in_reply_to_id == root.id).
   - Outdated: comment has "original_line" but "line" is null.
   - Source: user.login contains "[bot]" or equals "coderabbitai" → bot; else human.
   - Lines: single → "file.py:42"; range → "file.py:42-58" (use start_line and line).
   - already_replied: latest reply author == authenticated user.
   - Reply target: comment_id = root comment id; discussion_id = null.
-  - CODE — capture "diff_hunk": copy the root comment's "diff_hunk" field VERBATIM from
-    the pulls/{number}/comments response you already fetched (no extra API call). It is the
-    exact code the reviewer saw and works even when the comment is outdated. Store it as-is
-    (multi-line string). If a "(summary)" item has no diff_hunk, set diff_hunk = null.
+  - CODE is NOT captured in this pass. Do NOT emit diff_hunk here — Phase 2.3 copies each
+    SELECTED comment's diff_hunk. (This pass returns identifiers only; see STEP 4.)
 
 If Platform is gitlab:
   - Each discussion = one thread. Drop notes where system == true.
@@ -238,19 +248,9 @@ If Platform is gitlab:
   - Source: author.username matches "coderabbit" or contains "bot" → bot; else human.
   - already_replied: latest note author == authenticated user.
   - Reply target: discussion_id = discussion.id (string); comment_id = null.
-  - CODE — store "position": copy position.new_path, position.new_line, position.old_line,
-    and position.line_range verbatim into a "position" object. GitLab discussions carry NO
-    diff_hunk, so set diff_hunk = null and RECONSTRUCT a snippet here, inside this subagent:
-      * If new_line is set (not outdated): read the current file at new_path around new_line
-        with context, e.g. `sed -n '{new_line-4},{new_line+4}p' {new_path}`. Put the text in a
-        "snippet" object {"lang": LANG, "text": SED_OUTPUT}, where LANG is derived from the file
-        extension (.py→python, .js→javascript, .ts→typescript, .yml/.yaml→yaml, .sh→bash;
-        unknown extension → empty string "") and SED_OUTPUT is the sed text.
-      * If new_line is null (outdated): try old_line context from the MR diff if you have it;
-        otherwise set snippet = null (the card degrades to no code block + an outdated note).
-      * If the file read yields nothing usable (deleted/moved file), set snippet = null — do
-        NOT fail; the card degrades gracefully.
-    A "(summary)" / general item (no position) has diff_hunk = null and snippet = null.
+  - CODE is NOT captured in this pass. Do NOT store "position", read files, or reconstruct a
+    "snippet" here — Phase 2.3 does all of that for each SELECTED note (it is the expensive part,
+    and it is wasted on notes the cap drops). This pass returns identifiers only; see STEP 4.
 
 === STEP 3 — Bot summary ===
   - GitHub: find the review whose user.login is "coderabbitai" / contains "[bot]"; if its
@@ -274,68 +274,121 @@ TABLE:
 | C1 | workflow.yml  | 15-20  | Missing error handling        |          |
 | C2 | (summary)     | —      | Consider adding retry logic   |          |
 
-METADATA:
+INDEX:
 [
-  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "Add contents: read for the whole job — the full, untruncated comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
+  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null},
+  {"platform": "github", "ref": "C2", "user": "coderabbitai", "is_bot": true, "path": "(summary)", "start_line": null, "line": null, "outdated": false, "already_replied": false, "comment_id": null, "discussion_id": null},
   ...
 ]
 
 Rules for TABLE:
 - Humans first (U1, U2...), bots second (C1, C2...)
-- "Comment (brief)" column: truncate to ~40 chars (the TABLE stays terse; the FULL body lives in METADATA)
+- "Comment (brief)" column: truncate to ~40 chars (the TABLE stays terse; the FULL body is fetched later, in Phase 2.3)
 - Outdated column: "⚠️" if outdated, empty otherwise
 - Summary/general items: show "(summary)" as file, "—" as lines
 
-Rules for METADATA JSON:
+Rules for INDEX JSON (LIGHTWEIGHT — identifiers only, NO bodies/threads/code):
+- One object per root comment/thread, in the SAME order as the TABLE
 - "platform": "github" or "gitlab" — the same value for every item
 - "comment_id": GitHub root comment id (number); null on GitLab
 - "discussion_id": GitLab discussion id (string); null on GitHub
-- "body": the **FULL, UNTRUNCATED** comment text. Do NOT cap it — the card shows it whole.
-  (Only the TABLE "Comment (brief)" column is truncated.)
-- "thread": array of {user, body} for all replies in the thread (full bodies)
-- "diff_hunk": GitHub — the root comment's diff_hunk string (may be null); GitLab — null
-- "position": GitLab — {new_path, new_line, old_line, line_range} (may be null); GitHub — null
-- "snippet": GitLab-reconstructed {lang, text} current-file context (may be null); GitHub — null
+- "is_bot": true for a bot author, false for a human
+- "outdated": true if the commented line moved/was removed in the latest version
 - "already_replied": true if the latest thread reply is from the authenticated user
-- Include ALL root comments/threads, even if already_replied is true (table will mark them) —
+- Do NOT emit "body", "thread", "diff_hunk", "position", or "snippet" — those are heavy and are
+  materialized in Phase 2.3, for the selected working set ONLY
+- Include ALL root comments/threads, even if already_replied is true (the table marks them) —
   EXCEPT roots dropped as resolved in Step 2 (GitHub) / Step 2 (GitLab), which are excluded entirely
-- One JSON array, valid JSON, on a single line after "METADATA:"
+- One JSON array, valid JSON, on a single line after "INDEX:"
 
 If there are NO unresolved comments, return:
 TABLE:
 No unresolved review comments found.
 
-METADATA:
+INDEX:
 []
 ```
 
-**After subagent returns:**
+**After the subagent returns:**
 
-1. Parse output: split by `TABLE:` and `METADATA:` markers
-2. Store the JSON metadata array (with `body`, `diff_hunk`/`position`/`snippet`, `thread`) — Phase 3 analyzes it and Phase 4 assembles cards from it
-3. Filter out comments where `already_replied` is true — mention count: "({N} already replied, skipping)"
-4. If no actionable comments remain after filtering, report and stop
-5. Do **not** print a "process all?" gate here — the decision surface is the per-comment card in Phase 4. (The only gate is the large-PR cap in Phase 3.)
+1. Parse output: split by the `TABLE:` and `INDEX:` markers. Store the lightweight index (identifiers only — no bodies or code yet).
+2. Filter out index entries where `already_replied` is true — mention count: "({N} already replied, skipping)".
+3. If no actionable comments remain after filtering, report and stop.
 
-### Phase 3: Analyze ALL Comments (Parallel Sonnet Subagents)
+#### 2.2. Cap gate — select the working set (on the TABLE, before materializing anything)
 
-Analyze **every** non-`already_replied` comment up front — there is **no pre-analysis
-"process all? yes/select/no" gate** anymore. The per-comment card (Phase 4) is the decision
-surface, and its take must be a real, code-backed assessment; a take written without reading
-the code is exactly the shallow dismissal this skill fights.
+The large-PR cap runs **here**, on the lightweight TABLE, **before** any full body/thread/hunk
+exists in the main context — that is the entire point: it bounds how much heavy payload 2.3 pulls
+in. It is the **only** pre-analysis gate (the per-comment card in Phase 4 is the decision surface;
+do **not** add a separate "process all?" gate).
 
-**Large-PR cap (the only pre-analysis gate).** If there are **more than ~20** non-replied
-comments, first display the Phase 2 TABLE and ask, in **plain text**, and wait for the answer
-(plain text by design — a structured dialog auto-submits on the AFK timeout; claude-tools-6q4):
+- **≤ ~20** non-replied comments → the working set is **all** of them. No prompt; go straight to 2.3.
+- **> ~20** non-replied comments → display the Phase 2.1 TABLE and ask, in **plain text**, and wait
+  for the answer (plain text by design — a structured dialog auto-submits on the AFK timeout;
+  claude-tools-6q4):
 
 ```
 {N} comments — analyze all, or select a subset? (all / <comma-separated refs>)
 ```
 
-- **all** → analyze all.
-- **refs** (e.g. "U1, U3, C2") → analyze only those.
+- **all** → working set = all non-replied comments.
+- **refs** (e.g. "U1, U3, C2") → working set = only those.
 
-Below the threshold, analyze **all** silently (no prompt).
+#### 2.3. Materialize full metadata for the working set (single haiku subagent)
+
+Now — and **only** now, for the **working set** chosen in 2.2 — fetch the full bodies + code.
+Launch a **second haiku subagent**. On a large PR this is what keeps the main context bounded: only
+the selected subset's full bodies/threads/`diff_hunk`s/snippets are ever returned.
+
+**Subagent:** `subagent_type="Bash"`, `model="haiku"`
+
+**Subagent prompt:**
+
+```
+Re-run the Phase 2.1 fetch + parse for this platform (the SAME STEP 1 fetch and STEP 2 thread
+parsing), but this time return the FULL METADATA for ONLY these refs — the working set:
+{comma-separated selected refs}. Do NOT emit the TABLE, and emit nothing for refs outside the set.
+
+Platform: {PLATFORM}            (github or gitlab — do ONLY the block for this platform)
+GitHub identifiers: owner/repo = {owner}/{repo}, PR number = {number}
+GitLab identifiers: project (URL-encoded) = {project}, MR iid = {iid}
+
+For each SELECTED ref, capture the CODE that Phase 2.1 deferred:
+- GitHub: copy the root comment's "diff_hunk" VERBATIM from the pulls/{number}/comments response
+  (no extra API call) — the exact code the reviewer saw; it survives outdating. A "(summary)" item
+  with no diff_hunk → diff_hunk = null. Always position = null, snippet = null.
+- GitLab: store "position" = {new_path, new_line, old_line, line_range} verbatim; diff_hunk = null;
+  RECONSTRUCT "snippet" = {lang, text} from the CURRENT file around new_line, e.g.
+  `sed -n '{new_line-4},{new_line+4}p' {new_path}` (lang from the extension: .py→python,
+  .js→javascript, .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → ""). If new_line is null
+  (outdated) or the read yields nothing usable (deleted/moved file), snippet = null — degrade, do
+  NOT fail. A "(summary)"/general item (no position) → position = null, diff_hunk = null,
+  snippet = null.
+
+Return ONE section only (no TABLE):
+
+METADATA:
+[
+  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "the FULL, UNTRUNCATED comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
+  ...one object per SELECTED ref, in TABLE order...
+]
+
+Rules:
+- "body": the FULL, UNTRUNCATED comment text — do NOT cap it (only the TABLE brief was truncated).
+- "thread": array of {user, body} for every reply in the thread (full bodies).
+- Emit ONLY the working-set refs. One JSON array, valid JSON, on a single line after "METADATA:".
+```
+
+Store the returned METADATA array — Phase 3 analyzes it and Phase 4 assembles cards from it. It
+holds **only** the working set, so on a large PR the main context carries just the selected subset.
+
+### Phase 3: Analyze the Working Set (Parallel Sonnet Subagents)
+
+Analyze **every** comment in the working set materialized in Phase 2.3 — the large-PR cap
+(Phase 2.2) already selected that set, so there is **no** further "process all? yes/select/no" gate
+here. The per-comment card (Phase 4) is the decision surface, and its take must be a real,
+code-backed assessment; a take written without reading the code is exactly the shallow dismissal
+this skill fights. (Below the ~20 cap the working set is simply all non-replied comments.)
 
 For each comment to analyze (or group of comments in the same file with overlapping line
 ranges), launch a **sonnet subagent**. Analysis is where a shallow read does the most damage —
@@ -395,9 +448,9 @@ Steps:
    context (e.g. `sed -n '{start-4},{end+4}p' {path}`) and return it as a fenced block tagged
    with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
    file/lines no longer exist.
-   GitLab: do NOT re-run `sed` here — Phase 2 already reconstructed a `snippet` into the
+   GitLab: do NOT re-run `sed` here — Phase 2.3 already reconstructed a `snippet` into the
    metadata for GitLab notes (their diff_hunk is always null). Leave SNIPPET empty and let the
-   Phase 4.2 fallback use that Phase-2 snippet. Re-reading the file here would just duplicate it.
+   Phase 4.2 fallback use that Phase-2.3 snippet. Re-reading the file here would just duplicate it.
 
 6. Return the verdict in this EXACT structured form. Every verdict has CATEGORY, THOUGHT,
    and SUGGESTED lines. `disagree` and `outdated_fixed` ALSO need CLAIM and EVIDENCE lines.
@@ -478,14 +531,14 @@ Triaging {N} comments (humans first, then bots):
 
 #### 4.2. One card at a time
 
-For each comment (in TOC order), **assemble the card JSON** by merging the Phase 2 metadata
+For each comment (in TOC order), **assemble the card JSON** by merging the Phase 2.3 metadata
 item with its Phase 3 verdict, then render it with `flow-comment-card`. The card fields:
 
 | Card field | Source |
 |------------|--------|
-| `ref`, `path`, `start_line`, `line`, `outdated`, `body`, `thread`, `diff_hunk` | Phase 2 metadata (map `author` = metadata `user`) |
+| `ref`, `path`, `start_line`, `line`, `outdated`, `body`, `thread`, `diff_hunk` | Phase 2.3 metadata (map `author` = metadata `user`) |
 | `category`, `thought`, `suggested` | Phase 3 verdict |
-| `snippet` | Phase 3 verdict's SNIPPET if present, else Phase 2 metadata `snippet` (GitLab). **When the card has a `snippet`, OMIT `diff_hunk` — see the override below.** |
+| `snippet` | Phase 3 verdict's SNIPPET if present, else Phase 2.3 metadata `snippet` (GitLab). **When the card has a `snippet`, OMIT `diff_hunk` — see the override below.** |
 
 **Thin-hunk override — a `snippet` on the card means DROP `diff_hunk`.** `flow-comment-card`'s
 `render_code` always prefers a non-empty `diff_hunk` over `snippet`, so a card carrying **both**
@@ -728,17 +781,29 @@ Proceed? (yes / edit / no)
 ```
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
-`bd create`). For special characters in the description, prefer `--body-file -` (stdin) or
-single-quote it:
+`bd create`). The reviewer's comment text is **untrusted** — it routinely contains backticks,
+`$HOME`, or `$(...)`. **Never inline `{full comment text}` into a double-quoted `--description`:**
+the shell runs the command substitution and expands the variables *before* `bd create` sees them,
+corrupting the task body (or executing whatever the reviewer wrote). Materialize the description
+with a **quoted heredoc** — the `<<'EOF'` quotes stop ALL expansion, so backticks / `$HOME` /
+`$(...)` reach `bd` verbatim — then pass it as a variable (equivalently, pipe the heredoc into
+`bd create … --body-file -`, the stdin form):
 
 ```bash
-bd create --title "Guard branch_name against detached HEAD" --type bug --priority 2 \
-  --parent claude-tools-5dl --description "**PR:** {url}
+DESC=$(cat <<'EOF'
+**PR:** {url}
 **Location:** packages/statuskit/src/statuskit/modules/git.py:42
 **Reviewer (coderabbitai):** {full comment text}
 
-**Take:** real crash on detached HEAD; deferred to its own task."
+**Take:** real crash on detached HEAD; deferred to its own task.
+EOF
+)
+bd create --title "Guard branch_name against detached HEAD" --type bug --priority 2 \
+  --parent claude-tools-5dl --description "$DESC"
 ```
+
+The heredoc delimiter MUST be quoted (`<<'EOF'`, not `<<EOF`) — an unquoted delimiter re-enables
+`$`/backtick expansion inside the body and reintroduces the bug.
 
 After creating all follow-ups, **persist to the shared beads store**:
 
@@ -842,8 +907,8 @@ Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries **with their anchored code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) and the **full** comment text
-- Analyze **all** non-replied comments with parallel sonnet subagents (dismissals must cite the moot code)
+- Collect all unresolved inline comments and review summaries in two passes — a lightweight TABLE + index first, then, after the large-PR cap, the **full** comment text **with their anchored code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) for the selected working set
+- Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel sonnet subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
 - Let the user triage each comment **fix / won't-fix / follow-up**, one card at a time
@@ -947,8 +1012,8 @@ Agent: Obvious fixes: U1, C1.  Disagree: U2.  Outdated: U3.
 ```
 User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
-       [Haiku subagent collects comments WITH diff_hunk + full body]
-       [3 non-replied comments → below the ~20 cap → analyzes ALL in parallel sonnet]
+       [Pass 1 haiku subagent → TABLE + lightweight index; 3 non-replied, below the ~20 cap → working set = all 3]
+       [Pass 2 haiku subagent → full bodies + diff_hunk for those 3; analyzes ALL in parallel sonnet]
 
        Triaging 3 comments (humans first, then bots):
 
@@ -1209,21 +1274,23 @@ If a comment's `path` points to a file that no longer exists:
 
 ### GitLab Thin / Absent Snippet
 
-GitLab has no `diff_hunk`; the snippet is reconstructed from the current file (Phase 2). If that
+GitLab has no `diff_hunk`; the snippet is reconstructed from the current file (Phase 2.3). If that
 read yields nothing usable (moved/renamed file, `new_line` out of range), **render the card
 without a code block** and note the `position` in the take — **degrade, don't fail**. The card
 still shows source + full text + take.
 
 ### Very Large Number of Comments (large-PR cap)
 
-The pre-analysis gate exists **only** for large PRs (see Phase 3). If there are **more than ~20**
-non-replied comments:
+The pre-analysis gate exists **only** for large PRs (see Phase 2.2). It runs on the lightweight
+TABLE **before** the full bodies/hunks are materialized (Phase 2.3), so a big review never floods
+the main context. If there are **more than ~20** non-replied comments:
 
-1. Show the full TABLE.
+1. Show the full TABLE (from Phase 2.1 — no full bodies fetched yet).
 2. Ask, in plain text: "{N} comments — analyze all, or select a subset? (all / <refs>)".
-3. If the user selects a subset, analyze and triage only those.
+3. Materialize full metadata (Phase 2.3) and analyze/triage **only** the selected subset.
 
-Below the threshold, analyze **all** and go straight to card-by-card triage — no gate.
+Below the threshold, the working set is all non-replied comments — materialize all and go straight
+to card-by-card triage; no prompt.
 
 ## The Bottom Line
 
