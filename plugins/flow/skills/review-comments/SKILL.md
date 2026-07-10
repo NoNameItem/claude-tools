@@ -351,6 +351,16 @@ Now — and **only** now, for the **working set** chosen in 2.2 — fetch the fu
 Launch a **second haiku subagent**. On a large PR this is what keeps the main context bounded: only
 the selected subset's full bodies/threads/`diff_hunk`s/snippets are ever returned.
 
+> **Untrusted-data rule (referenced throughout this skill).** Reviewer-supplied values —
+> file paths, `bd create` title/description, reply bodies, the LLM `thought` — are
+> **never inlined into shell command source**. Either (a) they never touch a shell: read
+> files with the **Read tool**, pass JSON via `--argjson`/`jq`; or (b) they are
+> materialized into a shell variable via a quoted heredoc and referenced as `"$var"`.
+> Double-quoting an **inlined literal** is *not* enough — quotes stop word-splitting and
+> globbing but **not** command substitution `$(...)` / backticks, so `"x$(cmd).py"` still
+> runs `cmd`. `"$path"` (a variable reference) is safe; `"{placeholder}"` filled in with
+> untrusted text is not.
+
 **Subagent:** `subagent_type="Bash"`, `model="haiku"`
 
 **Subagent prompt:**
@@ -607,7 +617,7 @@ turn Phase 3's fenced SNIPPET block into the JSON `--argjson snippet` needs. Any
 assembly works — the helper reads one comment object on stdin:
 
 ```bash
-# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal. Use a DISTINCTIVE
+# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal. Use a DISTINCTIVE (untrusted-data rule, 2.3)
 # delimiter (FLOW_RC_EOF): quoting stops expansion but NOT delimiter collision — a plain 'EOF'
 # terminates early if the captured text contains a line that is exactly EOF (common in code/shell
 # snippets and review text). The delimiter MUST be a token that does not appear in the content.
@@ -861,7 +871,7 @@ Proceed? (yes / edit / no)
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
 `bd create`). **Both the title and the description derive from the reviewer's comment** (the title
-from its substance — see above), and that text is **untrusted** — it routinely contains backticks,
+from its substance — see above), and that text is **untrusted** (untrusted-data rule, 2.3) — it routinely contains backticks,
 `$HOME`, or `$(...)`. **Never inline the reviewer-derived title or comment text into a double-quoted
 `--title` / `--description`:** the shell runs the command substitution and expands the variables
 *before* `bd create` sees them, corrupting the task (or executing whatever the reviewer wrote).
@@ -932,7 +942,7 @@ glab api --method POST \
 
 **Do NOT reply to comments where `already_replied` is true.**
 
-**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it — works for both platforms:
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule, 2.3) — works for both platforms:
 
 ```bash
 body=$(cat <<'FLOW_RC_EOF'
