@@ -255,7 +255,7 @@ If Platform is gitlab:
 === STEP 3 — Bot summary ===
   - GitHub: find the review whose user.login is "coderabbitai" / contains "[bot]"; if its
     body has actionable items not in the inline comments, add them as items with
-    path="(summary)", line="—".
+    path="(summary)", line="—", and set summary_id = that review's id.
   - GitLab: a bot's summary/walkthrough is just a general (no-position) note already
     captured in Step 2 as a "(summary)" item — no separate fetch.
 
@@ -292,6 +292,9 @@ Rules for INDEX JSON (LIGHTWEIGHT — identifiers only, NO bodies/threads/code):
 - "platform": "github" or "gitlab" — the same value for every item
 - "comment_id": GitHub root comment id (number); null on GitLab
 - "discussion_id": GitLab discussion id (string); null on GitHub
+- "summary_id": for a GitHub `(summary)` item ONLY, the review id whose body produced it (from the
+  reviews response); null for every inline comment and on GitLab. This is the summary's stable id —
+  a summary has no root comment id, so it is carried/selected by `summary_id`, never by `comment_id`.
 - `comment_id` (GitHub) / `discussion_id` (GitLab) are the **stable selection key**: the cap gate
   (2.2) records them for the chosen refs and 2.3 materializes by matching them, so the working set
   survives any ordinal renumbering between the two passes
@@ -341,9 +344,9 @@ do **not** add a separate "process all?" gate).
 *display* numbering derived from the fetch order — if a comment is added, resolved, or deleted while
 you sit at this prompt, a fresh fetch renumbers them and the same ordinal points at a different
 thread. So from the Phase 2.1 INDEX, look up each selected ref's stable id (GitHub `comment_id`,
-GitLab `discussion_id`) and pass **`{ref ⇒ stable-id}` pairs** to 2.3 — 2.3 matches on the stable
-id, never on a re-derived ordinal. (For the ≤ ~20 / **all** case, the working set is every
-non-replied comment's pair.)
+GitLab `discussion_id`; for a GitHub `(summary)` ref use its `summary_id`) and pass **`{ref ⇒
+stable-id}` pairs** to 2.3 — 2.3 matches on the stable id, never on a re-derived ordinal. (For the
+≤ ~20 / **all** case, the working set is every non-replied comment's pair.)
 
 #### 2.3. Materialize full metadata for the working set (single haiku subagent)
 
@@ -385,9 +388,10 @@ emit nothing for comments outside the working set.
 comment id** (`comment_id: null`) and can never equal a pair's `comment_id`. Re-matching would
 silently drop it — or collide two null-id summaries into one — so actionable bot-summary items
 would never reach analysis/triage. For any `(summary)` ref in the working set, carry its Phase 2.1
-record straight through to this pass's METADATA, keyed by its ref (diff_hunk = null, position =
-null, snippet = null); if you need the full review body, re-read it from the reviews endpoint by its
-review id. Only inline threads are matched by stable id.
+record straight through to this pass's METADATA, keyed by its ref, matched via `summary_id`
+(diff_hunk = null, position = null, snippet = null); re-read the full review body from the reviews
+response by its `summary_id` (the review id carried in the INDEX). Only inline threads are matched
+by stable id.
 
 Platform: {PLATFORM}            (github or gitlab — do ONLY the block for this platform)
 GitHub identifiers: owner/repo = {owner}/{repo}, PR number = {number}
