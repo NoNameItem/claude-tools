@@ -59,7 +59,7 @@ def format_location(card: dict) -> str:
 def render_header(card: dict) -> str:
     """Render '### {emoji} {ref} · {category} · {location}' (+ ' ⚠️ outdated')."""
     emoji = category_emoji(card.get("category"))
-    ref = card.get("ref", "?")
+    ref = card.get("ref") or "?"
     category = card.get("category") or "none"
     header = f"### {emoji} {ref} · {category} · {format_location(card)}"
     if card.get("outdated"):

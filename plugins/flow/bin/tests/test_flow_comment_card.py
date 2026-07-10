@@ -9,6 +9,8 @@ import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+import pytest
+
 # Import the extension-less executable as a module (mirrors test_flow_task_card.py)
 _HELPER = Path(__file__).parent.parent / "flow-comment-card"
 _spec = importlib.util.spec_from_file_location(
@@ -247,14 +249,21 @@ class TestMain:
         result = _run("")
         assert result.returncode == 1
 
+    def test_empty_object_errors(self):
+        # Valid JSON but no comment data -> the "No comment data." path.
+        result = _run("{}")
+        assert result.returncode == 1
+
+    def test_empty_array_errors(self):
+        # Valid JSON but no comment data -> the "No comment data." path.
+        result = _run("[]")
+        assert result.returncode == 1
+
     def test_output_is_not_wrapped_in_an_outer_fence(self):
         # The card must NOT be wrapped: it already contains ```-fences.
         card = {"ref": "C1", "category": "doc", "author": "a", "body": "hi"}
         result = _run(json.dumps(card))
         assert not result.stdout.startswith("```")
-
-
-import pytest  # noqa: E402
 
 
 class TestGoldenCards:
