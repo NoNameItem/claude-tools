@@ -276,8 +276,8 @@ TABLE:
 
 INDEX:
 [
-  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null},
-  {"platform": "github", "ref": "C2", "user": "coderabbitai", "is_bot": true, "path": "(summary)", "start_line": null, "line": null, "outdated": false, "already_replied": false, "comment_id": null, "discussion_id": null},
+  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "summary_id": null},
+  {"platform": "github", "ref": "C2", "user": "coderabbitai", "is_bot": true, "path": "(summary)", "start_line": null, "line": null, "outdated": false, "already_replied": false, "comment_id": null, "discussion_id": null, "summary_id": 987654},
   ...
 ]
 
@@ -295,7 +295,7 @@ Rules for INDEX JSON (LIGHTWEIGHT — identifiers only, NO bodies/threads/code):
 - "summary_id": for a GitHub `(summary)` item ONLY, the review id whose body produced it (from the
   reviews response); null for every inline comment and on GitLab. This is the summary's stable id —
   a summary has no root comment id, so it is carried/selected by `summary_id`, never by `comment_id`.
-- `comment_id` (GitHub) / `discussion_id` (GitLab) are the **stable selection key**: the cap gate
+- `comment_id` (GitHub) / `discussion_id` (GitLab) / `summary_id` (GitHub `(summary)`) are the **stable selection key**: the cap gate
   (2.2) records them for the chosen refs and 2.3 materializes by matching them, so the working set
   survives any ordinal renumbering between the two passes
 - "is_bot": true for a bot author, false for a human
@@ -425,7 +425,7 @@ Return ONE section only (no TABLE):
 
 METADATA:
 [
-  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "the FULL, UNTRUNCATED comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
+  {"platform": "github", "ref": "U1", "user": "username", "is_bot": false, "path": "workflow.yml", "start_line": null, "line": 22, "body": "the FULL, UNTRUNCATED comment text goes here.", "outdated": false, "already_replied": false, "comment_id": 12345, "discussion_id": null, "summary_id": null, "thread": [{"user": "author", "body": "reply text"}], "diff_hunk": "@@ -20,3 +20,4 @@ jobs:\n   build:\n     runs-on: ubuntu-latest\n+    permissions:", "position": null, "snippet": null},
   ...one object per SELECTED ref, in TABLE order...
 ]
 
