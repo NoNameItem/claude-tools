@@ -47,6 +47,10 @@ DEFAULT_CONFIG = """\
 # show_changes = true
 # show_commit = true
 # commit_age_format = "relative"  # "relative", "compact"
+# show_pr = true                  # show branch PR (gh) / MR (glab); needs gh/glab installed
+# pr_provider = "auto"            # "auto", "github", "gitlab"
+# pr_link = true                  # wrap PR/MR token in an OSC 8 hyperlink
+# pr_cache_ttl = 300              # min seconds between PR/MR network lookups
 
 # ─────────────────────────────────────────────────────────────
 # Usage limits module: API quota tracking (5h session, 7d weekly)

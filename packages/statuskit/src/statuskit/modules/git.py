@@ -1,17 +1,306 @@
 """Git module for statuskit."""
 
+from __future__ import annotations
+
+import json
+import shutil
 import subprocess
-from collections.abc import Mapping
+import tempfile
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from termcolor import colored
 
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from statuskit.core.models import RenderContext
+
+
+@dataclass
+class PrInfo:
+    """A branch's pull/merge request: provider, reference number, state, web URL."""
+
+    provider: str  # "github" | "gitlab"
+    number: int
+    state: str  # "open" | "draft" | "merged" | "closed"
+    url: str
+
+
+@dataclass
+class CliResult:
+    """Outcome of a `gh`/`glab` invocation. `ok` is exit-0; `reason` explains a failure."""
+
+    ok: bool
+    stdout: str
+    stderr: str
+    reason: str | None
+
+
+@dataclass
+class PrCacheEntry:
+    """A cached PR lookup for one (host, branch): the result and when it was last attempted."""
+
+    info: PrInfo | None  # None = cached negative ("no PR")
+    last_attempt_at: datetime
+
+
+@dataclass
+class PrCacheDoc:
+    """The whole git_pr.json document: per-host providers + per-key PR entries + detection misses."""
+
+    providers: dict[str, str]  # host -> "github" | "gitlab" (positive resolutions only)
+    entries: dict[str, PrCacheEntry]  # "slug\tbranch" -> entry (slug = host/owner/repo)
+    provider_misses: dict[str, datetime] = field(default_factory=dict)  # host -> last failed-detection time
+
+    @classmethod
+    def empty(cls) -> PrCacheDoc:
+        return cls(providers={}, entries={}, provider_misses={})
+
+
+def _serialize_pr_info(info: PrInfo | None) -> dict | None:
+    if info is None:
+        return None
+    return {"provider": info.provider, "number": info.number, "state": info.state, "url": info.url}
+
+
+def _deserialize_pr_info(data: dict | None) -> PrInfo | None:
+    if not data:
+        return None
+    return PrInfo(
+        provider=data["provider"],
+        number=data["number"],
+        state=data["state"],
+        url=data.get("url", ""),
+    )
+
+
+class PrCache:
+    """File-backed cache for PR lookups + resolved providers, mirroring UsageCache.
+
+    Load never raises (returns an empty doc on missing/corrupt); save is atomic
+    (temp file + Path.replace) and never raises.
+    """
+
+    def __init__(self, cache_dir: Path, ttl: int = 300):
+        self.cache_dir = cache_dir
+        self.ttl = ttl
+        self.cache_file = cache_dir / PR_CACHE_FILENAME
+
+    def load(self) -> PrCacheDoc:
+        """Read the cache document, degrading silently on any corruption.
+
+        A missing, unreadable, non-JSON, or wrong-shaped file yields an empty
+        doc rather than raising. A single unparseable entry is skipped so the
+        remaining valid entries and all providers survive (per-row degradation,
+        mirroring UsageCache).
+        """
+        try:
+            if not self.cache_file.exists():
+                return PrCacheDoc.empty()
+            raw = json.loads(self.cache_file.read_text())
+            providers = {host: prov for host, prov in raw.get("providers", {}).items() if prov in _CLI_BINARY}
+            entries: dict[str, PrCacheEntry] = {}
+            for key, entry in raw.get("entries", {}).items():
+                try:
+                    last_attempt_at = datetime.fromisoformat(entry["last_attempt_at"])
+                    if last_attempt_at.tzinfo is None:
+                        continue  # naive timestamp — treat row as corrupt, skip it
+                    entries[key] = PrCacheEntry(
+                        info=_deserialize_pr_info(entry.get("info")), last_attempt_at=last_attempt_at
+                    )
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    continue
+            provider_misses: dict[str, datetime] = {}
+            for host, ts in raw.get("provider_misses", {}).items():
+                try:
+                    parsed = datetime.fromisoformat(ts)
+                    if parsed.tzinfo is None:
+                        continue  # naive timestamp — treat row as corrupt, skip it
+                    provider_misses[host] = parsed
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    continue
+            return PrCacheDoc(providers=providers, entries=entries, provider_misses=provider_misses)
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError, OSError):
+            return PrCacheDoc.empty()
+
+    def save(self, doc: PrCacheDoc) -> None:
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "version": 1,
+                "providers": doc.providers,
+                "entries": {
+                    key: {
+                        "info": _serialize_pr_info(entry.info),
+                        "last_attempt_at": entry.last_attempt_at.isoformat(),
+                    }
+                    for key, entry in doc.entries.items()
+                },
+                "provider_misses": {host: ts.isoformat() for host, ts in doc.provider_misses.items()},
+            }
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
+                f.write(json.dumps(payload))
+                temp_path = Path(f.name)
+            try:
+                temp_path.replace(self.cache_file)
+            except OSError:
+                temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def parse_remote_host(remote_url: str) -> str | None:
+    """Extract the host from a git remote URL.
+
+    Handles both the scheme-based form (``https://HOST/…``, ``ssh://git@HOST:port/…``)
+    and the scp-like SSH form (``[user@]HOST:group/repo.git``). Strips any userinfo
+    (``user@``) and port (``:8443``). Returns None for empty or unparseable input.
+    The returned host is lowercased, since hostnames are case-insensitive.
+    """
+    url = remote_url.strip()
+    if not url:
+        return None
+    if "://" in url:
+        authority = url.split("://", 1)[1].split("/", 1)[0]
+        if "@" in authority:
+            authority = authority.rsplit("@", 1)[1]
+        return authority.split(":", 1)[0].lower() or None
+    # scp-like SSH: [user@]host:path
+    if ":" in url:
+        before_colon = url.split(":", 1)[0]
+        if "@" in before_colon:
+            before_colon = before_colon.rsplit("@", 1)[1]
+        return before_colon.lower() or None
+    return None
+
+
+def parse_remote_slug(remote_url: str) -> str | None:
+    """Stable per-repository identity ``host/path`` from a git remote URL.
+
+    ``git@github.com:Org/Repo.git`` and ``https://github.com/Org/Repo`` both yield
+    ``github.com/Org/Repo``. Host is lowercased (case-insensitive); the path keeps its
+    case and drops a trailing ``.git``. Returns None for empty/unparseable input.
+    """
+    url = remote_url.strip()
+    host = parse_remote_host(url)
+    if not url or host is None:
+        return None
+    if "://" in url:
+        after = url.split("://", 1)[1]
+        path = after.split("/", 1)[1] if "/" in after else ""
+    elif ":" in url:
+        path = url.split(":", 1)[1]
+    else:
+        return None
+    path = path.strip("/").removesuffix(".git")
+    return f"{host}/{path}" if path else None
+
+
+def _github_state(state: str | None, is_draft: bool) -> str | None:
+    """Map a `gh` PR state (+isDraft) to our state vocabulary, or None if unrecognized."""
+    if state == "OPEN":
+        return "draft" if is_draft else "open"
+    if state == "MERGED":
+        return "merged"
+    if state == "CLOSED":
+        return "closed"
+    return None
+
+
+def _gitlab_state(state: str | None, is_draft: bool) -> str | None:
+    """Map a `glab` MR state (+draft) to our state vocabulary, or None if unrecognized."""
+    if state == "opened":
+        return "draft" if is_draft else "open"
+    if state == "merged":
+        return "merged"
+    if state in ("closed", "locked"):
+        return "closed"
+    return None
+
+
+def parse_github_pr_list(stdout: str, owner: str | None = None) -> list[PrInfo] | None:
+    """Parse `gh pr list --json …` output.
+
+    Returns a list of PrInfo (empty = no PR, a normal result), or None when the
+    payload is not a JSON array (a malformed/error result the caller reports).
+
+    When ``owner`` is given, PRs whose head repository belongs to a different owner
+    (fork PRs that merely share the branch name) are dropped, so only the current
+    repo's own PR for the branch is considered.
+    """
+    try:
+        items = json.loads(stdout or "[]")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    result: list[PrInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if owner is not None:
+            head_owner = (item.get("headRepositoryOwner") or {}).get("login")
+            # GitHub owner names are case-insensitive; ``owner`` keeps the remote URL's
+            # casing while ``head_owner`` is GitHub's canonical login, so compare folded.
+            if head_owner is not None and head_owner.lower() != owner.lower():
+                continue  # fork PR with the same head branch name — not ours
+        number = item.get("number")
+        state = _github_state(item.get("state"), bool(item.get("isDraft", False)))
+        if not isinstance(number, int) or state is None:
+            continue
+        result.append(PrInfo(provider="github", number=number, state=state, url=item.get("url", "") or ""))
+    return result
+
+
+def parse_gitlab_mr_list(stdout: str) -> list[PrInfo] | None:
+    """Parse `glab mr list --output json` output. Same contract as parse_github_pr_list.
+
+    MRs opened from a fork (``source_project_id`` != ``target_project_id``) are dropped
+    so a fork MR sharing the source-branch name is not mistaken for the current repo's MR.
+    """
+    try:
+        items = json.loads(stdout or "[]")
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    result: list[PrInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        src = item.get("source_project_id")
+        tgt = item.get("target_project_id")
+        if src is not None and tgt is not None and src != tgt:
+            continue  # fork MR with the same source-branch name — not ours
+        number = item.get("iid")
+        is_draft = bool(item.get("draft", item.get("work_in_progress", False)))
+        state = _gitlab_state(item.get("state"), is_draft)
+        if not isinstance(number, int) or state is None:
+            continue
+        result.append(PrInfo(provider="gitlab", number=number, state=state, url=item.get("web_url", "") or ""))
+    return result
+
+
+def _select_pr(candidates: list[PrInfo]) -> PrInfo | None:
+    """Pick one PR when a branch has several: open>draft>merged>closed, then highest number."""
+    if not candidates:
+        return None
+    return min(candidates, key=lambda p: (_PR_STATE_PRECEDENCE.get(p.state, 99), -p.number))
+
+
 _GIT_TIMEOUT = 2  # seconds
+_CLI_TIMEOUT = 3  # seconds — gh/glab may touch the network
+_CLI_BINARY: dict[str, str] = {"github": "gh", "gitlab": "glab"}
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
+_MIN_SLUG_PARTS_FOR_OWNER = 2  # "host/owner/repo" needs ≥2 slashes to have an owner segment
+PR_CACHE_FILENAME = "git_pr.json"
 
 # Time conversion constants
 _MINUTES_PER_HOUR = 60
@@ -22,6 +311,18 @@ _MINUTES_PER_YEAR = 525600  # 365 * 1440
 
 # Age format constant
 _JUST_NOW = "just now"
+
+_PR_STATE_PRECEDENCE: dict[str, int] = {"open": 0, "draft": 1, "merged": 2, "closed": 3}
+_PR_STATE_STYLE: dict[str, tuple[str, str]] = {
+    "open": ("●", "green"),
+    "draft": ("○", "yellow"),
+    "merged": ("✓", "magenta"),
+    "closed": ("✗", "red"),
+}
+_PR_LABEL: dict[str, tuple[str, str]] = {
+    "github": ("PR", "#"),
+    "gitlab": ("MR", "!"),
+}
 
 # Git age unit to minutes mapping
 _UNIT_TO_MINUTES: dict[str, int] = {
@@ -60,6 +361,18 @@ class GitParams:
     show_remote_status: bool = param(True, "Show remote tracking status")
     show_changes: bool = param(True, "Show working tree change counts")
     show_commit: bool = param(True, "Show last commit hash and age")
+    show_pr: bool = param(True, "Show the current branch's PR (GitHub) / MR (GitLab)")
+    pr_provider: str = param(
+        "auto",
+        "PR provider detection",
+        choices={
+            "auto": "detect from the remote host and CLI auth",
+            "github": "force GitHub (`gh`)",
+            "gitlab": "force GitLab (`glab`)",
+        },
+    )
+    pr_link: bool = param(True, "Wrap the PR/MR token in an OSC 8 terminal hyperlink")
+    pr_cache_ttl: int = param(300, "Minimum seconds between PR/MR network lookups")
 
 
 class GitModule(BaseModule[GitParams]):
@@ -67,6 +380,157 @@ class GitModule(BaseModule[GitParams]):
 
     name = "git"
     description = "Git branch, status, and location"
+
+    def __init__(self, ctx: RenderContext, raw_section: dict) -> None:
+        """Initialize module: parse params, then set up the PR cache and debug channel."""
+        super().__init__(ctx, raw_section)
+        self.cache = PrCache(cache_dir=ctx.cache_dir, ttl=self.params.pr_cache_ttl) if ctx.cache_dir else None
+        self._debug_messages: list[str] = []
+
+    def _note_debug(self, message: str) -> None:
+        """Record a debug reason; surfaced (in debug mode) at the end of render()."""
+        self._debug_messages.append(message)
+
+    def _upstream_remote(self) -> str | None:
+        """Remote the current branch tracks, or None for no/local upstream.
+
+        Reads ``branch.<name>.remote`` from config directly rather than parsing
+        ``@{upstream}``: this handles remote names that contain ``/`` (Git allows
+        ``team/fork``) and returns None when the upstream is a *local* branch
+        (``remote = .``) or absent — cases where a remote PR/MR lookup is meaningless.
+        """
+        branch = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        if not branch or branch == "HEAD":  # detached HEAD — no tracking branch
+            return None
+        remote = self._run_git("config", "--get", f"branch.{branch}.remote")
+        if not remote or remote == ".":  # no upstream, or a local-branch upstream
+            return None
+        return remote
+
+    def _upstream_branch(self) -> str | None:
+        """Remote branch name the current branch tracks (``branch.<name>.merge``), or None.
+
+        The PR/MR list filters (``gh pr list --head`` / ``glab mr list --source-branch``)
+        match the *remote* head/source branch name. When a local branch is a differently
+        named alias of its upstream (``git checkout -b work origin/feature/login``), the
+        local name would miss the PR; read the tracked branch name instead. Returns None
+        for a detached HEAD or a branch with no configured upstream ref, so the caller
+        falls back to the local branch name.
+        """
+        branch = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        if not branch or branch == "HEAD":  # detached HEAD — no tracking branch
+            return None
+        merge_ref = self._run_git("config", "--get", f"branch.{branch}.merge")
+        if not merge_ref:  # no configured upstream branch
+            return None
+        return merge_ref.removeprefix("refs/heads/")
+
+    def _get_remote(self) -> tuple[str, str] | None:
+        """(host, slug) of the branch's tracked remote, or None when there is none.
+
+        ``host`` drives provider detection (cached per host); ``slug`` ('host/owner/repo')
+        is the per-repository cache identity so two repos on one host that share a branch
+        name don't alias each other's PR/MR lookups. Resolving the branch's actual tracked
+        remote (not a hard-coded origin) matches the sync indicator; a local-only or absent
+        upstream yields None so we don't show an unrelated origin PR for the same branch.
+        """
+        remote = self._upstream_remote()
+        if remote is None:
+            return None
+        url = self._run_git("remote", "get-url", remote)
+        if not url:
+            return None
+        host = parse_remote_host(url)
+        slug = parse_remote_slug(url)
+        if host is None or slug is None:
+            return None
+        return host, slug
+
+    def _resolve_provider(self, host: str, doc: PrCacheDoc) -> str | None:
+        """Provider for host: explicit override → cached positive → throttled detection.
+
+        Detection may run `gh`/`glab auth status` (each with a CLI timeout). After a failed
+        detection the host is recorded in ``doc.provider_misses`` and not re-probed for
+        ``pr_cache_ttl`` seconds, so an unknown self-hosted host does not re-run auth-status
+        on every render. A positive resolution is cached in ``doc.providers`` and clears any
+        recorded miss, so fixing CLI auth is re-detected on the next render past the TTL.
+        """
+        if self.params.pr_provider in ("github", "gitlab"):
+            return self.params.pr_provider
+        cached = doc.providers.get(host)
+        if cached in ("github", "gitlab"):
+            return cached
+        now = datetime.now(UTC)
+        last_miss = doc.provider_misses.get(host)
+        if last_miss is not None and (now - last_miss).total_seconds() < self.params.pr_cache_ttl:
+            return None  # recently probed and still unknown — skip re-probing
+        provider = self._detect_provider(host)
+        if provider is not None:
+            doc.providers[host] = provider  # cache positive resolutions only
+            doc.provider_misses.pop(host, None)  # resolved — clear any miss marker
+        else:
+            doc.provider_misses[host] = now  # remember the miss to throttle re-probing
+        return provider
+
+    def _get_pr(self, branch: str, remote_status: tuple[str, int]) -> PrInfo | None:
+        """Resolve the branch's PR/MR, or None. Degrades silently; notes debug reasons.
+
+        Loads the cache once, delegates the gated/throttled lookup to _pr_lookup (which
+        mutates the doc and reports whether it changed), then persists only when needed.
+        """
+        if not self.params.show_pr:
+            return None  # feature off — no debug
+        if remote_status[0] == "no_upstream":
+            return None  # local-only branch: no which(), no network
+        remote = self._get_remote()
+        if remote is None:
+            self._note_debug("PR: could not resolve remote host")
+            return None
+        host, slug = remote
+        doc = self.cache.load() if self.cache else PrCacheDoc.empty()
+        info, changed = self._pr_lookup(host, slug, branch, doc)
+        if self.cache is not None and changed:
+            self.cache.save(doc)  # only when a provider/miss was cached or an entry written
+        return info
+
+    def _pr_lookup(self, host: str, slug: str, branch: str, doc: PrCacheDoc) -> tuple[PrInfo | None, bool]:
+        """CLI gates + provider resolution + cached/throttled fetch. Mutates ``doc``.
+
+        Returns ``(info, changed)`` where ``changed`` is True iff ``doc`` was mutated
+        (a provider cached, a detection miss recorded, or an entry written), so the caller
+        can skip an otherwise-pointless cache write on throttled/early-return paths.
+        Entries are keyed by ``slug`` (per repository); providers/misses by ``host``.
+        """
+        if shutil.which("gh") is None and shutil.which("glab") is None:
+            self._note_debug("PR: neither gh nor glab installed")
+            return None, False
+        miss_before = doc.provider_misses.get(host)
+        had_provider = host in doc.providers
+        provider = self._resolve_provider(host, doc)
+        if provider is None:
+            self._note_debug(f"PR: could not resolve provider for {host}; set pr_provider")
+            miss_after = doc.provider_misses.get(host)
+            return None, miss_after is not None and miss_after != miss_before
+        changed = host in doc.providers and not had_provider  # provider newly cached
+        binary = _CLI_BINARY[provider]
+        if shutil.which(binary) is None:
+            self._note_debug(f"PR: {provider} for {host} but {binary} not installed")
+            return None, changed
+        key = f"{slug}\t{branch}"
+        entry = doc.entries.get(key)
+        now = datetime.now(UTC)
+        if entry is not None and (now - entry.last_attempt_at).total_seconds() < self.params.pr_cache_ttl:
+            return entry.info, changed  # throttled: reuse cached value, no entry write
+        info, error = self._fetch_pr(provider, slug, branch)
+        if error is not None:
+            self._note_debug(f"PR: {provider} fetch failed: {error}")
+            stale = entry.info if entry is not None else None
+            doc.entries[key] = PrCacheEntry(info=stale, last_attempt_at=now)
+            return stale, True
+        if info is None:
+            self._note_debug("PR: no PR/MR for branch")  # normal, not an error
+        doc.entries[key] = PrCacheEntry(info=info, last_attempt_at=now)
+        return info, True
 
     def render(self) -> str | None:
         """Render git status output.
@@ -96,9 +560,14 @@ class GitModule(BaseModule[GitParams]):
             commit = self._get_last_commit()
             if commit:
                 commit = (commit[0], self._format_commit_age(commit[1]))
-            line2 = self._render_status_line(branch, remote_status, changes, commit)
+            # PR/MR filters match the remote head branch; when the local branch is a
+            # differently named alias, look up by the tracked upstream branch name.
+            pr = self._get_pr(self._upstream_branch() or branch, remote_status)
+            line2 = self._render_status_line(branch, remote_status, changes, commit, pr=pr)
 
         lines = [line for line in (line1, line2) if line]
+        if self.debug and self._debug_messages:
+            lines.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
         return "\n".join(lines) if lines else None
 
     def _run_git(self, *args: str, cwd: str | None = None) -> str | None:
@@ -132,6 +601,112 @@ class GitModule(BaseModule[GitParams]):
             # e.g. a stale project_dir) and a missing git binary — degrade to None
             # rather than crash the whole statusline render.
             return None
+
+    def _run_cli(self, provider: str, *args: str) -> CliResult:
+        """Run `gh`/`glab` and classify the outcome.
+
+        Builds the command as a local list so only S603 applies (S607's partial-path
+        check does not fire on a variable). Captures both streams: `auth status` may
+        print host info to stdout or stderr depending on CLI version.
+        """
+        binary = _CLI_BINARY[provider]
+        cmd = [binary, *args]
+        try:
+            result = subprocess.run(  # noqa: S603 - cmd is a fixed [binary, *args] list; no shell, no user-controlled executable
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=_CLI_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return CliResult(ok=False, stdout="", stderr="", reason="timeout")
+        except OSError:
+            return CliResult(ok=False, stdout="", stderr="", reason=f"{binary} not runnable")
+        stdout = result.stdout.strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            return CliResult(ok=False, stdout=stdout, stderr=stderr, reason=stderr or f"exit {result.returncode}")
+        return CliResult(ok=True, stdout=stdout, stderr=stderr, reason=None)
+
+    def _fetch_pr(self, provider: str, slug: str, branch: str) -> tuple[PrInfo | None, str | None]:
+        """Fetch and classify the branch's PR/MR via the list form.
+
+        ``slug`` ('host/owner/repo') targets the branch's upstream repository explicitly
+        via ``--repo``, so the CLI queries that repo rather than whatever it would default
+        to from the current directory (which can differ when the branch tracks a fork).
+
+        Returns ``(info, error)``:
+        - ``(None, None)`` — no PR/MR for the branch (a normal, non-error result).
+        - ``(PrInfo, None)`` — the selected PR/MR.
+        - ``(None, reason)`` — an error (CLI failure or malformed JSON) to log in debug.
+        """
+        if provider == "github":
+            # gh accepts a HOST/OWNER/REPO slug directly (works for github.com and GHE).
+            result = self._run_cli(
+                "github",
+                "pr",
+                "list",
+                "--repo",
+                slug,
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                "number,state,isDraft,title,url,headRepositoryOwner",
+            )
+            owner = slug.split("/")[1] if slug.count("/") >= _MIN_SLUG_PARTS_FOR_OWNER else None
+            candidates = parse_github_pr_list(result.stdout, owner) if result.ok else None
+        else:
+            # glab --repo wants OWNER/REPO (no host); it resolves the host from its auth.
+            repo = slug.split("/", 1)[1] if "/" in slug else slug
+            result = self._run_cli(
+                "gitlab", "mr", "list", "--repo", repo, "--source-branch", branch, "--all", "--output", "json"
+            )
+            candidates = parse_gitlab_mr_list(result.stdout) if result.ok else None
+        if not result.ok:
+            return None, result.reason
+        if candidates is None:
+            return None, "malformed CLI JSON"
+        return _select_pr(candidates), None
+
+    def _host_authenticated(self, provider: str, host: str) -> bool:
+        """Whether `<cli> auth status --hostname <host>` reports the host authenticated.
+
+        Scoping to ``--hostname`` avoids a global `auth status` returning nonzero just
+        because some OTHER configured host is unauthenticated. Still substring-matches the
+        host over both streams — `gh`/`glab` place host info on stdout or stderr depending
+        on version (mirrors the flow:review-comments detection).
+        """
+        result = self._run_cli(provider, "auth", "status", "--hostname", host)
+        return result.ok and host in f"{result.stdout}\n{result.stderr}"
+
+    def _detect_provider(self, host: str) -> str | None:  # noqa: PLR0911 - 8 intentional returns: literal/auth-status/name-heuristic ladder
+        """Resolve host → provider via literal shortcut, auth-status match, name heuristic.
+
+        Cheap gates first: literal github.com/gitlab.com need no subprocess; `auth status`
+        runs only for self-hosted hosts and only for CLIs that are installed. Owned by
+        exactly one CLI wins; owned by both is ambiguous (None); otherwise a name
+        heuristic; otherwise give up (None).
+        """
+        if host == "github.com":
+            return "github"
+        if host == "gitlab.com":
+            return "gitlab"
+        in_gh = shutil.which("gh") is not None and self._host_authenticated("github", host)
+        in_glab = shutil.which("glab") is not None and self._host_authenticated("gitlab", host)
+        if in_gh and not in_glab:
+            return "github"
+        if in_glab and not in_gh:
+            return "gitlab"
+        if in_gh and in_glab:
+            return None
+        if "github" in host:
+            return "github"
+        if "gitlab" in host:
+            return "gitlab"
+        return None
 
     def _shorten_path(self, path: str) -> str:
         """Shorten an absolute path by replacing a leading $HOME with ``~``.
@@ -519,12 +1094,28 @@ class GitModule(BaseModule[GitParams]):
         change_parts = [colored(f"{prefix}{count}", color) for count, prefix, color in indicators if count > 0]
         return "[" + " ".join(change_parts) + "]" if change_parts else None
 
+    def _render_pr(self, info: PrInfo) -> str | None:
+        """Format the PR/MR token: `PR #42 ●` / `MR !7 ○`, state-colored, optional OSC 8 link."""
+        style = _PR_STATE_STYLE.get(info.state)
+        label = _PR_LABEL.get(info.provider)
+        if style is None or label is None:
+            return None
+        glyph, color = style
+        name, sigil = label
+        token = colored(f"{name} {sigil}{info.number} {glyph}", color)
+        if self.params.pr_link and info.url:
+            # BEL-terminated OSC 8 hyperlink; passed through by the CC statusline,
+            # clickable in supporting terminals, plain text elsewhere.
+            return f"\033]8;;{info.url}\a{token}\033]8;;\a"
+        return token
+
     def _render_status_line(
         self,
         branch: str,
         remote_status: tuple[str, int],
         changes: dict[str, int],
         commit: tuple[str, str] | None,
+        pr: PrInfo | None = None,
     ) -> str | None:
         """Render the status line (Line 2).
 
@@ -533,6 +1124,7 @@ class GitModule(BaseModule[GitParams]):
             remote_status: Tuple of (status, count)
             changes: Dict with staged, modified, untracked counts
             commit: Tuple of (hash, age) or None
+            pr: Resolved PR/MR info, or None
 
         Returns:
             Formatted status string or None if all disabled
@@ -541,6 +1133,11 @@ class GitModule(BaseModule[GitParams]):
 
         if self.params.show_branch:
             parts.append(colored(branch, "magenta"))
+
+        if self.params.show_pr and pr is not None:
+            pr_str = self._render_pr(pr)
+            if pr_str:
+                parts.append(pr_str)
 
         if self.params.show_remote_status:
             remote = self._render_remote_status(remote_status)

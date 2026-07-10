@@ -22,6 +22,10 @@ it through pluggable **modules**, and prints the formatted line(s). Entry point:
   `render(...) -> str | None` (text, or `None` to skip). Built-ins: `model`, `git`,
   `usage_limits` (`beads` is planned — commented out in `BUILTIN_MODULES`). The user picks
   and orders them via `modules = [...]` in config.
+- The `git` module optionally shells out to `gh`/`glab` (via `shutil.which` gates and a
+  short-timeout `_run_cli`) to show the current branch's PR/MR, caching results in
+  `git_pr.json`. It always degrades silently — no network on every render, no failures
+  surfaced to the user (only through the debug channel).
 
 **Principles:** modular plugin pattern (add a module = register in `BUILTIN_MODULES`, no
 core changes); **error isolation** — the render loop wraps each module in try/except so one
