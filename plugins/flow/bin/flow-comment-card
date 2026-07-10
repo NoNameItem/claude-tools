@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""
+Render one review comment as a markdown card for terminal triage.
+
+Reads a single comment (JSON on stdin) and prints markdown to stdout. Pure
+formatting: reads no files, calls no APIs — the caller supplies every field.
+Output is emitted UNWRAPPED (it already contains ```-fenced code blocks and
+blockquotes that Claude Code renders natively).
+
+Usage:
+    echo "$CARD_JSON" | flow-comment-card
+"""
+
+from __future__ import annotations
+
+CATEGORY_EMOJI = {
+    "correctness": "🔴",
+    "security": "🔴",
+    "logic": "🔴",
+    "style": "🟡",
+    "nitpick": "🟡",
+    "doc": "🔵",
+}
+FALLBACK_EMOJI = "⚪"
+
+
+def category_emoji(category: str | None) -> str:
+    """Return the header emoji for a category (⚪ for unknown/None/empty)."""
+    if not category:
+        return FALLBACK_EMOJI
+    return CATEGORY_EMOJI.get(category, FALLBACK_EMOJI)
+
+
+def format_lines(start_line, line) -> str | None:
+    """Return 'start-line' for a range, 'line' for a single line, else None."""
+    if start_line is not None and line is not None and start_line != line:
+        return f"{start_line}-{line}"
+    if line is not None:
+        return str(line)
+    if start_line is not None:
+        return str(start_line)
+    return None
