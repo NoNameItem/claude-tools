@@ -64,7 +64,7 @@ Resolve `PLATFORM` in this order — stop at the first that decides:
 | Detect unit for current branch | `gh pr view --json number,title,headRefName,url` | `glab mr view <iid> --output json` (fields: `iid`, `title`, `source_branch`, `web_url`, `state`) |
 | Fetch threads | `gh api repos/{o}/{r}/pulls/{n}/comments --paginate` + `…/reviews` + `gh api graphql` `reviewThreads` (resolve-state) | `glab api --paginate "projects/{id}/merge_requests/{iid}/discussions"` (one endpoint returns all) |
 | Thread model | flat comments linked by `in_reply_to_id` | each `discussion.notes[]` IS the thread; `notes[0]` = root, `notes[1:]` = replies |
-| Code for the card | `diff_hunk` on each `pulls/{n}/comments` item (already fetched — no extra call) | no `diff_hunk`; store `position` and reconstruct a `snippet` from the current file around `new_line` (via `sed`, **inside the subagent**) |
+| Code for the card | `diff_hunk` on each `pulls/{n}/comments` item (already fetched — no extra call) | no `diff_hunk`; store `position` and reconstruct a `snippet` from the current file around `new_line` (via the **Read tool**, **inside the subagent**) |
 | Authenticated user | `gh api user -q .login` | `glab api user -q .username` |
 | Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{comment_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body=…` — keyed by **`discussion_id`, not comment id** |
 | Skip as already-done | `isResolved` (GraphQL `reviewThreads`) **or** `already_replied` | `resolved == true` **or** `already_replied` |
