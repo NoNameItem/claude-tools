@@ -946,7 +946,7 @@ Record `{ref → task-id}` for the 5.5 reply and the 5.8 summary line.
 
 #### 5.5. Reply on the platform
 
-For each processed comment, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
+For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
 
 **GitHub** (reply addressed by `comment_id`):
 
@@ -1043,7 +1043,7 @@ Processed: {total} comments
   Won't fix: {count} ({list of refs with brief reason})
   Already fixed: {count} ({list of refs})
   Follow-ups created: {count} ({ref → task-id})
-  Skipped: {count} ({list of refs user chose to skip})
+  Skipped: {count} ({list of refs skipped})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
