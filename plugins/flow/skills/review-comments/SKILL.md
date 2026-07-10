@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -292,6 +292,9 @@ Rules for INDEX JSON (LIGHTWEIGHT — identifiers only, NO bodies/threads/code):
 - "platform": "github" or "gitlab" — the same value for every item
 - "comment_id": GitHub root comment id (number); null on GitLab
 - "discussion_id": GitLab discussion id (string); null on GitHub
+- `comment_id` (GitHub) / `discussion_id` (GitLab) are the **stable selection key**: the cap gate
+  (2.2) records them for the chosen refs and 2.3 materializes by matching them, so the working set
+  survives any ordinal renumbering between the two passes
 - "is_bot": true for a bot author, false for a human
 - "outdated": true if the commented line moved/was removed in the latest version
 - "already_replied": true if the latest thread reply is from the authenticated user
@@ -334,6 +337,14 @@ do **not** add a separate "process all?" gate).
 - **all** → working set = all non-replied comments.
 - **refs** (e.g. "U1, U3, C2") → working set = only those.
 
+**Record the working set by STABLE id, not by ordinal ref.** The ordinal refs (`U1`/`C1`) are a
+*display* numbering derived from the fetch order — if a comment is added, resolved, or deleted while
+you sit at this prompt, a fresh fetch renumbers them and the same ordinal points at a different
+thread. So from the Phase 2.1 INDEX, look up each selected ref's stable id (GitHub `comment_id`,
+GitLab `discussion_id`) and pass **`{ref ⇒ stable-id}` pairs** to 2.3 — 2.3 matches on the stable
+id, never on a re-derived ordinal. (For the ≤ ~20 / **all** case, the working set is every
+non-replied comment's pair.)
+
 #### 2.3. Materialize full metadata for the working set (single haiku subagent)
 
 Now — and **only** now, for the **working set** chosen in 2.2 — fetch the full bodies + code.
@@ -346,8 +357,18 @@ the selected subset's full bodies/threads/`diff_hunk`s/snippets are ever returne
 
 ```
 Re-run the Phase 2.1 fetch + parse for this platform (the SAME STEP 1 fetch and STEP 2 thread
-parsing), but this time return the FULL METADATA for ONLY these refs — the working set:
-{comma-separated selected refs}. Do NOT emit the TABLE, and emit nothing for refs outside the set.
+parsing), but this time return the FULL METADATA for ONLY the working set. The working set is given
+as {ref ⇒ stable-id} pairs; match each item by its STABLE id, NOT by re-deriving the ordinal ref
+(a comment added/resolved/deleted since Phase 2.1 shifts the ordinals, so the same ordinal can now
+point at a different thread — matching by stable id materializes the RIGHT thread):
+
+Working set (ref ⇒ stable id):
+{selected pairs — GitHub: "U1 ⇒ comment_id 12345"; GitLab: "U1 ⇒ discussion_id abcdef"}
+
+Keep a root comment/thread from your fresh fetch ONLY if its stable id is in the working set —
+GitHub: the root comment id equals a pair's comment_id; GitLab: discussion.id equals a pair's
+discussion_id. Label each kept item with the ref from its matching pair. Do NOT emit the TABLE, and
+emit nothing for comments outside the working set.
 
 Platform: {PLATFORM}            (github or gitlab — do ONLY the block for this platform)
 GitHub identifiers: owner/repo = {owner}/{repo}, PR number = {number}
@@ -358,11 +379,19 @@ For each SELECTED ref, capture the CODE that Phase 2.1 deferred:
   (no extra API call) — the exact code the reviewer saw; it survives outdating. A "(summary)" item
   with no diff_hunk → diff_hunk = null. Always position = null, snippet = null.
 - GitLab: store "position" = {new_path, new_line, old_line, line_range} verbatim; diff_hunk = null;
-  RECONSTRUCT "snippet" = {lang, text} from the CURRENT file around new_line, e.g.
-  `sed -n '{new_line-4},{new_line+4}p' {new_path}` (lang from the extension: .py→python,
-  .js→javascript, .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → ""). If new_line is null
-  (outdated) or the read yields nothing usable (deleted/moved file), snippet = null — degrade, do
-  NOT fail. A "(summary)"/general item (no position) → position = null, diff_hunk = null,
+  RECONSTRUCT "snippet" = {lang, text} from the CURRENT file. Choose the line range from position:
+    * position.line_range present (a MULTILINE note) → span the whole note:
+      start = line_range.start.new_line - 4, end = line_range.end.new_line + 4;
+    * otherwise (single-line note) → start = new_line - 4, end = new_line + 4.
+  Then CLAMP the start to at least 1: start = max(1, start). This is required — a start ≤ 0 makes
+  `sed` silently print nothing for `0,Np` and reject `-3,Np` as a bad option, so a comment on
+  lines 1–4 would wrongly yield snippet = null even though the file exists. PREFER the Read tool
+  (offset/limit around those lines) so the path never touches the shell; if you fall back to `sed`,
+  the file path is UNTRUSTED — **double-quote it** so a space or glob char cannot split/expand it:
+  `sed -n '{start},{end}p' "{new_path}"` (never leave {new_path} bare). Lang from the extension:
+  .py→python, .js→javascript, .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → "". If new_line
+  is null (outdated) or the read yields nothing usable (deleted/moved file), snippet = null —
+  degrade, do NOT fail. A "(summary)"/general item (no position) → position = null, diff_hunk = null,
   snippet = null.
 
 Return ONE section only (no TABLE):
@@ -376,7 +405,8 @@ METADATA:
 Rules:
 - "body": the FULL, UNTRUNCATED comment text — do NOT cap it (only the TABLE brief was truncated).
 - "thread": array of {user, body} for every reply in the thread (full bodies).
-- Emit ONLY the working-set refs. One JSON array, valid JSON, on a single line after "METADATA:".
+- Emit ONLY the working-set items (matched by stable id above), carrying the ref from each matching
+  pair. One JSON array, valid JSON, on a single line after "METADATA:".
 ```
 
 Store the returned METADATA array — Phase 3 analyzes it and Phase 4 assembles cards from it. It
@@ -411,10 +441,14 @@ Thread replies:
 {formatted thread replies}
 
 Outdated: {yes/no}
+Reviewer diff_hunk (the exact code the reviewer saw — from the Phase 2.3 metadata; may be empty on
+a GitLab note or a "(summary)" item):
+{diff_hunk or "(none)"}
 
 Steps:
 1. Read the file at the relevant lines (with context ±20 lines):
-   Read tool or: sed -n '{start-20},{end+20}p' {path}
+   PREFER the Read tool. The `sed` fallback must double-quote the (untrusted) path so a space or
+   glob char cannot split/expand it: sed -n '{start-20},{end+20}p' "{path}"  (never leave it bare)
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -442,10 +476,12 @@ Steps:
    correctness, or maintainability? If not → disagree (still fill CLAIM +
    EVIDENCE showing why the current code is fine or the suggestion is worse).
 
-5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. If the comment is NOT
-   outdated and the reviewer's diff_hunk is absent or too thin to understand the change on its
-   own, ALSO return a SNIPPET: read the current file at the commented lines with a little
-   context (e.g. `sed -n '{start-4},{end+4}p' {path}`) and return it as a fenced block tagged
+5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. Judge the reviewer diff_hunk
+   shown above: if the comment is NOT outdated and that diff_hunk is absent ("(none)") or too thin
+   to understand the change on its own, ALSO return a SNIPPET: read the current file at the
+   commented lines with a little
+   context (e.g. `sed -n '{start-4},{end+4}p' "{path}"` — double-quote the untrusted path; prefer
+   the Read tool) and return it as a fenced block tagged
    with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
    file/lines no longer exist.
    GitLab: do NOT re-run `sed` here — Phase 2.3 already reconstructed a `snippet` into the
@@ -560,16 +596,19 @@ turn Phase 3's fenced SNIPPET block into the JSON `--argjson snippet` needs. Any
 assembly works — the helper reads one comment object on stdin:
 
 ```bash
-# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal:
-THOUGHT=$(cat <<'EOF'
+# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal. Use a DISTINCTIVE
+# delimiter (FLOW_RC_EOF): quoting stops expansion but NOT delimiter collision — a plain 'EOF'
+# terminates early if the captured text contains a line that is exactly EOF (common in code/shell
+# snippets and review text). The delimiter MUST be a token that does not appear in the content.
+THOUGHT=$(cat <<'FLOW_RC_EOF'
 Agrees — real crash on detached HEAD; the guard is one frame too low.
-EOF
+FLOW_RC_EOF
 )
 # Phase 3 returns SNIPPET as a fenced markdown block, not JSON. Turn its text + language into the
 # object --argjson wants (set SNIPPET_JSON=null when the verdict has no SNIPPET):
-SNIPPET_TEXT=$(cat <<'EOF'
+SNIPPET_TEXT=$(cat <<'FLOW_RC_EOF'
 <the lines inside the Phase 3 SNIPPET fence, verbatim>
-EOF
+FLOW_RC_EOF
 )
 SNIPPET_JSON=$(printf '%s' "$SNIPPET_TEXT" | jq -Rs --arg lang "python" '{lang: $lang, text: .}')
 
@@ -756,6 +795,18 @@ Runs **before** the reply (5.5) so replies describe the final code.
 For each comment the user decided **`follow-up`** on, create a beads task so the deferred work
 is tracked, then reply "Filed as follow-up: {task-id}" in 5.5.
 
+**First — guard bd (before any `bd create`).** Follow-up creation is the only bd-using path in this
+skill, so run the version guard here, once, at the START of the batch:
+
+```bash
+flow-require-bd
+```
+
+If it exits non-zero, **STOP the follow-up batch**: print its stderr message and create **no** tasks
+(flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, "bd requirements and migration"). Keep
+it in its own block so a failed guard cannot fall through to `bd create`. The fix / won't-fix paths
+need no bd; only the follow-up path is blocked.
+
 **Parent epic — infer from the comment's path** (repo convention; the user confirms/overrides):
 
 | Comment path starts with | Parent epic |
@@ -785,25 +836,28 @@ On **yes**, create them **sequentially** (embedded Dolt is single-writer — do 
 `$HOME`, or `$(...)`. **Never inline `{full comment text}` into a double-quoted `--description`:**
 the shell runs the command substitution and expands the variables *before* `bd create` sees them,
 corrupting the task body (or executing whatever the reviewer wrote). Materialize the description
-with a **quoted heredoc** — the `<<'EOF'` quotes stop ALL expansion, so backticks / `$HOME` /
+with a **quoted heredoc** — the `<<'FLOW_RC_EOF'` quotes stop ALL expansion, so backticks / `$HOME` /
 `$(...)` reach `bd` verbatim — then pass it as a variable (equivalently, pipe the heredoc into
 `bd create … --body-file -`, the stdin form):
 
 ```bash
-DESC=$(cat <<'EOF'
+DESC=$(cat <<'FLOW_RC_EOF'
 **PR:** {url}
 **Location:** packages/statuskit/src/statuskit/modules/git.py:42
 **Reviewer (coderabbitai):** {full comment text}
 
 **Take:** real crash on detached HEAD; deferred to its own task.
-EOF
+FLOW_RC_EOF
 )
 bd create --title "Guard branch_name against detached HEAD" --type bug --priority 2 \
   --parent claude-tools-5dl --description "$DESC"
 ```
 
-The heredoc delimiter MUST be quoted (`<<'EOF'`, not `<<EOF`) — an unquoted delimiter re-enables
-`$`/backtick expansion inside the body and reintroduces the bug.
+The heredoc delimiter MUST be quoted (`<<'FLOW_RC_EOF'`, not `<<FLOW_RC_EOF`) — an unquoted
+delimiter re-enables `$`/backtick expansion inside the body and reintroduces the bug. It must also
+be a **distinctive token absent from the content**: quoting stops expansion but NOT delimiter
+collision, so a plain `EOF` closes early when the reviewer's comment contains a line that is exactly
+`EOF` (common in shell/heredoc snippets) — `FLOW_RC_EOF` avoids that.
 
 After creating all follow-ups, **persist to the shared beads store**:
 
@@ -844,13 +898,13 @@ glab api --method POST \
 
 **Do NOT reply to comments where `already_replied` is true.**
 
-**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc and pass it as a variable so the shell does not interpolate it — works for both platforms:
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it — works for both platforms:
 
 ```bash
-body=$(cat <<'EOF'
+body=$(cat <<'FLOW_RC_EOF'
 Won't fix: the current loop is already clear; extracting a helper
 adds indirection without improving readability.
-EOF
+FLOW_RC_EOF
 )
 gh   api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body="$body"                        # GitHub
 glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body="$body"   # GitLab
