@@ -224,11 +224,15 @@ def _gitlab_state(state: str | None, is_draft: bool) -> str | None:
     return None
 
 
-def parse_github_pr_list(stdout: str) -> list[PrInfo] | None:
+def parse_github_pr_list(stdout: str, owner: str | None = None) -> list[PrInfo] | None:
     """Parse `gh pr list --json …` output.
 
     Returns a list of PrInfo (empty = no PR, a normal result), or None when the
     payload is not a JSON array (a malformed/error result the caller reports).
+
+    When ``owner`` is given, PRs whose head repository belongs to a different owner
+    (fork PRs that merely share the branch name) are dropped, so only the current
+    repo's own PR for the branch is considered.
     """
     try:
         items = json.loads(stdout or "[]")
@@ -240,6 +244,10 @@ def parse_github_pr_list(stdout: str) -> list[PrInfo] | None:
     for item in items:
         if not isinstance(item, dict):
             continue
+        if owner is not None:
+            head_owner = (item.get("headRepositoryOwner") or {}).get("login")
+            if head_owner is not None and head_owner != owner:
+                continue  # fork PR with the same head branch name — not ours
         number = item.get("number")
         state = _github_state(item.get("state"), bool(item.get("isDraft", False)))
         if not isinstance(number, int) or state is None:
@@ -249,7 +257,11 @@ def parse_github_pr_list(stdout: str) -> list[PrInfo] | None:
 
 
 def parse_gitlab_mr_list(stdout: str) -> list[PrInfo] | None:
-    """Parse `glab mr list --output json` output. Same contract as parse_github_pr_list."""
+    """Parse `glab mr list --output json` output. Same contract as parse_github_pr_list.
+
+    MRs opened from a fork (``source_project_id`` != ``target_project_id``) are dropped
+    so a fork MR sharing the source-branch name is not mistaken for the current repo's MR.
+    """
     try:
         items = json.loads(stdout or "[]")
     except (json.JSONDecodeError, ValueError):
@@ -260,6 +272,10 @@ def parse_gitlab_mr_list(stdout: str) -> list[PrInfo] | None:
     for item in items:
         if not isinstance(item, dict):
             continue
+        src = item.get("source_project_id")
+        tgt = item.get("target_project_id")
+        if src is not None and tgt is not None and src != tgt:
+            continue  # fork MR with the same source-branch name — not ours
         number = item.get("iid")
         is_draft = bool(item.get("draft", item.get("work_in_progress", False)))
         state = _gitlab_state(item.get("state"), is_draft)
@@ -281,6 +297,7 @@ _CLI_TIMEOUT = 3  # seconds — gh/glab may touch the network
 _CLI_BINARY: dict[str, str] = {"github": "gh", "gitlab": "glab"}
 _EXPECTED_COUNT_PARTS = 2  # ahead\tbehind format
 _MIN_STATUS_LINE_LEN = 2  # "XY filename" format minimum
+_MIN_SLUG_PARTS_FOR_OWNER = 2  # "host/owner/repo" needs ≥2 slashes to have an owner segment
 PR_CACHE_FILENAME = "git_pr.json"
 
 # Time conversion constants
@@ -373,21 +390,33 @@ class GitModule(BaseModule[GitParams]):
         self._debug_messages.append(message)
 
     def _upstream_remote(self) -> str | None:
-        """Name of the remote the current branch tracks (e.g. 'origin'), or None."""
-        ref = self._run_git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
-        if not ref or "/" not in ref:
+        """Remote the current branch tracks, or None for no/local upstream.
+
+        Reads ``branch.<name>.remote`` from config directly rather than parsing
+        ``@{upstream}``: this handles remote names that contain ``/`` (Git allows
+        ``team/fork``) and returns None when the upstream is a *local* branch
+        (``remote = .``) or absent — cases where a remote PR/MR lookup is meaningless.
+        """
+        branch = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        if not branch or branch == "HEAD":  # detached HEAD — no tracking branch
             return None
-        return ref.split("/", 1)[0]
+        remote = self._run_git("config", "--get", f"branch.{branch}.remote")
+        if not remote or remote == ".":  # no upstream, or a local-branch upstream
+            return None
+        return remote
 
     def _get_remote(self) -> tuple[str, str] | None:
-        """(host, slug) of the branch's upstream remote, falling back to 'origin'.
+        """(host, slug) of the branch's tracked remote, or None when there is none.
 
         ``host`` drives provider detection (cached per host); ``slug`` ('host/owner/repo')
         is the per-repository cache identity so two repos on one host that share a branch
-        name don't alias each other's PR/MR lookups. Reading @{upstream} (not a hard-coded
-        origin) matches the sync indicator's remote and works when the branch tracks a fork.
+        name don't alias each other's PR/MR lookups. Resolving the branch's actual tracked
+        remote (not a hard-coded origin) matches the sync indicator; a local-only or absent
+        upstream yields None so we don't show an unrelated origin PR for the same branch.
         """
-        remote = self._upstream_remote() or "origin"
+        remote = self._upstream_remote()
+        if remote is None:
+            return None
         url = self._run_git("remote", "get-url", remote)
         if not url:
             return None
@@ -603,9 +632,10 @@ class GitModule(BaseModule[GitParams]):
                 "--state",
                 "all",
                 "--json",
-                "number,state,isDraft,title,url",
+                "number,state,isDraft,title,url,headRepositoryOwner",
             )
-            candidates = parse_github_pr_list(result.stdout) if result.ok else None
+            owner = slug.split("/")[1] if slug.count("/") >= _MIN_SLUG_PARTS_FOR_OWNER else None
+            candidates = parse_github_pr_list(result.stdout, owner) if result.ok else None
         else:
             # glab --repo wants OWNER/REPO (no host); it resolves the host from its auth.
             repo = slug.split("/", 1)[1] if "/" in slug else slug

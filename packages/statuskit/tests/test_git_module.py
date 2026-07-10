@@ -1467,6 +1467,34 @@ class TestParseGithubPrList:
         stdout = '[{"number": 1, "state": "WEIRD", "isDraft": false, "url": "u"}]'
         assert parse_github_pr_list(stdout) == []
 
+    def test_owner_filter_drops_fork_pr(self):
+        own_pr = {"number": 1, "state": "OPEN", "isDraft": False, "url": "a", "headRepositoryOwner": {"login": "me"}}
+        fork_pr = {
+            "number": 2,
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "b",
+            "headRepositoryOwner": {"login": "forker"},
+        }
+        stdout = json.dumps([own_pr, fork_pr])
+        assert parse_github_pr_list(stdout, owner="me") == [PrInfo("github", 1, "open", "a")]
+
+    def test_owner_filter_keeps_when_owner_missing(self):
+        """A PR without headRepositoryOwner is not dropped (lenient)."""
+        stdout = json.dumps([{"number": 1, "state": "OPEN", "isDraft": False, "url": "a"}])
+        assert parse_github_pr_list(stdout, owner="me") == [PrInfo("github", 1, "open", "a")]
+
+    def test_no_owner_keeps_all(self):
+        fork_pr = {
+            "number": 1,
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "a",
+            "headRepositoryOwner": {"login": "forker"},
+        }
+        stdout = json.dumps([fork_pr])
+        assert parse_github_pr_list(stdout) == [PrInfo("github", 1, "open", "a")]
+
 
 class TestParseGitlabMrList:
     """Tests for parse_gitlab_mr_list."""
@@ -1496,6 +1524,32 @@ class TestParseGitlabMrList:
 
     def test_malformed_is_none(self):
         assert parse_gitlab_mr_list("<html>") is None
+
+    def test_drops_fork_mr(self):
+        """A fork MR (source_project_id != target_project_id) is dropped."""
+        own_mr = {
+            "iid": 1,
+            "state": "opened",
+            "draft": False,
+            "web_url": "a",
+            "source_project_id": 5,
+            "target_project_id": 5,
+        }
+        fork_mr = {
+            "iid": 2,
+            "state": "opened",
+            "draft": False,
+            "web_url": "b",
+            "source_project_id": 9,
+            "target_project_id": 5,
+        }
+        stdout = json.dumps([own_mr, fork_mr])
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 1, "open", "a")]
+
+    def test_keeps_mr_without_project_ids(self):
+        """Missing project ids → no filtering (lenient)."""
+        stdout = json.dumps([{"iid": 1, "state": "opened", "draft": False, "web_url": "a"}])
+        assert parse_gitlab_mr_list(stdout) == [PrInfo("gitlab", 1, "open", "a")]
 
 
 class TestSelectPr:
@@ -1897,12 +1951,14 @@ class TestGitInitAndRemoteHost:
         mod._note_debug("hello")
         assert mod._debug_messages == ["hello"]
 
-    def test_get_remote_uses_upstream_remote(self, make_render_context):
+    def test_get_remote_uses_tracked_remote(self, make_render_context):
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
 
         def fake_git(*args):
-            if args[:2] == ("rev-parse", "--abbrev-ref"):
-                return "upstream/main"
+            if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "feature/x"
+            if args == ("config", "--get", "branch.feature/x.remote"):
+                return "upstream"
             if args == ("remote", "get-url", "upstream"):
                 return "git@github.com:o/r.git"
             return None
@@ -1910,20 +1966,37 @@ class TestGitInitAndRemoteHost:
         with patch.object(mod, "_run_git", side_effect=fake_git):
             assert mod._get_remote() == ("github.com", "github.com/o/r")
 
-    def test_get_remote_falls_back_to_origin(self, make_render_context):
+    def test_get_remote_handles_slash_in_remote_name(self, make_render_context):
+        """Git allows remote names with '/', e.g. 'team/fork' — read config, don't split."""
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
 
         def fake_git(*args):
-            if args[:2] == ("rev-parse", "--abbrev-ref"):
-                return None
-            if args == ("remote", "get-url", "origin"):
+            if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "main"
+            if args == ("config", "--get", "branch.main.remote"):
+                return "team/fork"
+            if args == ("remote", "get-url", "team/fork"):
                 return "https://gitlab.com/g/p.git"
             return None
 
         with patch.object(mod, "_run_git", side_effect=fake_git):
             assert mod._get_remote() == ("gitlab.com", "gitlab.com/g/p")
 
-    def test_get_remote_none_when_no_remote(self, make_render_context):
+    def test_get_remote_none_for_local_upstream(self, make_render_context):
+        """A branch tracking a local branch (remote = '.') has no remote to query."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        def fake_git(*args):
+            if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "main"
+            if args == ("config", "--get", "branch.main.remote"):
+                return "."
+            return None
+
+        with patch.object(mod, "_run_git", side_effect=fake_git):
+            assert mod._get_remote() is None
+
+    def test_get_remote_none_when_no_upstream(self, make_render_context):
         mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
         with patch.object(mod, "_run_git", return_value=None):
             assert mod._get_remote() is None
