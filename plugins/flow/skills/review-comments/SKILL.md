@@ -398,20 +398,24 @@ For each SELECTED ref, capture the CODE that Phase 2.1 deferred:
   (no extra API call) — the exact code the reviewer saw; it survives outdating. A "(summary)" item
   with no diff_hunk → diff_hunk = null. Always position = null, snippet = null.
 - GitLab: store "position" = {new_path, new_line, old_line, line_range} verbatim; diff_hunk = null;
-  RECONSTRUCT "snippet" = {lang, text} from the CURRENT file. Choose the line range from position:
-    * position.line_range present (a MULTILINE note) → span the whole note:
+  RECONSTRUCT "snippet" = {lang, text} from the CURRENT file. Resolve the line range with ONE
+  precondition — compute [start, end] only from endpoints that have a current-file line number
+  (new_line != null):
+    * position.line_range present AND both line_range.start.new_line and line_range.end.new_line
+      are non-null (a MULTILINE note fully on current lines) → span the whole note:
       start = line_range.start.new_line - 4, end = line_range.end.new_line + 4;
-    * otherwise (single-line note) → start = new_line - 4, end = new_line + 4.
-  Then CLAMP the start to at least 1: start = max(1, start). This is required — a start ≤ 0 makes
-  `sed` silently print nothing for `0,Np` and reject `-3,Np` as a bad option, so a comment on
-  lines 1–4 would wrongly yield snippet = null even though the file exists. PREFER the Read tool
-  (offset/limit around those lines) so the path never touches the shell; if you fall back to `sed`,
-  the file path is UNTRUSTED — **double-quote it** so a space or glob char cannot split/expand it:
-  `sed -n '{start},{end}p' "{new_path}"` (never leave {new_path} bare). Lang from the extension:
-  .py→python, .js→javascript, .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → "". If new_line
-  is null (outdated) or the read yields nothing usable (deleted/moved file), snippet = null —
-  degrade, do NOT fail. A "(summary)"/general item (no position) → position = null, diff_hunk = null,
-  snippet = null.
+    * else if position.new_line is non-null (single-line note) → start = new_line - 4,
+      end = new_line + 4;
+    * else (outdated / old-side deleted lines — no current-file line) → snippet = null; STOP here.
+  Then CLAMP: start = max(1, start). A start ≤ 0 makes `sed` print nothing for `0,Np` and reject
+  `-3,Np`, so a comment on lines 1–4 would wrongly yield snippet = null even though the file exists.
+  Read the file at [start, end] with the **Read tool** (offset/limit) — the untrusted path is passed
+  as a data argument, never parsed by a shell (untrusted-data rule, 2.3). Do NOT build a `sed`/shell
+  command from {new_path}: double-quoting an inlined path does not stop `$(...)`/backticks, so a file
+  named `x$(cmd).py` would execute `cmd`. Lang from the extension: .py→python, .js→javascript,
+  .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → "". If the read yields nothing usable
+  (deleted/moved file), snippet = null — degrade, do NOT fail. A "(summary)"/general item (no
+  position) → position = null, diff_hunk = null, snippet = null.
 
 Return ONE section only (no TABLE):
 
@@ -465,9 +469,9 @@ a GitLab note or a "(summary)" item):
 {diff_hunk or "(none)"}
 
 Steps:
-1. Read the file at the relevant lines (with context ±20 lines):
-   PREFER the Read tool. The `sed` fallback must double-quote the (untrusted) path so a space or
-   glob char cannot split/expand it: sed -n '{start-20},{end+20}p' "{path}"  (never leave it bare)
+1. Read the file at the relevant lines (with context ±20 lines) using the **Read tool**
+   (offset/limit) — do not build a `sed`/shell command from the untrusted {path}
+   (untrusted-data rule, 2.3).
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -497,12 +501,13 @@ Steps:
 
 5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. Judge the reviewer diff_hunk
    shown above: if the comment is NOT outdated and that diff_hunk is absent ("(none)") or too thin
-   to understand the change on its own, ALSO return a SNIPPET: read the current file at the
-   commented lines with a little context — prefer the Read tool; if you fall back to `sed`, **clamp
-   the start to at least 1** (`sed -n '{max(1, start-4)},{end+4}p' "{path}"`) and double-quote the
-   untrusted path. The clamp matters for the same reason as Phase 2.3: a comment on lines 1–4 gives
-   `start-4 ≤ 0`, and `sed` prints nothing for `0,Np` / rejects `-3,Np` as a bad option, so the card
-   would lose current-file context exactly when the thin hunk needs it. Return it as a fenced block
+   to understand the change on its own, ALSO return a SNIPPET:
+   read the current file at the commented lines with the **Read tool** (offset/limit), clamping the
+   start to `max(1, start-4)`; do not build a `sed`/shell command from the untrusted path
+   (untrusted-data rule, 2.3). The clamp matters for the same reason as Phase 2.3: a comment on
+   lines 1–4 gives `start-4 ≤ 0`, and `sed` prints nothing for `0,Np` / rejects `-3,Np` as a bad
+   option, so the card would lose current-file context exactly when the thin hunk needs it.
+   Return it as a fenced block
    tagged with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
    file/lines no longer exist.
    GitLab: do NOT re-run `sed` here — Phase 2.3 already reconstructed a `snippet` into the
