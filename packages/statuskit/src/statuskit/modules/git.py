@@ -246,7 +246,9 @@ def parse_github_pr_list(stdout: str, owner: str | None = None) -> list[PrInfo] 
             continue
         if owner is not None:
             head_owner = (item.get("headRepositoryOwner") or {}).get("login")
-            if head_owner is not None and head_owner != owner:
+            # GitHub owner names are case-insensitive; ``owner`` keeps the remote URL's
+            # casing while ``head_owner`` is GitHub's canonical login, so compare folded.
+            if head_owner is not None and head_owner.lower() != owner.lower():
                 continue  # fork PR with the same head branch name — not ours
         number = item.get("number")
         state = _github_state(item.get("state"), bool(item.get("isDraft", False)))
@@ -405,6 +407,24 @@ class GitModule(BaseModule[GitParams]):
             return None
         return remote
 
+    def _upstream_branch(self) -> str | None:
+        """Remote branch name the current branch tracks (``branch.<name>.merge``), or None.
+
+        The PR/MR list filters (``gh pr list --head`` / ``glab mr list --source-branch``)
+        match the *remote* head/source branch name. When a local branch is a differently
+        named alias of its upstream (``git checkout -b work origin/feature/login``), the
+        local name would miss the PR; read the tracked branch name instead. Returns None
+        for a detached HEAD or a branch with no configured upstream ref, so the caller
+        falls back to the local branch name.
+        """
+        branch = self._run_git("rev-parse", "--abbrev-ref", "HEAD")
+        if not branch or branch == "HEAD":  # detached HEAD — no tracking branch
+            return None
+        merge_ref = self._run_git("config", "--get", f"branch.{branch}.merge")
+        if not merge_ref:  # no configured upstream branch
+            return None
+        return merge_ref.removeprefix("refs/heads/")
+
     def _get_remote(self) -> tuple[str, str] | None:
         """(host, slug) of the branch's tracked remote, or None when there is none.
 
@@ -540,7 +560,9 @@ class GitModule(BaseModule[GitParams]):
             commit = self._get_last_commit()
             if commit:
                 commit = (commit[0], self._format_commit_age(commit[1]))
-            pr = self._get_pr(branch, remote_status)
+            # PR/MR filters match the remote head branch; when the local branch is a
+            # differently named alias, look up by the tracked upstream branch name.
+            pr = self._get_pr(self._upstream_branch() or branch, remote_status)
             line2 = self._render_status_line(branch, remote_status, changes, commit, pr=pr)
 
         lines = [line for line in (line1, line2) if line]

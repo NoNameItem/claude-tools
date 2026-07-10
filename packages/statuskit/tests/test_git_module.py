@@ -1495,6 +1495,19 @@ class TestParseGithubPrList:
         stdout = json.dumps([fork_pr])
         assert parse_github_pr_list(stdout) == [PrInfo("github", 1, "open", "a")]
 
+    def test_owner_filter_case_insensitive(self):
+        """Owner match ignores case: remote-URL casing vs GitHub's canonical login (C1)."""
+        own_pr = {
+            "number": 1,
+            "state": "OPEN",
+            "isDraft": False,
+            "url": "a",
+            "headRepositoryOwner": {"login": "NoNameItem"},
+        }
+        stdout = json.dumps([own_pr])
+        # owner comes lower-cased from the remote URL; the repo's own PR must not be dropped.
+        assert parse_github_pr_list(stdout, owner="nonameitem") == [PrInfo("github", 1, "open", "a")]
+
 
 class TestParseGitlabMrList:
     """Tests for parse_gitlab_mr_list."""
@@ -2002,6 +2015,41 @@ class TestGitInitAndRemoteHost:
             assert mod._get_remote() is None
 
 
+class TestUpstreamBranch:
+    """Tests for _upstream_branch: reads branch.<name>.merge, strips refs/heads/ (C3)."""
+
+    def test_reads_tracked_branch_name(self, make_render_context):
+        """A local alias returns the remote branch name it tracks, not its own name."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        def fake_git(*args):
+            if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "work"
+            if args == ("config", "--get", "branch.work.merge"):
+                return "refs/heads/feature/login"
+            return None
+
+        with patch.object(mod, "_run_git", side_effect=fake_git):
+            assert mod._upstream_branch() == "feature/login"
+
+    def test_none_when_no_merge_config(self, make_render_context):
+        """No configured upstream ref → None, so the caller falls back to the local name."""
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+
+        def fake_git(*args):
+            if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+                return "main"
+            return None
+
+        with patch.object(mod, "_run_git", side_effect=fake_git):
+            assert mod._upstream_branch() is None
+
+    def test_none_on_detached_head(self, make_render_context):
+        mod = GitModule(make_render_context(make_input_data(model=make_model_data())), {})
+        with patch.object(mod, "_run_git", return_value="HEAD"):
+            assert mod._upstream_branch() is None
+
+
 class TestResolveProvider:
     """Tests for _resolve_provider: explicit override, cache reuse, positive caching."""
 
@@ -2388,3 +2436,29 @@ class TestRenderWithPr:
             result = mod.render()
         assert result is not None
         assert "[git] PR: neither gh nor glab installed" in result
+
+    def test_pr_lookup_uses_upstream_branch_name(self, make_render_context, force_color):
+        """A local alias looks up the PR by its tracked upstream branch, but displays the local name (C3)."""
+        data = make_input_data(
+            model=make_model_data(),
+            workspace={"current_dir": "/home/user/project", "project_dir": "/home/user/project"},
+        )
+        mod = GitModule(make_render_context(data), {"pr_link": False})
+        seen: dict[str, str] = {}
+
+        def fake_get_pr(branch, _remote):
+            seen["branch"] = branch
+
+        with (
+            patch.object(mod, "_get_location", return_value={"project": "p", "worktree": None, "subfolder": None}),
+            patch.object(mod, "_get_branch", return_value="work"),
+            patch.object(mod, "_upstream_branch", return_value="feature/login"),
+            patch.object(mod, "_get_remote_status", return_value=("synced", 0)),
+            patch.object(mod, "_get_changes", return_value={"staged": 0, "modified": 0, "untracked": 0}),
+            patch.object(mod, "_get_last_commit", return_value=None),
+            patch.object(mod, "_get_pr", side_effect=fake_get_pr),
+        ):
+            result = mod.render()
+        assert seen["branch"] == "feature/login"  # lookup uses the remote head name
+        assert result is not None
+        assert "work" in result  # display still shows the local branch name
