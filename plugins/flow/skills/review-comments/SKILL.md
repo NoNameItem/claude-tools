@@ -783,6 +783,10 @@ Apply to: all / original only / select
 
 Record the confirmed sites for 5.2 and the CLASS name for the 5.5 reply.
 
+**Record `APPLIED_FILES`** — the exact set of files the apply subagents created or modified (5.1/5.2
+already operate on "specific files"). This set, not the git working tree, is the authoritative signal
+of whether this run changed anything; 5.6 gates on it.
+
 #### 5.2. Apply Changes
 
 Group accepted fixes by file. For each file (or group of related files), launch a **haiku subagent**:
@@ -997,24 +1001,16 @@ glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{dis
 
 #### 5.6. Commit
 
-**First, gate on whether anything was actually applied.** If Phase 5.1 changed no files — the fix
-bucket was empty, or held only `outdated_fixed` / won't-fix / follow-up decisions — there is nothing
-to stage. Running `git add` + commit here would fail (no pathspec match / "nothing to commit")
-*after* replies and follow-ups are already posted, dropping the workflow into an error path. Check
-the working tree and, when it is clean, **skip both 5.6 and 5.7** — go straight to the 5.8 summary:
+**First, gate on whether the apply phase changed anything.** If `APPLIED_FILES` (Phase 5.1) is
+**empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up / skip
+decisions — there is nothing to commit. Skip **both** 5.6 and 5.7 and go straight to the 5.8 summary
+(replies and follow-ups are already posted). Gate on the apply-set, NOT the git working tree: a tree
+check wrongly proceeds when the session has unrelated pre-existing edits, and wrongly skips a fix that
+creates only a new untracked file. Otherwise, stage exactly `APPLIED_FILES`:
 
 ```bash
-[ -z "$(git status --porcelain)" ] && echo "no file changes — skip commit + push"
-```
-
-Use `git status --porcelain` (not `git diff --quiet`): a fix that adds a **new** file leaves the
-tracked-file diff empty but shows the file as `??`, and 5.3 explicitly allows newly-created files —
-`git diff` alone would wrongly skip and lose it.
-
-Otherwise (the tree has changes), stage only changed files:
-
-```bash
-git add {specific files that were modified}
+# skip commit + push when APPLIED_FILES is empty; otherwise stage exactly the applied set:
+git add {APPLIED_FILES}
 ```
 
 Commit message follows CLAUDE.md scope rules:
