@@ -377,3 +377,150 @@ def test_github_bot_summary_from_review_body(fake_gh_api):
     assert c["diff_hunk"] is None
     assert c["snippet"] is None
     assert "retry" in c["body"]
+
+
+m = flow_review_collect_mod
+
+
+class TestSnippet:
+    def test_lang_for_known_and_unknown(self):
+        assert m.lang_for("a/b.py") == "python"
+        assert m.lang_for("x.unknownext") == ""
+
+    def test_read_window_clamps_top_of_file(self, tmp_path):
+        f = tmp_path / "a.py"
+        f.write_text("l1\nl2\nl3\nl4\nl5\n")
+        # comment on line 1: start-4 = -3 → clamp to 1; window [1, 1+4]
+        snip = m.build_snippet(str(f), 1, 1)
+        assert snip["lang"] == "python"
+        assert snip["text"] == "l1\nl2\nl3\nl4\nl5"  # lines 1..5 (end+4 capped at EOF)
+
+    def test_read_window_mid_file(self, tmp_path):
+        f = tmp_path / "a.py"
+        f.write_text("\n".join(f"l{i}" for i in range(1, 21)) + "\n")
+        snip = m.build_snippet(str(f), 10, 10)  # window [6, 14]
+        assert snip["text"].splitlines()[0] == "l6"
+        assert snip["text"].splitlines()[-1] == "l14"
+
+    def test_missing_file_degrades_to_none(self, tmp_path):
+        assert m.build_snippet(str(tmp_path / "nope.py"), 3, 3) is None
+
+
+class TestThinHunk:
+    def test_thin_hunk_is_thin(self):
+        assert m.hunk_is_thin("@@ -1 +1 @@\n line") is True  # 1 body line
+        assert m.hunk_is_thin(None) is True
+        assert m.hunk_is_thin("") is True
+
+    def test_fat_hunk_is_not_thin(self):
+        assert m.hunk_is_thin("@@ -1,5 +1,5 @@\n a\n b\n c\n d\n e") is False
+
+
+def test_github_thin_hunk_gets_snippet(fake_gh_api, git_repo):
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 5,
+                    "body": "x",
+                    "diff_hunk": "@@ -5 +5 @@\n l5",  # 1 body line → thin
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    c = _out(r)["comments"][0]
+    assert c["snippet"]["lang"] == "python"
+    assert "l5" in c["snippet"]["text"]  # window [1,9]
+    assert "l1" in c["snippet"]["text"]
+
+
+def test_github_fat_hunk_no_snippet(fake_gh_api, git_repo):
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 5,
+                    "body": "x",
+                    "diff_hunk": "@@ -3,5 +3,5 @@\n l3\n l4\n l5\n l6\n l7",  # 5 lines → fat
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    assert _out(r)["comments"][0]["snippet"] is None
+
+
+def test_gitlab_reconstructs_snippet(fake_glab_api, git_repo):
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", "me")
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "n",
+                            "position": {"new_path": "a.py", "new_line": 5},
+                            "resolvable": True,
+                            "resolved": False,
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    r = run_helper("flow-review-collect", "1", "--platform", "gitlab", cwd=git_repo, env=fake_glab_api.env())
+    c = _out(r)["comments"][0]
+    assert c["snippet"]["text"].count("\n") >= 1
+    assert "l5" in c["snippet"]["text"]
+
+
+def test_outdated_gets_no_snippet(fake_gh_api, git_repo):
+    (git_repo / "a.py").write_text("l1\nl2\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": None,
+                    "original_line": 99,
+                    "body": "x",
+                    "diff_hunk": "@@",
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    assert _out(r)["comments"][0]["snippet"] is None

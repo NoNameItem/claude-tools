@@ -19,6 +19,7 @@ import argparse
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import _git
 
@@ -51,6 +52,46 @@ LANG_BY_EXT = {
     "css": "css",
     "sql": "sql",
 }
+
+
+def lang_for(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return LANG_BY_EXT.get(ext, "")
+
+
+def build_snippet(path: str, start: int, end: int) -> dict | None:
+    """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree. None if unreadable."""
+    lo = max(1, start - SNIPPET_CONTEXT)
+    hi = end + SNIPPET_CONTEXT
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    window = lines[lo - 1 : hi]
+    if not window:
+        return None
+    return {"lang": lang_for(path), "text": "\n".join(window)}
+
+
+def hunk_is_thin(diff_hunk: str | None) -> bool:
+    """A hunk with fewer than THIN_HUNK_LINES body lines (after the @@ header) is thin."""
+    if not diff_hunk:
+        return True
+    body = [ln for ln in diff_hunk.splitlines() if not ln.startswith("@@")]
+    return len(body) < THIN_HUNK_LINES
+
+
+def attach_snippet(item: dict, *, is_github: bool) -> None:
+    """Attach item['snippet'] when the note is on current lines and the hunk is thin/absent."""
+    if item["outdated"] or item["path"] in (None, "(summary)"):
+        return
+    if is_github and not hunk_is_thin(item["diff_hunk"]):
+        return  # GitHub with a fat diff_hunk → the hunk is enough
+    line = item["line"]
+    if line is None:
+        return
+    start = item["start_line"] or line
+    item["snippet"] = build_snippet(item["path"], start, line)
 
 
 def is_bot(login: str) -> bool:
@@ -178,6 +219,7 @@ def gh_collect(number: str | None) -> dict:
                 "snippet": None,
             }
         )
+        attach_snippet(items[-1], is_github=True)
 
     items += gh_summary_items(reviews)
     ordered = _order(items)
@@ -294,6 +336,7 @@ def gl_collect(number: str | None) -> dict:
                 "snippet": None,
             }
         )
+        attach_snippet(items[-1], is_github=False)
     ordered = _order(items)
     assign_refs(ordered)
     return _document("gitlab", unit, me, ordered)
