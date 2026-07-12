@@ -163,8 +163,12 @@ handled in tested code, not prose.
 
 ```bash
 FLOW_RC_DIR="$(mktemp -d)"
-flow-review-collect {number-if-any} > "$FLOW_RC_DIR/metadata.json"
+flow-review-collect {number-if-any} --platform {PLATFORM} > "$FLOW_RC_DIR/metadata.json"
 ```
+
+Pass the Phase-0 `{PLATFORM}` explicitly so the collector honors an override / interactive
+disambiguation instead of re-detecting from scratch (its own detection would drop a `--platform`
+override on an ambiguous host — exactly the case the override exists for).
 
 `metadata.json` schema: `{platform, unit:{number,branch,url}, me, counts:{total,already_replied,
 actionable}, comments:[…]}`. Each `comments[]` item carries `ref` (humans `U1…`, bots `C1…`),
