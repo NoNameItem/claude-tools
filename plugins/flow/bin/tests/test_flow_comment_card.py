@@ -371,3 +371,93 @@ class TestGoldenCards:
         card = {"ref": "C1", "category": category, "path": "a/b.py", "line": 1}
         label = category if category != "unknown" else "unknown"
         assert render_header(card) == f"### {emoji} C1 · {label} · a/b.py:1"
+
+
+class TestMergeMode:
+    def _files(self, tmp_path, meta, verdict, ref="C1"):
+        (tmp_path / "meta.json").write_text(json.dumps(meta))
+        (tmp_path / "verdict.json").write_text(json.dumps(verdict))
+        return subprocess.run(
+            [
+                sys.executable,
+                str(_HELPER),
+                "--meta",
+                str(tmp_path / "meta.json"),
+                "--ref",
+                ref,
+                "--verdict",
+                str(tmp_path / "verdict.json"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_merges_meta_and_verdict(self, tmp_path):
+        meta = {
+            "comments": [
+                {
+                    "ref": "C1",
+                    "user": "coderabbitai",
+                    "path": "a.py",
+                    "line": 42,
+                    "body": "crashes",
+                    "thread": [],
+                    "diff_hunk": "@@ -40 +40 @@\n x",
+                    "snippet": None,
+                }
+            ]
+        }
+        verdict = {"category": "correctness", "thought": "Real crash.", "suggested": "fix"}
+        r = self._files(tmp_path, meta, verdict)
+        assert r.returncode == 0, r.stderr
+        assert r.stdout.startswith("### 🔴 C1 · correctness · a.py:42")
+        assert "> **@coderabbitai:** crashes" in r.stdout
+        assert "**Suggested:** fix" in r.stdout
+
+    def test_snippet_overrides_diff_hunk(self, tmp_path):
+        # collector attached a snippet (thin hunk) → it must WIN and diff_hunk must be dropped
+        meta = {
+            "comments": [
+                {
+                    "ref": "C1",
+                    "user": "a",
+                    "path": "a.py",
+                    "line": 5,
+                    "body": "b",
+                    "thread": [],
+                    "diff_hunk": "@@ -5 +5 @@\n l5",
+                    "snippet": {"lang": "python", "text": "l1\nl2\nl5"},
+                }
+            ]
+        }
+        verdict = {"category": "style", "thought": "t", "suggested": "won't-fix"}
+        r = self._files(tmp_path, meta, verdict)
+        assert "```python" in r.stdout
+        assert "l1\nl2\nl5" in r.stdout
+        assert "```diff" not in r.stdout  # diff_hunk dropped in favor of the snippet
+
+    def test_no_snippet_keeps_diff_hunk(self, tmp_path):
+        meta = {
+            "comments": [
+                {
+                    "ref": "C1",
+                    "user": "a",
+                    "path": "a.py",
+                    "line": 5,
+                    "body": "b",
+                    "thread": [],
+                    "diff_hunk": "@@ -5,3 +5,3 @@\n a\n b\n c",
+                    "snippet": None,
+                }
+            ]
+        }
+        verdict = {"category": "logic", "thought": "t", "suggested": "fix"}
+        r = self._files(tmp_path, meta, verdict)
+        assert "```diff" in r.stdout
+
+    def test_missing_ref_errors(self, tmp_path):
+        meta = {"comments": [{"ref": "C1", "user": "a", "body": "b"}]}
+        verdict = {"category": "doc", "thought": "t", "suggested": "fix"}
+        r = self._files(tmp_path, meta, verdict, ref="C9")
+        assert r.returncode == 1

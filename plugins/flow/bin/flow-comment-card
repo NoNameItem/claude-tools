@@ -13,8 +13,10 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+from pathlib import Path
 
 CATEGORY_EMOJI = {
     "correctness": "🔴",
@@ -135,7 +137,47 @@ def render_card(card: dict) -> str:
     return "\n\n".join(section for section in sections if section)
 
 
+def merge_card(meta_item: dict, verdict: dict) -> dict:
+    """Merge a collector comment item with an LLM verdict into a render-ready card."""
+    card = dict(meta_item)
+    card["author"] = meta_item.get("user")
+    for key in ("category", "thought", "suggested"):
+        if verdict.get(key) is not None:
+            card[key] = verdict[key]
+    snippet = meta_item.get("snippet")
+    if snippet and snippet.get("text"):
+        card.pop("diff_hunk", None)  # collector attached a snippet → it wins over the hunk
+    return card
+
+
+def _find_item(meta_path: str, ref: str) -> dict:
+    with Path(meta_path).open(encoding="utf-8") as fh:
+        doc = json.load(fh)
+    for item in doc.get("comments", []):
+        if item.get("ref") == ref:
+            return item
+    print(f"Error: ref {ref!r} not found in {meta_path}", file=sys.stderr)
+    sys.exit(1)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="flow-comment-card")
+    parser.add_argument("--meta")
+    parser.add_argument("--ref")
+    parser.add_argument("--verdict")
+    args = parser.parse_args()
+
+    if args.meta or args.ref or args.verdict:
+        if not (args.meta and args.ref and args.verdict):
+            print("Error: --meta, --ref, and --verdict are required together", file=sys.stderr)
+            sys.exit(1)
+        meta_item = _find_item(args.meta, args.ref)
+        with Path(args.verdict).open(encoding="utf-8") as fh:
+            verdict = json.load(fh)
+        print(render_card(merge_card(meta_item, verdict)))
+        return
+
+    # stdin path (unchanged)
     try:
         data = json.load(sys.stdin)
     except json.JSONDecodeError as e:
