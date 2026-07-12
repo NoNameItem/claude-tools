@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 
 import _git
@@ -54,7 +55,10 @@ LANG_BY_EXT = {
 
 def is_bot(login: str) -> bool:
     low = (login or "").lower()
-    return "[bot]" in low or "coderabbit" in low or low.endswith("bot")
+    # Word-boundary suffix (`-bot`/`_bot`), not a bare `bot` suffix, so human logins like
+    # `abbot`/`talbot` are not misclassified. Keeps GitHub `dependabot[bot]`,
+    # `github-actions[bot]` and GitLab `project_123_bot` service accounts.
+    return "[bot]" in low or "coderabbit" in low or low.endswith(("-bot", "_bot"))
 
 
 def assign_refs(items: list[dict]) -> None:
@@ -119,12 +123,18 @@ def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
                     if inner and inner[0].get("fullDatabaseId") is not None:
                         resolved.add(str(inner[0]["fullDatabaseId"]))
             info = rt.get("pageInfo") or {}
-            if info.get("hasNextPage"):
-                cursor = info.get("endCursor")
+            # Only advance when BOTH flags are truthy: a `hasNextPage: true` with a null
+            # endCursor would re-fetch page 1 identically forever, so treat it as the end.
+            if info.get("hasNextPage") and info.get("endCursor"):
+                cursor = info["endCursor"]
                 continue
             break
-    except (KeyError, TypeError, ValueError, OSError):
-        return set()  # NEVER abort collection over the resolve side-query
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        # NEVER abort collection over the resolve side-query. `_git.run` (check=True) raises
+        # CalledProcessError when `gh api graphql` exits non-zero — which gh does whenever the
+        # GraphQL response carries an `errors` key — and TimeoutExpired on a hang; both are
+        # subclasses of SubprocessError.
+        return set()
     return resolved
 
 
@@ -133,7 +143,7 @@ def gh_collect(number: str | None) -> dict:
     repo = _git.resolve_repo()
     me = _git.gh_api("user", jq=".login")
     comments = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True))
-    reviews = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews"))
+    reviews = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews", paginate=True))
     resolved_ids = gh_review_thread_resolved_ids(repo, unit["number"])
 
     roots = [c for c in comments if not c.get("in_reply_to_id")]
