@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Agent Read Write
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Agent Read Write
 ---
 
 # Flow: Review Comments
@@ -301,8 +301,10 @@ writes no snippet. Do **not** print a grouped-by-type verdict dump here; the ver
 one card at a time in Phase 4.
 
 A JSON verdict written to a file removes the three Phase-3 bug classes at once — no fenced snippet to
-collide, no jq/heredoc to inject through, no offset/limit to miscompute — because `flow-comment-card`
-reads `--meta`/`--verdict` by path in Phase 4.2.
+collide, no jq/heredoc to inject through, no snippet offset/limit to miscompute — because the
+collector owns the card snippet and `flow-comment-card` reads `--meta`/`--verdict` by path in Phase
+4.2. (The subagent's own ±20-line judgment-tracing Read still uses `offset`/`limit`; that is code
+tracing, not snippet mechanics.)
 
 ### Phase 4: Card-by-Card Triage
 
