@@ -254,8 +254,11 @@ If Platform is gitlab:
 
 === STEP 3 — Bot summary ===
   - GitHub: find the review whose user.login is "coderabbitai" / contains "[bot]"; if its
-    body has actionable items not in the inline comments, add them as items with
-    path="(summary)", line="—", and set summary_id = that review's id.
+    body has actionable items not in the inline comments, add it as ONE `(summary)` item per
+    review body (NOT one per bullet — multiple items from the same review would share the
+    review's id and be indistinguishable at selection/materialization) with path="(summary)",
+    line="—", and set summary_id = that review's id; its body carries all the review's
+    actionable bullets.
   - GitLab: a bot's summary/walkthrough is just a general (no-position) note already
     captured in Step 2 as a "(summary)" item — no separate fetch.
 
@@ -862,7 +865,9 @@ If the fixes are complete and don't shift the problem, return exactly:
 
 - `NO MATERIAL FINDINGS` → continue silently.
 - Material findings → present them as an addendum batch and confirm before applying (a plain-text
-  per-item accept/skip). Apply each item the user accepts via a 5.2 apply subagent, then re-run
+  per-item accept/skip). Apply each item the user accepts via a 5.2 apply subagent, **add every
+  file the addendum created or modified to `APPLIED_FILES`** (5.6 stages exactly that set — an
+  addendum path left out would be verified and replied to but never committed/pushed), then re-run
   the Phase 5.2 final verification (`ruff check` on the changed files) so the addendum code is
   checked too. Do **not** re-run the skeptic — a single pass, then proceed.
 
@@ -880,10 +885,12 @@ skill, so run the version guard here, once, at the START of the batch:
 flow-require-bd
 ```
 
-If it exits non-zero, **STOP the follow-up batch**: print its stderr message and create **no** tasks
-(flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, "bd requirements and migration"). Keep
-it in its own block so a failed guard cannot fall through to `bd create`. The fix / won't-fix paths
-need no bd; only the follow-up path is blocked.
+If it exits non-zero, **STOP the follow-up batch**: print its stderr message, create **no** tasks,
+and **record every `follow-up` ref as `skip` (invariant 4)** so Phase 5.5 does not post a
+"Filed as follow-up" reply for a ref that has no `{task-id}` (flow requires `bd >= 1.0.0` — see
+`plugins/flow/README.md`, "bd requirements and migration"). Keep it in its own block so a failed
+guard cannot fall through to `bd create`. The fix / won't-fix paths need no bd; only the follow-up
+path is blocked.
 
 **Parent epic — infer from the comment's path** (repo convention; the user confirms/overrides):
 
