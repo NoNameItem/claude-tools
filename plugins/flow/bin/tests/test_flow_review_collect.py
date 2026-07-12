@@ -234,3 +234,108 @@ def test_github_resolved_pagination_null_cursor_terminates(fake_gh_api):
     doc = _out(r)
     assert doc["comments"] == []
     assert doc["counts"]["total"] == 0
+
+
+def test_gitlab_inline_and_general(fake_glab_api):
+    fake_glab_api.set("project", "grp/proj")
+    fake_glab_api.set("user", "me")
+    fake_glab_api.set("mr_view", json.dumps({"iid": 4, "source_branch": "mb", "web_url": "wu"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "inline note",
+                            "position": {"new_path": "a.py", "new_line": 12, "old_line": None},
+                            "resolvable": True,
+                            "resolved": False,
+                        }
+                    ],
+                },
+                {
+                    "id": "d2",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "coderabbit"},
+                            "body": "walkthrough",
+                            "resolvable": False,
+                        }
+                    ],
+                },
+                {
+                    "id": "d3",
+                    "notes": [{"system": True, "author": {"username": "x"}, "body": "changed the description"}],
+                },
+            ]
+        ),
+    )
+    r = run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env())
+    doc = _out(r)
+    assert doc["platform"] == "gitlab"
+    assert doc["unit"] == {"number": 4, "branch": "mb", "url": "wu"}
+    refs = {c["ref"]: c for c in doc["comments"]}
+    assert refs["U1"]["path"] == "a.py"
+    assert refs["U1"]["line"] == 12
+    assert refs["U1"]["discussion_id"] == "d1"
+    assert refs["U1"]["comment_id"] is None
+    assert refs["C1"]["path"] == "(summary)"
+    assert refs["C1"]["is_bot"] is True  # general bot note
+    assert all(c["body"] != "changed the description" for c in doc["comments"])  # system dropped
+
+
+def test_gitlab_resolved_thread_dropped(fake_glab_api):
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", "me")
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "n",
+                            "position": {"new_path": "a.py", "new_line": 5},
+                            "resolvable": True,
+                            "resolved": True,
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
+    assert doc["comments"] == []
+
+
+def test_github_bot_summary_from_review_body(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps(
+            [
+                {"id": 55, "user": {"login": "coderabbitai[bot]"}, "body": "Consider adding retry logic."},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["ref"] == "C1"
+    assert c["path"] == "(summary)"
+    assert c["summary_id"] == 55
+    assert c["comment_id"] is None
+    assert c["diff_hunk"] is None
+    assert c["snippet"] is None
+    assert "retry" in c["body"]

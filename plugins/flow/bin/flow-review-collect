@@ -179,22 +179,119 @@ def gh_collect(number: str | None) -> dict:
             }
         )
 
-    items += gh_summary_items(reviews)  # Task 4 fills this; stub returns [] for now
+    items += gh_summary_items(reviews)
     ordered = _order(items)
     assign_refs(ordered)
     return _document("github", unit, me, ordered)
 
 
-def gh_summary_items(reviews: list[dict]) -> list[dict]:  # noqa: ARG001  -- implemented in Task 4
-    return []  # implemented in Task 4
+def gh_summary_items(reviews: list[dict]) -> list[dict]:
+    """One (summary) item per bot review whose body has actionable text (keyed by review id)."""
+    items: list[dict] = []
+    for rv in reviews:
+        login = (rv.get("user") or {}).get("login", "")
+        body = (rv.get("body") or "").strip()
+        if not is_bot(login) or not body:
+            continue
+        items.append(
+            {
+                "user": login,
+                "is_bot": True,
+                "path": "(summary)",
+                "start_line": None,
+                "line": None,
+                "outdated": False,
+                "already_replied": False,
+                "comment_id": None,
+                "discussion_id": None,
+                "summary_id": rv.get("id"),
+                "body": body,
+                "thread": [],
+                "diff_hunk": None,
+                "position": None,
+                "snippet": None,
+            }
+        )
+    return items
 
 
 # ---- GitLab ------------------------------------------------------------------
 
 
-def gl_collect(number):
-    msg = "GitLab collection not yet implemented"
-    raise NotImplementedError(msg)
+def gl_resolve_unit(number: str | None) -> dict:
+    cmd = ["glab", "mr", "view", *([number] if number else []), "--output", "json"]
+    data = json.loads(_git.run(cmd))
+    return {"number": data["iid"], "branch": data["source_branch"], "url": data["web_url"]}
+
+
+def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
+    """(start_line, line, outdated) from a GitLab note position.
+
+    Prefers a `line_range` with both new_line endpoints (multi-line comment); falls back to a
+    single `new_line` (start_line stays None); outdated when there is no new_line but there is
+    an old_line (the note anchors to a line that no longer exists on the diff's new side).
+    """
+    lr = position.get("line_range") or {}
+    start_nl = (lr.get("start") or {}).get("new_line")
+    end_nl = (lr.get("end") or {}).get("new_line")
+    new_line = position.get("new_line")
+    outdated = new_line is None and position.get("old_line") is not None
+    if start_nl is not None and end_nl is not None:
+        return start_nl, end_nl, outdated
+    if new_line is not None:
+        return None, new_line, outdated
+    return None, None, outdated
+
+
+def gl_collect(number: str | None) -> dict:
+    unit = gl_resolve_unit(number)
+    project = _git.resolve_project()
+    me = _git.glab_api("user", jq=".username")
+    discussions = json.loads(
+        _git.glab_api(f"projects/{project}/merge_requests/{unit['number']}/discussions", paginate=True)
+    )
+    items: list[dict] = []
+    for disc in discussions:
+        notes = [n for n in (disc.get("notes") or []) if not n.get("system")]
+        if not notes:
+            continue
+        resolvable = [n for n in notes if n.get("resolvable")]
+        if resolvable and all(n.get("resolved") for n in resolvable):
+            continue  # every resolvable note in the discussion is resolved → drop entirely
+        root, replies = notes[0], notes[1:]
+        thread = [{"user": (n.get("author") or {}).get("username", "?"), "body": n.get("body", "")} for n in replies]
+        latest = thread[-1]["user"] if thread else None
+        username = (root.get("author") or {}).get("username", "?")
+        position = root.get("position")
+        if position:
+            start_line, line, outdated = _gl_lines(position)
+            path = position.get("new_path") or position.get("old_path")
+        else:
+            start_line = line = None
+            outdated = False
+            path = "(summary)"
+        items.append(
+            {
+                "user": username,
+                "is_bot": is_bot(username),
+                "path": path,
+                "start_line": start_line,
+                "line": line,
+                "outdated": outdated,
+                "already_replied": latest == me,
+                "comment_id": None,
+                "discussion_id": disc.get("id"),
+                "summary_id": None,
+                "body": root.get("body", ""),
+                "thread": thread,
+                "diff_hunk": None,
+                "position": position,
+                "snippet": None,
+            }
+        )
+    ordered = _order(items)
+    assign_refs(ordered)
+    return _document("gitlab", unit, me, ordered)
 
 
 # ---- shared ------------------------------------------------------------------
@@ -223,7 +320,7 @@ def main(argv: list[str]) -> int:
     if platform == "github":
         doc = gh_collect(number)
     else:
-        doc = gl_collect(number)  # Task 4
+        doc = gl_collect(number)
     print(json.dumps(doc))
     return 0
 
