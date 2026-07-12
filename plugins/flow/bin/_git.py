@@ -16,7 +16,7 @@ import urllib.parse
 DEFAULT_TIMEOUT = 30
 
 _SSH_RE = re.compile(r"^[^@]+@([^:]+):")
-_HTTPS_RE = re.compile(r"^https?://([^/]+)/")
+_HTTPS_RE = re.compile(r"^https?://(?:[^@/]+@)?([^/]+)/")
 
 
 def run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, check: bool = True) -> str:
@@ -37,12 +37,18 @@ def host_from_remote(url: str) -> str | None:
 
 
 def _auth_hosts(cli: str) -> list[str]:
-    """Hosts `gh`/`glab` is authenticated for; [] on any failure (never raises)."""
+    """Hosts `cli` (`gh`/`glab`) is authenticated for; [] on any failure (never raises).
+
+    `gh`/`glab auth status` write their report to STDERR (and exit non-zero when a token
+    is stale), so this bypasses `run()` (stdout-only, check=True) and scans both streams.
+    """
     try:
-        out = run([cli, "auth", "status"], check=False)
+        proc = subprocess.run(
+            [cli, "auth", "status"], capture_output=True, text=True, check=False, timeout=DEFAULT_TIMEOUT
+        )
     except (subprocess.SubprocessError, OSError):
         return []
-    # `gh`/`glab auth status` print host lines; scan for domain-looking tokens.
+    out = f"{proc.stdout}\n{proc.stderr}"
     hosts = []
     for tok in re.findall(r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}", out):
         if tok not in hosts:
@@ -55,11 +61,11 @@ def decide_platform(override: str | None, remote_host: str | None, gh_hosts: lis
     if override in ("github", "gitlab"):
         return override
     if remote_host:
-        if remote_host in gh_hosts:
-            return "github"
-        if remote_host in glab_hosts:
-            return "gitlab"
         low = remote_host.lower()
+        if low in {h.lower() for h in gh_hosts}:
+            return "github"
+        if low in {h.lower() for h in glab_hosts}:
+            return "gitlab"
         if "github" in low:
             return "github"
         if "gitlab" in low:
@@ -91,15 +97,18 @@ def resolve_project() -> str:
 
 
 def gh_api(path: str, *, paginate: bool = False, jq: str | None = None) -> str:
-    argv = ["gh", "api", path]
+    """Call `gh api <path>`; `paginate` follows Link headers, `jq` filters via `-q`."""
+    argv = ["gh", "api"]
     if paginate:
         argv.append("--paginate")
+    argv.append(path)
     if jq:
         argv += ["-q", jq]
     return run(argv)
 
 
 def glab_api(path: str, *, paginate: bool = False, jq: str | None = None) -> str:
+    """Call `glab api <path>`; `paginate` follows all pages, `jq` filters via `-q`."""
     argv = ["glab", "api"]
     if paginate:
         argv.append("--paginate")

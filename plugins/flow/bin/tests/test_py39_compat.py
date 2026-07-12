@@ -22,8 +22,8 @@ def test_helpers_compatible_with_py39():
     ruff = shutil.which("ruff")
     if ruff is None:
         pytest.skip("ruff not on PATH")
-    helpers = sorted(str(p) for p in BIN.glob("flow-*") if p.is_file())
-    assert helpers, "no flow-* helpers found"
+    helpers = sorted(str(p) for p in (*BIN.glob("flow-*"), *BIN.glob("_*.py")) if p.is_file())
+    assert helpers, "no flow-* or _*.py helpers found"
     result = subprocess.run(
         [ruff, "check", "--select", "FA102", "--target-version", "py39", "--no-cache", *helpers],
         capture_output=True,

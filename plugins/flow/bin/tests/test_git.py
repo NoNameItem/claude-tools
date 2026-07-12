@@ -28,6 +28,11 @@ class TestHostFromRemote:
     def test_ssh_subgroup(self):
         assert _git.host_from_remote("git@gitlab.example.com:g/sub/r.git") == "gitlab.example.com"
 
+    def test_https_strips_userinfo(self):
+        # Token in the URL must NOT leak into the host (credential leak + breaks exact-match).
+        url = "https://oauth2:TOKEN@git.angara.cloud/g/r.git"
+        assert _git.host_from_remote(url) == "git.angara.cloud"
+
     def test_unparseable_returns_none(self):
         assert _git.host_from_remote("not-a-url") is None
 
@@ -73,3 +78,51 @@ class TestRunAndResolve:
         gh.chmod(0o755)
         monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
         assert _git.resolve_repo() == "acme/widgets"
+
+    def test_resolve_project_url_encodes_subgroup(self, tmp_path, monkeypatch):
+        glab = tmp_path / "glab"
+        glab.write_text('#!/usr/bin/env python3\nprint(\'{"path_with_namespace": "group/sub/repo"}\')\n')
+        glab.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        assert _git.resolve_project() == "group%2Fsub%2Frepo"
+
+
+class TestAuthHosts:
+    def test_reads_host_from_stderr_on_nonzero_exit(self, tmp_path, monkeypatch):
+        # Regression: `gh`/`glab auth status` write the host report to STDERR and may
+        # exit non-zero (stale token). `_auth_hosts` must still return the host.
+        gh = tmp_path / "gh"
+        gh.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            'sys.stderr.write("ghe.corp\\n  x ghe.corp: API call failed\\n")\n'
+            "sys.exit(1)\n"
+        )
+        gh.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        assert "ghe.corp" in _git._auth_hosts("gh")
+
+    def test_missing_cli_returns_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PATH", str(tmp_path))  # no gh/glab on PATH
+        assert _git._auth_hosts("gh") == []
+
+
+class TestDetectPlatform:
+    def test_detects_gitlab_via_remote_heuristic(self, tmp_path, monkeypatch):
+        # Fake `git remote get-url origin` → a self-hosted host whose name contains
+        # "gitlab"; no gh/glab auth match, so the heuristic decides.
+        git = tmp_path / "git"
+        git.write_text("#!/usr/bin/env python3\nprint('git@gitlab.example.com:g/r.git')\n")
+        git.chmod(0o755)
+        # Stub auth CLIs to return nothing so only the remote host drives the decision.
+        for name in ("gh", "glab"):
+            cli = tmp_path / name
+            cli.write_text("#!/usr/bin/env python3\n")
+            cli.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        assert _git.detect_platform() == "gitlab"
+
+    def test_override_short_circuits(self, monkeypatch):
+        # An explicit override must win with no CLI calls at all.
+        monkeypatch.setenv("PATH", "/nonexistent")
+        assert _git.detect_platform("github") == "github"
