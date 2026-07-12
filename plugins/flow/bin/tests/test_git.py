@@ -78,6 +78,8 @@ class TestRunAndResolve:
         gh.chmod(0o755)
         monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
         assert _git.resolve_repo() == "acme/widgets"
+        # Callers (flow-wait-ci) pass a custom timeout; the kwarg must be accepted and forwarded.
+        assert _git.resolve_repo(timeout=5) == "acme/widgets"
 
     def test_resolve_project_url_encodes_subgroup(self, tmp_path, monkeypatch):
         glab = tmp_path / "glab"
@@ -85,6 +87,8 @@ class TestRunAndResolve:
         glab.chmod(0o755)
         monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
         assert _git.resolve_project() == "group%2Fsub%2Frepo"
+        # Callers (flow-wait-ci) pass a custom timeout; the kwarg must be accepted and forwarded.
+        assert _git.resolve_project(timeout=5) == "group%2Fsub%2Frepo"
 
 
 class TestAuthHosts:

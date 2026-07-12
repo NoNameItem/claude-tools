@@ -87,7 +87,7 @@ class GHSnap(NamedTuple):
 def _gh_repo() -> tuple[str, str] | None:
     """Resolve the current repo's (owner, repo); None on failure (caller retries)."""
     try:
-        nwo = _git.resolve_repo()
+        nwo = _git.resolve_repo(timeout=SUBPROCESS_TIMEOUT)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         sys.stderr.write(f"warning: gh repo view failed ({exc}); retrying until deadline\n")
         return None
@@ -233,7 +233,7 @@ class GLSnap(NamedTuple):
 def _gl_project() -> str | None:
     """Resolve the current repo's URL-encoded project path; None on failure (caller retries)."""
     try:
-        return _git.resolve_project()
+        return _git.resolve_project(timeout=SUBPROCESS_TIMEOUT)
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,

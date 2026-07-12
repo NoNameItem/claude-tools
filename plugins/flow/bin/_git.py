@@ -84,14 +84,14 @@ def detect_platform(override: str | None = None) -> str:
     return decide_platform(override, remote_host, _auth_hosts("gh"), _auth_hosts("glab"))
 
 
-def resolve_repo() -> str:
+def resolve_repo(*, timeout: int = DEFAULT_TIMEOUT) -> str:
     """GitHub 'owner/repo' for the current repo."""
-    return run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    return run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], timeout=timeout)
 
 
-def resolve_project() -> str:
+def resolve_project(*, timeout: int = DEFAULT_TIMEOUT) -> str:
     """GitLab URL-encoded 'group%2Frepo' (every '/' → '%2F', incl. subgroups)."""
-    view = run(["glab", "repo", "view", "--output", "json"])
+    view = run(["glab", "repo", "view", "--output", "json"], timeout=timeout)
     path = json.loads(view)["path_with_namespace"]
     return urllib.parse.quote(path, safe="")
 
