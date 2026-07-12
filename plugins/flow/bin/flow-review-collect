@@ -229,17 +229,22 @@ def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
 
     Prefers a `line_range` with both new_line endpoints (multi-line comment); falls back to a
     single `new_line` (start_line stays None); outdated when there is no new_line but there is
-    an old_line (the note anchors to a line that no longer exists on the diff's new side).
+    an old_line (the note anchors to a line that no longer exists on the diff's new side). For
+    an outdated note with no usable new_line, anchors to `old_line` — a historical anchor,
+    never a bare null (mirrors the GitHub `original_line` fallback).
     """
     lr = position.get("line_range") or {}
     start_nl = (lr.get("start") or {}).get("new_line")
     end_nl = (lr.get("end") or {}).get("new_line")
     new_line = position.get("new_line")
-    outdated = new_line is None and position.get("old_line") is not None
+    old_line = position.get("old_line")
+    outdated = new_line is None and old_line is not None
     if start_nl is not None and end_nl is not None:
         return start_nl, end_nl, outdated
     if new_line is not None:
         return None, new_line, outdated
+    if old_line is not None:  # outdated: historical anchor, never bare null (mirror GitHub original_line)
+        return None, old_line, outdated
     return None, None, outdated
 
 

@@ -317,6 +317,44 @@ def test_gitlab_resolved_thread_dropped(fake_glab_api):
     assert doc["comments"] == []
 
 
+def test_gitlab_outdated_note_anchors_to_old_line(fake_glab_api):
+    """An outdated inline note (new_line null, old_line set, no line_range) keeps a historical
+    anchor — never a bare null (mirrors the GitHub original_line fallback)."""
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", "me")
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "was here",
+                            "position": {
+                                "new_path": "a.py",
+                                "old_path": "a.py",
+                                "new_line": None,
+                                "old_line": 9,
+                            },
+                            "resolvable": True,
+                            "resolved": False,
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
+    c = doc["comments"][0]
+    assert c["outdated"] is True
+    assert c["line"] == 9  # historical anchor, never bare null
+    assert c["path"] == "a.py"
+
+
 def test_github_bot_summary_from_review_body(fake_gh_api):
     fake_gh_api.set("repo", "o/r")
     fake_gh_api.set("user", "me")
