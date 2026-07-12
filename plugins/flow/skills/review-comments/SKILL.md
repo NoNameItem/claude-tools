@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(uv:*) Agent Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -828,18 +828,17 @@ Apply these fixes to {path}:
 
 {list of fixes with line numbers and descriptions}
 
-After applying:
-1. Run: uv run ruff format {path}  (if Python file)
-2. Run: uv run ruff check --fix {path}  (if Python file)
-
 Return: "OK" if all applied successfully, or describe what failed.
 ```
 
-After all file subagents complete, run a final verification in the main context:
-
-```bash
-uv run ruff check {changed_files}  # if Python files changed
-```
+After all file subagents complete, run the **project's configured formatter/linter** on the changed
+files, in the main context — **only if the project defines one**. This skill is language- and
+tool-agnostic: it does **not** assume Python, `ruff`, `uv`, or any specific toolchain. What to run is
+the project's concern, documented for the agent in the repo (e.g. its `CLAUDE.md` / `AGENTS.md` /
+contributing guide — a `pre-commit run` on the changed files, a lint/format script, or a language
+toolchain). If the repo documents such a command, run it on the changed files and fix what it
+reports; if it documents none, skip this step and rely on the project's commit hooks / CI. Never
+hard-code a formatter here.
 
 After the apply subagents return, prune `APPLIED_FILES` to the files they actually reported as changed
 (drop any whose apply failed), so a failed apply leaves no phantom path for 5.6 to stage.
@@ -905,8 +904,8 @@ If the fixes are complete and don't shift the problem, return exactly:
   path the addendum created, modified, deleted, or renamed to `APPLIED_FILES`** (both the old and new
   path for a rename — same rule as the 5.1 definition; 5.6 stages exactly that set — an addendum path
   left out would be verified and replied to but never committed/pushed), then re-run
-  the Phase 5.2 final verification (`ruff check` on the changed files) so the addendum code is
-  checked too. Do **not** re-run the skeptic — a single pass, then proceed.
+  the Phase 5.2 project format/lint step (if the project configures one) on the changed files so the
+  addendum code is checked too. Do **not** re-run the skeptic — a single pass, then proceed.
 
 Runs **before** the reply (5.5) so replies describe the final code.
 
