@@ -1,0 +1,167 @@
+"""Tests for flow-review-collect (deterministic Phase-2 collector)."""
+
+# ruff: noqa: INP001
+
+import importlib.util
+import json
+import sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+from conftest import run_helper
+
+BIN = Path(__file__).parent.parent
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
+
+_HELPER = BIN / "flow-review-collect"
+_spec = importlib.util.spec_from_file_location(
+    "flow_review_collect_mod", _HELPER, loader=SourceFileLoader("flow_review_collect_mod", str(_HELPER))
+)
+assert _spec is not None
+assert _spec.loader is not None
+flow_review_collect_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(flow_review_collect_mod)
+
+
+def _out(r):
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout)
+
+
+def test_github_single_inline_comment(fake_gh_api, monkeypatch):
+    fake_gh_api.set("repo", "acme/widgets")
+    fake_gh_api.set("user", "me\n")
+    fake_gh_api.set(
+        "pr_view", json.dumps({"number": 7, "title": "T", "headRefName": "feat/x", "url": "https://gh/pr/7"})
+    )
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 111,
+                    "in_reply_to_id": None,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 42,
+                    "start_line": None,
+                    "original_line": 42,
+                    "original_start_line": None,
+                    "body": "Prefer a constant.",
+                    "diff_hunk": "@@ -40,3 +40,3 @@\n x\n y\n z",
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    env = fake_gh_api.env()
+    r = run_helper("flow-review-collect", "7", "--platform", "github", env=env)
+    doc = _out(r)
+    assert doc["platform"] == "github"
+    assert doc["unit"] == {"number": 7, "branch": "feat/x", "url": "https://gh/pr/7"}
+    assert doc["me"] == "me"
+    assert doc["counts"] == {"total": 1, "already_replied": 0, "actionable": 1}
+    c = doc["comments"][0]
+    assert c["ref"] == "U1"
+    assert c["user"] == "alice"
+    assert c["is_bot"] is False
+    assert c["path"] == "a.py"
+    assert c["line"] == 42
+    assert c["comment_id"] == 111
+    assert c["discussion_id"] is None
+    assert c["diff_hunk"].startswith("@@ -40,3")
+    assert c["outdated"] is False
+    assert c["already_replied"] is False
+
+
+def test_github_outdated_uses_original_line(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 5,
+                    "user": {"login": "bob"},
+                    "path": "a.py",
+                    "line": None,
+                    "start_line": None,
+                    "original_line": 88,
+                    "original_start_line": 80,
+                    "body": "x",
+                    "diff_hunk": "@@",
+                },
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["outdated"] is True
+    assert c["line"] == 88  # historical anchor, never bare null
+    assert c["start_line"] == 80  # historical anchor, never bare null
+
+
+def test_github_resolved_thread_dropped(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {"id": 9, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"},
+            ]
+        ),
+    )
+    fake_gh_api.set(
+        "review_threads",
+        json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert doc["comments"] == []
+    assert doc["counts"]["total"] == 0
+
+
+def test_github_already_replied_and_bot_ref(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "path": "a.py",
+                    "line": 3,
+                    "body": "z",
+                    "diff_hunk": "@@",
+                },
+                {"id": 2, "in_reply_to_id": 1, "user": {"login": "me"}, "body": "done"},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["ref"] == "C1"
+    assert c["is_bot"] is True
+    assert c["already_replied"] is True
+    assert doc["counts"]["already_replied"] == 1
+    assert doc["counts"]["actionable"] == 0

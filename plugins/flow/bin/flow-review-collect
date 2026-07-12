@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Collect all PR/MR review comments into one structured JSON (deterministic Phase 2).
+
+Absorbs the whole of the old SKILL.md Phase 2: fetch (comments + reviews / discussions, with
+pagination), thread parsing, outdated detection with original_line fallback, source
+classification, resolved-thread skipping, bot-summary extraction, already_replied, ref
+assignment (humans U…, bots C…), and snippet reconstruction from the CURRENT working tree.
+
+    flow-review-collect [<pr_or_mr_number>]
+
+Platform is auto-detected via _git. The caller must `git pull` first (snippets read the tree).
+Prints one JSON object on stdout (see schema in the design doc). Degrades a missing snippet to
+null; never fails the whole run over one file read.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+
+import _git
+
+SNIPPET_CONTEXT = 4  # lines of current-file context above/below the commented range
+THIN_HUNK_LINES = 4  # a GitHub diff_hunk with fewer body lines than this is "thin" → add a snippet
+
+LANG_BY_EXT = {
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "yml": "yaml",
+    "yaml": "yaml",
+    "sh": "bash",
+    "bash": "bash",
+    "rb": "ruby",
+    "go": "go",
+    "rs": "rust",
+    "java": "java",
+    "kt": "kotlin",
+    "c": "c",
+    "h": "c",
+    "cc": "cpp",
+    "cpp": "cpp",
+    "hpp": "cpp",
+    "md": "markdown",
+    "json": "json",
+    "toml": "toml",
+    "html": "html",
+    "css": "css",
+    "sql": "sql",
+}
+
+
+def is_bot(login: str) -> bool:
+    low = (login or "").lower()
+    return "[bot]" in low or "coderabbit" in low or low.endswith("bot")
+
+
+def assign_refs(items: list[dict]) -> None:
+    """Assign U-refs to humans then C-refs to bots, in list order. Mutates each item."""
+    humans = [it for it in items if not it["is_bot"]]
+    bots = [it for it in items if it["is_bot"]]
+    for i, it in enumerate(humans, 1):
+        it["ref"] = f"U{i}"
+    for i, it in enumerate(bots, 1):
+        it["ref"] = f"C{i}"
+
+
+def _order(items: list[dict]) -> list[dict]:
+    """humans (in order) then bots (in order) — the canonical comments[] order."""
+    return [it for it in items if not it["is_bot"]] + [it for it in items if it["is_bot"]]
+
+
+# ---- GitHub ----------------------------------------------------------------
+
+
+def gh_resolve_unit(number: str | None) -> dict:
+    fields = "number,title,headRefName,url"
+    cmd = ["gh", "pr", "view", *([number] if number else []), "--json", fields]
+    data = json.loads(_git.run(cmd))
+    return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
+
+
+def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
+    """String root-comment ids of RESOLVED review threads (GraphQL; [] on any error)."""
+    query = (
+        "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){"
+        "repository(owner:$owner,name:$repo){pullRequest(number:$num){"
+        "reviewThreads(first:100,after:$cursor){"
+        "nodes{isResolved comments(first:1){nodes{fullDatabaseId}}}"
+        "pageInfo{hasNextPage endCursor}}}}}"
+    )
+    owner, _, name = repo.partition("/")
+    resolved: set[str] = set()
+    cursor: str | None = None
+    try:
+        while True:
+            cmd = [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-F",
+                f"num={number}",
+            ]
+            if cursor is not None:
+                cmd += ["-f", f"cursor={cursor}"]
+            page = json.loads(_git.run(cmd))
+            rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for node in rt.get("nodes") or []:
+                if node.get("isResolved"):
+                    inner = (node.get("comments") or {}).get("nodes") or []
+                    if inner and inner[0].get("fullDatabaseId") is not None:
+                        resolved.add(str(inner[0]["fullDatabaseId"]))
+            info = rt.get("pageInfo") or {}
+            if info.get("hasNextPage"):
+                cursor = info.get("endCursor")
+                continue
+            break
+    except (KeyError, TypeError, ValueError, OSError):
+        return set()  # NEVER abort collection over the resolve side-query
+    return resolved
+
+
+def gh_collect(number: str | None) -> dict:
+    unit = gh_resolve_unit(number)
+    repo = _git.resolve_repo()
+    me = _git.gh_api("user", jq=".login")
+    comments = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True))
+    reviews = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews"))
+    resolved_ids = gh_review_thread_resolved_ids(repo, unit["number"])
+
+    roots = [c for c in comments if not c.get("in_reply_to_id")]
+    items: list[dict] = []
+    for c in roots:
+        cid = c.get("id")
+        if str(cid) in resolved_ids:
+            continue  # resolved thread → drop entirely
+        replies = [r for r in comments if r.get("in_reply_to_id") == cid]
+        thread = [{"user": (r.get("user") or {}).get("login", "?"), "body": r.get("body", "")} for r in replies]
+        outdated = c.get("line") is None and c.get("original_line") is not None
+        line = c.get("original_line") if outdated else c.get("line")
+        start_line = c.get("original_start_line") if outdated else c.get("start_line")
+        login = (c.get("user") or {}).get("login", "?")
+        latest = thread[-1]["user"] if thread else None
+        items.append(
+            {
+                "user": login,
+                "is_bot": is_bot(login),
+                "path": c.get("path"),
+                "start_line": start_line,
+                "line": line,
+                "outdated": outdated,
+                "already_replied": latest == me,
+                "comment_id": cid,
+                "discussion_id": None,
+                "summary_id": None,
+                "body": c.get("body", ""),
+                "thread": thread,
+                "diff_hunk": c.get("diff_hunk"),
+                "position": None,
+                "snippet": None,
+            }
+        )
+
+    items += gh_summary_items(reviews)  # Task 4 fills this; stub returns [] for now
+    ordered = _order(items)
+    assign_refs(ordered)
+    return _document("github", unit, me, ordered)
+
+
+def gh_summary_items(reviews: list[dict]) -> list[dict]:  # noqa: ARG001  -- implemented in Task 4
+    return []  # implemented in Task 4
+
+
+# ---- GitLab ------------------------------------------------------------------
+
+
+def gl_collect(number):
+    msg = "GitLab collection not yet implemented"
+    raise NotImplementedError(msg)
+
+
+# ---- shared ------------------------------------------------------------------
+
+
+def _document(platform: str, unit: dict, me: str, comments: list[dict]) -> dict:
+    total = len(comments)
+    already = sum(1 for c in comments if c["already_replied"])
+    return {
+        "platform": platform,
+        "unit": unit,
+        "me": me,
+        "counts": {"total": total, "already_replied": already, "actionable": total - already},
+        "comments": comments,
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="flow-review-collect")
+    parser.add_argument("number", nargs="?", default=None)
+    parser.add_argument("--platform", default=None, choices=["github", "gitlab"])
+    args = parser.parse_args(argv)
+
+    number = args.number.lstrip("!") if args.number else None
+    platform = _git.detect_platform(args.platform)
+    if platform == "github":
+        doc = gh_collect(number)
+    else:
+        doc = gl_collect(number)  # Task 4
+    print(json.dumps(doc))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -270,3 +270,145 @@ def gl_mr(*, status="success", head=SHA, pipeline_sha=None, pid=1, present=True)
 def gl_jobs(*jobs):
     """Build a failed-jobs list. Each job is (name, allow_failure)."""
     return _json.dumps([{"name": n, "status": "failed", "allow_failure": af} for (n, af) in jobs])
+
+
+# --- review-collect fakes: route `gh`/`glab` by argv to canned per-endpoint files ------
+#
+# NOTE: `_git.gh_api`/`glab_api` build argv as ["<cli>", "api", "--paginate"?, <path>, "-q", <jq>?]
+# -- the `--paginate` flag (when present) comes BEFORE the path, not after. The `endpoint()`
+# helper below walks past known flags (and their values) to find the first positional token,
+# so routing is correct whether or not `paginate=True` was passed.
+
+_GH_ROUTER = r"""#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+STATE = Path({state!r})
+a = sys.argv[1:]
+
+def emit(name, default="[]"):
+    p = STATE / name
+    sys.stdout.write(p.read_text() if p.exists() else default)
+
+def endpoint(rest):
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok == "--paginate":
+            i += 1
+            continue
+        if tok == "-q":
+            i += 2
+            continue
+        return tok
+    return ""
+
+EMPTY_THREADS = (
+    '{{"data":{{"repository":{{"pullRequest":{{"reviewThreads":'
+    '{{"nodes":[],"pageInfo":{{"hasNextPage":false,"endCursor":null}}}}}}}}}}}}'
+)
+
+if a[:2] == ["pr", "view"]:
+    emit("pr_view", "{{}}"); sys.exit(0)
+if a[:2] == ["repo", "view"]:
+    emit("repo", "o/r"); sys.exit(0)
+if a[:1] == ["api"]:
+    rest = a[1:]
+    # `gh api user -q .login`
+    if "user" in rest:
+        emit("user", "me"); sys.exit(0)
+    ep = endpoint(rest)
+    if ep == "graphql":
+        emit("review_threads", EMPTY_THREADS)
+        sys.exit(0)
+    if ep.endswith("/comments"):
+        emit("comments"); sys.exit(0)
+    if ep.endswith("/reviews"):
+        emit("reviews"); sys.exit(0)
+sys.exit(0)
+"""
+
+
+@pytest.fixture
+def fake_gh_api(tmp_path):
+    """Fake `gh` routing each endpoint to a canned file the test writes."""
+    state = tmp_path / "gh-api-state"
+    state.mkdir()
+    gh = tmp_path / "gh"
+    gh.write_text(_GH_ROUTER.format(state=str(state)))
+    gh.chmod(0o755)
+
+    class Ctl:
+        dir = state
+
+        def env(self, **overrides):
+            base = {"PATH": f"{tmp_path}:/usr/bin:/bin"}
+            base.update(overrides)
+            return base
+
+        def set(self, name, text):
+            (state / name).write_text(text)
+
+    return Ctl()
+
+
+_GLAB_ROUTER = r"""#!/usr/bin/env python3
+import sys, json
+from pathlib import Path
+STATE = Path({state!r})
+a = sys.argv[1:]
+
+def emit(name, default="[]"):
+    p = STATE / name
+    sys.stdout.write(p.read_text() if p.exists() else default)
+
+def endpoint(rest):
+    i = 0
+    while i < len(rest):
+        tok = rest[i]
+        if tok == "--paginate":
+            i += 1
+            continue
+        if tok == "-q":
+            i += 2
+            continue
+        return tok
+    return ""
+
+if a[:2] == ["repo", "view"]:
+    p = STATE / "project"
+    path = p.read_text() if p.exists() else "g/r"
+    sys.stdout.write(json.dumps({{"path_with_namespace": path}})); sys.exit(0)
+if a[:2] == ["mr", "view"]:
+    emit("mr_view", "{{}}"); sys.exit(0)
+if a[:1] == ["api"]:
+    rest = a[1:]
+    if "user" in rest:
+        emit("user", "me"); sys.exit(0)
+    ep = endpoint(rest)
+    if ep.endswith("/discussions"):
+        emit("discussions"); sys.exit(0)
+sys.exit(0)
+"""
+
+
+@pytest.fixture
+def fake_glab_api(tmp_path):
+    """Fake `glab` routing each endpoint to a canned file the test writes."""
+    state = tmp_path / "glab-api-state"
+    state.mkdir()
+    glab = tmp_path / "glab"
+    glab.write_text(_GLAB_ROUTER.format(state=str(state)))
+    glab.chmod(0o755)
+
+    class Ctl:
+        dir = state
+
+        def env(self, **overrides):
+            base = {"PATH": f"{tmp_path}:/usr/bin:/bin"}
+            base.update(overrides)
+            return base
+
+        def set(self, name, text):
+            (state / name).write_text(text)
+
+    return Ctl()
