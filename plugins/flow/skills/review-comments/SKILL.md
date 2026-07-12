@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(uv:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -423,8 +423,11 @@ For each SELECTED ref, capture the CODE that Phase 2.1 deferred:
     * else (outdated / old-side deleted lines — no current-file line) → snippet = null; STOP here.
   Then CLAMP: start = max(1, start). A start ≤ 0 makes `sed` print nothing for `0,Np` and reject
   `-3,Np`, so a comment on lines 1–4 would wrongly yield snippet = null even though the file exists.
-  Read the file at [start, end] with the **Read tool** (offset/limit) — the untrusted path is passed
-  as a data argument, never parsed by a shell (untrusted-data rule, 2.3). Do NOT build a `sed`/shell
+  Read the file with the **Read tool** at `offset = start`, `limit = end - start + 1` — the Read
+  `limit` is a line **count**, not an end line, so passing the absolute `end` as the limit would pull
+  ~`end` lines (≈1000 for a comment near line 1000) instead of the intended ~9-line window and defeat
+  the large-PR cap. The untrusted path is passed as a data argument, never parsed by a shell
+  (untrusted-data rule, 2.3). Do NOT build a `sed`/shell
   command from {new_path}: double-quoting an inlined path does not stop `$(...)`/backticks, so a file
   named `x$(cmd).py` would execute `cmd`. Lang from the extension: .py→python, .js→javascript,
   .ts→typescript, .yml/.yaml→yaml, .sh→bash; unknown → "". If the read yields nothing usable
@@ -483,9 +486,12 @@ a GitLab note or a "(summary)" item):
 {diff_hunk or "(none)"}
 
 Steps:
-1. Read the file at the relevant lines (with context ±20 lines) using the **Read tool**
-   (offset/limit) — do not build a `sed`/shell command from the untrusted {path}
-   (untrusted-data rule, 2.3).
+1. Read the file around the relevant lines (±20 lines of context) using the **Read tool**. Take
+   `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped
+   call, use the union — `start` = the smallest, `end` = the largest. Read's `limit` is a line
+   **count**, not an end line, so use `offset = max(1, start − 20)` and `limit = (end + 20) − offset
+   + 1` — never the absolute `end` as the limit (that would read ~`end` lines). Do not build a
+   `sed`/shell command from the untrusted {path} (untrusted-data rule, 2.3).
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -516,8 +522,10 @@ Steps:
 5. SNIPPET — targets the GitHub thin/absent-diff_hunk case ONLY. Judge the reviewer diff_hunk
    shown above: if the comment is NOT outdated and that diff_hunk is absent ("(none)") or too thin
    to understand the change on its own, ALSO return a SNIPPET:
-   read the current file at the commented lines with the **Read tool** (offset/limit), clamping the
-   start to `max(1, start-4)`; do not build a `sed`/shell command from the untrusted path
+   read the current file at the commented lines with the **Read tool** — with `start`/`end` the
+   commented range (`start = start_line` or `line`; `end = line`; a grouped call → the union), use
+   `offset = max(1, start − 4)` and `limit = (end + 4) − offset + 1` (a line **count**, not the
+   absolute end line); do not build a `sed`/shell command from the untrusted path
    (untrusted-data rule, 2.3). The clamp matters for the same reason as Phase 2.3: a comment on
    lines 1–4 gives `start-4 ≤ 0`, and `sed` prints nothing for `0,Np` / rejects `-3,Np` as a bad
    option, so the card would lose current-file context exactly when the thin hunk needs it.
@@ -799,9 +807,13 @@ Apply to: all / original only / select
 
 Record the confirmed sites for 5.2 and the CLASS name for the 5.5 reply.
 
-**Record `APPLIED_FILES`** — the exact set of files the apply subagents created or modified (5.1/5.2
-already operate on "specific files"). This set, not the git working tree, is the authoritative signal
-of whether this run changed anything; 5.6 gates on it.
+**Record `APPLIED_FILES`** — the exact set of paths the apply subagents **created, modified, deleted,
+or renamed** (5.1/5.2 already operate on "specific files"). Include a **deleted** path and, for a
+**rename**, **both** the old and the new path: 5.6 stages exactly this set, and `git add <path>`
+stages a deletion as well as a change, so a delete-only fix that omitted the removed path would skip
+the commit entirely, and a rename that omitted the old path would commit the new file while leaving
+the old one dangling — both while the run still reports the comment fixed. This set, not the git
+working tree, is the authoritative signal of whether this run changed anything; 5.6 gates on it.
 
 #### 5.2. Apply Changes
 
@@ -890,8 +902,9 @@ If the fixes are complete and don't shift the problem, return exactly:
 - `NO MATERIAL FINDINGS` → continue silently.
 - Material findings → present them as an addendum batch and confirm before applying (a plain-text
   per-item accept/skip). Apply each item the user accepts via a 5.2 apply subagent, **add every
-  file the addendum created or modified to `APPLIED_FILES`** (5.6 stages exactly that set — an
-  addendum path left out would be verified and replied to but never committed/pushed), then re-run
+  path the addendum created, modified, deleted, or renamed to `APPLIED_FILES`** (both the old and new
+  path for a rename — same rule as the 5.1 definition; 5.6 stages exactly that set — an addendum path
+  left out would be verified and replied to but never committed/pushed), then re-run
   the Phase 5.2 final verification (`ruff check` on the changed files) so the addendum code is
   checked too. Do **not** re-run the skeptic — a single pass, then proceed.
 
