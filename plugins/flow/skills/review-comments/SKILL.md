@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(printf:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read Write
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Agent Read Write
 ---
 
 # Flow: Review Comments
@@ -12,7 +12,9 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-
 
 This skill makes every unresolved review comment reviewable and triageable **inside Claude Code**: for each comment it shows the **anchored code** (syntax-highlighted), the **full comment text + thread**, and the **agent's take** (category + short honest assessment) as a per-comment **card**, then lets the user decide **fix / won't-fix / follow-up** per comment. It applies accepted fixes, argues against invalid comments, files follow-ups as beads tasks, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Flow shape:** Phase 2 collects in two passes — first a lightweight **TABLE + index**, then, after the large-PR **cap** (Phase 2.2) has selected a working set, the **full** bodies **with their code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) **only for that set** — so a large review never floods the context. Phase 3 analyzes the whole working set up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
+**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through a **quoted heredoc → variable** so backticks / `$` / `$(…)` reach the tool verbatim.
+
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) — one deterministic pass that fetches, parses, and writes a single `metadata.json`, each comment already carrying its code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet). A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -27,7 +29,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 |------|--------|-----------|
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
-| 2. Collect **(cap before code)** | Pass 1: TABLE + lightweight index. Cap selects a working set. Pass 2: **full** body + `diff_hunk`/`position` **for the working set only** | Two haiku subagents; heavy payload reaches main context only AFTER the cap, for the selected set |
+| 2. Collect | Run `flow-review-collect` once → one `metadata.json` (fetch/parse/outdated/resolved-skip/summary/snippet). Cap then selects the working set | One deterministic collector call; reviewer text never touches a shell |
 | 3. Analyze the **working set** | Parallel sonnet subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → reply → commit → push | Fix the class; skeptic pass before push; follow-up = a beads task |
@@ -62,15 +64,8 @@ Resolve `PLATFORM` in this order — stop at the first that decides:
 | Unit | Pull Request, number | Merge Request, **iid** (the `!42` number) |
 | Repo identifier | `owner/repo` (`gh repo view --json nameWithOwner -q .nameWithOwner`) | **URL-encoded** project path `group%2Frepo` (from remote URL path; `/` → `%2F`) |
 | Detect unit for current branch | `gh pr view --json number,title,headRefName,url` | `glab mr view <iid> --output json` (fields: `iid`, `title`, `source_branch`, `web_url`, `state`) |
-| Fetch threads | `gh api repos/{o}/{r}/pulls/{n}/comments --paginate` + `…/reviews` + `gh api graphql` `reviewThreads` (resolve-state) | `glab api --paginate "projects/{id}/merge_requests/{iid}/discussions"` (one endpoint returns all) |
-| Thread model | flat comments linked by `in_reply_to_id` | each `discussion.notes[]` IS the thread; `notes[0]` = root, `notes[1:]` = replies |
-| Code for the card | `diff_hunk` on each `pulls/{n}/comments` item (already fetched — no extra call) | no `diff_hunk`; store `position` and reconstruct a `snippet` from the current file around `new_line` (via the **Read tool**, **inside the subagent**) |
-| Authenticated user | `gh api user -q .login` | `glab api user -q .username` |
+| Fetch / threads / outdated / resolved-skip / bot-summary / authenticated user | handled by the collector (`flow-review-collect`) — see the Phase 2 `metadata.json` schema | same collector, same schema (GitLab `discussions` endpoint, `position`/`new_line`, `system`-note skip) |
 | Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{comment_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body=…` — keyed by **`discussion_id`, not comment id** |
-| Skip as already-done | `isResolved` (GraphQL `reviewThreads`) **or** `already_replied` | `resolved == true` **or** `already_replied` |
-| Outdated detection | `line == null && original_line` set | diff note where `position.new_line == null` (with `old_line` set) — the line no longer exists in the latest version; a note with no `position` is a general comment, not outdated. Do **not** use `head_sha` — it over-flags after a pull |
-| Bot / summary | `user.login` is `coderabbitai` / contains `[bot]` | `author.username` matches `coderabbit` / contains `bot`; a bot's summary/walkthrough is just a non-`position` discussion → `(summary)` bucket |
-| System notes | n/a | skip notes where `system == true` (e.g. "changed the description") |
 
 > **`glab` command verification:** the exact `glab` flags (`--output json`, `--method`, `--raw-field`, `--paginate`) and whether the `projects/:id` shorthand resolves the current repo can vary by `glab` version. If a documented command fails, fall back to the explicit URL-encoded project path (`projects/group%2Frepo/...`) and verify with `glab api --help` / `glab mr --help`.
 
@@ -332,78 +327,19 @@ Triaging {N} comments (humans first, then bots):
 
 #### 4.2. One card at a time
 
-For each comment (in TOC order), **assemble the card JSON** by merging the Phase 2.3 metadata
-item with its Phase 3 verdict, then render it with `flow-comment-card`. The card fields:
-
-| Card field | Source |
-|------------|--------|
-| `ref`, `path`, `start_line`, `line`, `outdated`, `body`, `thread`, `diff_hunk` | Phase 2.3 metadata (map `author` = metadata `user`) |
-| `category`, `thought`, `suggested` | Phase 3 verdict |
-| `snippet` | Phase 3 verdict's SNIPPET if present, else Phase 2.3 metadata `snippet` (GitLab). **When the card has a `snippet`, OMIT `diff_hunk` — see the override below.** |
-
-**Thin-hunk override — a `snippet` on the card means DROP `diff_hunk`.** `flow-comment-card`'s
-`render_code` always prefers a non-empty `diff_hunk` over `snippet`, so a card carrying **both**
-never shows the snippet. But the Phase 3 subagent emits a SNIPPET *precisely* when it judged the
-reviewer's `diff_hunk` absent or **too thin** (and GitLab has no `diff_hunk` at all) — so the
-snippet is the fuller context you want to show. **Rule: if the assembled card has a non-empty
-`snippet`, remove `diff_hunk` from the card JSON.** No snippet → keep `diff_hunk`.
-
-The `source` value (`bot`/`human`) is computed only for the Phase 4.1 TOC ordering (humans first,
-bots second) — it is **not** a card field the renderer reads, so do **not** put it in the card JSON.
-
-Build one JSON object and pipe it in. **Every free-text field must reach `jq` through a
-double-quoted shell VARIABLE — NEVER inline it as a literal.** Raw reviewer `body`/`thread` and
-the LLM-authored `THOUGHT` routinely contain `'`, backticks, and `$`; inlined as a literal those
-trigger command substitution / variable expansion and silently corrupt or break the command
-(`--arg thought "…\`repo.head\`…$HOME…"` runs `repo.head` and expands `$HOME`). Materialize each
-free-text value with the **quoted-heredoc** pattern (the same one Phase 5.5 uses for replies), and
-turn Phase 3's fenced SNIPPET block into the JSON `--argjson snippet` needs. Any equivalent
-assembly works — the helper reads one comment object on stdin:
+For each comment (in TOC order), render its card by pointing `flow-comment-card` at the two files —
+no shell-assembled JSON, no jq:
 
 ```bash
-# Free-text → quoted-heredoc variables so backticks / $ / ' stay literal (untrusted-data rule, 2.3). Use a DISTINCTIVE
-# delimiter (FLOW_RC_EOF): quoting stops expansion but NOT delimiter collision — a plain 'EOF'
-# terminates early if the captured text contains a line that is exactly EOF (common in code/shell
-# snippets and review text). The delimiter MUST be a token that does not appear in the content.
-THOUGHT=$(cat <<'FLOW_RC_EOF'
-Agrees — real crash on detached HEAD; the guard is one frame too low.
-FLOW_RC_EOF
-)
-# Phase 3 returns SNIPPET as a fenced markdown block, not JSON. Pick ONE branch from the verdict —
-# it either carried a SNIPPET fence or it did not. This null is load-bearing: the merge below falls
-# back to $meta.snippet ONLY when $snippet is null, so an empty {lang, text:""} object (what the jq
-# yields on empty text) would WIN over $meta.snippet and blank out the Phase 2.3 reconstructed code
-# — which is the normal GitLab case (Phase 3 defers to that reconstructed snippet, returning no
-# SNIPPET of its own).
-#
-# (a) verdict HAS a Phase 3 SNIPPET fence → build the object. Take the lines BETWEEN the outer
-# fence, whatever its backtick length (Phase 3 uses a dynamic fence ≥4 ticks when the snippet
-# itself contains a ``` line — do NOT stop at the first inner 3-tick run):
-SNIPPET_TEXT=$(cat <<'FLOW_RC_EOF'
-<the lines inside the Phase 3 SNIPPET fence, verbatim (strip only the outer dynamic fence)>
-FLOW_RC_EOF
-)
-SNIPPET_JSON=$(printf '%s' "$SNIPPET_TEXT" | jq -Rs --arg lang "python" '{lang: $lang, text: .}')
-#
-# (b) verdict has NO Phase 3 SNIPPET (the normal GitLab case) → use this line INSTEAD of (a):
-#     SNIPPET_JSON=null   # let $meta.snippet win in the merge
-
-card=$(jq -n \
-  --argjson meta "$(jq '.[] | select(.ref=="C1")' <<<"$METADATA")" \
-  --arg category  "correctness" \
-  --arg thought   "$THOUGHT" \
-  --arg suggested "fix" \
-  --argjson snippet "$SNIPPET_JSON" \
-  '$meta
-   + {author: $meta.user, category: $category, thought: $thought, suggested: $suggested}
-   + (if $snippet != null then {snippet: $snippet} else {snippet: $meta.snippet} end)
-   | if (.snippet.text // "") != "" then del(.diff_hunk) else . end')
-echo "$card" | flow-comment-card
+flow-comment-card --meta "$FLOW_RC_DIR/metadata.json" --ref C1 --verdict "$FLOW_RC_DIR/verdict-C1.json"
 ```
 
-The reviewer `body`/`thread` need no manual escaping here: they arrive already JSON-escaped inside
-`$METADATA` and travel through `--argjson meta`, so `jq` parses them as **data**, never as shell
-text. The rule above is about the fields you add by hand — above all `THOUGHT`.
+The helper reads the `comments[]` item for that `ref` from `metadata.json`, merges the verdict's
+`category`/`thought`/`suggested` from `verdict-{ref}.json`, and applies the snippet↔diff_hunk
+override (a collector-attached `snippet` — present exactly when the GitHub `diff_hunk` was thin or
+absent, and always on GitLab — wins, and `diff_hunk` is dropped; otherwise the `diff_hunk` shows).
+Both arguments are **file paths**, so no reviewer `body`/`thread` and no LLM `thought` is ever
+assembled into a shell command (untrusted-data rule).
 
 **⚠️ NO OUTER FENCE — emit the card UNWRAPPED.** `flow-comment-card` output already *contains*
 ```` ```diff ````/```` ```lang ```` fences and markdown blockquotes. Print its output **directly
@@ -423,9 +359,10 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
 
 - Empty / Enter → take the default (`suggested`).
 - **agree_unclear:** the take is genuinely ambiguous — present the 2-3 fix options inline here
-  (from the verdict's `agree_unclear | A OR B OR C`) and let the user pick which fix (or skip)
-  **before** moving to the next card. If the user picks a fix option, record it with the `fix`
-  decision; if the user picks "skip", record the decision as `skip` (invariant 3), not `fix`.
+  (read them from the verdict JSON's `thought`, or its `options` array when present) and let the
+  user pick which fix (or skip) **before** moving to the next card. If the user picks a fix option,
+  record it with the `fix` decision; if the user picks "skip", record the decision as `skip`
+  (invariant 3), not `fix`.
 - **disagree → fix (accept-anyway):** a `disagree` verdict carries only CLAIM / EVIDENCE / THOUGHT —
   it explains why NOT to apply, so it has **no fix action**. If the user overrides it to `fix`, Phase
   5.1 would otherwise call the apply flow with an empty patch plan. Before recording the `fix`
@@ -671,7 +608,7 @@ Proceed? (yes / edit / no)
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
 `bd create`). **Both the title and the description derive from the reviewer's comment** (the title
-from its substance — see above), and that text is **untrusted** (untrusted-data rule, 2.3) — it routinely contains backticks,
+from its substance — see above), and that text is **untrusted** (untrusted-data rule) — it routinely contains backticks,
 `$HOME`, or `$(...)`. **Never inline the reviewer-derived title or comment text into a double-quoted
 `--title` / `--description`:** the shell runs the command substitution and expands the variables
 *before* `bd create` sees them, corrupting the task (or executing whatever the reviewer wrote).
@@ -742,7 +679,7 @@ glab api --method POST \
 
 **Do NOT reply to comments where `already_replied` is true.**
 
-**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule, 2.3) — works for both platforms:
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule) — works for both platforms:
 
 ```bash
 body=$(cat <<'FLOW_RC_EOF'
@@ -769,7 +706,7 @@ decisions — there is nothing to commit. Skip **both** 5.6 and 5.7 and go strai
 Otherwise, stage exactly `APPLIED_FILES`:
 
 Stage exactly the applied set. `APPLIED_FILES` holds PR file paths (reviewer-controlled) → feed them
-to git as **data, never as shell words** (untrusted-data rule, 2.3): inlined into shell source a path
+to git as **data, never as shell words** (untrusted-data rule): inlined into shell source a path
 like `x$(cmd).py` would run `cmd`, and a path with spaces would word-split, before `git add` saw it.
 Write the applied paths (one per line, verbatim) through a **quoted heredoc** — which expands nothing
 — straight into `git add --pathspec-from-file=-`, so git reads them from stdin as pathspecs, not the
@@ -822,7 +759,7 @@ Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries in two passes — a lightweight TABLE + index first, then, after the large-PR cap, the **full** comment text **with their anchored code** (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet) for the selected working set
+- Collect all unresolved inline comments and review summaries with the `flow-review-collect` collector (one `metadata.json`), then apply the large-PR cap to select the working set — each comment already carries its anchored code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet)
 - Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel sonnet subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
@@ -927,8 +864,8 @@ Agent: Obvious fixes: U1, C1.  Disagree: U2.  Outdated: U3.
 ```
 User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
-       [Pass 1 haiku subagent → TABLE + lightweight index; 3 non-replied, below the ~20 cap → working set = all 3]
-       [Pass 2 haiku subagent → full bodies + diff_hunk for those 3; analyzes ALL in parallel sonnet]
+       [flow-review-collect → metadata.json; 3 non-replied, below the ~20 cap → working set = all 3]
+       [Analyzes ALL 3 in parallel sonnet, each subagent reading its comment from metadata.json]
 
        Triaging 3 comments (humans first, then bots):
 
@@ -1103,9 +1040,9 @@ commits"; that is the shallow dismissal Phase 3 exists to prevent.
 
 ### Summary / General Item (no position)
 
-A `(summary)`/general item has no anchored line, so its **card has no code block** — header
-shows `(summary)`, and it carries the full text + take only. It is still triageable (including
-**follow-up**). Reply targets differ:
+The collector emits a summary/general item with `path: "(summary)"` and no `line`, so its **card
+has no code block** — the header shows `(summary)` and it carries the full text + take only. It is
+still triageable (including **follow-up**). Reply targets differ:
 
 - **GitHub:** a summary item comes from the review body, so `comment_id == null` — there is **no
   reply target**. Record its decision in the 5.8 summary report; do **not** attempt a reply. (A
@@ -1180,32 +1117,32 @@ Continuing with #42.
 
 ### Comment References Deleted File
 
-If a comment's `path` points to a file that no longer exists:
+When a comment's `path` no longer exists, the collector emits `snippet: null` (the file read
+degraded) — GitHub may still carry the historical `diff_hunk`, GitLab has no code block. Treat as
+outdated:
 
-- Treat as outdated; the card has **no reconstructed snippet** (nothing to read). GitHub may
-  still carry the historical `diff_hunk` — show it. GitLab degrades to no code block.
 - Verdict: `outdated_fixed` with note "file was removed"
 - Reply: "Fixed in subsequent commits (file removed)"
 
 ### GitLab Thin / Absent Snippet
 
-GitLab has no `diff_hunk`; the snippet is reconstructed from the current file (Phase 2.3). If that
-read yields nothing usable (moved/renamed file, `new_line` out of range), **render the card
-without a code block** and note the `position` in the take — **degrade, don't fail**. The card
-still shows source + full text + take.
+GitLab has no `diff_hunk`, so the collector reconstructs the snippet from the current file. If that
+read yields nothing usable (moved/renamed file, `new_line` out of range), it emits `snippet: null`
+and the card **renders without a code block** (the take notes the `position`) — **degrade, don't
+fail**. The card still shows source + full text + take.
 
 ### Very Large Number of Comments (large-PR cap)
 
-The pre-analysis gate exists **only** for large PRs (see Phase 2.2). It runs on the lightweight
-TABLE **before** the full bodies/hunks are materialized (Phase 2.3), so a big review never floods
-the main context. If there are **more than ~20** non-replied comments:
+The pre-analysis gate exists **only** for large PRs (see Phase 2). The collector always returns the
+full `metadata.json`, but the cap decides how much of it enters analysis, so a big review never
+floods the main context. If `counts.actionable` is **more than ~20**:
 
-1. Show the full TABLE (from Phase 2.1 — no full bodies fetched yet).
+1. Print the Phase 4.1 TOC (refs, path:lines, category, brief — no full bodies yet).
 2. Ask, in plain text: "{N} comments — analyze all, or select a subset? (all / <refs>)".
-3. Materialize full metadata (Phase 2.3) and analyze/triage **only** the selected subset.
+3. Analyze/triage **only** the selected subset (look each ref up in `metadata.json`).
 
-Below the threshold, the working set is all non-replied comments — materialize all and go straight
-to card-by-card triage; no prompt.
+Below the threshold, the working set is all actionable comments — go straight to card-by-card
+triage; no prompt.
 
 ## The Bottom Line
 
