@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Agent Read
 ---
 
 # Flow: Review Comments
@@ -226,9 +226,13 @@ If Platform is github:
     the INDEX (so 2.3 never materializes them). (This is a HARDER skip than already_replied,
     which stays visible-and-marked.)
   - For each remaining root, collect thread replies (comments with in_reply_to_id == root.id).
-  - Outdated: comment has "original_line" but "line" is null.
+  - Outdated: comment has "original_line" but "line" is null → set outdated = true. THEN, for an
+    outdated comment, emit line = original_line and start_line = original_start_line (the historical
+    anchor) — otherwise the card and the Phase 3 analysis prompt render with no line at all. The ⚠️
+    outdated flag already marks it as a historical position; the diff_hunk still holds the code.
   - Source: user.login contains "[bot]" or equals "coderabbitai" → bot; else human.
-  - Lines: single → "file.py:42"; range → "file.py:42-58" (use start_line and line).
+  - Lines: single → "file.py:42"; range → "file.py:42-58" (use start_line and line, after the
+    outdated fallback above).
   - already_replied: latest reply author == authenticated user.
   - Reply target: comment_id = root comment id; discussion_id = null.
   - CODE is NOT captured in this pass. Do NOT emit diff_hunk here — Phase 2.3 copies each
@@ -302,7 +306,10 @@ Rules for INDEX JSON (LIGHTWEIGHT — identifiers only, NO bodies/threads/code):
   (2.2) records them for the chosen refs and 2.3 materializes by matching them, so the working set
   survives any ordinal renumbering between the two passes
 - "is_bot": true for a bot author, false for a human
-- "outdated": true if the commented line moved/was removed in the latest version
+- "outdated": true if the commented line moved/was removed in the latest version. For an outdated
+  GitHub comment (`line == null`), `line`/`start_line` carry the historical anchor
+  (`original_line`/`original_start_line`, per STEP 2) — never a bare null that would strip the card
+  and analysis prompt of any line
 - "already_replied": true if the latest thread reply is from the authenticated user
 - Do NOT emit "body", "thread", "diff_hunk", "position", or "snippet" — those are heavy and are
   materialized in Phase 2.3, for the selected working set ONLY
@@ -514,9 +521,12 @@ Steps:
    (untrusted-data rule, 2.3). The clamp matters for the same reason as Phase 2.3: a comment on
    lines 1–4 gives `start-4 ≤ 0`, and `sed` prints nothing for `0,Np` / rejects `-3,Np` as a bad
    option, so the card would lose current-file context exactly when the thin hunk needs it.
-   Return it as a fenced block
-   tagged with the file's language. Omit SNIPPET if the diff_hunk is already clear, or if the
-   file/lines no longer exist.
+   Return it as a fenced block tagged with the file's language, but fence it with a run of
+   **`max(3, 1 + the longest backtick run inside the snippet)`** backticks — i.e. the usual 3, but
+   ≥4 whenever the current-file context itself contains a ``` line (common in Markdown/SKILL files).
+   A fixed 3-tick fence would be closed early by that inner fence, and Phase 4.2 would capture a
+   truncated snippet.
+   Omit SNIPPET if the diff_hunk is already clear, or if the file/lines no longer exist.
    GitLab: do NOT re-run `sed` here — Phase 2.3 already reconstructed a `snippet` into the
    metadata for GitLab notes (their diff_hunk is always null). Leave SNIPPET empty and let the
    Phase 4.2 fallback use that Phase-2.3 snippet. Re-reading the file here would just duplicate it.
@@ -549,7 +559,8 @@ Steps:
    THOUGHT: <one short honest paragraph — why the current code already handles it>
    SUGGESTED: <fix | won't-fix | follow-up>
 
-   SNIPPET: (optional, step 5)
+   SNIPPET: (optional, step 5 — fence with N backticks, N = max(3, 1 + the longest backtick run
+   inside the snippet); the 3 shown here are only illustrative)
    ```<lang>
    <current-file context lines>
    ```
@@ -644,9 +655,11 @@ FLOW_RC_EOF
 # — which is the normal GitLab case (Phase 3 defers to that reconstructed snippet, returning no
 # SNIPPET of its own).
 #
-# (a) verdict HAS a Phase 3 SNIPPET fence → build the object:
+# (a) verdict HAS a Phase 3 SNIPPET fence → build the object. Take the lines BETWEEN the outer
+# fence, whatever its backtick length (Phase 3 uses a dynamic fence ≥4 ticks when the snippet
+# itself contains a ``` line — do NOT stop at the first inner 3-tick run):
 SNIPPET_TEXT=$(cat <<'FLOW_RC_EOF'
-<the lines inside the Phase 3 SNIPPET fence, verbatim>
+<the lines inside the Phase 3 SNIPPET fence, verbatim (strip only the outer dynamic fence)>
 FLOW_RC_EOF
 )
 SNIPPET_JSON=$(printf '%s' "$SNIPPET_TEXT" | jq -Rs --arg lang "python" '{lang: $lang, text: .}')
@@ -818,6 +831,17 @@ uv run ruff check {changed_files}  # if Python files changed
 
 After the apply subagents return, prune `APPLIED_FILES` to the files they actually reported as changed
 (drop any whose apply failed), so a failed apply leaves no phantom path for 5.6 to stage.
+
+**A failed apply also demotes its decision.** A ref keeps its `fix` decision (→ a `Fixed: …` reply
+in 5.5) **only if the apply subagent reported `OK` for every file that ref's fix touches** — a
+generalized fix spans several files/sites, and 5.2 applies per file, so one ref can be part-applied.
+If **any** of a ref's files failed, change that ref's Phase 4 decision from `fix` to `skip` (a
+*failed apply*): Phase 5.5 posts `Fixed: …` for **every** `fix` ref, so a ref left as `fix` after a
+failed/partial apply would be reported fixed with nothing (or only part) behind it. A demoted ref
+gets **no** `Fixed:` reply and appears on the 5.8 `Failed:` line. The files that *did* apply cleanly
+stay in `APPLIED_FILES` and are still committed — they are real improvements and the commit records
+exactly them — but the comment is not reported fixed, and the human finishes it next round from the
+`Failed:` line. Never claim a fix that was not fully applied.
 
 #### 5.3. Pre-Push Adversarial Self-Review
 
@@ -1019,9 +1043,18 @@ decisions — there is nothing to commit. Skip **both** 5.6 and 5.7 and go strai
 (`git diff`) drops a fix that only creates a new untracked file — the apply-set has neither failure.
 Otherwise, stage exactly `APPLIED_FILES`:
 
+Stage exactly the applied set. `APPLIED_FILES` holds PR file paths (reviewer-controlled) → feed them
+to git as **data, never as shell words** (untrusted-data rule, 2.3): inlined into shell source a path
+like `x$(cmd).py` would run `cmd`, and a path with spaces would word-split, before `git add` saw it.
+Write the applied paths (one per line, verbatim) through a **quoted heredoc** — which expands nothing
+— straight into `git add --pathspec-from-file=-`, so git reads them from stdin as pathspecs, not the
+shell:
+
 ```bash
-# skip commit + push when APPLIED_FILES is empty; otherwise stage exactly the applied set:
-git add {APPLIED_FILES}
+git add --pathspec-from-file=- <<'FLOW_RC_EOF'
+plugins/flow/skills/review-comments/SKILL.md
+<one applied path per line, verbatim — the files the apply phase changed>
+FLOW_RC_EOF
 ```
 
 Commit message follows CLAUDE.md scope rules:
@@ -1055,6 +1088,7 @@ Processed: {total} comments
   Already fixed: {count} ({list of refs})
   Follow-ups created: {count} ({ref → task-id})
   Skipped: {count} ({list of refs skipped})
+  Failed: {count} ({list of refs whose apply failed — demoted from fix in 5.2, not reported fixed})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
