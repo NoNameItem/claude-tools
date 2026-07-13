@@ -398,6 +398,23 @@ def test_github_human_changes_requested_summary_included(fake_gh_api):
     assert "add tests" in c["body"]
 
 
+def test_github_human_commented_summary_included(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps([{"id": 79, "user": {"login": "carol"}, "state": "COMMENTED", "body": "Consider edge cases."}]),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert len(doc["comments"]) == 1
+    c = doc["comments"][0]
+    assert c["ref"] == "U1"
+    assert c["is_bot"] is False
+    assert c["summary_id"] == 79
+
+
 def test_github_human_approved_lgtm_summary_dropped(fake_gh_api):
     # An APPROVED "LGTM" body is noise, not actionable — the state gate must drop it.
     fake_gh_api.set("repo", "o/r")

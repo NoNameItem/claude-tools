@@ -146,6 +146,9 @@ def _order(items: list[dict]) -> list[dict]:
 
 _OPEN_STATES = {"OPEN", "OPENED"}  # GitHub OPEN/CLOSED/MERGED; GitLab opened/closed/merged/locked
 
+# GitHub review states whose body is actionable feedback (vs a bare APPROVED "LGTM").
+_ACTIONABLE_HUMAN_REVIEW_STATES = {"CHANGES_REQUESTED", "COMMENTED"}
+
 
 def _require_open(state: object, kind: str, ref: object) -> None:
     """Abort the whole run when the PR/MR is not open (closed / merged / locked).
@@ -282,15 +285,17 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
     Bot reviews (CodeRabbit walkthroughs) are always included. Human review bodies are
     included only when the review requested changes or explicitly commented — an APPROVED
     "LGTM" body is noise, not a triage item.
+
+    GitLab general (no-position) notes are captured separately by gl_collect with no state gate —
+    GitHub review bodies are submission-level cover notes, GitLab general notes the primary channel.
     """
-    actionable_human_states = {"CHANGES_REQUESTED", "COMMENTED"}
     items: list[dict] = []
     for rv in reviews:
         login = (rv.get("user") or {}).get("login", "")
         body = (rv.get("body") or "").strip()
         state = (rv.get("state") or "").upper()
         bot = is_bot(login)
-        if not body or not (bot or state in actionable_human_states):
+        if not body or not (bot or state in _ACTIONABLE_HUMAN_REVIEW_STATES):
             continue
         items.append(
             {
