@@ -110,9 +110,9 @@ def attach_snippet(item: dict, *, is_github: bool, root: Path | None = None) -> 
     """Attach item['snippet'] when the note is on current lines and the hunk is thin/absent."""
     if item["outdated"] or item["path"] in (None, "(summary)"):
         return
-    if is_github and item.get("side") == "LEFT":
-        # Deleted-side comment: `line` is an old-side number, so a current-tree snippet would
-        # show unrelated code. Keep the historical diff_hunk as the anchor.
+    if is_github and "LEFT" in (item.get("side"), item.get("start_side")):
+        # Deleted-side anchor (either endpoint): `line`/`start_line` are old-side numbers, so a
+        # current-tree window would mix coordinate systems. Keep the historical diff_hunk.
         return
     if is_github and not hunk_is_thin(item["diff_hunk"]):
         return  # GitHub with a fat diff_hunk → the hunk is enough

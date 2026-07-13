@@ -674,8 +674,8 @@ def test_github_left_side_no_snippet(fake_gh_api, git_repo):
     fake_gh_api.set("reviews", "[]")
     r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
     c = _out(r)["comments"][0]
-    assert c["side"] == "LEFT"
-    assert c["snippet"] is None
+    assert c["snippet"] is None  # the actual bug this fix addresses — assert FIRST
+    assert c["side"] == "LEFT"  # schema check — second
 
 
 def test_github_right_side_still_gets_snippet(fake_gh_api, git_repo):
@@ -703,9 +703,43 @@ def test_github_right_side_still_gets_snippet(fake_gh_api, git_repo):
     fake_gh_api.set("reviews", "[]")
     r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
     c = _out(r)["comments"][0]
-    assert c["side"] == "RIGHT"
-    assert c["snippet"] is not None
+    assert c["snippet"] is not None  # behavioral assertion — FIRST
     assert "l5" in c["snippet"]["text"]
+    assert c["side"] == "RIGHT"  # schema check — second
+
+
+def test_github_mixed_side_start_left_no_snippet(fake_gh_api, git_repo):
+    """A mixed multi-line comment (side=RIGHT, start_side=LEFT) starts on a deleted (old-side)
+    line, so start_line is an old-side number and a current-tree window would mix coordinate
+    systems. Either endpoint on the old side must skip the snippet."""
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 5,
+                    "side": "RIGHT",
+                    "start_line": 3,
+                    "start_side": "LEFT",
+                    "body": "x",
+                    "diff_hunk": "@@ -3,3 +5 @@\n l5",  # thin hunk — would normally get a snippet
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    c = _out(r)["comments"][0]
+    assert c["snippet"] is None  # behavioral assertion — FIRST
+    assert c["side"] == "RIGHT"
+    assert c["start_side"] == "LEFT"
 
 
 def test_github_closed_pr_aborts(fake_gh_api):
