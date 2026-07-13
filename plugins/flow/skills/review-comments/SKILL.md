@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write Grep
 ---
 
 # Flow: Review Comments
@@ -261,6 +261,16 @@ Steps:
      concern against the replacement; if nothing is found, treat it as **genuinely removed** and
      reason from `body` / `thread` / historical `diff_hunk`. Never pick `outdated_fixed` from the
      missing path alone (see the "Comment References Deleted (or Moved) File" edge case).
+   - **`outdated` is true and the file still exists** (the historical `line` / `start_line` is an
+     **old-side** coordinate — the collector stores `original_line` / `old_line` there, so on GitHub
+     `line` is non-null yet points at where the code *used to be*): do **not** Read the current file at
+     that stale coordinate — the code may have moved and that window can surface unrelated lines. First
+     reconstruct the concern from the `body` and the historical `diff_hunk`, then **Grep** the tree for
+     the commented identifier / symbol to find where the code lives now (or confirm it is gone) and
+     **Read** those candidates. Only if the search finds nothing, fall back to a bounded current-line
+     Read. (`attach_snippet` already yields `snippet == null` for outdated items, so there is no
+     misleading current-tree window — this branch is what stops the analyzer from trusting the stale
+     line number.)
    - **otherwise** (a normal inline comment): Read the file around the relevant lines (±20 lines of
      context) using the **Read tool** — this is judgment tracing, not snippet mechanics. Take
      `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped call,
@@ -452,7 +462,7 @@ skeptic pass, and one commit/push — the reason triage and execution are split.
 Take the comments the user decided **`fix`** on in Phase 4 (this includes an `agree_unclear`
 whose option was chosen, and an accepted `disagree` the user overrode to `fix`). An
 `outdated_fixed` comment the user kept as `fix` has **nothing to apply** — it is already fixed
-in current code; skip it here and just reply "Fixed in subsequent commits" in 5.7. **Before
+in current code; skip it here — its "Fixed in subsequent commits" reply is handled in 5.7, which gates it on the fix being on the remote. **Before
 applying** the rest, check whether each is one instance of a class. Patching only the literal
 line is how one defect gets re-flagged round after round (fixed for one event type, still
 broken for the next).
@@ -686,8 +696,10 @@ Record `{ref → task-id}` for the 5.7 reply and the 5.8 summary line.
 **First, gate on whether the apply phase changed anything.** If `APPLIED_FILES` (Phase 5.1) is
 **empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up / skip
 decisions — there is nothing to commit. Skip **both** this step and the push (5.6) and go straight to
-the reply step (5.7): the replies still owed (`Won't fix:` / `Filed as follow-up:` / `Fixed in
-subsequent commits`) assert **no** change landed this run, so they do not depend on a push. Gate on the
+the reply step (5.7): `Won't fix:` and `Filed as follow-up:` assert **no** change landed this run, so
+they do not depend on a push. `Fixed in subsequent commits` is **not** unconditional here — it still
+passes the 5.7 branch-not-ahead gate (`git rev-list --count origin/{branch}..HEAD`); skipping 5.5/5.6
+does not skip that check, which lives in 5.7. Gate on the
 apply-set, NOT the git working tree: `git status --porcelain` over-includes unrelated pre-existing
 edits, while a tracked-diff check (`git diff`) drops a fix that only creates a new untracked file — the
 apply-set has neither failure. Otherwise, stage exactly `APPLIED_FILES`:
@@ -740,13 +752,23 @@ Options:
 2. Skip
 ```
 
-**The reply step (5.7) gates on this outcome.** A `Fixed: …` reply claims the change is on the remote, so it may go out **only after a successful push**. If the user selects **Skip** (or the push fails), the commit stays local: **withhold every `Fixed: …` reply** and report those refs on the 5.8 `Reply deferred (push skipped)` line — a later push (then re-run) posts them once the fix is actually on the remote. The non-fix replies (`Won't fix:` / `Filed as follow-up:` / `Fixed in subsequent commits`) still post in 5.7.
+**The reply step (5.7) gates on this outcome.** A `Fixed: …` reply claims the change is on the remote, so it may go out **only after a successful push**. If the user selects **Skip** (or the push fails), the commit stays local: **withhold every `Fixed: …` reply** and report those refs on the 5.8 `Reply deferred (push skipped)` line — a later push (then re-run) posts them once the fix is actually on the remote. The non-fix replies (`Won't fix:` / `Filed as follow-up:`) still post in 5.7; `Fixed in subsequent commits` posts only when the branch is not ahead of the remote (5.7 gates it).
 
 #### 5.7. Reply on the platform
 
 Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
 
-**Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line. Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed), `Filed as follow-up:` (work is only tracked), and `Fixed in subsequent commits` (the `outdated_fixed` fix already landed in an earlier, already-pushed commit).
+**Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
+
+**`Fixed in subsequent commits` (the `outdated_fixed` case) also asserts the fix is on the remote** — it claims an *earlier* commit already fixed the issue, which reviewers can only see if that commit is on `origin/{branch}`. Do **not** assume it: Phase 1 only *pulled*, so local commits can sit ahead of origin unpushed. **Verify the branch is not ahead of the remote** before posting:
+
+```bash
+git rev-list --count origin/{branch}..HEAD   # 0 → branch not ahead; the fix is on the remote
+```
+
+Count **0** → post `Fixed in subsequent commits`. **Non-zero** → the fixing commit may be local-only and invisible to reviewers: treat it exactly like a skipped push — **withhold the reply** and carry the ref to the 5.8 `Reply deferred (push skipped)` line until a push makes the fix visible.
+
+Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed) and `Filed as follow-up:` (work is only tracked).
 
 For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the Write tool first**, then pass
 it as a **quoted** command substitution `"$(cat …)"` — which captures the file's bytes as a single
@@ -801,7 +823,7 @@ Processed: {total} comments
   Follow-ups created: {count} ({ref → task-id})
   Skipped: {count} ({list of refs skipped})
   Failed: {count} ({list of refs whose apply failed — demoted from fix in 5.2, not reported fixed})
-  Reply deferred (push skipped): {count} ({list of fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed})
+  Reply deferred (push skipped): {count} ({fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed, plus `outdated_fixed` refs whose `Fixed in subsequent commits` was withheld because the branch is ahead of the remote})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
