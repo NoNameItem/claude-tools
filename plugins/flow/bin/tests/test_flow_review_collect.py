@@ -510,6 +510,33 @@ class TestThinHunk:
         assert m.hunk_is_thin("@@ -1,5 +1,5 @@\n a\n b\n c\n d\n e") is False
 
 
+class TestGlLines:
+    def test_old_line_range_preserved(self):
+        """A multiline comment on removed lines: line_range has only old_line endpoints
+        (no new_line). The range must be preserved, not collapsed to a single anchor."""
+        position = {
+            "line_range": {
+                "start": {"old_line": 10, "new_line": None},
+                "end": {"old_line": 14, "new_line": None},
+            },
+            "new_line": None,
+            "old_line": None,
+        }
+        assert m._gl_lines(position) == (10, 14, True)
+
+    def test_new_line_range_preserved(self):
+        """Control: a new_line range (comment on current lines) is unaffected."""
+        position = {
+            "line_range": {
+                "start": {"old_line": None, "new_line": 20},
+                "end": {"old_line": None, "new_line": 25},
+            },
+            "new_line": 25,
+            "old_line": None,
+        }
+        assert m._gl_lines(position) == (20, 25, False)
+
+
 def test_github_thin_hunk_gets_snippet(fake_gh_api, git_repo):
     (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
     fake_gh_api.set("repo", "o/r")
@@ -618,6 +645,67 @@ def test_outdated_gets_no_snippet(fake_gh_api, git_repo):
     fake_gh_api.set("reviews", "[]")
     r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
     assert _out(r)["comments"][0]["snippet"] is None
+
+
+def test_github_left_side_no_snippet(fake_gh_api, git_repo):
+    """A comment on a deleted line (side=LEFT) must NOT get a current-tree snippet: `line` is
+    an old-side line number, so reading the current tree there would show unrelated code. The
+    historical diff_hunk stays the anchor instead."""
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 5,
+                    "side": "LEFT",
+                    "body": "x",
+                    "diff_hunk": "@@ -5 +5 @@\n l5",  # thin hunk — would normally get a snippet
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    c = _out(r)["comments"][0]
+    assert c["side"] == "LEFT"
+    assert c["snippet"] is None
+
+
+def test_github_right_side_still_gets_snippet(fake_gh_api, git_repo):
+    """Control: a RIGHT-side (current-line) comment with a thin hunk still gets a snippet."""
+    (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 5,
+                    "side": "RIGHT",
+                    "body": "x",
+                    "diff_hunk": "@@ -5 +5 @@\n l5",  # thin hunk
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
+    c = _out(r)["comments"][0]
+    assert c["side"] == "RIGHT"
+    assert c["snippet"] is not None
+    assert "l5" in c["snippet"]["text"]
 
 
 def test_github_closed_pr_aborts(fake_gh_api):
