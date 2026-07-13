@@ -428,6 +428,18 @@ class TestSnippet:
         monkeypatch.chdir(repo)
         assert m.build_snippet("../outside.py", 1, 1) is None
 
+    def test_snippet_resolves_from_repo_root_when_run_from_subdir(self, git_repo, monkeypatch):
+        # API paths are repo-root-relative; when run from a subdirectory the snippet must
+        # still resolve against the repo root, not cwd.
+        (git_repo / "pkg").mkdir()
+        (git_repo / "pkg" / "mod.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
+        sub = git_repo / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)  # launched from a subdirectory of the repo
+        snip = m.build_snippet("pkg/mod.py", 5, 5)
+        assert snip is not None
+        assert "l5" in snip["text"]
+
 
 class TestThinHunk:
     def test_thin_hunk_is_thin(self):

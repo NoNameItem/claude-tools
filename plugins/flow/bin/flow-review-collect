@@ -59,6 +59,19 @@ def lang_for(path: str) -> str:
     return LANG_BY_EXT.get(ext, "")
 
 
+def _repo_root() -> Path:
+    """The working tree's root (git top-level), or cwd when not inside a repo.
+
+    API comment paths are repo-root-relative, so snippets must resolve against the repo root
+    even when the skill is launched from a subdirectory. Falls back to cwd outside a repo
+    (e.g. unit tests that chdir into a bare tmp dir).
+    """
+    try:
+        return Path(_git.run(["git", "rev-parse", "--show-toplevel"])).resolve()
+    except (subprocess.SubprocessError, OSError):
+        return Path.cwd().resolve()
+
+
 def build_snippet(path: str, start: int, end: int) -> dict | None:
     """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree.
 
@@ -70,7 +83,7 @@ def build_snippet(path: str, start: int, end: int) -> dict | None:
     """
     lo = max(1, start - SNIPPET_CONTEXT)
     hi = end + SNIPPET_CONTEXT
-    root = Path.cwd().resolve()
+    root = _repo_root()
     target = (root / path).resolve()
     if target != root and root not in target.parents:
         return None  # symlink / traversal escaping the working tree → refuse
