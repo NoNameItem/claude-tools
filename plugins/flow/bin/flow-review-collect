@@ -60,11 +60,22 @@ def lang_for(path: str) -> str:
 
 
 def build_snippet(path: str, start: int, end: int) -> dict | None:
-    """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree. None if unreadable."""
+    """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree.
+
+    Returns None when unreadable OR when `path` resolves **outside** the working tree. The
+    comment's file path is reviewer-controlled: a PR can add a symlink (`evil.py → /etc/passwd`)
+    or a `..` traversal, and reading it verbatim would copy an arbitrary local file into the
+    card/metadata. Resolving both the root and the target collapses symlinks and `..`, so any
+    escape from the working directory is rejected before the read.
+    """
     lo = max(1, start - SNIPPET_CONTEXT)
     hi = end + SNIPPET_CONTEXT
+    root = Path.cwd().resolve()
+    target = (root / path).resolve()
+    if target != root and root not in target.parents:
+        return None  # symlink / traversal escaping the working tree → refuse
     try:
-        lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:
         return None
     window = lines[lo - 1 : hi]
@@ -117,13 +128,36 @@ def _order(items: list[dict]) -> list[dict]:
     return [it for it in items if not it["is_bot"]] + [it for it in items if it["is_bot"]]
 
 
+# ---- shared unit-state guard -------------------------------------------------
+
+_OPEN_STATES = {"OPEN", "OPENED"}  # GitHub OPEN/CLOSED/MERGED; GitLab opened/closed/merged/locked
+
+
+def _require_open(state: object, kind: str, ref: object) -> None:
+    """Abort the whole run when the PR/MR is not open (closed / merged / locked).
+
+    Collecting review comments on a closed or merged unit is almost always a mistake — the
+    branch may be gone and replies land on a dead thread. `state` is None only when the CLI
+    response omitted it (never in production, where we request the field); that degrades to
+    proceeding rather than crashing.
+    """
+    if state is not None and str(state).upper() not in _OPEN_STATES:
+        print(
+            f"flow-review-collect: {kind} {ref} is {state!r}, not open — "
+            "refusing to collect review comments on a closed/merged unit.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+
+
 # ---- GitHub ----------------------------------------------------------------
 
 
 def gh_resolve_unit(number: str | None) -> dict:
-    fields = "number,title,headRefName,url"
+    fields = "number,title,headRefName,url,state"
     cmd = ["gh", "pr", "view", *([number] if number else []), "--json", fields]
     data = json.loads(_git.run(cmd))
+    _require_open(data.get("state"), "PR", data.get("number"))
     return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
 
 
@@ -263,6 +297,7 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
 def gl_resolve_unit(number: str | None) -> dict:
     cmd = ["glab", "mr", "view", *([number] if number else []), "--output", "json"]
     data = json.loads(_git.run(cmd))
+    _require_open(data.get("state"), "MR", data.get("iid"))
     return {"number": data["iid"], "branch": data["source_branch"], "url": data["web_url"]}
 
 
@@ -293,7 +328,7 @@ def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
 def gl_collect(number: str | None) -> dict:
     unit = gl_resolve_unit(number)
     project = _git.resolve_project()
-    me = _git.glab_api("user", jq=".username")
+    me = json.loads(_git.glab_api("user"))["username"]  # glab api has no -q flag; parse in Python
     discussions = json.loads(
         _git.glab_api(f"projects/{project}/merge_requests/{unit['number']}/discussions", paginate=True)
     )

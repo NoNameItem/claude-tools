@@ -107,12 +107,15 @@ def gh_api(path: str, *, paginate: bool = False, jq: str | None = None) -> str:
     return run(argv)
 
 
-def glab_api(path: str, *, paginate: bool = False, jq: str | None = None) -> str:
-    """Call `glab api <path>`; `paginate` follows all pages, `jq` filters via `-q`."""
+def glab_api(path: str, *, paginate: bool = False) -> str:
+    """Call `glab api <path>`; `paginate` follows all pages.
+
+    Unlike `gh api`, `glab api` has **no** `-q`/`--jq` filter flag — it expects the caller to
+    pipe the raw JSON to an external `jq`. So this wrapper never adds one; callers parse the
+    returned JSON in Python (e.g. `json.loads(glab_api("user"))["username"]`).
+    """
     argv = ["glab", "api"]
     if paginate:
         argv.append("--paginate")
     argv.append(path)
-    if jq:
-        argv += ["-q", jq]
     return run(argv)

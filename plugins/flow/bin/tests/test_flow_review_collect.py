@@ -1,6 +1,6 @@
 """Tests for flow-review-collect (deterministic Phase-2 collector)."""
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
 import json
@@ -238,7 +238,7 @@ def test_github_resolved_pagination_null_cursor_terminates(fake_gh_api):
 
 def test_gitlab_inline_and_general(fake_glab_api):
     fake_glab_api.set("project", "grp/proj")
-    fake_glab_api.set("user", "me")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
     fake_glab_api.set("mr_view", json.dumps({"iid": 4, "source_branch": "mb", "web_url": "wu"}))
     fake_glab_api.set(
         "discussions",
@@ -291,7 +291,7 @@ def test_gitlab_inline_and_general(fake_glab_api):
 
 def test_gitlab_resolved_thread_dropped(fake_glab_api):
     fake_glab_api.set("project", "g/p")
-    fake_glab_api.set("user", "me")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
     fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
     fake_glab_api.set(
         "discussions",
@@ -321,7 +321,7 @@ def test_gitlab_outdated_note_anchors_to_old_line(fake_glab_api):
     """An outdated inline note (new_line null, old_line set, no line_range) keeps a historical
     anchor — never a bare null (mirrors the GitHub original_line fallback)."""
     fake_glab_api.set("project", "g/p")
-    fake_glab_api.set("user", "me")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
     fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
     fake_glab_api.set(
         "discussions",
@@ -387,23 +387,46 @@ class TestSnippet:
         assert m.lang_for("a/b.py") == "python"
         assert m.lang_for("x.unknownext") == ""
 
-    def test_read_window_clamps_top_of_file(self, tmp_path):
-        f = tmp_path / "a.py"
-        f.write_text("l1\nl2\nl3\nl4\nl5\n")
+    def test_read_window_clamps_top_of_file(self, tmp_path, monkeypatch):
+        (tmp_path / "a.py").write_text("l1\nl2\nl3\nl4\nl5\n")
+        monkeypatch.chdir(tmp_path)  # snippets read repo-relative paths under cwd
         # comment on line 1: start-4 = -3 → clamp to 1; window [1, 1+4]
-        snip = m.build_snippet(str(f), 1, 1)
+        snip = m.build_snippet("a.py", 1, 1)
         assert snip["lang"] == "python"
         assert snip["text"] == "l1\nl2\nl3\nl4\nl5"  # lines 1..5 (end+4 capped at EOF)
 
-    def test_read_window_mid_file(self, tmp_path):
-        f = tmp_path / "a.py"
-        f.write_text("\n".join(f"l{i}" for i in range(1, 21)) + "\n")
-        snip = m.build_snippet(str(f), 10, 10)  # window [6, 14]
+    def test_read_window_mid_file(self, tmp_path, monkeypatch):
+        (tmp_path / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 21)) + "\n")
+        monkeypatch.chdir(tmp_path)
+        snip = m.build_snippet("a.py", 10, 10)  # window [6, 14]
         assert snip["text"].splitlines()[0] == "l6"
         assert snip["text"].splitlines()[-1] == "l14"
 
-    def test_missing_file_degrades_to_none(self, tmp_path):
-        assert m.build_snippet(str(tmp_path / "nope.py"), 3, 3) is None
+    def test_missing_file_degrades_to_none(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert m.build_snippet("nope.py", 3, 3) is None
+
+    def test_symlink_outside_repo_refused(self, tmp_path, monkeypatch):
+        """A reviewer-controlled path that is a symlink OUT of the tree must not be read.
+
+        A PR can add `evil.py -> /etc/passwd`; without the guard build_snippet would copy the
+        target's contents verbatim into the card/metadata (arbitrary local file read).
+        """
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOPSECRET\nline2\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "evil.py").symlink_to(secret)
+        monkeypatch.chdir(repo)
+        assert m.build_snippet("evil.py", 1, 1) is None
+
+    def test_parent_traversal_refused(self, tmp_path, monkeypatch):
+        """A `..` path that escapes the working tree must not be read."""
+        (tmp_path / "outside.py").write_text("secret\n")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.chdir(repo)
+        assert m.build_snippet("../outside.py", 1, 1) is None
 
 
 class TestThinHunk:
@@ -472,7 +495,7 @@ def test_github_fat_hunk_no_snippet(fake_gh_api, git_repo):
 def test_gitlab_reconstructs_snippet(fake_glab_api, git_repo):
     (git_repo / "a.py").write_text("\n".join(f"l{i}" for i in range(1, 11)) + "\n")
     fake_glab_api.set("project", "g/p")
-    fake_glab_api.set("user", "me")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
     fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
     fake_glab_api.set(
         "discussions",
@@ -524,3 +547,33 @@ def test_outdated_gets_no_snippet(fake_gh_api, git_repo):
     fake_gh_api.set("reviews", "[]")
     r = run_helper("flow-review-collect", "1", "--platform", "github", cwd=git_repo, env=fake_gh_api.env())
     assert _out(r)["comments"][0]["snippet"] is None
+
+
+def test_github_closed_pr_aborts(fake_gh_api):
+    """A closed/merged PR must abort collection, not silently gather stale threads."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u", "state": "CLOSED"}))
+    r = run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env())
+    assert r.returncode != 0
+    assert "not open" in r.stderr.lower()
+
+
+def test_gitlab_merged_mr_aborts(fake_glab_api):
+    """A merged MR must abort collection."""
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u", "state": "merged"}))
+    r = run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env())
+    assert r.returncode != 0
+    assert "not open" in r.stderr.lower()
+
+
+def test_gitlab_me_parsed_from_json(fake_glab_api):
+    """`glab api user` returns JSON (glab has no `-q` flag); username is parsed in Python."""
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "alice"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u", "state": "opened"}))
+    fake_glab_api.set("discussions", "[]")
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
+    assert doc["me"] == "alice"

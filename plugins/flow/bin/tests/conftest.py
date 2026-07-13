@@ -274,8 +274,9 @@ def gl_jobs(*jobs):
 
 # --- review-collect fakes: route `gh`/`glab` by argv to canned per-endpoint files ------
 #
-# NOTE: `_git.gh_api`/`glab_api` build argv as ["<cli>", "api", "--paginate"?, <path>, "-q", <jq>?]
-# -- the `--paginate` flag (when present) comes BEFORE the path, not after. The `endpoint()`
+# NOTE: `_git.gh_api` builds argv as ["gh", "api", "--paginate"?, <path>, "-q", <jq>?] and
+# `_git.glab_api` as ["glab", "api", "--paginate"?, <path>] (glab has no `-q`/`--jq` flag).
+# The `--paginate` flag (when present) comes BEFORE the path, not after. The `endpoint()`
 # helper below walks past known flags (and their values) to find the first positional token,
 # so routing is correct whether or not `paginate=True` was passed.
 
@@ -383,7 +384,7 @@ if a[:2] == ["mr", "view"]:
 if a[:1] == ["api"]:
     rest = a[1:]
     if "user" in rest:
-        emit("user", "me"); sys.exit(0)
+        emit("user", '{{"username": "me"}}'); sys.exit(0)  # glab api user -> JSON (no -q flag)
     ep = endpoint(rest)
     if ep.endswith("/discussions"):
         emit("discussions"); sys.exit(0)

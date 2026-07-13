@@ -91,6 +91,29 @@ class TestRunAndResolve:
         assert _git.resolve_project(timeout=5) == "group%2Fsub%2Frepo"
 
 
+class TestApiWrappers:
+    def test_glab_api_never_emits_q_flag(self, monkeypatch):
+        # `glab api` has NO -q/--jq flag; the wrapper must never add one (a stray -q makes
+        # glab error on an unknown flag). Capture the argv it hands to run().
+        captured = {}
+
+        def fake_run(argv, **_kw):
+            captured["argv"] = argv
+            return "{}"
+
+        monkeypatch.setattr(_git, "run", fake_run)
+        _git.glab_api("user")
+        assert captured["argv"] == ["glab", "api", "user"]
+        _git.glab_api("projects/x/merge_requests/1/discussions", paginate=True)
+        assert "-q" not in captured["argv"]
+        assert "--jq" not in captured["argv"]
+
+    def test_glab_api_signature_has_no_jq(self):
+        import inspect
+
+        assert "jq" not in inspect.signature(_git.glab_api).parameters
+
+
 class TestAuthHosts:
     def test_reads_host_from_stderr_on_nonzero_exit(self, tmp_path, monkeypatch):
         # Regression: `gh`/`glab auth status` write the host report to STDERR and may
