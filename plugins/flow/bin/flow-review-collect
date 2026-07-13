@@ -85,7 +85,13 @@ def build_snippet(path: str, start: int, end: int, root: Path | None = None) -> 
     hi = end + SNIPPET_CONTEXT
     if root is None:
         root = _repo_root()
-    target = (root / path).resolve()
+    try:
+        target = (root / path).resolve()
+    except (OSError, RuntimeError):
+        # RuntimeError: a symlink loop (`loop -> loop`) raises here under Python 3.9/3.10;
+        # OSError: other resolution failures. The path is reviewer-controlled, so one crafted
+        # PR file must not abort the whole run — degrade this snippet to None (helper contract).
+        return None
     if target != root and root not in target.parents:
         return None  # symlink / traversal escaping the working tree → refuse
     try:

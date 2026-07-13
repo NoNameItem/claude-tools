@@ -698,7 +698,7 @@ Record `{ref → task-id}` for the 5.7 reply and the 5.8 summary line.
 decisions — there is nothing to commit. Skip **both** this step and the push (5.6) and go straight to
 the reply step (5.7): `Won't fix:` and `Filed as follow-up:` assert **no** change landed this run, so
 they do not depend on a push. `Fixed in subsequent commits` is **not** unconditional here — it still
-passes the 5.7 branch-not-ahead gate (`git rev-list --count origin/{branch}..HEAD`); skipping 5.5/5.6
+passes the 5.7 branch-not-ahead gate (`git rev-list --count "origin/$branch..HEAD"`); skipping 5.5/5.6
 does not skip that check, which lives in 5.7. Gate on the
 apply-set, NOT the git working tree: `git status --porcelain` over-includes unrelated pre-existing
 edits, while a tracked-diff check (`git diff`) drops a fix that only creates a new untracked file — the
@@ -774,10 +774,13 @@ Post replies **after** the push (5.6) so each reply reflects the remote's actual
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
-**`Fixed in subsequent commits` (the `outdated_fixed` case) also asserts the fix is on the remote** — it claims an *earlier* commit already fixed the issue, which reviewers can only see if that commit is on `origin/{branch}`. Do **not** assume it: Phase 1 only *pulled*, so local commits can sit ahead of origin unpushed. **Verify the branch is not ahead of the remote** before posting:
+**`Fixed in subsequent commits` (the `outdated_fixed` case) also asserts the fix is on the remote** — it claims an *earlier* commit already fixed the issue, which reviewers can only see if that commit is on `origin/{branch}`. Do **not** assume it: Phase 1 only *pulled*, so local commits can sit ahead of origin unpushed. **Verify the branch is not ahead of the remote** before posting.
+
+**Bind the branch to a variable and reference it quoted — never paste the raw name into the command.** Git ref names may contain shell metacharacters (`git check-ref-format --branch 'foo$(id)'` succeeds) and the branch is PR-author-controlled, so the raw form `origin/{branch}..HEAD` would run the substitution before `git` sees the ref. A quoted variable expansion is not re-scanned for `$()`/backticks, so this stays injection-safe even for a hostile branch name:
 
 ```bash
-git rev-list --count origin/{branch}..HEAD   # 0 → branch not ahead; the fix is on the remote
+branch="$(gh pr view --json headRefName -q .headRefName)"   # GitHub — GitLab: glab mr view {iid} --output json -q .source_branch
+git rev-list --count "origin/$branch..HEAD"   # 0 → branch not ahead; the fix is on the remote
 ```
 
 Count **0** → post `Fixed in subsequent commits`. **Non-zero** → the fixing commit may be local-only and invisible to reviewers: treat it exactly like a skipped push — **withhold the reply** and carry the ref to the 5.8 `Reply deferred (push skipped)` line until a push makes the fix visible.

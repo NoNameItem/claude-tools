@@ -522,6 +522,37 @@ class TestSnippet:
         monkeypatch.chdir(repo)
         assert m.build_snippet("../outside.py", 1, 1) is None
 
+    def test_symlink_loop_degrades_to_none(self, tmp_path, monkeypatch):
+        """A symlink loop at the commented path must degrade to None, not abort the run.
+
+        `Path.resolve()` raises RuntimeError (NOT OSError) on a symlink loop such as
+        `loop -> loop`. The path is reviewer-controlled, so a single crafted PR file would
+        otherwise crash the whole collection — violating the "per-file reads never fail the
+        whole run" contract that build_snippet's docstring promises.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "loop").symlink_to(repo / "loop")  # self-referential symlink → resolution loop
+        monkeypatch.chdir(repo)
+        assert m.build_snippet("loop", 1, 1) is None
+
+    def test_resolve_runtimeerror_degrades_to_none(self, tmp_path, monkeypatch):
+        """Path.resolve() raises RuntimeError (NOT OSError) on a symlink loop under Python
+        3.9/3.10; build_snippet must degrade to None there too. The runtime Python may be
+        3.11+ (where the loop surfaces later as OSError on read), so simulate the 3.9/3.10
+        raise directly — the flow bin/ helpers support 3.9+ (see test_py39_compat).
+        """
+        (tmp_path / "a.py").write_text("l1\n")
+
+        def boom(self, *args, **kwargs):
+            msg = "Symlink loop"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(Path, "resolve", boom)
+        # root passed explicitly so _repo_root() (which also resolves) is bypassed — this
+        # isolates the resolve() on the reviewer-controlled target path.
+        assert m.build_snippet("a.py", 1, 1, root=tmp_path) is None
+
     def test_snippet_resolves_from_repo_root_when_run_from_subdir(self, git_repo, monkeypatch):
         # API paths are repo-root-relative; when run from a subdirectory the snippet must
         # still resolve against the repo root, not cwd.
