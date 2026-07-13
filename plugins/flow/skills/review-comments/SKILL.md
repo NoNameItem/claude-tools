@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Agent Read Write
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Agent Read Write
 ---
 
 # Flow: Review Comments
@@ -715,11 +715,13 @@ Stage exactly the applied set. `APPLIED_FILES` holds PR file paths (reviewer-con
 to git as **data, never as shell words** (untrusted-data rule): inlined into shell source a path
 like `x$(cmd).py` would run `cmd`, and a path with spaces would word-split, before `git add` saw it.
 Write the applied paths (one per line, verbatim) through a **quoted heredoc** — which expands nothing
-— straight into `git add --pathspec-from-file=-`, so git reads them from stdin as pathspecs, not the
-shell:
+— into `git --literal-pathspecs add --pathspec-from-file=-`. The quoted heredoc keeps the shell from
+touching the path; `--literal-pathspecs` then makes git treat every line as a **literal path**, not a
+pathspec, so a reviewer-controlled file named `:(glob)*.py` or one with leading `:` magic cannot
+expand the staged set beyond the exact files the apply phase changed:
 
 ```bash
-git add --pathspec-from-file=- <<'FLOW_RC_EOF'
+git --literal-pathspecs add --pathspec-from-file=- <<'FLOW_RC_EOF'
 plugins/flow/skills/review-comments/SKILL.md
 <one applied path per line, verbatim — the files the apply phase changed>
 FLOW_RC_EOF
