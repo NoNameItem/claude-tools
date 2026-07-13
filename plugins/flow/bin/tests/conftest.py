@@ -290,11 +290,27 @@ def emit(name, default="[]"):
     p = STATE / name
     sys.stdout.write(p.read_text() if p.exists() else default)
 
+# emit_pages: emits canned `name` the way real `gh api [--paginate] [--slurp]` would.
+# Canned content is either a plain JSON value (the common single-page case) or
+# {{"__pages__": [page1, page2, ...]}} to simulate a multi-page response. `--slurp`
+# wraps every page into one outer array; without it, `gh api --paginate` emits each
+# page as its own back-to-back top-level JSON document (no separator) -- which is
+# exactly the multi-page bug (`json.loads`: "Extra data") this fixture reproduces.
+def emit_pages(name, slurp, default="[]"):
+    p = STATE / name
+    raw = p.read_text() if p.exists() else default
+    data = json.loads(raw)
+    pages = data["__pages__"] if isinstance(data, dict) and "__pages__" in data else [data]
+    if slurp:
+        sys.stdout.write(json.dumps(pages))
+    else:
+        sys.stdout.write("".join(json.dumps(pg) for pg in pages))
+
 def endpoint(rest):
     i = 0
     while i < len(rest):
         tok = rest[i]
-        if tok == "--paginate":
+        if tok in ("--paginate", "--slurp"):
             i += 1
             continue
         if tok == "-q":
@@ -317,14 +333,15 @@ if a[:1] == ["api"]:
     # `gh api user -q .login`
     if "user" in rest:
         emit("user", "me"); sys.exit(0)
+    slurp = "--slurp" in rest
     ep = endpoint(rest)
     if ep == "graphql":
         emit("review_threads", EMPTY_THREADS)
         sys.exit(0)
     if ep.endswith("/comments"):
-        emit("comments"); sys.exit(0)
+        emit_pages("comments", slurp); sys.exit(0)
     if ep.endswith("/reviews"):
-        emit("reviews"); sys.exit(0)
+        emit_pages("reviews", slurp); sys.exit(0)
 sys.exit(0)
 """
 

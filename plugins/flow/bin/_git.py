@@ -103,11 +103,22 @@ def resolve_project(*, timeout: int = DEFAULT_TIMEOUT) -> str:
     return urllib.parse.quote(path, safe="")
 
 
-def gh_api(path: str, *, paginate: bool = False, jq: str | None = None) -> str:
-    """Call `gh api <path>`; `paginate` follows Link headers, `jq` filters via `-q`."""
+def gh_api(path: str, *, paginate: bool = False, jq: str | None = None, slurp: bool = False) -> str:
+    """Call `gh api <path>`; `paginate` follows Link headers, `jq` filters via `-q`.
+
+    `slurp` adds `--slurp`, which wraps each page into one outer JSON array instead of
+    emitting each page as its own back-to-back top-level document (the latter breaks a
+    bare `json.loads` on any multi-page response with "Extra data"). `--slurp` and `-q`
+    are mutually exclusive in `gh api` itself, so `slurp=True, jq=...` raises here.
+    """
+    if slurp and jq:
+        msg = "gh_api: slurp and jq are mutually exclusive"
+        raise ValueError(msg)
     argv = ["gh", "api"]
     if paginate:
         argv.append("--paginate")
+    if slurp:
+        argv.append("--slurp")
     argv.append(path)
     if jq:
         argv += ["-q", jq]

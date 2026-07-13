@@ -102,6 +102,29 @@ class TestRunAndResolve:
         assert _git.resolve_project(timeout=5) == "group%2Fsub%2Frepo"
 
 
+class TestGhApiSlurp:
+    # C68: `gh api --paginate` (no `--slurp`) emits each page as its own top-level JSON
+    # array, so a multi-page PR breaks `json.loads` with "Extra data". `--slurp` wraps all
+    # pages into one outer array, but is incompatible with `-q`/`--jq`.
+    def test_paginate_and_slurp_both_present_in_order(self, monkeypatch):
+        captured = {}
+
+        def fake_run(argv, **_kw):
+            captured["argv"] = argv
+            return "[]"
+
+        monkeypatch.setattr(_git, "run", fake_run)
+        _git.gh_api("repos/o/r/pulls/1/comments", paginate=True, slurp=True)
+        argv = captured["argv"]
+        assert "--paginate" in argv
+        assert "--slurp" in argv
+        assert argv.index("--paginate") < argv.index("--slurp")
+
+    def test_slurp_and_jq_are_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="slurp and jq"):
+            _git.gh_api("user", slurp=True, jq=".login")
+
+
 class TestApiWrappers:
     def test_glab_api_never_emits_q_flag(self, monkeypatch):
         # `glab api` has NO -q/--jq flag; the wrapper must never add one (a stray -q makes

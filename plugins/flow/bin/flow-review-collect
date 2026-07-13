@@ -239,8 +239,13 @@ def gh_collect(number: str | None) -> dict:
     repo = _git.resolve_repo()
     repo_root = _repo_root()
     me = _git.gh_api("user", jq=".login")
-    comments = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True))
-    reviews = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews", paginate=True))
+    # `--paginate` alone emits each page as its own top-level JSON array ("[...][...]"),
+    # which breaks a bare `json.loads` on any multi-page PR ("Extra data"). `--slurp`
+    # wraps every page into one outer array instead — flatten it back to a plain item list.
+    comment_pages = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True, slurp=True))
+    comments = [c for page in comment_pages for c in page]
+    review_pages = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews", paginate=True, slurp=True))
+    reviews = [r for page in review_pages for r in page]
     resolved_ids = gh_review_thread_resolved_ids(repo, unit["number"])
 
     roots = [c for c in comments if not c.get("in_reply_to_id")]

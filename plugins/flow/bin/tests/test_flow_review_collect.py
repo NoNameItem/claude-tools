@@ -236,6 +236,50 @@ def test_github_resolved_pagination_null_cursor_terminates(fake_gh_api):
     assert doc["counts"]["total"] == 0
 
 
+def test_github_multipage_comments_both_pages_included(fake_gh_api):
+    """C68 regression: a multi-page `/comments` response.
+
+    Real `gh api --paginate` (no `--slurp`) emits each page as its own back-to-back
+    top-level JSON array (`[...][...]`), which makes a bare `json.loads` raise
+    `json.JSONDecodeError: Extra data`. The `__pages__` fixture below drives the fake gh
+    to reproduce that exact shape. Pre-fix, `gh_collect` crashes (non-zero exit) before
+    producing any doc; post-fix (`paginate=True, slurp=True` + flatten) items from BOTH
+    pages must show up — in particular the page-2-only comment id.
+    """
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    page1 = [
+        {"id": 201, "user": {"login": "alice"}, "path": "a.py", "line": 3, "body": "p1 comment", "diff_hunk": "@@"},
+    ]
+    page2 = [
+        {"id": 202, "user": {"login": "bob"}, "path": "b.py", "line": 9, "body": "p2 comment", "diff_hunk": "@@"},
+    ]
+    fake_gh_api.set("comments", json.dumps({"__pages__": [page1, page2]}))
+    fake_gh_api.set("reviews", "[]")
+    r = run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env())
+    doc = _out(r)
+    ids = {c["comment_id"] for c in doc["comments"]}
+    assert 201 in ids
+    assert 202 in ids  # page-2-only item — dropped/crashed pre-fix
+
+
+def test_github_multipage_reviews_both_pages_included(fake_gh_api):
+    """C68 regression, `/reviews` endpoint: same multi-page shape as the comments test."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    page1 = [{"id": 301, "user": {"login": "coderabbitai[bot]"}, "body": "review page 1"}]
+    page2 = [{"id": 302, "user": {"login": "coderabbitai[bot]"}, "body": "review page 2"}]
+    fake_gh_api.set("reviews", json.dumps({"__pages__": [page1, page2]}))
+    r = run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env())
+    doc = _out(r)
+    ids = {c["summary_id"] for c in doc["comments"]}
+    assert 301 in ids
+    assert 302 in ids  # page-2-only item — dropped/crashed pre-fix
+
+
 def test_gitlab_inline_and_general(fake_glab_api):
     fake_glab_api.set("project", "grp/proj")
     fake_glab_api.set("user", json.dumps({"username": "me"}))
