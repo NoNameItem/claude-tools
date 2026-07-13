@@ -1159,14 +1159,26 @@ Switching to feature/add-auth...
 Continuing with #42.
 ```
 
-### Comment References Deleted File
+### Comment References Deleted (or Moved) File
 
-When a comment's `path` no longer exists, the collector emits `snippet: null` (the file read
-degraded) — GitHub may still carry the historical `diff_hunk`, GitLab has no code block. Treat as
-outdated:
+When a comment's `path` no longer exists in the working tree, the collector emits `snippet: null`
+(the file read degraded) — GitHub may still carry the historical `diff_hunk`, GitLab has no code
+block. A missing path is **not**, by itself, evidence the concern is resolved: the file may have
+been deleted (concern likely moot) **or renamed / its code moved elsewhere** (concern may still be
+live in the replacement). Do **not** shortcut to `outdated_fixed` from the missing path alone — that
+bypasses the Phase 3 evidence rule ("cite the code that moots the SPECIFIC claim") and can falsely
+close a still-valid concern in the moved code.
 
-- Verdict: `outdated_fixed` with note "file was removed"
-- Reply: "Fixed in subsequent commits (file removed)"
+Analyze instead:
+- Treat the missing path as **no current snippet / no current context** — reason from the comment
+  `body`, `thread`, and any historical `diff_hunk`.
+- Determine what happened to the commented code: search the tree for it (renamed file, moved
+  function/symbol). If it **moved**, read the replacement and analyze the concern there.
+- Choose the verdict from evidence, like any other comment:
+  - Code genuinely **removed** and the concern no longer applies → `outdated_fixed`, note "file
+    removed", reply "Fixed in subsequent commits (file removed)".
+  - Code **moved/renamed** and the concern still holds → a real `agree_*` verdict against the
+    replacement (fix or follow-up), **not** `outdated_fixed`.
 
 ### GitLab Thin / Absent Snippet
 
