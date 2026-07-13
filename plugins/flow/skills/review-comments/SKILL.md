@@ -737,6 +737,20 @@ Commit message follows CLAUDE.md scope rules:
 - Changes in `packages/statuskit/` → `fix(statuskit): address PR review feedback`
 - Changes across scopes → separate commits per scope (single-package-commit hook enforces this)
 
+**Commit only the applied paths — never the whole index.** A bare `git commit` commits **everything**
+staged, so any change the user had **already staged before this run** (a file outside `APPLIED_FILES`)
+gets swept into the `Fixed:` commit. Commit the applied set explicitly with `--only`, which commits
+those paths' content and **disregards anything else in the index** (leaving the user's pre-staged work
+untouched, still staged):
+
+```bash
+git --literal-pathspecs commit --only --pathspec-from-file="$FLOW_RC_DIR/applied-files.txt" \
+  -m "fix(flow): address PR review feedback"
+```
+
+For the across-scopes case, run one such `--only` commit per scope, each fed a per-scope
+`applied-files-{scope}.txt`, so every commit carries only its own files.
+
 #### 5.6. Push
 
 **MANDATORY: confirm before pushing with a plain-text prompt, then wait for the answer.** Do **not** use a structured multiple-choice dialog — it auto-submits its pre-selected option after the AFK idle timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s), which on a push prompt is an unattended `git push` without consent (claude-tools-6q4). A no-response is not approval; never push until the user answers.
