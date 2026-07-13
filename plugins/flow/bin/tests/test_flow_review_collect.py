@@ -379,6 +379,39 @@ def test_github_bot_summary_from_review_body(fake_gh_api):
     assert "retry" in c["body"]
 
 
+def test_github_human_changes_requested_summary_included(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps([{"id": 77, "user": {"login": "alice"}, "state": "CHANGES_REQUESTED", "body": "Please add tests."}]),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert len(doc["comments"]) == 1
+    c = doc["comments"][0]
+    assert c["ref"] == "U1"  # human → U-ref, not C-ref
+    assert c["is_bot"] is False
+    assert c["path"] == "(summary)"
+    assert c["summary_id"] == 77
+    assert "add tests" in c["body"]
+
+
+def test_github_human_approved_lgtm_summary_dropped(fake_gh_api):
+    # An APPROVED "LGTM" body is noise, not actionable — the state gate must drop it.
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps([{"id": 78, "user": {"login": "bob"}, "state": "APPROVED", "body": "LGTM"}]),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert doc["comments"] == []
+
+
 m = flow_review_collect_mod
 
 
