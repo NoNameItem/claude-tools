@@ -32,7 +32,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 2. Collect | Run `flow-review-collect` once → one `metadata.json` (fetch/parse/outdated/resolved-skip/summary/snippet). Cap then selects the working set | One deterministic collector call; reviewer text never touches a shell |
 | 3. Analyze the **working set** | Parallel sonnet subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
-| 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → reply → commit → push | Fix the class; skeptic pass before push; follow-up = a beads task |
+| 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task |
 
 ## Platform Support
 
@@ -391,7 +391,7 @@ own source. Record per decision:
    overridden to `won't-fix`, ask — plain text — for an explicit reason and record THAT.
 3. `skip` ⇒ its own outcome: no apply, no reply, recorded skipped. An `agree_unclear` where the user
    picks "skip" is recorded as `skip`, not `fix`.
-4. `follow-up` ⇒ a **task-id must exist** before 5.5 posts "Filed as follow-up: {task-id}". If 5.4 is
+4. `follow-up` ⇒ a **task-id must exist** before 5.7 posts "Filed as follow-up: {task-id}". If 5.4 is
    answered `edit`/`no` and a ref gets no task, record that ref as skipped and post no follow-up reply.
 
 | verdict → decision (override) | extra data to record at triage |
@@ -406,17 +406,17 @@ Do **not** apply, reply, or commit during the loop.
 ### Phase 5: Batch Execution
 
 The Phase 4 decisions are now executed **once**, grouped by outcome. Order matters: apply all
-fixes first (so replies describe the final code), create follow-ups, then reply to every
-comment, then commit and push (**commit/push are skipped when no files changed** — 5.6). This
-preserves fix-the-class, a single skeptic pass, and one commit/push — the reason triage and
-execution are split.
+fixes first, run the skeptic, create follow-ups, then **commit and push** — and only **then reply**
+to every comment, so a `Fixed:` reply never claims a change the remote does not yet have
+(**commit/push are skipped when no files changed** — 5.5). This preserves fix-the-class, a single
+skeptic pass, and one commit/push — the reason triage and execution are split.
 
 #### 5.1. Fix — generalize the class (fix the class, not the instance)
 
 Take the comments the user decided **`fix`** on in Phase 4 (this includes an `agree_unclear`
 whose option was chosen, and an accepted `disagree` the user overrode to `fix`). An
 `outdated_fixed` comment the user kept as `fix` has **nothing to apply** — it is already fixed
-in current code; skip it here and just reply "Fixed in subsequent commits" in 5.5. **Before
+in current code; skip it here and just reply "Fixed in subsequent commits" in 5.7. **Before
 applying** the rest, check whether each is one instance of a class. Patching only the literal
 line is how one defect gets re-flagged round after round (fixed for one event type, still
 broken for the next).
@@ -461,15 +461,15 @@ U1 (add `contents: read`) generalizes to a class: 3 sites
 Apply to: all / original only / select
 ```
 
-Record the confirmed sites for 5.2 and the CLASS name for the 5.5 reply.
+Record the confirmed sites for 5.2 and the CLASS name for the 5.7 reply.
 
 **Record `APPLIED_FILES`** — the exact set of paths the apply subagents **created, modified, deleted,
 or renamed** (5.1/5.2 already operate on "specific files"). Include a **deleted** path and, for a
-**rename**, **both** the old and the new path: 5.6 stages exactly this set, and `git add <path>`
+**rename**, **both** the old and the new path: 5.5 stages exactly this set, and `git add <path>`
 stages a deletion as well as a change, so a delete-only fix that omitted the removed path would skip
 the commit entirely, and a rename that omitted the old path would commit the new file while leaving
 the old one dangling — both while the run still reports the comment fixed. This set, not the git
-working tree, is the authoritative signal of whether this run changed anything; 5.6 gates on it.
+working tree, is the authoritative signal of whether this run changed anything; 5.5 gates on it.
 
 #### 5.2. Apply Changes
 
@@ -497,13 +497,13 @@ reports; if it documents none, skip this step and rely on the project's commit h
 hard-code a formatter here.
 
 After the apply subagents return, prune `APPLIED_FILES` to the files they actually reported as changed
-(drop any whose apply failed), so a failed apply leaves no phantom path for 5.6 to stage.
+(drop any whose apply failed), so a failed apply leaves no phantom path for 5.5 to stage.
 
 **A failed apply also demotes its decision.** A ref keeps its `fix` decision (→ a `Fixed: …` reply
-in 5.5) **only if the apply subagent reported `OK` for every file that ref's fix touches** — a
+in 5.7) **only if the apply subagent reported `OK` for every file that ref's fix touches** — a
 generalized fix spans several files/sites, and 5.2 applies per file, so one ref can be part-applied.
 If **any** of a ref's files failed, change that ref's Phase 4 decision from `fix` to `skip` (a
-*failed apply*): Phase 5.5 posts `Fixed: …` for **every** `fix` ref, so a ref left as `fix` after a
+*failed apply*): Phase 5.7 posts `Fixed: …` for **every** pushed `fix` ref, so a ref left as `fix` after a
 failed/partial apply would be reported fixed with nothing (or only part) behind it. A demoted ref
 gets **no** `Fixed:` reply and appears on the 5.8 `Failed:` line. The files that *did* apply cleanly
 stay in `APPLIED_FILES` and are still committed — they are real improvements and the commit records
@@ -558,17 +558,17 @@ If the fixes are complete and don't shift the problem, return exactly:
 - Material findings → present them as an addendum batch and confirm before applying (a plain-text
   per-item accept/skip). Apply each item the user accepts via a 5.2 apply subagent, **add every
   path the addendum created, modified, deleted, or renamed to `APPLIED_FILES`** (both the old and new
-  path for a rename — same rule as the 5.1 definition; 5.6 stages exactly that set — an addendum path
+  path for a rename — same rule as the 5.1 definition; 5.5 stages exactly that set — an addendum path
   left out would be verified and replied to but never committed/pushed), then re-run
   the Phase 5.2 project format/lint step (if the project configures one) on the changed files so the
   addendum code is checked too. Do **not** re-run the skeptic — a single pass, then proceed.
 
-Runs **before** the reply (5.5) so replies describe the final code.
+Runs **before** the commit (5.5) so the code that is committed, pushed, and later described by the replies is already final.
 
 #### 5.4. Follow-up — create beads tasks
 
 For each comment the user decided **`follow-up`** on, create a beads task so the deferred work
-is tracked, then reply "Filed as follow-up: {task-id}" in 5.5.
+is tracked, then reply "Filed as follow-up: {task-id}" in 5.7.
 
 **First — guard bd (before any `bd create`).** Follow-up creation is the only bd-using path in this
 skill, so run the version guard here, once, at the START of the batch:
@@ -578,7 +578,7 @@ flow-require-bd
 ```
 
 If it exits non-zero, **STOP the follow-up batch**: print its stderr message, create **no** tasks,
-and **record every `follow-up` ref as `skip` (invariant 4)** so Phase 5.5 does not post a
+and **record every `follow-up` ref as `skip` (invariant 4)** so Phase 5.7 does not post a
 "Filed as follow-up" reply for a ref that has no `{task-id}` (flow requires `bd >= 1.0.0` — see
 `plugins/flow/README.md`, "bd requirements and migration"). Keep it in its own block so a failed
 guard cannot fall through to `bd create`. The fix / won't-fix paths need no bd; only the follow-up
@@ -652,64 +652,18 @@ After creating all follow-ups, **persist to the shared beads store**:
 flow-sync push
 ```
 
-Record `{ref → task-id}` for the 5.5 reply and the 5.8 summary line.
+Record `{ref → task-id}` for the 5.7 reply and the 5.8 summary line.
 
-#### 5.5. Reply on the platform
-
-For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
-
-**GitHub** (reply addressed by `comment_id`):
-
-```bash
-gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
-  -f body="<reply text>"
-```
-
-**GitLab** (reply addressed by `discussion_id`, NOT a comment id — a new note in the discussion):
-
-```bash
-glab api --method POST \
-  "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
-  --raw-field body="<reply text>"
-```
-
-**Reply format by decision** (identical on both platforms):
-
-| Decision (from Phase 4) | Reply |
-|-------------------------|-------|
-| fix (change applied) | `"Fixed: {brief description of what was changed}"` |
-| fix, generalized | `"Fixed: {change}; applied across the class ({class}) at {N} sites."` |
-| fix, but `outdated_fixed` (already fixed in current code, nothing applied) | `"Fixed in subsequent commits"` |
-| won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the **recorded rejection reason** (= the card's `thought` only when the verdict was `disagree`; otherwise the explicit reason collected at triage, invariant 2) |
-| follow-up | `"Filed as follow-up: {task-id}"` (the beads task from 5.4) |
-
-**Do NOT reply to comments where `already_replied` is true.**
-
-**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule) — works for both platforms:
-
-```bash
-body=$(cat <<'FLOW_RC_EOF'
-Won't fix: the current loop is already clear; extracting a helper
-adds indirection without improving readability.
-FLOW_RC_EOF
-)
-gh   api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body="$body"                        # GitHub
-glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body="$body"   # GitLab
-```
-
-**Summary / general items:**
-- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
-- **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
-
-#### 5.6. Commit
+#### 5.5. Commit
 
 **First, gate on whether the apply phase changed anything.** If `APPLIED_FILES` (Phase 5.1) is
 **empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up / skip
-decisions — there is nothing to commit. Skip **both** 5.6 and 5.7 and go straight to the 5.8 summary
-(replies and follow-ups are already posted). Gate on the apply-set, NOT the git working tree:
-`git status --porcelain` over-includes unrelated pre-existing edits, while a tracked-diff check
-(`git diff`) drops a fix that only creates a new untracked file — the apply-set has neither failure.
-Otherwise, stage exactly `APPLIED_FILES`:
+decisions — there is nothing to commit. Skip **both** this step and the push (5.6) and go straight to
+the reply step (5.7): the replies still owed (`Won't fix:` / `Filed as follow-up:` / `Fixed in
+subsequent commits`) assert **no** change landed this run, so they do not depend on a push. Gate on the
+apply-set, NOT the git working tree: `git status --porcelain` over-includes unrelated pre-existing
+edits, while a tracked-diff check (`git diff`) drops a fix that only creates a new untracked file — the
+apply-set has neither failure. Otherwise, stage exactly `APPLIED_FILES`:
 
 Stage exactly the applied set. `APPLIED_FILES` holds PR file paths (reviewer-controlled) → feed them
 to git as **data, never as shell words** (untrusted-data rule): inlined into shell source a path
@@ -733,7 +687,7 @@ Commit message follows CLAUDE.md scope rules:
 - Changes in `packages/statuskit/` → `fix(statuskit): address PR review feedback`
 - Changes across scopes → separate commits per scope (single-package-commit hook enforces this)
 
-#### 5.7. Push
+#### 5.6. Push
 
 **MANDATORY: confirm before pushing with a plain-text prompt, then wait for the answer.** Do **not** use a structured multiple-choice dialog — it auto-submits its pre-selected option after the AFK idle timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s), which on a push prompt is an unattended `git push` without consent (claude-tools-6q4). A no-response is not approval; never push until the user answers.
 
@@ -748,6 +702,57 @@ Options:
 2. Skip
 ```
 
+**The reply step (5.7) gates on this outcome.** A `Fixed: …` reply claims the change is on the remote, so it may go out **only after a successful push**. If the user selects **Skip** (or the push fails), the commit stays local: **withhold every `Fixed: …` reply** and report those refs on the 5.8 `Reply deferred (push skipped)` line — a later push (then re-run) posts them once the fix is actually on the remote. The non-fix replies (`Won't fix:` / `Filed as follow-up:` / `Fixed in subsequent commits`) still post in 5.7.
+
+#### 5.7. Reply on the platform
+
+Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
+
+**Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line. Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed), `Filed as follow-up:` (work is only tracked), and `Fixed in subsequent commits` (the `outdated_fixed` fix already landed in an earlier, already-pushed commit).
+
+**GitHub** (reply addressed by `comment_id`):
+
+```bash
+gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
+  -f body="<reply text>"
+```
+
+**GitLab** (reply addressed by `discussion_id`, NOT a comment id — a new note in the discussion):
+
+```bash
+glab api --method POST \
+  "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
+  --raw-field body="<reply text>"
+```
+
+**Reply format by decision** (identical on both platforms):
+
+| Decision (from Phase 4) | Reply |
+|-------------------------|-------|
+| fix (change applied, pushed) | `"Fixed: {brief description of what was changed}"` |
+| fix, generalized (pushed) | `"Fixed: {change}; applied across the class ({class}) at {N} sites."` |
+| fix, but `outdated_fixed` (already fixed in current code, nothing applied) | `"Fixed in subsequent commits"` |
+| won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the **recorded rejection reason** (= the card's `thought` only when the verdict was `disagree`; otherwise the explicit reason collected at triage, invariant 2) |
+| follow-up | `"Filed as follow-up: {task-id}"` (the beads task from 5.4) |
+
+**Do NOT reply to comments where `already_replied` is true.**
+
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule) — works for both platforms:
+
+```bash
+body=$(cat <<'FLOW_RC_EOF'
+Won't fix: the current loop is already clear; extracting a helper
+adds indirection without improving readability.
+FLOW_RC_EOF
+)
+gh   api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body="$body"                        # GitHub
+glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body="$body"   # GitLab
+```
+
+**Summary / general items:**
+- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
+- **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
+
 #### 5.8. Summary Report
 
 ```
@@ -759,6 +764,7 @@ Processed: {total} comments
   Follow-ups created: {count} ({ref → task-id})
   Skipped: {count} ({list of refs skipped})
   Failed: {count} ({list of refs whose apply failed — demoted from fix in 5.2, not reported fixed})
+  Reply deferred (push skipped): {count} ({list of fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
