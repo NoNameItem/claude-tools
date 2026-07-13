@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Agent Read Write
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write
 ---
 
 # Flow: Review Comments
@@ -953,10 +953,6 @@ Agent: [Phase 5 — acts once, grouped by outcome]
 User: yes
 
 Agent: [bd create … ; flow-sync push]
-       [Replies sequentially:
-         U1: "Won't fix: the module uses camelCase consistently; renaming one breaks it"
-         C1: "Fixed: guard branch_name against detached HEAD; applied across the class at 2 sites."
-         C2: (GitHub summary, comment_id == null → no reply; recorded in summary)]
        [Commits: fix(statuskit): address PR review feedback]
 
        Push to origin/feature/add-config?
@@ -967,6 +963,10 @@ Agent: [bd create … ; flow-sync push]
 User: Push
 
 Agent: [Pushes]
+       [Replies sequentially — only after the successful push:
+         U1: "Won't fix: the module uses camelCase consistently; renaming one breaks it"
+         C1: "Fixed: guard branch_name against detached HEAD; applied across the class at 2 sites."
+         C2: (GitHub summary, comment_id == null → no reply; recorded in summary)]
        Processed: 3 comments
          Fixed: 1 (C1)   Generalized: C1 → detached-HEAD guard → 2 sites
          Won't fix: 1 (U1 — module is camelCase)
