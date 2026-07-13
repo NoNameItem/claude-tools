@@ -254,6 +254,13 @@ Steps:
      bounded `limit` such as 60) and assess the file-level concern; do **not** compute a window around a
      non-existent line. (No collector change is needed — `attach_snippet` already yields `snippet == null`
      for these; this branch is what makes them analyzable.)
+   - **`path` is set but the file no longer exists on disk** (the `Read` of `{path}` fails — the
+     file was deleted or renamed/moved): do **not** stop at the failed Read. **Grep** the tree for
+     the commented identifier / function / symbol named in the `body` (and the historical
+     `diff_hunk`), then **Read** each candidate to confirm. If the code **moved**, analyze the
+     concern against the replacement; if nothing is found, treat it as **genuinely removed** and
+     reason from `body` / `thread` / historical `diff_hunk`. Never pick `outdated_fixed` from the
+     missing path alone (see the "Comment References Deleted (or Moved) File" edge case).
    - **otherwise** (a normal inline comment): Read the file around the relevant lines (±20 lines of
      context) using the **Read tool** — this is judgment tracing, not snippet mechanics. Take
      `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped call,
@@ -1172,11 +1179,14 @@ close a still-valid concern in the moved code.
 Analyze instead:
 - Treat the missing path as **no current snippet / no current context** — reason from the comment
   `body`, `thread`, and any historical `diff_hunk`.
-- Determine what happened to the commented code: search the tree for it (renamed file, moved
-  function/symbol). If it **moved**, read the replacement and analyze the concern there.
+- Determine what happened to the commented code: **Grep** the tree for the commented identifier /
+  function / symbol (renamed file, moved symbol), then Read each candidate to confirm. If it
+  **moved**, read the replacement and analyze the concern there.
 - Choose the verdict from evidence, like any other comment:
   - Code genuinely **removed** and the concern no longer applies → `outdated_fixed`, note "file
-    removed", reply "Fixed in subsequent commits (file removed)".
+    removed", reply "Fixed in subsequent commits (file removed)". For `evidence`, record what the
+    search covered and its negative result (e.g. "grepped for the class/function repo-wide, no
+    match — code and file both gone"), not a file:line (none exists).
   - Code **moved/renamed** and the concern still holds → a real `agree_*` verdict against the
     replacement (fix or follow-up), **not** `outdated_fixed`.
 
