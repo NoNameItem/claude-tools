@@ -36,6 +36,17 @@ class TestHostFromRemote:
     def test_unparseable_returns_none(self):
         assert _git.host_from_remote("not-a-url") is None
 
+    def test_ssh_scheme_without_port(self):
+        # ssh:// with no explicit port: the scp-form regex misses it (no ':' after host).
+        assert _git.host_from_remote("ssh://git@github.com/o/r.git") == "github.com"
+
+    def test_ssh_scheme_with_port_keeps_port(self):
+        # Port is intentionally preserved for now (host:port normalization is a follow-up).
+        assert _git.host_from_remote("ssh://git@ghe.example.com:22/o/r.git") == "ghe.example.com:22"
+
+    def test_ssh_scheme_strips_userinfo(self):
+        assert _git.host_from_remote("ssh://git@gitlab.example.com/g/sub/r.git") == "gitlab.example.com"
+
 
 class TestDecidePlatform:
     def test_override_wins(self):

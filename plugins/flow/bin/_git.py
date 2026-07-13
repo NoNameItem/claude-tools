@@ -16,7 +16,6 @@ import urllib.parse
 DEFAULT_TIMEOUT = 30
 
 _SSH_RE = re.compile(r"^[^@]+@([^:]+):")
-_HTTPS_RE = re.compile(r"^https?://(?:[^@/]+@)?([^/]+)/")
 
 
 def run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, check: bool = True) -> str:
@@ -31,8 +30,16 @@ def run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, check: bool = True) 
 
 
 def host_from_remote(url: str) -> str | None:
-    """Extract the host from an SSH or HTTPS git remote URL; None if unparseable."""
-    m = _SSH_RE.match(url) or _HTTPS_RE.match(url)
+    """Extract the host from an SSH or HTTPS git remote URL; None if unparseable.
+
+    Any `scheme://` URL (https://, ssh://, git+ssh://) is parsed with urlparse — its netloc
+    covers ssh:// remotes that the scp-form regex misses. The scp form `git@host:path` (no
+    scheme) stays on the regex. Any `user@` in the netloc is stripped; the port is kept as-is
+    (host:port normalization is a separate follow-up).
+    """
+    if "://" in url:
+        return urllib.parse.urlparse(url).netloc.rsplit("@", 1)[-1] or None
+    m = _SSH_RE.match(url)  # scp-like git@host:path
     return m.group(1) if m else None
 
 
