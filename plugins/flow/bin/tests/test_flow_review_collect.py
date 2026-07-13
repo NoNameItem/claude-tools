@@ -440,6 +440,15 @@ class TestSnippet:
         assert snip is not None
         assert "l5" in snip["text"]
 
+    def test_escape_from_repo_root_refused_from_subdir(self, git_repo, monkeypatch):
+        # root is the repo top-level; a path climbing out of the repo is refused even
+        # when build_snippet is called from a subdirectory of that repo.
+        (git_repo.parent / "secret.txt").write_text("TOPSECRET\n")
+        sub = git_repo / "sub"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        assert m.build_snippet("../secret.txt", 1, 1) is None
+
 
 class TestThinHunk:
     def test_thin_hunk_is_thin(self):

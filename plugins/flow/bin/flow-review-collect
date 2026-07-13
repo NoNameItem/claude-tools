@@ -72,7 +72,7 @@ def _repo_root() -> Path:
         return Path.cwd().resolve()
 
 
-def build_snippet(path: str, start: int, end: int) -> dict | None:
+def build_snippet(path: str, start: int, end: int, root: Path | None = None) -> dict | None:
     """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree.
 
     Returns None when unreadable OR when `path` resolves **outside** the working tree. The
@@ -83,7 +83,8 @@ def build_snippet(path: str, start: int, end: int) -> dict | None:
     """
     lo = max(1, start - SNIPPET_CONTEXT)
     hi = end + SNIPPET_CONTEXT
-    root = _repo_root()
+    if root is None:
+        root = _repo_root()
     target = (root / path).resolve()
     if target != root and root not in target.parents:
         return None  # symlink / traversal escaping the working tree → refuse
@@ -105,7 +106,7 @@ def hunk_is_thin(diff_hunk: str | None) -> bool:
     return len(body) < THIN_HUNK_LINES
 
 
-def attach_snippet(item: dict, *, is_github: bool) -> None:
+def attach_snippet(item: dict, *, is_github: bool, root: Path | None = None) -> None:
     """Attach item['snippet'] when the note is on current lines and the hunk is thin/absent."""
     if item["outdated"] or item["path"] in (None, "(summary)"):
         return
@@ -115,7 +116,7 @@ def attach_snippet(item: dict, *, is_github: bool) -> None:
     if line is None:
         return
     start = item["start_line"] or line
-    item["snippet"] = build_snippet(item["path"], start, line)
+    item["snippet"] = build_snippet(item["path"], start, line, root=root)
 
 
 def is_bot(login: str) -> bool:
@@ -229,6 +230,7 @@ def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
 def gh_collect(number: str | None) -> dict:
     unit = gh_resolve_unit(number)
     repo = _git.resolve_repo()
+    repo_root = _repo_root()
     me = _git.gh_api("user", jq=".login")
     comments = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True))
     reviews = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews", paginate=True))
@@ -266,7 +268,7 @@ def gh_collect(number: str | None) -> dict:
                 "snippet": None,
             }
         )
-        attach_snippet(items[-1], is_github=True)
+        attach_snippet(items[-1], is_github=True, root=repo_root)
 
     items += gh_summary_items(reviews)
     ordered = _order(items)
@@ -341,6 +343,7 @@ def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
 def gl_collect(number: str | None) -> dict:
     unit = gl_resolve_unit(number)
     project = _git.resolve_project()
+    repo_root = _repo_root()
     me = json.loads(_git.glab_api("user"))["username"]  # glab api has no -q flag; parse in Python
     discussions = json.loads(
         _git.glab_api(f"projects/{project}/merge_requests/{unit['number']}/discussions", paginate=True)
@@ -384,7 +387,7 @@ def gl_collect(number: str | None) -> dict:
                 "snippet": None,
             }
         )
-        attach_snippet(items[-1], is_github=False)
+        attach_snippet(items[-1], is_github=False, root=repo_root)
     ordered = _order(items)
     assign_refs(ordered)
     return _document("gitlab", unit, me, ordered)
