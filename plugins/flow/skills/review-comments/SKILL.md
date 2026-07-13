@@ -12,7 +12,7 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-
 
 This skill makes every unresolved review comment reviewable and triageable **inside Claude Code**: for each comment it shows the **anchored code** (syntax-highlighted), the **full comment text + thread**, and the **agent's take** (category + short honest assessment) as a per-comment **card**, then lets the user decide **fix / won't-fix / follow-up** per comment. It applies accepted fixes, argues against invalid comments, files follow-ups as beads tasks, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through a **quoted heredoc → variable** so backticks / `$` / `$(…)` reach the tool verbatim.
+**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the **Write tool → file** and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
 **Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) — one deterministic pass that fetches, parses, and writes a single `metadata.json`, each comment already carrying its code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet). A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
 
@@ -163,6 +163,10 @@ handled in tested code, not prose.
 
 ```bash
 FLOW_RC_DIR="$(mktemp -d)"
+# Baseline: paths already dirty BEFORE this run (nothing has mutated the tree yet). 5.5 refuses
+# path-level staging when an applied file overlaps this set — that is what stops a pre-existing
+# unrelated edit from being swept into a "Fixed:" commit.
+git status --porcelain | cut -c4- > "$FLOW_RC_DIR/baseline-dirty.txt"
 flow-review-collect {number-if-any} --platform {PLATFORM} > "$FLOW_RC_DIR/metadata.json"
 ```
 
@@ -180,8 +184,23 @@ Read `counts` from the JSON:
 - `counts.actionable == 0` → report ("{already_replied} already replied, nothing to act on") and stop.
 - Otherwise the **working set** is every item with `already_replied == false`.
 
-**Large-PR cap (the only pre-analysis gate).** If `counts.actionable` > ~20, print the Phase 4.1
-TOC and ask, in **plain text** (a structured dialog auto-submits on the AFK timeout — claude-tools-6q4):
+**Large-PR cap (the only pre-analysis gate).** If `counts.actionable` > ~20, print a **category-free
+selection table** built straight from `metadata.json` — every column below exists **before** any
+analysis — and ask, in **plain text** (a structured dialog auto-submits on the AFK timeout —
+claude-tools-6q4):
+
+```
+| ref | source | path:lines   | ⚠️ | brief                          |
+|-----|--------|--------------|----|--------------------------------|
+| U1  | human  | config.py:15 |    | Missing type annotation        |
+| C1  | bot    | git.py:42    |    | Crashes on detached HEAD       |
+| C3  | bot    | utils.py:10  | ⚠️ | Unused import                  |
+```
+
+`source` = `is_bot` (human / bot); `path:lines` from `path` + `start_line`-`line` (or `(summary)`);
+`⚠️` = `outdated`; `brief` = the truncated `body`. Do **not** add a `category` column here — that
+field is a Phase 3 verdict and does not exist yet; the categorized agenda is the Phase 4.1 TOC,
+printed **after** analysis.
 
 ```
 {actionable} comments — analyze all, or select a subset? (all / <comma-separated refs>)
@@ -221,17 +240,27 @@ thin or absent, so you neither build nor fence one.
 
 Comment ref: {ref} (by {user})
 File: {path}
-Lines: {start_line}-{line} (or just {line} if no start_line)
+Lines: {start_line}-{line} (just {line} if no start_line; "(none)" for a summary / file-level comment where both are null)
 Outdated: {yes/no}
 
 Steps:
-1. Read the file around the relevant lines (±20 lines of context) using the **Read tool** — this is
-   judgment tracing, not snippet mechanics. Take `start = start_line` (or `line` when there is no
-   `start_line`) and `end = line`; for a grouped call, use the union — `start` = the smallest, `end`
-   = the largest. Read's `limit` is a line **count**, not an end line, so use
-   `offset = max(1, start − 20)` and `limit = (end + 20) − offset + 1` — never the absolute `end` as
-   the limit (that would read ~`end` lines). Pass the (untrusted) `{path}` as a data argument to the
-   Read tool; never build a shell command from it.
+1. **Locate the code to read — branch on whether the comment anchors to a line:**
+   - **`path == "(summary)"` or `path` is null** (a review-body summary / general discussion): there is
+     **no** file line to read — do **not** call Read on `(summary)`. Triage from the comment `body` and
+     `thread`; if the body names specific files/paths, Read those for context, otherwise assess the body
+     directly.
+   - **`path` is a real file but `line` is null** (a GitHub file-level comment — `subject_type: file`,
+     both `line` and `original_line` null): Read the file's **header / top region** (`offset = 1`, a
+     bounded `limit` such as 60) and assess the file-level concern; do **not** compute a window around a
+     non-existent line. (No collector change is needed — `attach_snippet` already yields `snippet == null`
+     for these; this branch is what makes them analyzable.)
+   - **otherwise** (a normal inline comment): Read the file around the relevant lines (±20 lines of
+     context) using the **Read tool** — this is judgment tracing, not snippet mechanics. Take
+     `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped call,
+     use the union — `start` = the smallest, `end` = the largest. Read's `limit` is a line **count**, not
+     an end line, so use `offset = max(1, start − 20)` and `limit = (end + 20) − offset + 1` — never the
+     absolute `end` as the limit (that would read ~`end` lines). Pass the (untrusted) `{path}` as a data
+     argument to the Read tool; never build a shell command from it.
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -614,37 +643,28 @@ Proceed? (yes / edit / no)
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
 `bd create`). **Both the title and the description derive from the reviewer's comment** (the title
-from its substance — see above), and that text is **untrusted** (untrusted-data rule) — it routinely contains backticks,
-`$HOME`, or `$(...)`. **Never inline the reviewer-derived title or comment text into a double-quoted
-`--title` / `--description`:** the shell runs the command substitution and expands the variables
-*before* `bd create` sees them, corrupting the task (or executing whatever the reviewer wrote).
-Materialize **each** free-text value with a **quoted heredoc** — the `<<'FLOW_RC_EOF'` quotes stop
-ALL expansion, so backticks / `$HOME` / `$(...)` reach `bd` verbatim — then pass it as a variable
-(for the description you can equivalently pipe the heredoc into `bd create … --body-file -`, the
-stdin form):
+from its substance — see above), and that text is **untrusted** (untrusted-data rule) — it routinely
+contains backticks, `$HOME`, `$(...)`, or even a line that is exactly a heredoc delimiter. **Never
+build the title or description from a shell heredoc or an unquoted argument:** a quoted heredoc stops
+`$`/backtick expansion, but a reviewer comment containing a line equal to the delimiter still closes it
+early and silently truncates the task body (this repo's own review comments contain the literal
+`FLOW_RC_EOF`, so this is not hypothetical).
+
+**Materialize each free-text value with the Write tool, then pass it by file** — the Write tool takes
+the content as a tool argument that no shell ever parses, so delimiter collision and expansion are both
+impossible. Write the title to `$FLOW_RC_DIR/title-{ref}.txt` and the full description (PR/MR URL,
+`path:lines`, the reviewer's comment text read from `metadata.json`, and the agent's take) to
+`$FLOW_RC_DIR/desc-{ref}.md`, then:
 
 ```bash
-TITLE=$(cat <<'FLOW_RC_EOF'
-Guard branch_name against detached HEAD
-FLOW_RC_EOF
-)
-DESC=$(cat <<'FLOW_RC_EOF'
-**PR:** {url}
-**Location:** packages/statuskit/src/statuskit/modules/git.py:42
-**Reviewer (coderabbitai):** {full comment text}
-
-**Take:** real crash on detached HEAD; deferred to its own task.
-FLOW_RC_EOF
-)
-bd create --title "$TITLE" --type bug --priority 2 \
-  --parent claude-tools-5dl --description "$DESC"
+bd create --title "$(cat "$FLOW_RC_DIR/title-C3.txt")" --type bug --priority 2 \
+  --parent claude-tools-5dl --body-file "$FLOW_RC_DIR/desc-C3.md"
 ```
 
-The heredoc delimiter MUST be quoted (`<<'FLOW_RC_EOF'`, not `<<FLOW_RC_EOF`) — an unquoted
-delimiter re-enables `$`/backtick expansion inside the body and reintroduces the bug. It must also
-be a **distinctive token absent from the content**: quoting stops expansion but NOT delimiter
-collision, so a plain `EOF` closes early when the reviewer's comment contains a line that is exactly
-`EOF` (common in shell/heredoc snippets) — `FLOW_RC_EOF` avoids that.
+`--body-file <path>` reads the description straight from the file — its content is never shell-parsed.
+The title has no file flag, so pass it as `"$(cat …)"`: a **quoted** command substitution captures the
+file's bytes as a single argument with no re-parsing, so backticks / `$` / a `FLOW_RC_EOF` line reach
+`bd` verbatim.
 
 After creating all follow-ups, **persist to the shared beads store**:
 
@@ -665,20 +685,31 @@ apply-set, NOT the git working tree: `git status --porcelain` over-includes unre
 edits, while a tracked-diff check (`git diff`) drops a fix that only creates a new untracked file — the
 apply-set has neither failure. Otherwise, stage exactly `APPLIED_FILES`:
 
+**Guard against sweeping in pre-existing edits (before staging).** `git add <path>` stages the **whole
+file**, not just this run's hunks. If a file in `APPLIED_FILES` also has edits that pre-date this run,
+staging its path would commit those unrelated changes under a `Fixed:` message. Compare `APPLIED_FILES`
+against the pre-run dirty set captured in Phase 2 (`$FLOW_RC_DIR/baseline-dirty.txt`): if they
+**overlap**, **STOP** — do not stage, commit, or push — and report, in plain text:
+
+```
+⚠️ These files had uncommitted changes before this run: {overlap}.
+Staging them would sweep unrelated edits into a "Fixed:" commit.
+Commit or stash those changes, then re-run /flow:review-comments.
+```
+
+A dirty file that is **not** in `APPLIED_FILES` is fine and must not block the run — only the overlap is
+the hazard. No overlap → each applied file's only diff is this run's fix, so path-level staging is safe.
+
 Stage exactly the applied set. `APPLIED_FILES` holds PR file paths (reviewer-controlled) → feed them
 to git as **data, never as shell words** (untrusted-data rule): inlined into shell source a path
 like `x$(cmd).py` would run `cmd`, and a path with spaces would word-split, before `git add` saw it.
-Write the applied paths (one per line, verbatim) through a **quoted heredoc** — which expands nothing
-— into `git --literal-pathspecs add --pathspec-from-file=-`. The quoted heredoc keeps the shell from
-touching the path; `--literal-pathspecs` then makes git treat every line as a **literal path**, not a
-pathspec, so a reviewer-controlled file named `:(glob)*.py` or one with leading `:` magic cannot
-expand the staged set beyond the exact files the apply phase changed:
+**Write the applied paths (one per line, verbatim) to `$FLOW_RC_DIR/applied-files.txt` with the Write
+tool** — no shell parses them — then feed that file to git. `--literal-pathspecs` makes git treat every
+line as a **literal path**, not a pathspec, so a reviewer-controlled file named `:(glob)*.py` or one
+with leading `:` magic cannot expand the staged set beyond the exact files the apply phase changed:
 
 ```bash
-git --literal-pathspecs add --pathspec-from-file=- <<'FLOW_RC_EOF'
-plugins/flow/skills/review-comments/SKILL.md
-<one applied path per line, verbatim — the files the apply phase changed>
-FLOW_RC_EOF
+git --literal-pathspecs add --pathspec-from-file="$FLOW_RC_DIR/applied-files.txt"
 ```
 
 Commit message follows CLAUDE.md scope rules:
@@ -710,11 +741,16 @@ Post replies **after** the push (5.6) so each reply reflects the remote's actual
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line. Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed), `Filed as follow-up:` (work is only tracked), and `Fixed in subsequent commits` (the `outdated_fixed` fix already landed in an earlier, already-pushed commit).
 
+For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the Write tool first**, then pass
+it as a **quoted** command substitution `"$(cat …)"` — which captures the file's bytes as a single
+argument with no shell re-parsing, so a `Won't fix:` rationale that quotes reviewer text (backticks, `$`,
+or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break out.
+
 **GitHub** (reply addressed by `comment_id`):
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
-  -f body="<reply text>"
+  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
 ```
 
 **GitLab** (reply addressed by `discussion_id`, NOT a comment id — a new note in the discussion):
@@ -722,7 +758,7 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
 ```bash
 glab api --method POST \
   "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
-  --raw-field body="<reply text>"
+  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
 ```
 
 **Reply format by decision** (identical on both platforms):
@@ -737,17 +773,11 @@ glab api --method POST \
 
 **Do NOT reply to comments where `already_replied` is true.**
 
-**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks / `$` / quotes): build the body with a quoted heredoc using a **distinctive delimiter** (`FLOW_RC_EOF`, not a plain `EOF` that the body could contain — see 5.4) and pass it as a variable so the shell does not interpolate it (untrusted-data rule) — works for both platforms:
-
-```bash
-body=$(cat <<'FLOW_RC_EOF'
-Won't fix: the current loop is already clear; extracting a helper
-adds indirection without improving readability.
-FLOW_RC_EOF
-)
-gh   api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies -f body="$body"                        # GitHub
-glab api --method POST "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body="$body"   # GitLab
-```
+**Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks /
+`$` / quotes, including quoted reviewer text) need no special handling — the Write-tool-to-file +
+`"$(cat …)"` pattern above already carries them verbatim on both platforms. **Never** assemble a reply
+body from a shell heredoc: a reviewer line equal to the delimiter would truncate it (the same failure
+as 5.4).
 
 **Summary / general items:**
 - **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
@@ -1151,9 +1181,11 @@ The pre-analysis gate exists **only** for large PRs (see Phase 2). The collector
 full `metadata.json`, but the cap decides how much of it enters analysis, so a big review never
 floods the main context. If `counts.actionable` is **more than ~20**:
 
-1. Print the Phase 4.1 TOC (refs, path:lines, category, brief — no full bodies yet).
+1. Print the **category-free** selection table (refs, source, path:lines, ⚠️ outdated, brief — no
+   `category` and no full bodies yet; `category` is a Phase 3 verdict that does not exist pre-analysis).
 2. Ask, in plain text: "{N} comments — analyze all, or select a subset? (all / <refs>)".
-3. Analyze/triage **only** the selected subset (look each ref up in `metadata.json`).
+3. Analyze/triage **only** the selected subset (look each ref up in `metadata.json`). The categorized
+   Phase 4.1 TOC (with `category`) is printed here, after analysis.
 
 Below the threshold, the working set is all actionable comments — go straight to card-by-card
 triage; no prompt.
