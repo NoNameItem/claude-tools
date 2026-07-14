@@ -144,13 +144,16 @@ The MR branch is `source_branch`; the iid is `iid`; the URL is `web_url`. Only p
   git branch --show-current
   ```
   - Match: continue.
-  - Mismatch: check out the PR/MR branch. On GitHub the branch name is **PR-author-controlled** and may
-    contain shell metacharacters (`git check-ref-format --branch 'foo$(id)'` succeeds), so bind it to a
-    variable and reference it **quoted** — never paste the raw name into `git checkout` (a quoted variable
-    expansion is not re-scanned for `$()`/backticks, so this stays injection-safe even for a hostile name):
+  - Mismatch: check out the PR/MR branch. Pass `{number-if-any}` (the requested number, empty in the
+    current-branch case) so a `/flow:review-comments 42` run from another branch resolves **#42** — a bare
+    `gh pr view` would switch back to the current branch's PR. On GitHub the branch name is
+    **PR-author-controlled** and may contain shell metacharacters (`git check-ref-format --branch
+    'foo$(id)'` succeeds), so bind it to a variable and reference it **quoted** — never paste the raw name
+    into `git checkout` (a quoted variable expansion is not re-scanned for `$()`/backticks, so this stays
+    injection-safe even for a hostile name):
     ```bash
-    branch="$(gh pr view --json headRefName -q .headRefName)"   # GitHub
-    git checkout "$branch"                                       # GitLab: glab mr checkout <iid>
+    branch="$(gh pr view {number-if-any} --json headRefName -q .headRefName)"   # GitHub
+    git checkout "$branch"   # GitLab: glab mr checkout <iid>
     ```
 
 #### 1.3. Sync with remote
@@ -160,7 +163,7 @@ form `git pull origin <branch>` would run an embedded `$()`/backtick before git 
 branch to a variable and reference it **quoted** (same rule as 1.2 and 5.7):
 
 ```bash
-branch="$(gh pr view --json headRefName -q .headRefName)"   # GitHub — GitLab: glab mr view <iid> --output json --jq .source_branch
+branch="$(gh pr view {number-if-any} --json headRefName -q .headRefName)"   # GitHub — GitLab: glab mr view <iid> --output json --jq .source_branch
 git pull origin "$branch"
 ```
 
@@ -792,7 +795,7 @@ Post replies **after** the push (5.6) so each reply reflects the remote's actual
 **Bind the branch to a variable and reference it quoted — never paste the raw name into the command.** Git ref names may contain shell metacharacters (`git check-ref-format --branch 'foo$(id)'` succeeds) and the branch is PR-author-controlled, so the raw form `origin/{branch}..HEAD` would run the substitution before `git` sees the ref. A quoted variable expansion is not re-scanned for `$()`/backticks, so this stays injection-safe even for a hostile branch name:
 
 ```bash
-branch="$(gh pr view --json headRefName -q .headRefName)"   # GitHub — GitLab: glab mr view {iid} --output json --jq .source_branch
+branch="$(gh pr view {number-if-any} --json headRefName -q .headRefName)"   # GitHub — GitLab: glab mr view {iid} --output json --jq .source_branch
 git rev-list --count "origin/$branch..HEAD"   # 0 → branch not ahead; the fix is on the remote
 ```
 
