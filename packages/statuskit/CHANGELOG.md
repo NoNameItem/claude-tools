@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.3.2...statuskit-0.4.0) (2026-07-14)
+
+
+### Features
+
+* **statuskit:** declarative module config — declaration & parsing (5dl.9.1) ([#81](https://github.com/NoNameItem/claude-tools/issues/81)) ([c74772d](https://github.com/NoNameItem/claude-tools/commit/c74772d910d3280eef5860fda1f27f6389446e13))
+* **statuskit:** show current-branch PR/MR in git module ([#107](https://github.com/NoNameItem/claude-tools/issues/107)) ([7019218](https://github.com/NoNameItem/claude-tools/commit/7019218d03e87caec7db76f5da2c375b9d4e48aa))
+
+
+### Bug Fixes
+
+* **statuskit:** read --version from correct distribution name ([#99](https://github.com/NoNameItem/claude-tools/issues/99)) ([e56b360](https://github.com/NoNameItem/claude-tools/commit/e56b360ebc890021c7ade21e98cefe960249b267))
+* **statuskit:** show current directory outside a git repo ([#98](https://github.com/NoNameItem/claude-tools/issues/98)) ([e04a11e](https://github.com/NoNameItem/claude-tools/commit/e04a11e3ff6dfa61f36d94107eb378b0b3859e81))
+* **statuskit:** stop usage_limits hammering API on failed fetch ([#92](https://github.com/NoNameItem/claude-tools/issues/92)) ([3b1ad64](https://github.com/NoNameItem/claude-tools/commit/3b1ad64f948e0fe80ad843a9324b53b101cb4848))
+
+
+### Documentation
+
+* **statuskit:** add AGENTS.md with architecture and review guidelines ([#87](https://github.com/NoNameItem/claude-tools/issues/87)) ([ca55d6e](https://github.com/NoNameItem/claude-tools/commit/ca55d6eabb504f92c55002d98d51c07bf5f17234))
+* **statuskit:** add CI status badge ([#66](https://github.com/NoNameItem/claude-tools/issues/66)) ([7c51a57](https://github.com/NoNameItem/claude-tools/commit/7c51a57e2b08a2b5645ce94f83edbf351c1dd507))
+
 ## [0.3.2](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.3.1...statuskit-0.3.2) (2026-01-28)
 
 
