@@ -64,6 +64,20 @@ flag any change that force-adds them to git.
 an inline justification — CI passes *because* the warning is suppressed, so only review
 catches it. Policy is fix-don't-suppress.
 
+**Report a recurring class in one pass, whole-file.** Many defects here come in *classes* with
+several sibling sites, so reviewing only the changed line surfaces one site per round — five
+fix-and-re-review cycles for what is really one class. When you flag an instance of a class like
+those below, **sweep the whole file you are reviewing for its other sites and report them
+together**, rather than stopping at the first occurrence on the changed line:
+- untrusted reviewer data (a file path, a `bd` title/description, a reply body, an applied path)
+  inlined into shell command *source* — check every command site; double-quoting a literal does not
+  stop `$(...)`/backticks;
+- a hard-coded ` ``` ` fence wrapping content that can itself contain a fence — check every emitter;
+- a helper invoked bare (`cmd`) that the frontmatter grants only as `Bash(cmd:*)` — cross-check
+  every invoked helper against `allowed-tools` for both the bare and `:*` forms;
+- a line/offset range computed without a `max(1, …)` clamp — check every range computation for the
+  top-of-file (lines 1–4) boundary.
+
 **Do not flag (intentional — treat as non-issues):**
 - Actions pinned to `@vN` version tags instead of full commit SHAs — repo prefers readable
   tags.

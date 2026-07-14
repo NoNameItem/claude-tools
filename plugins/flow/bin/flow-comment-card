@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""
+Render one review comment as a markdown card for terminal triage.
+
+Reads a single comment (JSON on stdin) and prints markdown to stdout. Pure
+formatting: reads no files, calls no APIs — the caller supplies every field.
+Output is emitted UNWRAPPED (it already contains ```-fenced code blocks and
+blockquotes that Claude Code renders natively).
+
+Usage:
+    echo "$CARD_JSON" | flow-comment-card
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+CATEGORY_EMOJI = {
+    "correctness": "🔴",
+    "security": "🔴",
+    "logic": "🔴",
+    "style": "🟡",
+    "nitpick": "🟡",
+    "doc": "🔵",
+}
+FALLBACK_EMOJI = "⚪"
+
+
+def category_emoji(category: str | None) -> str:
+    """Return the header emoji for a category (⚪ for unknown/None/empty)."""
+    if not category:
+        return FALLBACK_EMOJI
+    return CATEGORY_EMOJI.get(category, FALLBACK_EMOJI)
+
+
+def format_lines(start_line, line) -> str | None:
+    """Return 'start-line' for a range, 'line' for a single line, else None."""
+    if start_line is not None and line is not None and start_line != line:
+        return f"{start_line}-{line}"
+    if line is not None:
+        return str(line)
+    if start_line is not None:
+        return str(start_line)
+    return None
+
+
+def format_location(card: dict) -> str:
+    """Return the '{path}:{lines}' / '{path}' / '(summary)' location segment."""
+    path = card.get("path")
+    lines = format_lines(card.get("start_line"), card.get("line"))
+    if path and lines:
+        return f"{path}:{lines}"
+    if path:
+        return path
+    return "(summary)"
+
+
+def render_header(card: dict) -> str:
+    """Render '### {emoji} {ref} · {category} · {location}' (+ ' ⚠️ outdated')."""
+    emoji = category_emoji(card.get("category"))
+    ref = card.get("ref") or "?"
+    category = card.get("category") or "none"
+    header = f"### {emoji} {ref} · {category} · {format_location(card)}"
+    if card.get("outdated"):
+        header += " ⚠️ outdated"
+    return header
+
+
+def _blockquote(prefix: str, author: str, body: str) -> list[str]:
+    """Blockquote a body across its physical lines; first line carries the author."""
+    body_lines = (body or "").split("\n")
+    first = f"> {prefix}**@{author}:** {body_lines[0]}"
+    rest = [f"> {ln}" for ln in body_lines[1:]]
+    return [first, *rest]
+
+
+def render_comment(card: dict) -> str:
+    """Render the comment blockquote plus each reply in its thread."""
+    lines = _blockquote("", card.get("author", "?"), card.get("body", ""))
+    for reply in card.get("thread") or []:
+        lines.extend(_blockquote("↳ ", reply.get("user", "?"), reply.get("body", "")))
+    return "\n".join(lines)
+
+
+def _fence(content: str) -> str:
+    """Return a backtick fence longer than any backtick run in content (min 3)."""
+    longest = run = 0
+    for ch in content:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    return "`" * max(3, longest + 1)
+
+
+def render_code(card: dict) -> str:
+    """diff_hunk as a fenced ```diff block; else snippet as a fenced ```{lang} block; else ''.
+
+    The fence is widened past any backtick run inside the content (CommonMark rule)
+    so a literal ``` in the diff/snippet text can't prematurely close the fence.
+    """
+    diff_hunk = card.get("diff_hunk")
+    if diff_hunk:
+        fence = _fence(diff_hunk)
+        return f"{fence}diff\n{diff_hunk}\n{fence}"
+    snippet = card.get("snippet")
+    if snippet and snippet.get("text"):
+        lang = snippet.get("lang") or ""
+        text = snippet["text"]
+        fence = _fence(text)
+        return f"{fence}{lang}\n{text}\n{fence}"
+    return ""
+
+
+def render_take(card: dict) -> str:
+    """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields)."""
+    lines = []
+    if card.get("thought"):
+        lines.append(f"**Thought:** {card['thought']}")
+    if card.get("suggested"):
+        lines.append(f"**Suggested:** {card['suggested']}")
+    return "\n".join(lines)
+
+
+def render_card(card: dict) -> str:
+    """Assemble the full markdown card; non-empty sections joined by one blank line."""
+    sections = [
+        render_header(card),
+        render_comment(card),
+        render_code(card),
+        render_take(card),
+    ]
+    return "\n\n".join(section for section in sections if section)
+
+
+def merge_card(meta_item: dict, verdict: dict) -> dict:
+    """Merge a collector comment item with an LLM verdict into a render-ready card."""
+    card = dict(meta_item)
+    card["author"] = meta_item.get("user")
+    for key in ("category", "thought", "suggested"):
+        if verdict.get(key) is not None:
+            card[key] = verdict[key]
+    snippet = meta_item.get("snippet")
+    if snippet and snippet.get("text"):
+        card.pop("diff_hunk", None)  # collector attached a snippet → it wins over the hunk
+    return card
+
+
+def _find_item(meta_path: str, ref: str) -> dict:
+    with Path(meta_path).open(encoding="utf-8") as fh:
+        doc = json.load(fh)
+    for item in doc.get("comments", []):
+        if item.get("ref") == ref:
+            return item
+    print(f"Error: ref {ref!r} not found in {meta_path}", file=sys.stderr)
+    sys.exit(1)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(prog="flow-comment-card")
+    parser.add_argument("--meta")
+    parser.add_argument("--ref")
+    parser.add_argument("--verdict")
+    args = parser.parse_args()
+
+    if args.meta or args.ref or args.verdict:
+        if not (args.meta and args.ref and args.verdict):
+            print("Error: --meta, --ref, and --verdict are required together", file=sys.stderr)
+            sys.exit(1)
+        meta_item = _find_item(args.meta, args.ref)
+        with Path(args.verdict).open(encoding="utf-8") as fh:
+            verdict = json.load(fh)
+        print(render_card(merge_card(meta_item, verdict)))
+        return
+
+    # stdin path (unchanged)
+    try:
+        data = json.load(sys.stdin)
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not data:
+        print("No comment data.", file=sys.stderr)
+        sys.exit(1)
+    card = data[0] if isinstance(data, list) else data
+    print(render_card(card))
+
+
+if __name__ == "__main__":
+    main()

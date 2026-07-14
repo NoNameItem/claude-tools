@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""Collect all PR/MR review comments into one structured JSON (deterministic Phase 2).
+
+Absorbs the whole of the old SKILL.md Phase 2: fetch (comments + reviews / discussions, with
+pagination), thread parsing, outdated detection with original_line fallback, source
+classification, resolved-thread skipping, bot-summary extraction, already_replied, ref
+assignment (humans U…, bots C…), and snippet reconstruction from the CURRENT working tree.
+
+    flow-review-collect [<pr_or_mr_number>]
+
+Platform is auto-detected via _git. The caller must `git pull` first (snippets read the tree).
+Prints one JSON object on stdout (see schema in the design doc). Degrades a missing snippet to
+null; never fails the whole run over one file read.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import _git
+
+SNIPPET_CONTEXT = 4  # lines of current-file context above/below the commented range
+THIN_HUNK_LINES = 4  # a GitHub diff_hunk with fewer body lines than this is "thin" → add a snippet
+
+LANG_BY_EXT = {
+    "py": "python",
+    "js": "javascript",
+    "ts": "typescript",
+    "tsx": "typescript",
+    "yml": "yaml",
+    "yaml": "yaml",
+    "sh": "bash",
+    "bash": "bash",
+    "rb": "ruby",
+    "go": "go",
+    "rs": "rust",
+    "java": "java",
+    "kt": "kotlin",
+    "c": "c",
+    "h": "c",
+    "cc": "cpp",
+    "cpp": "cpp",
+    "hpp": "cpp",
+    "md": "markdown",
+    "json": "json",
+    "toml": "toml",
+    "html": "html",
+    "css": "css",
+    "sql": "sql",
+}
+
+
+def lang_for(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return LANG_BY_EXT.get(ext, "")
+
+
+def _repo_root() -> Path:
+    """The working tree's root (git top-level), or cwd when not inside a repo.
+
+    API comment paths are repo-root-relative, so snippets must resolve against the repo root
+    even when the skill is launched from a subdirectory. Falls back to cwd outside a repo
+    (e.g. unit tests that chdir into a bare tmp dir).
+    """
+    try:
+        return Path(_git.run(["git", "rev-parse", "--show-toplevel"])).resolve()
+    except (subprocess.SubprocessError, OSError):
+        return Path.cwd().resolve()
+
+
+def build_snippet(path: str, start: int, end: int, root: Path | None = None) -> dict | None:
+    """Read [start-CTX, end+CTX] (clamped to line 1) from the CURRENT tree.
+
+    Returns None when unreadable OR when `path` resolves **outside** the working tree. The
+    comment's file path is reviewer-controlled: a PR can add a symlink (`evil.py → /etc/passwd`)
+    or a `..` traversal, and reading it verbatim would copy an arbitrary local file into the
+    card/metadata. Resolving both the root and the target collapses symlinks and `..`, so any
+    escape from the working directory is rejected before the read.
+    """
+    lo = max(1, start - SNIPPET_CONTEXT)
+    hi = end + SNIPPET_CONTEXT
+    if root is None:
+        root = _repo_root()
+    try:
+        target = (root / path).resolve()
+    except (OSError, RuntimeError):
+        # RuntimeError: a symlink loop (`loop -> loop`) raises here under Python 3.9/3.10;
+        # OSError: other resolution failures. The path is reviewer-controlled, so one crafted
+        # PR file must not abort the whole run — degrade this snippet to None (helper contract).
+        return None
+    if target != root and root not in target.parents:
+        return None  # symlink / traversal escaping the working tree → refuse
+    try:
+        lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    window = lines[lo - 1 : hi]
+    if not window:
+        return None
+    return {"lang": lang_for(path), "text": "\n".join(window)}
+
+
+def hunk_is_thin(diff_hunk: str | None) -> bool:
+    """A hunk with fewer than THIN_HUNK_LINES body lines (after the @@ header) is thin."""
+    if not diff_hunk:
+        return True
+    body = [ln for ln in diff_hunk.splitlines() if not ln.startswith("@@")]
+    return len(body) < THIN_HUNK_LINES
+
+
+def attach_snippet(item: dict, *, is_github: bool, root: Path | None = None) -> None:
+    """Attach item['snippet'] when the note is on current lines and the hunk is thin/absent."""
+    if item["outdated"] or item["path"] in (None, "(summary)"):
+        return
+    if is_github and "LEFT" in (item.get("side"), item.get("start_side")):
+        # Deleted-side anchor (either endpoint): `line`/`start_line` are old-side numbers, so a
+        # current-tree window would mix coordinate systems. Keep the historical diff_hunk.
+        return
+    if is_github and not hunk_is_thin(item["diff_hunk"]):
+        return  # GitHub with a fat diff_hunk → the hunk is enough
+    line = item["line"]
+    if line is None:
+        return
+    start = item["start_line"] or line
+    item["snippet"] = build_snippet(item["path"], start, line, root=root)
+
+
+def is_bot(login: str) -> bool:
+    low = (login or "").lower()
+    # Word-boundary suffix (`-bot`/`_bot`), not a bare `bot` suffix, so human logins like
+    # `abbot`/`talbot` are not misclassified. Keeps GitHub `dependabot[bot]`,
+    # `github-actions[bot]` and GitLab `project_123_bot` service accounts.
+    return "[bot]" in low or "coderabbit" in low or low.endswith(("-bot", "_bot"))
+
+
+def assign_refs(items: list[dict]) -> None:
+    """Assign U-refs to humans then C-refs to bots, in list order. Mutates each item."""
+    humans = [it for it in items if not it["is_bot"]]
+    bots = [it for it in items if it["is_bot"]]
+    for i, it in enumerate(humans, 1):
+        it["ref"] = f"U{i}"
+    for i, it in enumerate(bots, 1):
+        it["ref"] = f"C{i}"
+
+
+def _order(items: list[dict]) -> list[dict]:
+    """humans (in order) then bots (in order) — the canonical comments[] order."""
+    return [it for it in items if not it["is_bot"]] + [it for it in items if it["is_bot"]]
+
+
+# ---- shared unit-state guard -------------------------------------------------
+
+_OPEN_STATES = {"OPEN", "OPENED"}  # GitHub OPEN/CLOSED/MERGED; GitLab opened/closed/merged/locked
+
+# GitHub review states whose body is actionable feedback (vs a bare APPROVED "LGTM").
+_ACTIONABLE_HUMAN_REVIEW_STATES = {"CHANGES_REQUESTED", "COMMENTED"}
+
+
+def _require_open(state: object, kind: str, ref: object) -> None:
+    """Abort the whole run when the PR/MR is not open (closed / merged / locked).
+
+    Collecting review comments on a closed or merged unit is almost always a mistake — the
+    branch may be gone and replies land on a dead thread. `state` is None only when the CLI
+    response omitted it (never in production, where we request the field); that degrades to
+    proceeding rather than crashing.
+    """
+    if state is not None and str(state).upper() not in _OPEN_STATES:
+        print(
+            f"flow-review-collect: {kind} {ref} is {state!r}, not open — "
+            "refusing to collect review comments on a closed/merged unit.",
+            file=sys.stderr,
+        )
+        raise SystemExit(3)
+
+
+# ---- GitHub ----------------------------------------------------------------
+
+
+def gh_resolve_unit(number: str | None) -> dict:
+    fields = "number,title,headRefName,url,state"
+    cmd = ["gh", "pr", "view", *([number] if number else []), "--json", fields]
+    data = json.loads(_git.run(cmd))
+    _require_open(data.get("state"), "PR", data.get("number"))
+    return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
+
+
+def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
+    """String root-comment ids of RESOLVED review threads (GraphQL; [] on any error)."""
+    query = (
+        "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){"
+        "repository(owner:$owner,name:$repo){pullRequest(number:$num){"
+        "reviewThreads(first:100,after:$cursor){"
+        "nodes{isResolved comments(first:1){nodes{fullDatabaseId}}}"
+        "pageInfo{hasNextPage endCursor}}}}}"
+    )
+    owner, _, name = repo.partition("/")
+    resolved: set[str] = set()
+    cursor: str | None = None
+    try:
+        while True:
+            cmd = [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-F",
+                f"num={number}",
+            ]
+            if cursor is not None:
+                cmd += ["-f", f"cursor={cursor}"]
+            page = json.loads(_git.run(cmd))
+            rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+            for node in rt.get("nodes") or []:
+                if node.get("isResolved"):
+                    inner = (node.get("comments") or {}).get("nodes") or []
+                    if inner and inner[0].get("fullDatabaseId") is not None:
+                        resolved.add(str(inner[0]["fullDatabaseId"]))
+            info = rt.get("pageInfo") or {}
+            # Only advance when BOTH flags are truthy: a `hasNextPage: true` with a null
+            # endCursor would re-fetch page 1 identically forever, so treat it as the end.
+            if info.get("hasNextPage") and info.get("endCursor"):
+                cursor = info["endCursor"]
+                continue
+            break
+    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
+        # NEVER abort collection over the resolve side-query. `_git.run` (check=True) raises
+        # CalledProcessError when `gh api graphql` exits non-zero — which gh does whenever the
+        # GraphQL response carries an `errors` key — and TimeoutExpired on a hang; both are
+        # subclasses of SubprocessError.
+        return set()
+    return resolved
+
+
+def gh_collect(number: str | None) -> dict:
+    unit = gh_resolve_unit(number)
+    repo = _git.resolve_repo()
+    repo_root = _repo_root()
+    me = _git.gh_api("user", jq=".login")
+    # `--paginate` alone emits each page as its own top-level JSON array ("[...][...]"),
+    # which breaks a bare `json.loads` on any multi-page PR ("Extra data"). `--slurp`
+    # wraps every page into one outer array instead — flatten it back to a plain item list.
+    comment_pages = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/comments", paginate=True, slurp=True))
+    comments = [c for page in comment_pages for c in page]
+    review_pages = json.loads(_git.gh_api(f"repos/{repo}/pulls/{unit['number']}/reviews", paginate=True, slurp=True))
+    reviews = [r for page in review_pages for r in page]
+    resolved_ids = gh_review_thread_resolved_ids(repo, unit["number"])
+
+    roots = [c for c in comments if not c.get("in_reply_to_id")]
+    items: list[dict] = []
+    for c in roots:
+        cid = c.get("id")
+        if str(cid) in resolved_ids:
+            continue  # resolved thread → drop entirely
+        replies = [r for r in comments if r.get("in_reply_to_id") == cid]
+        thread = [{"user": (r.get("user") or {}).get("login", "?"), "body": r.get("body", "")} for r in replies]
+        outdated = c.get("line") is None and c.get("original_line") is not None
+        line = c.get("original_line") if outdated else c.get("line")
+        start_line = c.get("original_start_line") if outdated else c.get("start_line")
+        login = (c.get("user") or {}).get("login", "?")
+        latest = thread[-1]["user"] if thread else None
+        items.append(
+            {
+                "user": login,
+                "is_bot": is_bot(login),
+                "path": c.get("path"),
+                "start_line": start_line,
+                "line": line,
+                "outdated": outdated,
+                "already_replied": latest == me,
+                "comment_id": cid,
+                "discussion_id": None,
+                "summary_id": None,
+                "body": c.get("body", ""),
+                "thread": thread,
+                "diff_hunk": c.get("diff_hunk"),
+                "side": c.get("side"),
+                "start_side": c.get("start_side"),
+                "position": None,
+                "snippet": None,
+            }
+        )
+        attach_snippet(items[-1], is_github=True, root=repo_root)
+
+    items += gh_summary_items(reviews)
+    ordered = _order(items)
+    assign_refs(ordered)
+    return _document("github", unit, me, ordered)
+
+
+def gh_summary_items(reviews: list[dict]) -> list[dict]:
+    """One (summary) item per review with actionable body text (keyed by review id).
+
+    Bot reviews (CodeRabbit walkthroughs) are always included. Human review bodies are
+    included only when the review requested changes or explicitly commented — an APPROVED
+    "LGTM" body is noise, not a triage item.
+
+    GitLab general (no-position) notes are captured separately by gl_collect with no state gate —
+    GitHub review bodies are submission-level cover notes, GitLab general notes the primary channel.
+    """
+    items: list[dict] = []
+    for rv in reviews:
+        login = (rv.get("user") or {}).get("login", "")
+        body = (rv.get("body") or "").strip()
+        state = (rv.get("state") or "").upper()
+        bot = is_bot(login)
+        if not body or not (bot or state in _ACTIONABLE_HUMAN_REVIEW_STATES):
+            continue
+        items.append(
+            {
+                "user": login,
+                "is_bot": bot,
+                "path": "(summary)",
+                "start_line": None,
+                "line": None,
+                "outdated": False,
+                "already_replied": False,
+                "comment_id": None,
+                "discussion_id": None,
+                "summary_id": rv.get("id"),
+                "body": body,
+                "thread": [],
+                "diff_hunk": None,
+                "position": None,
+                "snippet": None,
+            }
+        )
+    return items
+
+
+# ---- GitLab ------------------------------------------------------------------
+
+
+def gl_resolve_unit(number: str | None) -> dict:
+    cmd = ["glab", "mr", "view", *([number] if number else []), "--output", "json"]
+    data = json.loads(_git.run(cmd))
+    _require_open(data.get("state"), "MR", data.get("iid"))
+    return {"number": data["iid"], "branch": data["source_branch"], "url": data["web_url"]}
+
+
+def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
+    """(start_line, line, outdated) from a GitLab note position.
+
+    Prefers a `line_range` with both new_line endpoints (multi-line comment); then a
+    `line_range` with both old_line endpoints (multi-line comment on removed lines — no
+    new_line side, always outdated since the lines no longer exist); falls back to a single
+    `new_line` (start_line stays None); outdated when there is no new_line but there is an
+    old_line (the note anchors to a line that no longer exists on the diff's new side). For an
+    outdated note with no usable new_line, anchors to `old_line` — a historical anchor, never a
+    bare null (mirrors the GitHub `original_line` fallback).
+    """
+    lr = position.get("line_range") or {}
+    start_nl = (lr.get("start") or {}).get("new_line")
+    end_nl = (lr.get("end") or {}).get("new_line")
+    start_ol = (lr.get("start") or {}).get("old_line")
+    end_ol = (lr.get("end") or {}).get("old_line")
+    new_line = position.get("new_line")
+    old_line = position.get("old_line")
+    outdated = new_line is None and old_line is not None
+    if start_nl is not None and end_nl is not None:
+        return start_nl, end_nl, outdated
+    if start_ol is not None and end_ol is not None:
+        # Multi-line comment on removed lines: no new_line range, only old_line endpoints.
+        # Preserve the historical range and mark it outdated (the lines no longer exist).
+        return start_ol, end_ol, True
+    if new_line is not None:
+        return None, new_line, outdated
+    if old_line is not None:  # outdated: historical anchor, never bare null (mirror GitHub original_line)
+        return None, old_line, outdated
+    return None, None, outdated
+
+
+def gl_collect(number: str | None) -> dict:
+    unit = gl_resolve_unit(number)
+    project = _git.resolve_project()
+    repo_root = _repo_root()
+    me = json.loads(_git.glab_api("user"))["username"]  # glab api has no -q flag; parse in Python
+    discussions = json.loads(
+        _git.glab_api(f"projects/{project}/merge_requests/{unit['number']}/discussions", paginate=True)
+    )
+    items: list[dict] = []
+    for disc in discussions:
+        notes = [n for n in (disc.get("notes") or []) if not n.get("system")]
+        if not notes:
+            continue
+        resolvable = [n for n in notes if n.get("resolvable")]
+        if resolvable and all(n.get("resolved") for n in resolvable):
+            continue  # every resolvable note in the discussion is resolved → drop entirely
+        root, replies = notes[0], notes[1:]
+        thread = [{"user": (n.get("author") or {}).get("username", "?"), "body": n.get("body", "")} for n in replies]
+        latest = thread[-1]["user"] if thread else None
+        username = (root.get("author") or {}).get("username", "?")
+        position = root.get("position")
+        if position:
+            start_line, line, outdated = _gl_lines(position)
+            path = position.get("new_path") or position.get("old_path")
+        else:
+            start_line = line = None
+            outdated = False
+            path = "(summary)"
+        items.append(
+            {
+                "user": username,
+                "is_bot": is_bot(username),
+                "path": path,
+                "start_line": start_line,
+                "line": line,
+                "outdated": outdated,
+                "already_replied": latest == me,
+                "comment_id": None,
+                "discussion_id": disc.get("id"),
+                "summary_id": None,
+                "body": root.get("body", ""),
+                "thread": thread,
+                "diff_hunk": None,
+                "position": position,
+                "snippet": None,
+            }
+        )
+        attach_snippet(items[-1], is_github=False, root=repo_root)
+    ordered = _order(items)
+    assign_refs(ordered)
+    return _document("gitlab", unit, me, ordered)
+
+
+# ---- shared ------------------------------------------------------------------
+
+
+def _document(platform: str, unit: dict, me: str, comments: list[dict]) -> dict:
+    total = len(comments)
+    already = sum(1 for c in comments if c["already_replied"])
+    return {
+        "platform": platform,
+        "unit": unit,
+        "me": me,
+        "counts": {"total": total, "already_replied": already, "actionable": total - already},
+        "comments": comments,
+    }
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="flow-review-collect")
+    parser.add_argument("number", nargs="?", default=None)
+    parser.add_argument("--platform", default=None, choices=["github", "gitlab"])
+    args = parser.parse_args(argv)
+
+    number = args.number.lstrip("!") if args.number else None
+    platform = _git.detect_platform(args.platform)
+    if platform == "github":
+        doc = gh_collect(number)
+    else:
+        doc = gl_collect(number)
+    print(json.dumps(doc))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
