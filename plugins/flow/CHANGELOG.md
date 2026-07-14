@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0](https://github.com/NoNameItem/claude-tools/compare/flow-3.0.0...flow-3.1.0) (2026-07-14)
+
+
+### Features
+
+* **flow:** cut review-comments review iterations ([#94](https://github.com/NoNameItem/claude-tools/issues/94)) ([e1b7755](https://github.com/NoNameItem/claude-tools/commit/e1b7755583ce0f33dae5d05a387c0f9e57a242ce))
+* **flow:** generalize review-loop into the flow plugin ([#106](https://github.com/NoNameItem/claude-tools/issues/106)) ([4c06c0b](https://github.com/NoNameItem/claude-tools/commit/4c06c0b77298b8e5af4d87bb0218512e4c436855))
+* **flow:** review-comments — inline code context and per-comment triage ([#109](https://github.com/NoNameItem/claude-tools/issues/109)) ([6eac7fa](https://github.com/NoNameItem/claude-tools/commit/6eac7faad8e9c911f6cf7620002b80c00cbec04c))
+* **flow:** support multiple designs and branches per task ([#102](https://github.com/NoNameItem/claude-tools/issues/102)) ([24bf2c9](https://github.com/NoNameItem/claude-tools/commit/24bf2c91b2a6a4763b561c46f9dd8a541f843387))
+
+
+### Bug Fixes
+
+* **flow:** audit allowed-tools for bin/ helper commands ([#105](https://github.com/NoNameItem/claude-tools/issues/105)) ([2f2a48c](https://github.com/NoNameItem/claude-tools/commit/2f2a48c86930362c0700997b0c7a4e9fe2f6aea2))
+* **flow:** honor GitHub thread resolve-state in review-comments collection ([#103](https://github.com/NoNameItem/claude-tools/issues/103)) ([8bc0b9e](https://github.com/NoNameItem/claude-tools/commit/8bc0b9e90f5dd113ca7cce0d6c70548b08cdc72e))
+* **flow:** replace AskUserQuestion with plain-text prompts (claude-tools-6q4) ([#101](https://github.com/NoNameItem/claude-tools/issues/101)) ([4ce6359](https://github.com/NoNameItem/claude-tools/commit/4ce63592aecadafec6e3deca4601f6e88695420c))
+
+
+### Documentation
+
+* **flow:** add AGENTS.md with architecture and review guidelines ([#88](https://github.com/NoNameItem/claude-tools/issues/88)) ([11a7e25](https://github.com/NoNameItem/claude-tools/commit/11a7e258a39795e573c8d9964a2f2f0429c3570a))
+
 ## [3.0.0](https://github.com/NoNameItem/claude-tools/compare/flow-2.1.0...flow-3.0.0) (2026-06-29)
 
 
