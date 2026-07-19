@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-17
 **Updated:** 2026-07-19
-**Status:** revised, awaiting user review
+**Status:** approved
 
 ## Context
 
