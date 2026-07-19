@@ -99,6 +99,23 @@ def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dic
     return result, data if result.success else None
 
 
+def _codex_manifest_path_error(plugin_path: Path, value: object) -> str | None:
+    """Return an error when a declared Codex path is invalid."""
+    if not isinstance(value, str) or not value.startswith("./"):
+        return f"Codex manifest path must start with './': {value!r}"
+
+    try:
+        resolved_path = (plugin_path / value[2:]).resolve(strict=False)
+    except (OSError, RuntimeError):
+        return f"Codex manifest path cannot be resolved: {value}"
+
+    if not resolved_path.is_relative_to(plugin_path):
+        return f"Codex manifest path escapes plugin directory: {value}"
+    if not resolved_path.exists():
+        return f"Codex manifest path does not exist: {value}"
+    return None
+
+
 def validate_codex_manifest(
     plugin_path: Path,
     claude_manifest: dict,
@@ -123,6 +140,8 @@ def validate_codex_manifest(
         result.add_error("Codex plugin.json must contain a JSON object")
         return result
 
+    resolved_plugin_path = plugin_path.resolve()
+
     for metadata_key in ("name", "version"):
         if manifest.get(metadata_key) != claude_manifest.get(metadata_key):
             result.add_error(
@@ -138,11 +157,8 @@ def validate_codex_manifest(
             result.add_error(f"Codex manifest field '{path_field}' must be a path or list of paths")
             continue
         for value in values:
-            if not isinstance(value, str) or not value.startswith("./"):
-                result.add_error(f"Codex manifest path must start with './': {value!r}")
-                continue
-            if not (plugin_path / value[2:]).exists():
-                result.add_error(f"Codex manifest path does not exist: {value}")
+            if error := _codex_manifest_path_error(resolved_plugin_path, value):
+                result.add_error(error)
     return result
 
 
@@ -394,6 +410,16 @@ def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo
     return result
 
 
+def _find_repo_root(plugin_path: Path) -> Path:
+    """Find the repository root containing a plugin."""
+    repo_root = plugin_path
+    while repo_root != repo_root.parent:
+        if (repo_root / ".git").exists():
+            return repo_root
+        repo_root = repo_root.parent
+    return Path.cwd()
+
+
 def main() -> int:  # noqa: PLR0911
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Validate Claude Code plugin structure")
@@ -402,22 +428,20 @@ def main() -> int:  # noqa: PLR0911
         action="store_true",
         help="Require a matching .codex-plugin/plugin.json",
     )
-    parser.add_argument("plugin_path", type=Path)
+    parser.add_argument("plugin_path", type=Path, nargs="?")
     args = parser.parse_args()
+
+    if args.plugin_path is None:
+        parser.print_usage(sys.stderr)
+        print(f"{parser.prog}: error: the following arguments are required: plugin_path", file=sys.stderr)
+        return 10
 
     plugin_path = args.plugin_path
     if not plugin_path.exists():
         print(f"Error: Plugin path does not exist: {plugin_path}", file=sys.stderr)
         return 10
 
-    # Find repo root (look for .git directory)
-    repo_root = plugin_path
-    while repo_root != repo_root.parent:
-        if (repo_root / ".git").exists():
-            break
-        repo_root = repo_root.parent
-    else:
-        repo_root = Path.cwd()
+    repo_root = _find_repo_root(plugin_path)
 
     try:
         result = validate_plugin(
