@@ -14,6 +14,8 @@ interpreter when one is available on PATH — that they exit with a concise diag
 a raw import traceback, and never affect any other helper.
 """
 
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+
 import ast
 import shutil
 import subprocess

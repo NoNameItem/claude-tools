@@ -1,5 +1,7 @@
 """Tests for Flow's shared hook runtime and Codex helper resolver."""
 
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+
 from __future__ import annotations
 
 import ast
