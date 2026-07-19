@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start working on a beads task — select from the ready tree, create or switch the branch, init a worktree, and show the task card. Use when beginning a work session, after /clear, at session start, or when switching tasks. To resume an already in-progress task, use flow:continue.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for) Bash(flow-branch-for:*) Bash(flow-current-task:*) Bash(flow-find-branches) Bash(flow-find-branches:*) Bash(flow-find-worktree:*) Bash(flow-in-worktree) Bash(flow-link-doc) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-task-tree) Bash(flow-task-tree:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) Bash(flow-current-task:*) Bash(flow-find-branches) Bash(flow-find-branches:*) Bash(flow-find-worktree:*) Bash(flow-in-worktree) Bash(flow-link-doc) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-task-tree) Bash(flow-task-tree:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
 ---
 
 # Flow: Start Task

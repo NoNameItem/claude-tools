@@ -51,7 +51,7 @@ def test_all_executable_helpers_use_reserved_prefix() -> None:
 FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
 INLINE = re.compile(r"`([^`\n]+)`")
 HELPER = re.compile(r"(?<![A-Za-z0-9_-])(flow-[a-z0-9][a-z0-9-]*)")
-SHELL_END = "|;&<>)"
+SHELL_END = "|;&)"
 
 
 def command_snippets(body: str) -> list[str]:
