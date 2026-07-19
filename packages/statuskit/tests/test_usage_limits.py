@@ -671,3 +671,23 @@ class TestModelVisibilityConfig:
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
         assert output is not None
         assert "Fable" not in output
+
+
+class TestConfigBackCompat:
+    """Old configs with removed keys must not crash."""
+
+    def test_legacy_show_sonnet_key_does_not_crash(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        # show_sonnet / sonnet_time_format were removed; they are now unknown keys.
+        config = {"show_sonnet": True, "sonnet_time_format": "reset_at"}
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_session_group(11.0, datetime.now(UTC) + timedelta(hours=2))],
+                fetched_at=datetime.now(UTC),
+            )
+            module = UsageLimitsModule(ctx, config)
+            output = module.render()
+        assert output is not None
+        assert "Session:" in output
+        # Removed keys fall back to defaults, not applied.
+        assert not hasattr(module.params, "show_sonnet")
