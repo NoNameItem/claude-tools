@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Inspect, preview, and safely create optional Flow Codex agent profiles.
+
+Optional, project-scoped setup for `.codex/agents/flow-fast.toml`, `flow-balanced.toml`, and
+`flow-strongest.toml` -- these map Flow's fast/balanced/strongest capability tiers to
+account-specific Codex model IDs. Never a security boundary; never touches unrelated `.codex`
+state (in particular `.codex/config.toml`, which can hold machine-local credentials).
+
+Usage:
+    flow-codex-agent-setup inspect --project-root ROOT
+    flow-codex-agent-setup preview --project-root ROOT --request-json FILE
+    flow-codex-agent-setup create  --project-root ROOT --request-json FILE
+
+`--request-json -` reads the request from stdin instead of a file. `--project-root` is echoed
+in every JSON result. `inspect` and `preview` never write. `create` rescans after the caller's
+own confirmation and writes only still-missing, independently safe files with exclusive
+(`O_EXCL`) creation -- it never overwrites, renames, or repairs an existing file.
+
+Exit:
+    0  inspect/preview ran cleanly (no unsafe path, no ambiguous identity), or every requested
+       tier ended up compatible or newly created;
+    1  malformed input, an unsafe path (symlink), ambiguous identity, or any requested profile
+       left in conflict/invalid/failed.
+stdout carries the machine-readable JSON result even on exit 1 (partial success included).
+stderr carries a concise human diagnostic for hard failures (bad args, unreadable request file).
+
+Requires Python 3.11+ (tomllib, via `_codex_agents`); see that module's own version guard for
+the concise pre-3.11 diagnostic.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import _codex_agents
+
+
+def _load_request(source: str) -> dict[str, Any]:
+    text = sys.stdin.read() if source == "-" else Path(source).read_text()
+    return json.loads(text)
+
+
+def _requested_names(request: dict[str, Any]) -> set[str]:
+    """Profile names (e.g. 'flow-fast') the caller actually asked about, for exit-code scoping."""
+    profiles = request.get("profiles") if isinstance(request, dict) else None
+    if not isinstance(profiles, list):
+        return set()
+    names = set()
+    for item in profiles:
+        tier = item.get("tier") if isinstance(item, dict) else None
+        if isinstance(tier, str) and tier in _codex_agents.PROFILE_NAMES:
+            names.add(_codex_agents.PROFILE_NAMES[tier])
+    return names
+
+
+def _has_failure(result: dict[str, Any], requested_names: set[str]) -> bool:
+    if result.get("global_conflicts"):
+        return True
+    if any("symlink" in str(item.get("reason", "")).lower() for item in result.get("conflicts", [])):
+        return True
+    profiles = result.get("profiles", {})
+    return any(profiles.get(name, {}).get("status") in ("conflict", "invalid", "failed") for name in requested_names)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Inspect, preview, or safely create optional Flow Codex profiles.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for name in ("inspect", "preview", "create"):
+        sub = subparsers.add_parser(name)
+        sub.add_argument("--project-root", required=True, help="Project root; echoed in the JSON result.")
+        if name != "inspect":
+            sub.add_argument("--request-json", required=True, help="Request JSON file, or '-' for stdin.")
+    args = parser.parse_args()
+
+    project_root = Path(args.project_root)
+    if not project_root.is_dir():
+        sys.stderr.write(f"project root is not a directory: {args.project_root}\n")
+        return 1
+
+    if args.command == "inspect":
+        result = _codex_agents.inspect_project(project_root)
+        sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        return 1 if _has_failure(result, set()) else 0
+
+    try:
+        request = _load_request(args.request_json)
+    except (OSError, json.JSONDecodeError) as exc:
+        sys.stderr.write(f"invalid request JSON: {exc}\n")
+        return 1
+
+    try:
+        if args.command == "preview":
+            result = _codex_agents.preview_profiles(project_root, request)
+        else:
+            result = _codex_agents.create_profiles(project_root, request)
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+
+    sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    return 1 if _has_failure(result, _requested_names(request)) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

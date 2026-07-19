@@ -131,3 +131,67 @@ def test_review_comments_declares_semantic_dispatch_contracts() -> None:
         assert output_marker in normalized_body
     for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
         assert term not in body
+
+
+# --- create-codex-agents: purpose-built setup skill (Task 5) --------------------------------
+#
+# Excluded from MIGRATED (it legitimately names Codex configuration concepts) and from the
+# sonar-sync-only frontmatter-exception check above, per the design. It still must: declare the
+# setup helper's grants exactly (both the bare and args forms, regardless of which forms the
+# prose happens to use), never hard-code an account-specific model slug (model IDs are always
+# asked for, never guessed), and never name a concrete harness's file-editing tool (it must stay
+# usable by any harness that can safely write project files).
+
+CODEX_AGENTS_SKILL = FLOW_ROOT / "skills" / "create-codex-agents" / "SKILL.md"
+
+FORBIDDEN_MODEL_SLUGS = (
+    "gpt-3",
+    "gpt-4",
+    "gpt-5",
+    "o1-",
+    "o3-",
+    "o4-",
+    "codex-mini",
+    "claude-3",
+    "claude-opus",
+    "claude-sonnet",
+    "claude-haiku",
+)
+
+FORBIDDEN_HARNESS_FILE_TOOLS = (
+    "write tool",
+    "edit tool",
+    "read tool",
+    "apply_patch",
+    "str_replace_editor",
+    "notebookedit",
+)
+
+
+def test_create_codex_agents_skill_exists() -> None:
+    assert CODEX_AGENTS_SKILL.is_file()
+
+
+def test_create_codex_agents_declares_exact_helper_grants() -> None:
+    # Deliberately does not reuse the generic `helper_forms` scan used for MIGRATED skills:
+    # this skill's prose legitimately contains the Codex profile names `flow-fast` /
+    # `flow-balanced` / `flow-strongest` as data values (not bin/ helper invocations), which
+    # match the same `flow-[a-z0-9-]+` pattern the generic scanner treats as a command needing
+    # its own grant. Check exactly what the design requires instead: both exact forms of the
+    # one real helper this skill drives, and no unscoped wildcard.
+    grants = allowed_tools(CODEX_AGENTS_SKILL.read_text())
+    assert "Bash(flow-codex-agent-setup)" in grants
+    assert "Bash(flow-codex-agent-setup:*)" in grants
+    assert "Bash(flow-*)" not in grants
+
+
+def test_create_codex_agents_has_no_hardcoded_model_slug() -> None:
+    body = CODEX_AGENTS_SKILL.read_text().lower()
+    hits = [slug for slug in FORBIDDEN_MODEL_SLUGS if slug in body]
+    assert not hits, f"create-codex-agents hard-codes a model slug: {hits}"
+
+
+def test_create_codex_agents_names_no_concrete_harness_file_tool() -> None:
+    body = CODEX_AGENTS_SKILL.read_text().lower()
+    hits = [name for name in FORBIDDEN_HARNESS_FILE_TOOLS if name in body]
+    assert not hits, f"create-codex-agents names a concrete harness file tool: {hits}"
