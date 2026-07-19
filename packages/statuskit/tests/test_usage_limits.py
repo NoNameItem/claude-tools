@@ -104,6 +104,44 @@ class TestParseLimitsArray:
         assert weekly is not None
         assert weekly.models == []
 
+    def test_scoped_non_model_limit_does_not_overwrite_overall(self):
+        # A scoped limit that is not model-scoped (e.g. a future surface-scoped one) is
+        # neither the group's scope-less overall nor a per-model limit -> ignore it.
+        response = {
+            "limits": [
+                {"kind": "weekly_all", "group": "weekly", "percent": 42.0, "resets_at": None, "scope": None},
+                {
+                    "kind": "weekly_surface",
+                    "group": "weekly",
+                    "percent": 99.0,
+                    "resets_at": None,
+                    "scope": {"model": None, "surface": "code"},
+                },
+            ]
+        }
+        data = parse_api_response(response)
+        weekly = _group(data, "weekly")
+        assert weekly is not None
+        assert weekly.overall is not None
+        assert weekly.overall.utilization == 42.0
+        assert weekly.models == []
+
+    def test_scoped_non_model_limit_alone_yields_no_group(self):
+        # With no scope-less entry, a lone surface-scoped item must not become the overall.
+        response = {
+            "limits": [
+                {
+                    "kind": "weekly_surface",
+                    "group": "weekly",
+                    "percent": 99.0,
+                    "resets_at": None,
+                    "scope": {"surface": "code"},
+                },
+            ]
+        }
+        data = parse_api_response(response)
+        assert _group(data, "weekly") is None
+
     def test_skips_null_percent_overall(self):
         response = {
             "limits": [

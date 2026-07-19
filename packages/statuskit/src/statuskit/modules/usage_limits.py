@@ -113,10 +113,13 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
             limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), display_name)
             if limit is not None:
                 group.models.append(limit)
-        else:
+        elif scope is None:
             limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), _GROUP_LABELS[key])
             if limit is not None:
                 group.overall = limit
+        # else: scoped but not model-scoped (e.g. a future surface-scoped limit) — skip it.
+        # `overall` is the group's scope-less limit, so an unrecognized scoped item must never
+        # overwrite it, or the displayed Session/Weekly percentage would silently be wrong.
 
     ordered = [groups[k] for k in _GROUP_ORDER if k in groups]
     return [g for g in ordered if g.overall is not None or g.models]
