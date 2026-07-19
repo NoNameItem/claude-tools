@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any, get_args, get_origin, get_type_hints
 
 import pytest
 
@@ -31,6 +32,19 @@ canonical_prologue = RUNTIME.canonical_prologue
 literal_helpers = RUNTIME.literal_helpers
 render_session_context = RUNTIME.render_session_context
 rewrite_pre_tool_use = RUNTIME.rewrite_pre_tool_use
+
+
+def test_rewrite_return_type_is_optional_dict() -> None:
+    return_type = get_type_hints(rewrite_pre_tool_use)["return"]
+    assert return_type is not Any
+    assert get_origin(return_type) is not None
+
+    return_args = get_args(return_type)
+    assert type(None) in return_args
+    dict_types = [return_arg for return_arg in return_args if return_arg is not type(None)]
+    assert len(dict_types) == 1
+    assert get_origin(dict_types[0]) is dict
+    assert get_args(dict_types[0]) == (str, Any)
 
 
 @pytest.fixture

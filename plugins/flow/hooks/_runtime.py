@@ -34,7 +34,7 @@ def _mentions_helper(command: str, helpers: frozenset[str]) -> bool:
     return any(re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", command) for name in helpers)
 
 
-def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> Any:
+def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> dict[str, Any] | None:
     """Prepend the Flow PATH prologue when a shell command names a shipped helper."""
     if not isinstance(payload, dict):
         message = "PreToolUse input must be an object"
