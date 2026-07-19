@@ -17,6 +17,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -98,12 +99,65 @@ def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dic
     return result, data if result.success else None
 
 
-def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResult:
+def validate_codex_manifest(
+    plugin_path: Path,
+    claude_manifest: dict,
+    *,
+    required: bool,
+) -> PluginValidationResult:
+    """Validate an optional Codex manifest and its parity with Claude metadata."""
+    result = PluginValidationResult()
+    path = plugin_path / ".codex-plugin" / "plugin.json"
+    if not path.exists():
+        if required:
+            result.add_error("Codex plugin.json not found at .codex-plugin/plugin.json")
+        return result
+
+    try:
+        manifest = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        result.add_error(f"Invalid Codex plugin.json: {exc}")
+        return result
+
+    if not isinstance(manifest, dict):
+        result.add_error("Codex plugin.json must contain a JSON object")
+        return result
+
+    for metadata_key in ("name", "version"):
+        if manifest.get(metadata_key) != claude_manifest.get(metadata_key):
+            result.add_error(
+                f"Codex manifest {metadata_key} {manifest.get(metadata_key)!r} does not match "
+                f"Claude manifest {metadata_key} {claude_manifest.get(metadata_key)!r}"
+            )
+
+    for path_field in PATH_FIELDS:
+        values = manifest.get(path_field, [])
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            result.add_error(f"Codex manifest field '{path_field}' must be a path or list of paths")
+            continue
+        for value in values:
+            if not isinstance(value, str) or not value.startswith("./"):
+                result.add_error(f"Codex manifest path must start with './': {value!r}")
+                continue
+            if not (plugin_path / value[2:]).exists():
+                result.add_error(f"Codex manifest path does not exist: {value}")
+    return result
+
+
+def validate_plugin(
+    plugin_path: Path,
+    repo_root: Path,
+    *,
+    require_codex_manifest: bool = False,
+) -> PluginValidationResult:
     """Validate complete plugin structure.
 
     Args:
         plugin_path: Path to plugin directory.
         repo_root: Path to repository root.
+        require_codex_manifest: Whether the plugin must provide a Codex manifest.
 
     Returns:
         PluginValidationResult with all validation results.
@@ -115,6 +169,9 @@ def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResul
 
     result = PluginValidationResult()
     result.merge(json_result)
+
+    codex_result = validate_codex_manifest(plugin_path, plugin_data, required=require_codex_manifest)
+    result.merge(codex_result)
 
     # Validate components (Task 4)
     components_result = validate_components(plugin_path, plugin_data)
@@ -337,13 +394,18 @@ def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo
     return result
 
 
-def main() -> int:  # noqa: PLR0911, PLR0912
+def main() -> int:  # noqa: PLR0911
     """Main entry point."""
-    if len(sys.argv) < 2:  # noqa: PLR2004
-        print("Usage: python -m scripts.validate_plugin <plugin-path>", file=sys.stderr)
-        return 10
+    parser = argparse.ArgumentParser(description="Validate Claude Code plugin structure")
+    parser.add_argument(
+        "--require-codex-manifest",
+        action="store_true",
+        help="Require a matching .codex-plugin/plugin.json",
+    )
+    parser.add_argument("plugin_path", type=Path)
+    args = parser.parse_args()
 
-    plugin_path = Path(sys.argv[1])
+    plugin_path = args.plugin_path
     if not plugin_path.exists():
         print(f"Error: Plugin path does not exist: {plugin_path}", file=sys.stderr)
         return 10
@@ -358,7 +420,11 @@ def main() -> int:  # noqa: PLR0911, PLR0912
         repo_root = Path.cwd()
 
     try:
-        result = validate_plugin(plugin_path, repo_root)
+        result = validate_plugin(
+            plugin_path,
+            repo_root,
+            require_codex_manifest=args.require_codex_manifest,
+        )
     except Exception as e:
         print(f"Script error: {e}", file=sys.stderr)
         return 10

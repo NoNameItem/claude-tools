@@ -23,7 +23,11 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-include = ["plugins/flow/bin/flow-*"]  # extension-less helper executables
+extend-include = [
+    "plugins/flow/bin/flow-*",
+    "plugins/flow/hooks/session-start",
+    "plugins/flow/hooks/codex-pre-tool-use",
+]
 
 [tool.ruff.lint]
 select = [

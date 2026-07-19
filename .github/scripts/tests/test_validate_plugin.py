@@ -40,6 +40,59 @@ def temp_marketplace(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def write_codex_manifest(plugin: Path, **overrides: object) -> None:
+    """Create a Codex manifest with valid default metadata."""
+    payload: dict[str, object] = {
+        "name": "test-plugin",
+        "version": "1.0.0",
+        "skills": "./skills/",
+        "hooks": "./hooks/codex-hooks.json",
+    }
+    payload.update(overrides)
+    target = plugin / ".codex-plugin"
+    target.mkdir(exist_ok=True)
+    (target / "plugin.json").write_text(json.dumps(payload))
+
+
+def test_required_codex_manifest_is_missing(temp_plugin: Path) -> None:
+    """Should fail when a required Codex manifest is missing."""
+    from ..validate_plugin import validate_codex_manifest
+
+    result = validate_codex_manifest(
+        temp_plugin,
+        {"name": "test-plugin", "version": "1.0.0"},
+        required=True,
+    )
+    assert result.errors == ["Codex plugin.json not found at .codex-plugin/plugin.json"]
+
+
+def test_codex_manifest_must_match_name_and_version(temp_plugin: Path) -> None:
+    """Should fail when Codex and Claude metadata differ."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, name="other", version="2.0.0")
+    result = validate_codex_manifest(
+        temp_plugin,
+        {"name": "test-plugin", "version": "1.0.0"},
+        required=True,
+    )
+    assert "Codex manifest name 'other' does not match Claude manifest name 'test-plugin'" in result.errors
+    assert "Codex manifest version '2.0.0' does not match Claude manifest version '1.0.0'" in result.errors
+
+
+def test_codex_manifest_paths_must_exist(temp_plugin: Path) -> None:
+    """Should fail when a declared Codex component path is missing."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin)
+    result = validate_codex_manifest(
+        temp_plugin,
+        {"name": "test-plugin", "version": "1.0.0"},
+        required=True,
+    )
+    assert "Codex manifest path does not exist: ./hooks/codex-hooks.json" in result.errors
+
+
 class TestValidatePluginJson:
     """Tests for plugin.json validation."""
 

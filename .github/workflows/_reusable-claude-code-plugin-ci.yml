@@ -37,7 +37,12 @@ jobs:
           python-version: '3.11'
 
       - name: Validate plugin structure
-        run: python .github/scripts/validate_plugin.py "plugins/${{ matrix.plugin }}"
+        run: |
+          EXTRA_ARGS=()
+          if [ "${{ matrix.plugin }}" = "flow" ]; then
+            EXTRA_ARGS+=(--require-codex-manifest)
+          fi
+          python .github/scripts/validate_plugin.py "${EXTRA_ARGS[@]}" "plugins/${{ matrix.plugin }}"
 
       # flow skills must never call AskUserQuestion: its dialog auto-submits the
       # pre-selected option after the AFK idle timeout (CLAUDE_AFK_TIMEOUT_MS,
@@ -100,7 +105,15 @@ jobs:
             echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
           else
             # Lint only changed Python files
-            PY_FILES=$(echo "$CHANGED_FILES" | jq -r --arg p "$PLUGIN" '.[$p] // [] | .[] | select(endswith(".py") or test("/bin/flow-[^/]+$"))' | tr '\n' ' ')
+            PY_FILES=$(echo "$CHANGED_FILES" |
+              jq -r --arg p "$PLUGIN" \
+                '.[$p] // [] | .[] |
+                 select(
+                   endswith(".py") or
+                   test("/bin/flow-[^/]+$") or
+                   test("/hooks/(session-start|codex-pre-tool-use)$")
+                 )' |
+              tr '\n' ' ')
             if [ -z "$PY_FILES" ]; then
               echo "files=" >> "$GITHUB_OUTPUT"
             else
