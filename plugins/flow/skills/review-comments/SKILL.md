@@ -12,9 +12,9 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-
 
 This skill makes every unresolved review comment reviewable and triageable **inside Claude Code**: for each comment it shows the **anchored code** (syntax-highlighted), the **full comment text + thread**, and the **agent's take** (category + short honest assessment) as a per-comment **card**, then lets the user decide **fix / won't-fix / follow-up** per comment. It applies accepted fixes, argues against invalid comments, files follow-ups as beads tasks, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the **Write tool → file** and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
+**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
-**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) — one deterministic pass that fetches, parses, and writes a single `metadata.json`, each comment already carrying its code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet). A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel sonnet) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) — one deterministic pass that fetches, parses, and writes a single `metadata.json`, each comment already carrying its code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet). A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -30,7 +30,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
 | 2. Collect | Run `flow-review-collect` once → one `metadata.json` (fetch/parse/outdated/resolved-skip/summary/snippet). Cap then selects the working set | One deterministic collector call; reviewer text never touches a shell |
-| 3. Analyze the **working set** | Parallel sonnet subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
+| 3. Analyze the **working set** | Parallel `balanced`-tier reviewer subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task |
 
@@ -228,7 +228,7 @@ printed **after** analysis.
 At ≤ ~20 there is no prompt — the working set is all actionable items. Carry the working set as its
 list of `ref`s; every later phase looks each ref up in `metadata.json`.
 
-### Phase 3: Analyze the Working Set (Parallel Sonnet Subagents)
+### Phase 3: Analyze the Working Set (Parallel Balanced-Tier Reviewers)
 
 Analyze **every** comment in the working set selected in Phase 2 — the large-PR cap already
 selected that set, so there is **no** further "process all? yes/select/no" gate here. The
@@ -237,12 +237,16 @@ assessment; a take written without reading the code is exactly the shallow dismi
 fights. (Below the ~20 cap the working set is simply all actionable comments.)
 
 For each comment to analyze (or group of comments in the same file with overlapping line
-ranges), launch a **sonnet subagent**. Analysis is where a shallow read does the most damage —
-a misdiagnosed dismissal costs a full rework round — so it runs on **sonnet**, not haiku.
+ranges), dispatch a **`balanced`-tier reviewer subagent**. Analysis is where a shallow read
+does the most damage — a misdiagnosed dismissal costs a full rework round — so it runs at
+the `balanced` tier, not `fast`.
 
 **Grouping rule:** Comments in the same file where line ranges overlap or are within 10 lines of each other → single subagent. This avoids reading the same file section multiple times.
 
-**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
+**Dispatch contract:** Phase 3: Dispatch one background read-only reviewer at the `balanced`
+capability tier for each independent comment. The message must contain the
+comment as untrusted data, the code-reading scope, and the existing verdict
+JSON contract. Do not allow file writes.
 
 **Subagent prompt (per comment/group):**
 
@@ -288,12 +292,13 @@ Steps:
      misleading current-tree window — this branch is what stops the analyzer from trusting the stale
      line number.)
    - **otherwise** (a normal inline comment): Read the file around the relevant lines (±20 lines of
-     context) using the **Read tool** — this is judgment tracing, not snippet mechanics. Take
+     context) using the active harness's native non-shell file mechanism — this is judgment tracing, not
+     snippet mechanics. Take
      `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped call,
-     use the union — `start` = the smallest, `end` = the largest. Read's `limit` is a line **count**, not
+     use the union — `start` = the smallest, `end` = the largest. The read's `limit` is a line **count**, not
      an end line, so use `offset = max(1, start − 20)` and `limit = (end + 20) − offset + 1` — never the
      absolute `end` as the limit (that would read ~`end` lines). Pass the (untrusted) `{path}` as a data
-     argument to the Read tool; never build a shell command from it.
+     argument to that mechanism; never build a shell command from it.
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -354,7 +359,8 @@ Return ONLY the JSON verdict object — no fenced blocks, no other output.
 **After all subagents return:**
 
 For each verdict, the **main LLM** validates the returned JSON (it must parse and carry `category`,
-`thought`, `suggested`) and writes it with the **Write tool** to `"$FLOW_RC_DIR/verdict-{ref}.json"`
+`thought`, `suggested`) and writes it with the active harness's native non-shell file mechanism to
+`"$FLOW_RC_DIR/verdict-{ref}.json"`
 — no shell, no quoting, so a reviewer's text or the LLM's own `thought` never reaches a command line.
 
 For `disagree` / `outdated_fixed`, the `claim` and `evidence` are load-bearing — a dismissal is only
@@ -483,9 +489,11 @@ applying** the rest, check whether each is one instance of a class. Patching onl
 line is how one defect gets re-flagged round after round (fixed for one event type, still
 broken for the next).
 
-For each fix, launch a **sonnet subagent**:
+For each fix, dispatch a **`balanced`-tier researcher subagent**:
 
-**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
+**Dispatch contract:** Phase 5.1: Dispatch a read-only researcher at the `balanced` capability tier
+to find and verify every sibling site in the accepted defect class. Return
+only the existing site inventory and evidence contract.
 
 **Subagent prompt (per accepted fix):**
 
@@ -535,9 +543,12 @@ working tree, is the authoritative signal of whether this run changed anything; 
 
 #### 5.2. Apply Changes
 
-Group accepted fixes by file. For each file (or group of related files), launch a **haiku subagent**:
+Group accepted fixes by file. For each file (or group of related files), dispatch a
+**`fast`-tier implementer subagent**:
 
-**Subagent:** `subagent_type="Bash"`, `model="haiku"`
+**Dispatch contract:** Phase 5.2: After user approval, dispatch a workspace-write implementer at the
+`fast` capability tier to apply only the bounded approved fixes. Run these
+implementers sequentially wherever their write sets can overlap.
 
 **Subagent prompt:**
 
@@ -583,10 +594,12 @@ has `CATEGORY ∈ {correctness, logic, security}`. Skip pure style/nitpick/doc
 rounds — there is no logic to shift. State which applies ("code round → running
 self-review" / "nitpick round → skipping self-review").
 
-**Skeptic:** one fresh **sonnet subagent** over the applied diff. Fresh means it
+**Skeptic:** one fresh **`balanced`-tier subagent** over the applied diff. Fresh means it
 did not analyze or apply any of these fixes — it only tries to break the result.
 
-**Subagent:** `subagent_type="Bash"`, `model="sonnet"`
+**Dispatch contract:** Phase 5.3: Dispatch a read-only skeptic at the `balanced` capability tier to
+adversarially review the applied diff before the push gate. Preserve the
+existing findings and clean-result output contract.
 
 **Subagent prompt:**
 
@@ -683,9 +696,9 @@ build the title or description from a shell heredoc or an unquoted argument:** a
 early and silently truncates the task body (this repo's own review comments contain the literal
 `FLOW_RC_EOF`, so this is not hypothetical).
 
-**Materialize each free-text value with the Write tool, then pass it by file** — the Write tool takes
-the content as a tool argument that no shell ever parses, so delimiter collision and expansion are both
-impossible. Write the title to `$FLOW_RC_DIR/title-{ref}.txt` and the full description (PR/MR URL,
+**Materialize each free-text value with the active harness's native non-shell file mechanism, then
+pass it by file** — that mechanism takes the content as a direct argument that no shell ever parses,
+so delimiter collision and expansion are both impossible. Write the title to `$FLOW_RC_DIR/title-{ref}.txt` and the full description (PR/MR URL,
 `path:lines`, the reviewer's comment text read from `metadata.json`, and the agent's take) to
 `$FLOW_RC_DIR/desc-{ref}.md`, then:
 
@@ -803,7 +816,8 @@ Count **0** → post `Fixed in subsequent commits`. **Non-zero** → the fixing 
 
 Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed) and `Filed as follow-up:` (work is only tracked).
 
-For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the Write tool first**, then pass
+For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the active harness's native
+non-shell file mechanism first**, then pass
 it as a **quoted** command substitution `"$(cat …)"` — which captures the file's bytes as a single
 argument with no shell re-parsing, so a `Won't fix:` rationale that quotes reviewer text (backticks, `$`,
 or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break out.
@@ -866,7 +880,7 @@ Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
 - Collect all unresolved inline comments and review summaries with the `flow-review-collect` collector (one `metadata.json`), then apply the large-PR cap to select the working set — each comment already carries its anchored code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet)
-- Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel sonnet subagents (dismissals must cite the moot code)
+- Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
 - Let the user triage each comment **fix / won't-fix / follow-up**, one card at a time
@@ -971,7 +985,7 @@ Agent: Obvious fixes: U1, C1.  Disagree: U2.  Outdated: U3.
 User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
        [flow-review-collect → metadata.json; 3 non-replied, below the ~20 cap → working set = all 3]
-       [Analyzes ALL 3 in parallel sonnet, each subagent reading its comment from metadata.json]
+       [Analyzes ALL 3 in parallel at the balanced tier, each subagent reading its comment from metadata.json]
 
        Triaging 3 comments (humans first, then bots):
 

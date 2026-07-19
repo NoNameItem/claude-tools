@@ -111,3 +111,21 @@ def test_frontmatter_exception_is_only_sonar_sync() -> None:
         for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
         if path not in MIGRATED and path.parent.name not in {"review-comments", "create-codex-agents"}
     }
+
+
+REVIEW_DISPATCHES = (
+    ("reviewer", "balanced", "read-only"),
+    ("researcher", "balanced", "read-only"),
+    ("implementer", "fast", "workspace-write"),
+    ("skeptic", "balanced", "read-only"),
+)
+
+
+def test_review_comments_declares_semantic_dispatch_contracts() -> None:
+    body = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
+    for role, tier, access in REVIEW_DISPATCHES:
+        assert role in body
+        assert f"`{tier}`" in body
+        assert access in body
+    for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
+        assert term not in body
