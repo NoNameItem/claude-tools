@@ -1,7 +1,7 @@
 ---
 name: after-plan
 description: Link an implementation plan document to the current beads task after the planning phase (superpowers:writing-plans). Use right after writing a plan; it records the link, nothing else.
-allowed-tools: Bash(bd:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(flow-find-doc:*) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
 # Flow: After Plan
@@ -121,7 +121,7 @@ If all checked: Done.
 ✅ Sync changes to git
 
 ### This Skill Does NOT (Long list - READ IT):
-❌ Create todo lists (use TodoWrite separately if needed)
+❌ Create todo lists (use the active harness's progress mechanism separately if needed)
 ❌ Commit plan file to git (separate workflow)
 ❌ Create subtasks (use after-design for that)
 ❌ Update task status (use flow:start)
@@ -141,7 +141,7 @@ If all checked: Done.
 Save Plan link. That's the setup. Done.
 
 **If user wants todos:**
-Tell them to use TodoWrite separately. Not this skill's job.
+Tell them to use the active harness's progress mechanism separately. Not this skill's job.
 
 **If user wants to commit plan:**
 Tell them to use git workflow. Not this skill's job.
@@ -169,7 +169,7 @@ If you're thinking any of these, STOP and just save the link:
 |--------|---------|
 | "User wants setup" | Setup = save Plan link. Not todos or commits. |
 | "Task is too simple" | Simple is good. Do it simply. Don't add extras. |
-| "I'll create todos to help" | TodoWrite is separate workflow. Out of scope. |
+| "I'll create todos to help" | The active harness's progress mechanism is a separate workflow. Out of scope. |
 | "Committing plan is good practice" | Git workflow is separate. Out of scope. |
 | "I did helpful things" | Did you save Plan link? If no, task not done. |
 | "Being maximally helpful" | Maximal help = doing THE task, not extras. |

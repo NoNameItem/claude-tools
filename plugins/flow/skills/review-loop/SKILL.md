@@ -1,7 +1,7 @@
 ---
 name: review-loop
 description: "Use after pushing to a GitHub Pull Request or GitLab Merge Request when you want the automated bot/CI review cycle ridden round after round to convergence, instead of re-invoking flow:review-comments by hand each round. Cross-platform (gh/glab), gate-name-agnostic. Reply-only: it never resolves threads or merges. Not for human-reviewer feedback."
-allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci:*) Read
+allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Read
 ---
 
 # Review Loop
@@ -170,11 +170,13 @@ hand-off, and it colors the final report at (g).
 
   For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. For any
   comment ref review-comments printed in an earlier round (its Phase 2 table / Phase 5.7
-  summary, visible in-context because review-comments runs via the **Skill** tool in this
-  same agent), add a `⚠️ <ref> — повторно (<N>-й раунд)` line. Repeat-tracking is in-session
-  memory (a set of refs seen across iterations); no API queries, no persistence.
+  summary, visible in-context because review-comments runs through the active harness's
+  skill mechanism in this same agent), add a `⚠️ <ref> — повторно (<N>-й раунд)` line.
+  Repeat-tracking is in-session memory (a set of refs seen across iterations); no API
+  queries, no persistence.
 
-- Invoke `flow:review-comments <number>` via the **Skill** tool. It is interactive and may
+- Invoke `flow:review-comments <number>` through the active harness's skill mechanism and
+  preserve all of its confirmation, push, and reply gates. It is interactive and may
   push a new head. Answering "no" at its Phase 3 exits the loop. If you skip its push (Phase
   5.6), any replies are posted but its fixes stay **local** — the head is unchanged; step
   (g)'s unpushed-commit check surfaces this.
@@ -224,7 +226,7 @@ There is **no** `max_rounds` auto-stop and no wall-clock cap. Safety comes from 
 being interactive — `flow:review-comments` confirms every round (process + push) — plus the
 visible round indicator. A bot ↔ "Won't fix" ping-pong shows up as a comment ref that
 `flow:review-comments` prints again in a later round (its per-round output is visible
-in-context, since it runs via the **Skill** tool in this same agent), flagged `повторно` with
+in-context, since it runs through the active harness's skill mechanism in this same agent), flagged `повторно` with
 the round count. The user presses Esc the moment the indicator shows an unproductive dispute.
 A machine round cap would just as often cut off a productive cycle mid-flight; the human
 decision is better.

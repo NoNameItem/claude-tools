@@ -1,7 +1,7 @@
 ---
 name: decompose
 description: Break a beads task into subtasks from its linked design document — discuss the approach, preview the split, then bulk-create children. Use when a designed task is too large for one branch. Triggered by /flow:decompose or "break down this task".
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Read Edit
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Read Edit
 ---
 
 # Flow: Decompose Task
@@ -193,7 +193,7 @@ Append a `## Decomposition` section to the end of the design document:
 ```
 
 ```bash
-# Append to design doc (use Edit tool, not echo)
+# Update the document with the active harness's native non-shell editing mechanism.
 # Then:
 git add <design-path>   # the path from the task's Design: link, e.g. docs/superpowers/specs/...
 git commit -m "docs(flow): add decomposition to design doc"
