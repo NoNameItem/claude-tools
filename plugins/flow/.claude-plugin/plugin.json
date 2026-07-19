@@ -1,7 +1,7 @@
 {
   "name": "flow",
   "version": "3.1.0",
-  "description": "Automated beads workflow skills for Claude Code",
+  "description": "Automated beads workflow skills for Claude Code and Codex",
   "repository": "https://github.com/NoNameItem/claude-tools",
   "keywords": [
     "beads",

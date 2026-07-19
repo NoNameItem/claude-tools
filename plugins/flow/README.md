@@ -30,6 +30,66 @@ Local development:
 /plugin install flow@nonameitem-toolkit
 ```
 
+## Codex CLI
+
+Flow also runs as a native Codex CLI plugin, sharing the exact same skill tree as Claude Code —
+there is no separate Codex-only fork of any `/flow:*` workflow. The minimum verified surface is
+**Codex CLI 0.144.6**. Native local Codex CLI is the primary supported Codex surface; hosted Work
+mode does not load project-local shell hooks and agents through the same native runtime and is
+therefore unsupported. Flow's command recipes are **POSIX** shell workflows; native Windows
+command rewriting is out of scope.
+
+### Installing and trusting the plugin
+
+Install and enable Flow through Codex's native plugin flow (same marketplace/plugin source as
+above). After installing, review and trust the plugin's `SessionStart` and `PreToolUse` hooks
+through Codex's `/hooks` command — Codex requires this one-time trust step before the hooks run.
+Changed hook definitions (a plugin upgrade, for example) require re-trusting them again.
+
+If the hooks are disabled, left untrusted, or excluded by `allow_managed_hooks_only = true` in
+your Codex config, Flow loses its transparent bare-helper `PATH` resolution — Flow reports that
+its Codex hook setup is inactive rather than claiming that bare `flow-*` commands still resolve
+transparently.
+
+Codex does not guarantee a safe precedence order between concurrent hook rewrites from more than
+one installed plugin version, so run only **one active Flow plugin version** per Codex session.
+Restart (start a new session in) Codex after installing, upgrading, or changing Flow plugin files
+or Codex agent profiles, so hooks and profiles reload cleanly.
+
+### Invocation
+
+Claude Code and Codex CLI invoke the same underlying skills with their own native syntax:
+
+```text
+Claude Code: /flow:start
+Codex CLI:   $flow:start
+```
+
+### `allowed-tools` and Codex
+
+Each shared skill's `allowed-tools` frontmatter is Claude Code metadata. Codex CLI currently
+ignores it entirely rather than treating an omitted tool as denied — but Flow does not rely on
+that remaining true. Compatibility with Codex is gated by an integration canary that verifies a
+shared skill with `allowed-tools` still discovers and can use its mapped Codex tools, not by this
+assumption about Codex's current behavior.
+
+### Optional: Codex capability profiles (`flow:create-codex-agents`)
+
+`flow:create-codex-agents` is optional. It creates project-scoped
+`.codex/agents/flow-fast.toml`, `flow-balanced.toml`, and
+`flow-strongest.toml` only after preview and confirmation. You choose exact
+model IDs available to your account. Flow still works with default agents
+when profiles are absent or unavailable.
+
+A parent `codex -m ...` override may replace a profile's model. Profiles tune
+cost/reasoning; they do not grant permissions or relax sandboxing.
+
+This optional setup command (the `flow-codex-agent-setup` helper it drives) needs **Python
+3.11+** for `tomllib` and exits with a clear diagnostic on an older interpreter. The rest of
+Flow's `bin/` helpers stay compatible down to Python 3.9, as noted in Prerequisites above. After
+profiles are created or changed, restart Codex so it picks them up — the same restart rule as any
+other plugin/profile change described above.
+
 ## bd requirements and migration
 
 Flow targets **bd >= 1.0.0** (recommended **1.0.5**). Older builds break flow in confusing ways — a stale Homebrew `bd 0.44.0` once lacked `graph --all` and shadowed the working binary on `PATH`, so flow failed with cryptic errors. The `flow-require-bd` guard runs first in every bd-using skill and stops with a clear message (including the resolved binary path) when bd is missing or too old.

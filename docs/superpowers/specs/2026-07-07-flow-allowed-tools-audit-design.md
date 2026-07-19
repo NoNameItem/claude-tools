@@ -1,5 +1,11 @@
 # Flow skills: audit `allowed-tools` for bin/ helper commands
 
+> **Superseded for Codex:** Codex CLI does not currently enforce this
+> `allowed-tools` frontmatter as a deny-list. Keep this document as the
+> historical Claude Code grant audit; use
+> `2026-07-17-flow-codex-support-design.md` for current Codex behavior,
+> helper resolution, and compatibility gates.
+
 - **Task:** claude-tools-elf.22
 - **Date:** 2026-07-07
 - **Status:** design approved

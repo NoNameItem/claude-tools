@@ -195,3 +195,28 @@ def test_create_codex_agents_names_no_concrete_harness_file_tool() -> None:
     body = CODEX_AGENTS_SKILL.read_text().lower()
     hits = [name for name in FORBIDDEN_HARNESS_FILE_TOOLS if name in body]
     assert not hits, f"create-codex-agents names a concrete harness file tool: {hits}"
+
+
+# --- Task 6: documentation contracts -----------------------------------------------------
+
+
+def test_readme_documents_codex_runtime_contract() -> None:
+    readme = (FLOW_ROOT / "README.md").read_text()
+    for required in (
+        "$flow:start",
+        "/flow:start",
+        "/hooks",
+        "allow_managed_hooks_only",
+        "flow:create-codex-agents",
+        "Codex CLI 0.144.6",
+        "codex -m",
+        "one active Flow plugin version",
+        "POSIX",
+    ):
+        assert required in readme
+
+
+def test_old_allowed_tools_design_is_marked_superseded() -> None:
+    text = (FLOW_ROOT.parents[1] / "docs/superpowers/specs/2026-07-07-flow-allowed-tools-audit-design.md").read_text()
+    assert "Superseded for Codex" in text
+    assert "2026-07-17-flow-codex-support-design.md" in text
