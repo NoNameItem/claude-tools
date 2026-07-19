@@ -79,7 +79,11 @@ def _parse_limit_fields(utilization: float | None, resets_at_str: str | None, la
             resets_at = datetime.fromisoformat(resets_at_str)
         except (ValueError, TypeError):
             pass  # Malformed date string, treat as no reset time
-    return UsageLimit(label=label, utilization=float(utilization), resets_at=resets_at)
+    try:
+        util = float(utilization)
+    except (ValueError, TypeError):
+        return None  # Non-numeric utilization, skip this limit
+    return UsageLimit(label=label, utilization=util, resets_at=resets_at)
 
 
 def _parse_limits_array(limits: list) -> list[UsageGroup]:
@@ -357,7 +361,7 @@ class UsageCache:
                     pass
 
             return UsageData(groups=groups, fetched_at=fetched_at, last_attempt_at=last_attempt_at)
-        except (json.JSONDecodeError, KeyError, OSError):
+        except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError, AttributeError):
             return None
 
     def save(self, data: UsageData) -> None:
@@ -442,8 +446,8 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
         parts: list[str] = []
 
-        # Main output
-        if data:
+        # Main output (only when there is something visible to show)
+        if data and self._visible_groups(data):
             if self.params.multiline:
                 parts.append(self._render_multiline(data))
             else:

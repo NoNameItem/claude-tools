@@ -132,6 +132,23 @@ class TestParseLimitsArray:
         after = datetime.now(UTC)
         assert before <= data.fetched_at <= after
 
+    def test_non_numeric_percent_skipped(self):
+        response = make_api_response()
+        response["limits"].append(
+            {
+                "kind": "weekly_scoped",
+                "group": "weekly",
+                "percent": "n/a",
+                "resets_at": None,
+                "scope": {"model": {"id": None, "display_name": "Fable"}},
+                "is_active": False,
+            }
+        )
+        data = parse_api_response(response)
+        weekly = _group(data, "weekly")
+        assert weekly is not None
+        assert "Fable" not in [m.label for m in weekly.models]
+
 
 class TestParseLegacyFallback:
     """Parsing legacy top-level keys when `limits` is absent."""
@@ -338,6 +355,21 @@ class TestUsageCache:
         )
         assert cache.load() is None
 
+    def test_corrupt_cache_returns_none(self, tmp_path):
+        """Valid JSON but malformed fields (bad date, wrong-shaped data) must not crash load()."""
+        cache = UsageCache(cache_dir=tmp_path)
+        cache_file = tmp_path / "usage_limits.json"
+
+        cache_file.write_text(
+            json.dumps(
+                {"data": {"groups": [{"key": "session", "overall": None, "models": []}]}, "fetched_at": "not-a-date"}
+            )
+        )
+        assert cache.load() is None
+
+        cache_file.write_text(json.dumps({"data": ["not", "a", "dict"], "fetched_at": "2026-01-27T12:00:00+00:00"}))
+        assert cache.load() is None
+
 
 class TestRenderMultiline:
     """Nested multiline rendering."""
@@ -461,6 +493,20 @@ class TestRenderMultiline:
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = None
             assert UsageLimitsModule(ctx, {}).render() is None
+
+    def test_render_none_when_all_hidden(self, make_render_context, minimal_input_data, tmp_path):
+        """show_session=False, show_weekly=False, no models -> no bare 'Usage:' header."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[
+                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
+                    _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3)),
+                ],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {"show_session": False, "show_weekly": False}).render()
+        assert output is None
 
     def test_null_resets_at_shows_dash(self, make_render_context, minimal_input_data, tmp_path):
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
@@ -632,7 +678,8 @@ def test_cache_ttl_custom_flows_to_cache(make_render_context, minimal_input_data
 class TestModelVisibilityConfig:
     """models_always_show / models_never_show overrides."""
 
-    def _data_with_fable(self, util: float, resets_at: datetime | None):
+    @staticmethod
+    def _data_with_fable(util: float, resets_at: datetime | None):
         return UsageData(
             groups=[
                 _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", util, resets_at)])
