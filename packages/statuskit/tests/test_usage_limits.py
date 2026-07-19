@@ -418,6 +418,24 @@ class TestRenderMultiline:
         assert output is not None
         assert "Fable" in output
 
+    def test_models_top_level_when_overall_hidden(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[
+                    _weekly_group(
+                        None,
+                        datetime.now(UTC) + timedelta(days=3),
+                        models=[UsageLimit("Fable", 34.0, datetime.now(UTC) + timedelta(days=4))],
+                    )
+                ],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        fable_line = next(line for line in output.split("\n") if "Fable" in line)
+        assert not fable_line.startswith("  ")
+
     def test_dynamic_label_width_aligns(self, make_render_context, minimal_input_data, tmp_path):
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
