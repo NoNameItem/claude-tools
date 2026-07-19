@@ -167,7 +167,13 @@ def _parse_agent_file(path: Path) -> tuple[str | None, dict[str, object] | None,
     set, so the caller can still scope the conflict to just that tier. On malformed TOML with
     no unique recoverable identity, a reason is returned instead -- that's a GLOBAL block.
     """
-    text = path.read_text()
+    try:
+        text = path.read_text()
+    except OSError as exc:
+        # An unreadable candidate (e.g. made unreadable after the symlink check) means we
+        # cannot prove the three required names are absent/unique, so block globally rather
+        # than let the OSError escape as a traceback out of the no-try/except `inspect` path.
+        return None, None, f"cannot read agent file {path.name}: {exc}"
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError:

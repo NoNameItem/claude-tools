@@ -8,6 +8,8 @@ proven). These tests exercise real filesystem behavior (real tmp dirs, real subp
 real git worktrees) rather than mocking the classification logic.
 """
 
+# ruff: noqa: INP001
+
 from __future__ import annotations
 
 import json
@@ -26,13 +28,8 @@ if str(BIN) not in sys.path:
 import _codex_agents  # noqa: E402  (import after BIN is on sys.path — sibling-module pattern)
 from _codex_agents import create_profiles, inspect_project  # noqa: E402
 
-# NOTE: this module deliberately does not `from conftest import run_helper`. With
-# `plugins/flow/bin/tests/__init__.py` present, pytest's "prepend" import mode loads
-# conftest.py as `tests.conftest` (not bare `conftest`), so that import fails for every
-# test module in this directory today — a pre-existing repo-wide regression from
-# `plugins/flow/bin/tests/__init__.py` (added in a prior, unrelated commit), not something
-# introduced by or in scope for this change. `run_setup` below inlines the same
-# subprocess-based helper so this file collects and runs correctly on its own.
+# NOTE: `run_setup`/`_run_helper` below inline a minimal subprocess-based helper rather than
+# importing `conftest.run_helper`, keeping this module self-contained.
 
 
 def _run_helper(name: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -266,6 +263,28 @@ def test_inspection_never_reads_unrelated_codex_state(
 
     monkeypatch.setattr(Path, "read_text", guarded_read)
     inspect_project(tmp_path)
+
+
+def test_unreadable_agent_file_blocks_globally_without_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agents = tmp_path / ".codex" / "agents"
+    agents.mkdir(parents=True)
+    unreadable = agents / "flow-fast.toml"
+    unreadable.write_text('name = "flow-fast"\n')
+    original = Path.read_text
+
+    def failing_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == unreadable:
+            msg = "permission denied"
+            raise OSError(msg)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read)
+    # Must not raise; an unreadable candidate becomes a global block, not a traceback.
+    result = inspect_project(tmp_path)
+    assert any("flow-fast.toml" in item for item in result["global_conflicts"])
 
 
 def test_linked_worktree_warns_and_preserves_unrelated_state(
