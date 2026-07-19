@@ -6,10 +6,14 @@ import os
 import re
 import shlex
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+# Keep the runtime alias resolvable by get_type_hints() on Python 3.9.
+# Subscription syntax here would be rewritten to the Python 3.10-only `| None`.
+HookOutput = Optional.__getitem__(dict[str, Any])
 
 FLOW_HELPER = re.compile(r"^flow-[a-z0-9][a-z0-9-]*$")
 
@@ -34,7 +38,7 @@ def _mentions_helper(command: str, helpers: frozenset[str]) -> bool:
     return any(re.search(rf"(?<![A-Za-z0-9_-]){re.escape(name)}(?![A-Za-z0-9_-])", command) for name in helpers)
 
 
-def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> dict[str, Any] | None:
+def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> HookOutput:
     """Prepend the Flow PATH prologue when a shell command names a shipped helper."""
     if not isinstance(payload, dict):
         message = "PreToolUse input must be an object"
