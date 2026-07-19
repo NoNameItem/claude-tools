@@ -627,3 +627,47 @@ def test_cache_ttl_custom_flows_to_cache(make_render_context, minimal_input_data
     module = UsageLimitsModule(ctx, {"cache_ttl": 120})
     assert module.cache is not None
     assert module.cache.rate_limit == 120
+
+
+class TestModelVisibilityConfig:
+    """models_always_show / models_never_show overrides."""
+
+    def _data_with_fable(self, util: float, resets_at: datetime | None):
+        return UsageData(
+            groups=[
+                _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", util, resets_at)])
+            ],
+            fetched_at=datetime.now(UTC),
+        )
+
+    def test_always_show_forces_zero_percent_model(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_fable(0.0, None)
+            output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
+        assert output is not None
+        assert "Fable" in output
+
+    def test_never_show_hides_used_model(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
+            output = UsageLimitsModule(ctx, {"models_never_show": ["Fable"]}).render()
+        assert output is not None
+        assert "Fable" not in output
+
+    def test_never_beats_always(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
+            output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"], "models_never_show": ["Fable"]}).render()
+        assert output is not None
+        assert "Fable" not in output
+
+    def test_matching_is_case_insensitive(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
+            output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
+        assert output is not None
+        assert "Fable" not in output
