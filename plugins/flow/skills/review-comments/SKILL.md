@@ -548,7 +548,7 @@ Group accepted fixes by file. For each file (or group of related files), dispatc
 
 **Dispatch contract:** Phase 5.2: After user approval, dispatch a workspace-write implementer at the
 `fast` capability tier to apply only the bounded approved fixes. Run these
-implementers sequentially wherever their write sets can overlap.
+implementers sequentially wherever their write sets can overlap. Return the existing OK/failure-description output contract.
 
 **Subagent prompt:**
 

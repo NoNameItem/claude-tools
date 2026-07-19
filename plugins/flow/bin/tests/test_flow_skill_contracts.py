@@ -114,18 +114,20 @@ def test_frontmatter_exception_is_only_sonar_sync() -> None:
 
 
 REVIEW_DISPATCHES = (
-    ("reviewer", "balanced", "read-only"),
-    ("researcher", "balanced", "read-only"),
-    ("implementer", "fast", "workspace-write"),
-    ("skeptic", "balanced", "read-only"),
+    ("reviewer", "balanced", "read-only", "verdict JSON contract"),
+    ("researcher", "balanced", "read-only", "site inventory and evidence contract"),
+    ("implementer", "fast", "workspace-write", "OK/failure-description output contract"),
+    ("skeptic", "balanced", "read-only", "clean-result output contract"),
 )
 
 
 def test_review_comments_declares_semantic_dispatch_contracts() -> None:
     body = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
-    for role, tier, access in REVIEW_DISPATCHES:
+    normalized_body = re.sub(r"\s+", " ", body)
+    for role, tier, access, output_marker in REVIEW_DISPATCHES:
         assert role in body
         assert f"`{tier}`" in body
         assert access in body
+        assert output_marker in normalized_body
     for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
         assert term not in body
