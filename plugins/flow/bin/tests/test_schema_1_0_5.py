@@ -1,6 +1,6 @@
 """Lock in parser compatibility with real bd 1.0.5 --json fixtures (Task 1)."""
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
 import json

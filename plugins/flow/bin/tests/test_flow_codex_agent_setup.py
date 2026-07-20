@@ -8,10 +8,12 @@ proven). These tests exercise real filesystem behavior (real tmp dirs, real subp
 real git worktrees) rather than mocking the classification logic.
 """
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -327,3 +329,124 @@ def test_linked_worktree_warns_and_preserves_unrelated_state(
 
     assert result["linked_worktree"] is True
     assert all(path.read_bytes() == content for path, content in before.items())
+
+
+# --- regression tests for the PR #113 review round (C6/C2/C7) ------------------------------
+
+
+def _load_cli() -> object:
+    """Load the extension-less CLI script as a module, to unit-test its helpers."""
+    spec = importlib.util.spec_from_loader(
+        "flow_codex_agent_setup_cli",
+        importlib.machinery.SourceFileLoader("flow_codex_agent_setup_cli", str(BIN / "flow-codex-agent-setup")),
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+CLI = _load_cli()
+
+
+def run_setup_raw(
+    command: str,
+    project_root: Path,
+    request_obj: dict[str, object] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
+    """Like `run_setup`, but also returns the CompletedProcess so exit codes are assertable."""
+    args = [command, "--project-root", str(project_root)]
+    request_path = None
+    if request_obj is not None:
+        fd, request_path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as stream:
+            json.dump(request_obj, stream)
+        args += ["--request-json", request_path]
+    try:
+        proc = _run_helper("flow-codex-agent-setup", *args)
+        assert proc.stdout, f"no stdout; stderr was: {proc.stderr}"
+        return proc, json.loads(proc.stdout)
+    finally:
+        if request_path is not None:
+            Path(request_path).unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize("link_name", [".codex", ".codex/agents", ".codex/agents/flow-fast.toml"])
+def test_dangling_symlink_component_is_rejected(tmp_path: Path, link_name: str) -> None:
+    """A symlink whose target does not exist must still be rejected.
+
+    Regression for the `current.exists() and current.is_symlink()` guard: `exists()` follows
+    the link and is False for a dangling one, so the component slipped past entirely.
+    """
+    make_symlink_component(tmp_path, link_name, tmp_path / "no-such-target")
+    proc, result = run_setup_raw("create", tmp_path, make_request_for_all_profiles())
+    assert result["created"] == []
+    assert "symlink" in json.dumps(result["conflicts"]).lower()
+    assert proc.returncode == 1
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses write permissions")
+def test_write_failure_is_reported_and_exits_nonzero(tmp_path: Path) -> None:
+    """An OSError during the per-profile write must not exit 0.
+
+    `create_profiles` records such a failure only in `failed` and leaves the profile status at
+    "missing", so an exit-code check that looked only at statuses reported success.
+    """
+    agents = tmp_path / ".codex" / "agents"
+    agents.mkdir(parents=True)
+    agents.chmod(0o500)  # readable and traversable, not writable
+    try:
+        proc, result = run_setup_raw("create", tmp_path, make_request_for_all_profiles())
+    finally:
+        agents.chmod(0o700)
+    assert result["created"] == []
+    assert result["failed"], "an unwritable agents dir must populate `failed`"
+    assert proc.returncode == 1
+
+
+def test_codex_as_regular_file_yields_json_not_traceback(tmp_path: Path) -> None:
+    """`.codex` existing as a plain file is recoverable project state, not a crash.
+
+    `mkdir` raises NotADirectoryError there; it used to escape the result-building path, so the
+    CLI printed a traceback and no JSON, violating its stdout contract.
+    """
+    (tmp_path / ".codex").write_text("not a directory\n")
+    proc, result = run_setup_raw("create", tmp_path, make_request_for_all_profiles())
+    assert proc.returncode == 1
+    assert "Traceback" not in proc.stderr
+    assert result["created"] == []
+    assert any(item.get("name") is None for item in result["conflicts"])
+
+
+def test_has_failure_flags_recorded_write_failures() -> None:
+    """A populated `failed` list alone is enough to fail the exit code."""
+    result = {"profiles": {"flow-fast": {"status": "missing"}}, "failed": [{"name": "flow-fast", "reason": "ENOSPC"}]}
+    assert CLI._has_failure(result, {"flow-fast"}) is True
+
+
+def test_has_failure_flags_nameless_conflict_regardless_of_wording() -> None:
+    """A conflict with no `name` blocked the whole run, whatever its `reason` says."""
+    escaped = {"conflicts": [{"reason": "target escapes project root: /x"}], "profiles": {}}
+    denied = {"conflicts": [{"reason": "[Errno 13] Permission denied: '/x/.codex'"}], "profiles": {}}
+    assert CLI._has_failure(escaped, set()) is True
+    assert CLI._has_failure(denied, set()) is True
+
+
+def test_has_failure_ignores_conflicts_scoped_to_other_tiers() -> None:
+    """A named conflict is scoped to that profile and must not fail an unrelated request."""
+    result = {
+        "conflicts": [{"name": "flow-strongest", "reason": "flow-strongest.toml does not match the contract"}],
+        "profiles": {"flow-fast": {"status": "missing"}, "flow-strongest": {"status": "conflict"}},
+    }
+    assert CLI._has_failure(result, {"flow-fast"}) is False
+
+
+@pytest.mark.parametrize(("command", "has_write_keys"), [("inspect", False), ("preview", False), ("create", True)])
+def test_error_result_matches_the_command_shape(tmp_path: Path, command: str, has_write_keys: bool) -> None:
+    """`created`/`failed` exist only on `create`, so a failure mirrors that command's shape."""
+    result = CLI._error_result(tmp_path, OSError("boom"), command)
+    assert ("created" in result) is has_write_keys
+    assert ("failed" in result) is has_write_keys
+    assert result["global_conflicts"] == ["boom"]
+    assert result["conflicts"] == [{"reason": "boom"}]

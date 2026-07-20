@@ -57,10 +57,42 @@ def _requested_names(request: dict[str, Any]) -> set[str]:
     return names
 
 
+def _error_result(project_root: Path, exc: Exception, command: str) -> dict[str, Any]:
+    """Contract-shaped result for a hard failure, so stdout carries JSON even on exit 1.
+
+    Mirrors the successful shape of `command`: `created`/`failed` exist only on `create`, so an
+    `inspect`/`preview` failure does not hand the caller a shape neither contract describes. The
+    reason is reported both as a nameless conflict and in `global_conflicts` -- either is enough
+    for `_has_failure` and for the skill's own hard-stop rule.
+    """
+    result: dict[str, Any] = {
+        "project_root": str(project_root),
+        "agents_dir": str(project_root / ".codex" / "agents"),
+        "linked_worktree": False,
+        "profiles": {},
+        "conflicts": [{"reason": str(exc)}],
+        "global_conflicts": [str(exc)],
+        "missing": [],
+        "compatible": [],
+    }
+    if command == "create":
+        result["created"] = []
+        result["failed"] = []
+    return result
+
+
 def _has_failure(result: dict[str, Any], requested_names: set[str]) -> bool:
     if result.get("global_conflicts"):
         return True
-    if any("symlink" in str(item.get("reason", "")).lower() for item in result.get("conflicts", [])):
+    # A write that failed (disk full, permissions, quota) is recorded ONLY in `failed` --
+    # `create_profiles` leaves the profile's status at "missing" -- so without this the CLI
+    # would exit 0 in exactly the failure case it is reporting.
+    if result.get("failed"):
+        return True
+    # A conflict with no `name` is not scoped to one profile: it blocked the whole operation
+    # (unsafe path, unusable agents dir). Keyed on the absence of `name`, not on the word
+    # "symlink", which missed both "target escapes project root" and every OSError reason.
+    if any(item.get("name") is None for item in result.get("conflicts", [])):
         return True
     profiles = result.get("profiles", {})
     return any(profiles.get(name, {}).get("status") in ("conflict", "invalid", "failed") for name in requested_names)
@@ -82,7 +114,14 @@ def main() -> int:
         return 1
 
     if args.command == "inspect":
-        result = _codex_agents.inspect_project(project_root)
+        # OSError too: the project root can vanish between the is_dir() check above and the
+        # scan. Every exit path must still print the JSON result (see module docstring).
+        try:
+            result = _codex_agents.inspect_project(project_root)
+        except (ValueError, OSError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            sys.stdout.write(json.dumps(_error_result(project_root, exc, "inspect"), indent=2, sort_keys=True) + "\n")
+            return 1
         sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
         return 1 if _has_failure(result, set()) else 0
 
@@ -97,8 +136,9 @@ def main() -> int:
             result = _codex_agents.preview_profiles(project_root, request)
         else:
             result = _codex_agents.create_profiles(project_root, request)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         sys.stderr.write(f"{exc}\n")
+        sys.stdout.write(json.dumps(_error_result(project_root, exc, args.command), indent=2, sort_keys=True) + "\n")
         return 1
 
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")

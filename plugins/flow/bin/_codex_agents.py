@@ -138,7 +138,9 @@ def reject_symlink_components(project_root: Path, target: Path) -> None:
     current = root
     for part in candidate.relative_to(root).parts:
         current = current / part
-        if current.exists() and current.is_symlink():
+        # `is_symlink()` alone, deliberately: `exists()` follows the link and is False for a
+        # DANGLING symlink, which would let that component slip past this guard entirely.
+        if current.is_symlink():
             msg = f"symlink target component is not allowed: {current}"
             raise ValueError(msg)
 
@@ -203,9 +205,13 @@ def _scan(project_root: Path) -> ScanResult:
         "global_conflicts": [],
         "canonical_occupied": {},
     }
+    # OSError as well as ValueError: `reject_symlink_components` calls `resolve(strict=True)`,
+    # which raises FileNotFoundError (an OSError) if the project root vanished after the CLI's
+    # own is_dir() check. Letting that escape would break the "stdout always carries the JSON
+    # result" contract with a raw traceback; recorded as a block instead.
     try:
         reject_symlink_components(project_root, agents_dir)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         scan["symlink_conflicts"].append(str(exc))
         return scan
     if not agents_dir.is_dir():
@@ -213,7 +219,7 @@ def _scan(project_root: Path) -> ScanResult:
     for path in sorted(agents_dir.glob("*.toml")):
         try:
             reject_symlink_components(project_root, path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             scan["symlink_conflicts"].append(str(exc))
             continue
         name, data, ambiguous = _parse_agent_file(path)
@@ -405,13 +411,16 @@ def create_profiles(project_root: Path, request: dict[str, object]) -> dict[str,
     failed: list[dict[str, str]] = []
 
     if not blocked and plan["missing"]:
+        # `mkdir` is inside the guarded block on purpose: `.codex` existing as a regular file
+        # raises NotADirectoryError, and an unwritable root raises PermissionError -- both
+        # OSError, both recoverable project state that must be reported as a JSON block rather
+        # than escape as a traceback (the docstring promises stdout carries the result).
         try:
             reject_symlink_components(project_root, agents_dir)
-        except ValueError as exc:
+            agents_dir.mkdir(parents=True, exist_ok=True)
+        except (ValueError, OSError) as exc:
             plan["conflicts"].append({"reason": str(exc)})
             blocked = True
-        else:
-            agents_dir.mkdir(parents=True, exist_ok=True)
 
     if not blocked:
         for item in plan["missing"]:

@@ -1,7 +1,7 @@
 ---
 name: create-codex-agents
 description: Use when a project needs optional Flow fast, balanced, and strongest Codex capability profiles with account-specific model routing.
-allowed-tools: Bash(flow-codex-agent-setup) Bash(flow-codex-agent-setup:*) Bash(git:*)
+allowed-tools: Bash(flow-codex-agent-setup) Bash(flow-codex-agent-setup:*) Bash(git:*) Write
 ---
 
 # Flow: Create Codex Agents
@@ -151,10 +151,17 @@ any target component is a symlink, a profile identity is ambiguous, or the
 only proposed write path overwrites/renames an existing file.
 ```
 
-If `flow-codex-agent-setup` itself reports a symlink in any conflict, or a non-empty
-`global_conflicts`, treat that as a hard stop for the **entire** run, not just the affected
-tier — say so plainly and do not attempt to work around it (no following the symlink, no
-guessing at the ambiguous file's real identity).
+If `flow-codex-agent-setup` reports a non-empty `global_conflicts`, a non-empty `failed`, or
+**any `conflicts` entry that carries no `name`**, treat that as a hard stop for the **entire**
+run, not just the affected tier — say so plainly and do not attempt to work around it (no
+following the symlink, no guessing at the ambiguous file's real identity).
+
+Key on the **absence of a `name`**, not on the wording of `reason`. A conflict with a `name` is
+scoped to that one profile; one without a `name` blocked the whole operation. Its `reason` may
+say `symlink target component is not allowed`, but equally `target escapes project root` or a
+bare OS message such as `[Errno 13] Permission denied` — all three are the same hard stop, and
+matching on the word "symlink" would miss the last two. This is exactly what the helper's own
+exit code checks, so the two never disagree.
 
 ## Scope boundaries
 

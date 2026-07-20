@@ -1,6 +1,6 @@
 """Tests for flow-in-worktree."""
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 from conftest import run_helper
 
