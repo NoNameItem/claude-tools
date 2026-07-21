@@ -96,7 +96,10 @@ def test_rewrite_preserves_original_command_after_one_prologue(
     assert output is not None
     updated = output["hookSpecificOutput"]["updatedInput"]
     prologue = canonical_prologue(flow_plugin_root)
-    assert updated["cmd"] == prologue + command
+    # Always keyed `command`, even though this payload arrived as `cmd`: Codex requires a
+    # string `command` field in updatedInput, and any other shape fails the hook run open.
+    assert updated["command"] == prologue + command
+    assert "cmd" not in updated
     assert updated["yield_time_ms"] == 10_000
     assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     assert output["hookSpecificOutput"]["permissionDecision"] == "allow"
@@ -112,7 +115,7 @@ def test_rewrite_is_idempotent_only_for_the_exact_prefix(flow_plugin_root: Path)
     near_prefix = prologue.rstrip("\n") + " \nflow-sync pull"
     output = rewrite_pre_tool_use({"tool_input": {"cmd": near_prefix}}, flow_plugin_root)
     assert output is not None
-    assert output["hookSpecificOutput"]["updatedInput"]["cmd"] == prologue + near_prefix
+    assert output["hookSpecificOutput"]["updatedInput"]["command"] == prologue + near_prefix
 
 
 def test_non_flow_command_is_untouched(flow_plugin_root: Path) -> None:
@@ -133,7 +136,7 @@ def test_every_shipped_helper_triggers(flow_plugin_root: Path) -> None:
 
 
 @pytest.mark.parametrize("command_key", ["cmd", "command"])
-def test_handler_rewrites_both_command_keys(command_key: str) -> None:
+def test_handler_accepts_both_input_keys_but_always_emits_command(command_key: str) -> None:
     command = "flow-sync pull"
     payload = {
         "tool_name": "Bash",
@@ -147,7 +150,10 @@ def test_handler_rewrites_both_command_keys(command_key: str) -> None:
     assert result.returncode == 0
     output = json.loads(result.stdout)
     updated = output["hookSpecificOutput"]["updatedInput"]
-    assert updated[command_key] == canonical_prologue(FLOW_ROOT) + command
+    # Both input keys are accepted, but the response is ALWAYS keyed `command` -- echoing
+    # back `cmd` would make Codex report the hook as failed and run the un-prefixed command.
+    assert updated["command"] == canonical_prologue(FLOW_ROOT) + command
+    assert "cmd" not in updated
     assert updated["yield_time_ms"] == 10_000
 
 
@@ -213,7 +219,7 @@ def test_shell_quotes_unusual_plugin_root(tmp_path: Path) -> None:
         plugin_root,
     )
     assert output is not None
-    rewritten = output["hookSpecificOutput"]["updatedInput"]["cmd"]
+    rewritten = output["hookSpecificOutput"]["updatedInput"]["command"]
     assert rewritten == canonical_prologue(plugin_root) + command
     subprocess.run(
         ["sh", "-n", "-c", rewritten],

@@ -59,8 +59,16 @@ def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> HookOutp
     if command.startswith(prologue) or not _mentions_helper(command, literal_helpers(plugin_root)):
         return None
 
+    # `command` is emitted unconditionally, whichever key arrived. Codex's hook contract is
+    # explicit that for Bash and apply_patch the rewritten `updatedInput` must include a string
+    # `command` field; any other shape makes Codex mark the hook run as FAILED and run the
+    # ORIGINAL command -- silently dropping the PATH prologue, so bare `flow-*` helpers stop
+    # resolving. Echoing back a `cmd` key would fail exactly that way, and quietly. `cmd` stays
+    # ACCEPTED on input (a defensive alias; Codex itself sends `command`) but is never emitted,
+    # and is dropped from the copy so the response carries exactly one command field.
     updated_input = dict(tool_input)
-    updated_input[key] = prologue + command
+    updated_input.pop("cmd", None)
+    updated_input["command"] = prologue + command
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
