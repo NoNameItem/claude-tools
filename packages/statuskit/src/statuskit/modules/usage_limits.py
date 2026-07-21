@@ -36,15 +36,24 @@ _GROUP_WINDOWS = {"session": FIVE_HOUR_WINDOW, "weekly": float(SEVEN_DAY_WINDOW)
 _GROUP_LABELS = {"session": "Session", "weekly": "Weekly"}
 _GROUP_SHORT = {"session": "5h", "weekly": "7d"}
 _GROUP_ORDER = ("session", "weekly")
+_SCOPE_SEPARATOR = "·"  # joins model and surface in a scoped row's label, e.g. "Fable·cli"
 
 
 @dataclass
 class UsageLimit:
-    """A single displayable limit: a label, utilization %, and optional reset time."""
+    """A single displayable limit: a label, utilization %, and optional reset time.
 
-    label: str  # "Session" / "Weekly" / model display name e.g. "Fable"
+    `model` / `surface` mirror the API's `scope` object and together identify a scoped row.
+    A scoped limit is keyed by the PAIR, not by the model alone: the API can narrow a limit by
+    model, by surface, or by both, and two rows differing only in `surface` are different
+    quotas that must not collapse into one another. Both are None for a group's `overall`.
+    """
+
+    label: str  # "Session" / "Weekly" / "Fable" / "Fable·cli"
     utilization: float  # 0-100
     resets_at: datetime | None  # None when not yet used or API issue
+    model: str | None = None
+    surface: str | None = None
 
 
 @dataclass
@@ -90,9 +99,45 @@ def _parse_cache_datetime(value: object) -> datetime | None:
         return None
 
 
-def _parse_limit_fields(utilization: float | None, resets_at_str: str | None, label: str) -> UsageLimit | None:
-    """Build a UsageLimit from raw utilization/reset fields, or None if utilization is missing."""
-    if utilization is None:
+def _coerce_utilization(value: object) -> float | None:
+    """Percent as a finite float, or None when the payload value is unusable.
+
+    The single gate for BOTH the API and the cache parser — they were drifting apart, and a
+    value rejected on one path but accepted on the other is how a bogus quota gets rendered.
+    Rejects, specifically:
+      * bool — `float(True)` is 1.0, so a malformed `"percent": true` would silently render 1%;
+      * non-numerics (str/list/dict) — a numeric-looking string is still a shape change, and the
+        renderer's `> 0` comparison and `:.0f` format assume a real number;
+      * NaN / Infinity — json.loads() accepts those bare tokens, and they survive float() only
+        to raise ValueError/OverflowError inside format_progress_bar's int().
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _scope_label(model: str | None, surface: str | None) -> str | None:
+    """Display label for a (model, surface) pair, or None when the pair is empty.
+
+    The surface is shown verbatim rather than interpreted: the field is undocumented and always
+    null in live responses today, so any mapping we invented would be a guess. Showing it raw
+    keeps a narrower quota from masquerading as the model-wide one.
+    """
+    if model and surface:
+        return f"{model}{_SCOPE_SEPARATOR}{surface}"
+    return model or surface or None
+
+
+def _parse_limit_fields(
+    utilization: object,
+    resets_at_str: str | None,
+    label: str,
+    model: str | None = None,
+    surface: str | None = None,
+) -> UsageLimit | None:
+    """Build a UsageLimit from raw utilization/reset fields, or None if utilization is unusable."""
+    util = _coerce_utilization(utilization)
+    if util is None:
         return None
     resets_at = None
     if resets_at_str:
@@ -100,16 +145,7 @@ def _parse_limit_fields(utilization: float | None, resets_at_str: str | None, la
             resets_at = datetime.fromisoformat(resets_at_str)
         except (ValueError, TypeError):
             pass  # Malformed date string, treat as no reset time
-    try:
-        util = float(utilization)
-    except (ValueError, TypeError):
-        return None  # Non-numeric utilization, skip this limit
-    if not math.isfinite(util):
-        # json.loads() accepts the bare NaN / Infinity tokens, and a non-finite value survives
-        # float() only to blow up in the renderer: int(nan / 100 * width) raises ValueError,
-        # int(inf ...) raises OverflowError.
-        return None
-    return UsageLimit(label=label, utilization=util, resets_at=resets_at)
+    return UsageLimit(label=label, utilization=util, resets_at=resets_at, model=model, surface=surface)
 
 
 def _parse_limits_array(limits: list) -> list[UsageGroup]:
@@ -123,6 +159,8 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
             groups[key] = UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key])
         return groups[key]
 
+    seen_scopes: set[tuple[str, str | None, str | None]] = set()
+
     for item in limits:
         if not isinstance(item, dict):
             continue
@@ -131,24 +169,36 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
         if group is None:
             continue
         scope = item.get("scope")
-        model = scope.get("model") if isinstance(scope, dict) else None
-        if isinstance(model, dict):
-            display_name = model.get("display_name")
-            # Must be a non-empty *str*, not merely truthy: the label reaches
-            # `_visible_groups`'s `.casefold()` and the row formatter, which both assume text.
-            if not isinstance(display_name, str) or not display_name:
-                continue  # scoped limit without a usable label
-            limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), display_name)
-            if limit is not None:
-                group.models.append(limit)
-        elif scope is None:
+        if scope is None:
+            # The group's scope-less limit. A scoped item must never land here, or the displayed
+            # Session/Weekly percentage would silently be some narrower quota.
             limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), _GROUP_LABELS[key])
             if limit is not None:
                 group.overall = limit
-        # else: scoped but not usably model-scoped — a future surface-scoped limit, or a
-        # malformed `model` that is not an object — skip it.
-        # `overall` is the group's scope-less limit, so an unrecognized scoped item must never
-        # overwrite it, or the displayed Session/Weekly percentage would silently be wrong.
+            continue
+        if not isinstance(scope, dict):
+            continue  # malformed scope — not the overall limit, and nothing to key a row by
+
+        # A scoped row is identified by the (model, surface) PAIR. Either half may be absent;
+        # both must be non-empty strings when present, since the label reaches `.casefold()` and
+        # the row formatter.
+        model_obj = scope.get("model")
+        model = _as_dict(model_obj).get("display_name") if isinstance(model_obj, dict) else None
+        surface = scope.get("surface")
+        if not isinstance(model, str) or not model:
+            model = None
+        if not isinstance(surface, str) or not surface:
+            surface = None
+        label = _scope_label(model, surface)
+        if label is None:
+            continue  # scope object carrying neither a usable model nor a usable surface
+        scope_key = (key, model, surface)
+        if scope_key in seen_scopes:
+            continue  # duplicate row for the same scope — keep the first, never double-count
+        limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), label, model=model, surface=surface)
+        if limit is not None:
+            seen_scopes.add(scope_key)
+            group.models.append(limit)
 
     ordered = [groups[k] for k in _GROUP_ORDER if k in groups]
     return [g for g in ordered if g.overall is not None or g.models]
@@ -167,7 +217,7 @@ def _parse_legacy(response: dict) -> list[UsageGroup]:
     weekly = UsageGroup("weekly", _GROUP_WINDOWS["weekly"])
     weekly.overall = _parse_limit_fields(seven_day.get("utilization"), seven_day.get("resets_at"), "Weekly")
     sonnet_raw = _as_dict(response.get("seven_day_sonnet"))
-    sonnet = _parse_limit_fields(sonnet_raw.get("utilization"), sonnet_raw.get("resets_at"), "Sonnet")
+    sonnet = _parse_limit_fields(sonnet_raw.get("utilization"), sonnet_raw.get("resets_at"), "Sonnet", model="Sonnet")
     if sonnet is not None:
         weekly.models.append(sonnet)
     if weekly.overall is not None or weekly.models:
@@ -384,11 +434,16 @@ class UsageCache:
                 label = d.get("label", "")
                 if not isinstance(label, str):
                     return None
-                utilization = d.get("utilization")
-                if not isinstance(utilization, int | float) or isinstance(utilization, bool):
+                utilization = _coerce_utilization(d.get("utilization"))
+                if utilization is None:
                     return None
-                if not math.isfinite(utilization):
-                    return None  # json.loads() accepts bare NaN/Infinity — see _parse_limit_fields
+                scope_model = d.get("model")
+                scope_surface = d.get("surface")
+                # Absent on caches written before scoped rows were keyed by the pair.
+                if not isinstance(scope_model, str) or not scope_model:
+                    scope_model = None
+                if not isinstance(scope_surface, str) or not scope_surface:
+                    scope_surface = None
                 resets_at = None
                 resets_at_str = d.get("resets_at")
                 if resets_at_str:
@@ -396,7 +451,13 @@ class UsageCache:
                         resets_at = datetime.fromisoformat(resets_at_str)
                     except (ValueError, TypeError):
                         pass
-                return UsageLimit(label=label, utilization=float(utilization), resets_at=resets_at)
+                return UsageLimit(
+                    label=label,
+                    utilization=utilization,
+                    resets_at=resets_at,
+                    model=scope_model,
+                    surface=scope_surface,
+                )
 
             groups_raw = _as_dict(data.get("data")).get("groups")
             if not isinstance(groups_raw, list):
@@ -440,6 +501,8 @@ class UsageCache:
                 return {
                     "label": limit.label,
                     "utilization": limit.utilization,
+                    "model": limit.model,
+                    "surface": limit.surface,
                     "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
@@ -482,8 +545,19 @@ _TIME_FORMAT_CHOICES = {
 class UsageLimitsParams:
     show_session: bool = param(True, "Show 5-hour session limit")
     show_weekly: bool = param(True, "Show 7-day weekly limit")
-    models_always_show: list[str] = param([], "Model display names to always show, even at 0%", type_=list[str])
-    models_never_show: list[str] = param([], "Model display names to never show", type_=list[str])
+    # Both match a bare model name OR a full model·surface label, symmetrically: `fable` covers
+    # every Fable row including narrower scoped ones, `fable·cli` targets exactly that row. So a
+    # bare name in always_show will also force-show a scoped Fable row the user never configured.
+    models_always_show: list[str] = param(
+        [],
+        "Model (or model·surface) names to always show, even at 0%; a bare name covers its scoped rows",
+        type_=list[str],
+    )
+    models_never_show: list[str] = param(
+        [],
+        "Model (or model·surface) names to never show; a bare name covers its scoped rows",
+        type_=list[str],
+    )
     show_reset_time: bool = param(True, "Show time until / when reset occurs")
     multiline: bool = param(True, "Multi-line output (one limit per line)")
     show_progress_bar: bool = param(False, "Show ASCII progress bar")
@@ -603,10 +677,14 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             )
             visible_models = []
             for m in g.models:
-                name = m.label.casefold()
-                if name in never:
+                # Match the full label AND the bare model name, so an existing `fable` entry keeps
+                # covering a narrower `Fable·cli` row; `fable·cli` targets just that one.
+                names = {m.label.casefold()}
+                if m.model:
+                    names.add(m.model.casefold())
+                if names & never:
                     continue
-                if name in always or m.utilization > 0 or m.resets_at is not None:
+                if names & always or m.utilization > 0 or m.resets_at is not None:
                     visible_models.append(m)
             if show_overall or visible_models:
                 result.append((g, g.overall if show_overall else None, visible_models))

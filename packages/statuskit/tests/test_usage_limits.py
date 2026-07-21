@@ -105,8 +105,8 @@ class TestParseLimitsArray:
         assert weekly.models == []
 
     def test_scoped_non_model_limit_does_not_overwrite_overall(self):
-        # A scoped limit that is not model-scoped (e.g. a future surface-scoped one) is
-        # neither the group's scope-less overall nor a per-model limit -> ignore it.
+        # A surface-scoped limit is its own row, keyed by (model=None, surface="code") and
+        # labeled with the raw surface. It must never become the group's scope-less overall.
         response = {
             "limits": [
                 {"kind": "weekly_all", "group": "weekly", "percent": 42.0, "resets_at": None, "scope": None},
@@ -124,7 +124,77 @@ class TestParseLimitsArray:
         assert weekly is not None
         assert weekly.overall is not None
         assert weekly.overall.utilization == 42.0
-        assert weekly.models == []
+        assert [(m.label, m.model, m.surface) for m in weekly.models] == [("code", None, "code")]
+
+    def test_model_and_surface_are_distinct_rows(self):
+        # The whole point of keying by the pair: a narrower model+surface quota must not be
+        # mistaken for — or collapsed into — the model-wide one.
+        response = {
+            "limits": [
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 10.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": "Fable"}, "surface": None},
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 70.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": "Fable"}, "surface": "cli"},
+                },
+            ]
+        }
+        weekly = _group(parse_api_response(response), "weekly")
+        assert weekly is not None
+        assert [(m.label, m.model, m.surface, m.utilization) for m in weekly.models] == [
+            ("Fable", "Fable", None, 10.0),
+            ("Fable·cli", "Fable", "cli", 70.0),
+        ]
+
+    def test_duplicate_scope_keeps_first_row(self):
+        # Two rows for the same (model, surface) pair are an API anomaly — never double-count.
+        response = {
+            "limits": [
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 10.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": "Fable"}, "surface": None},
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 99.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": "Fable"}, "surface": None},
+                },
+            ]
+        }
+        weekly = _group(parse_api_response(response), "weekly")
+        assert weekly is not None
+        assert [(m.label, m.utilization) for m in weekly.models] == [("Fable", 10.0)]
+
+    def test_boolean_percent_is_rejected(self):
+        # float(True) is 1.0 — a malformed boolean would otherwise render as a bogus 1% quota.
+        response = {
+            "limits": [
+                {"kind": "weekly_all", "group": "weekly", "percent": True, "resets_at": None, "scope": None},
+                {"kind": "session", "group": "session", "percent": False, "resets_at": None, "scope": None},
+            ]
+        }
+        assert parse_api_response(response).groups == []
+
+    def test_string_percent_is_rejected(self):
+        # Same gate on both parsers: the cache path already rejected non-numerics, the API path
+        # silently coerced them. A numeric-looking string is still a shape change.
+        response = {
+            "limits": [{"kind": "weekly_all", "group": "weekly", "percent": "42", "resets_at": None, "scope": None}]
+        }
+        assert parse_api_response(response).groups == []
 
     def test_scoped_with_non_dict_model_is_skipped(self):
         # `model` as a bare id string (an API shape change) must not raise AttributeError out of
@@ -196,8 +266,9 @@ class TestParseLimitsArray:
         response = {"five_hour": "unavailable", "seven_day": 0, "seven_day_sonnet": ["nope"]}
         assert parse_api_response(response).groups == []
 
-    def test_scoped_non_model_limit_alone_yields_no_group(self):
-        # With no scope-less entry, a lone surface-scoped item must not become the overall.
+    def test_scoped_non_model_limit_alone_is_a_row_not_the_overall(self):
+        # A lone surface-scoped item forms the group (as a scoped row) but leaves `overall` unset,
+        # so the renderer never presents it as the group-wide Weekly percentage.
         response = {
             "limits": [
                 {
@@ -209,8 +280,26 @@ class TestParseLimitsArray:
                 },
             ]
         }
-        data = parse_api_response(response)
-        assert _group(data, "weekly") is None
+        weekly = _group(parse_api_response(response), "weekly")
+        assert weekly is not None
+        assert weekly.overall is None
+        assert [(m.label, m.model, m.surface) for m in weekly.models] == [("code", None, "code")]
+
+    def test_scope_object_without_usable_model_or_surface_is_skipped(self):
+        # An empty/unusable scope object keys nothing — it is neither overall nor a scoped row.
+        response = {
+            "limits": [
+                {"kind": "x", "group": "weekly", "percent": 5.0, "resets_at": None, "scope": {}},
+                {
+                    "kind": "y",
+                    "group": "weekly",
+                    "percent": 6.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": ""}, "surface": ""},
+                },
+            ]
+        }
+        assert parse_api_response(response).groups == []
 
     def test_skips_null_percent_overall(self):
         response = {
@@ -487,6 +576,48 @@ class TestUsageCache:
         loaded = cache.load()
         assert loaded is not None
         assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
+
+    def test_scope_fields_survive_cache_roundtrip(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path)
+        weekly = UsageGroup(key="weekly", window_hours=WEEKLY_WINDOW)
+        weekly.models = [
+            UsageLimit(label="Fable", utilization=10.0, resets_at=None, model="Fable"),
+            UsageLimit(label="Fable·cli", utilization=70.0, resets_at=None, model="Fable", surface="cli"),
+        ]
+        cache.save(UsageData(groups=[weekly], fetched_at=datetime.now(UTC)))
+        loaded = cache.load()
+        assert loaded is not None
+        restored = _group(loaded, "weekly")
+        assert restored is not None
+        assert [(m.label, m.model, m.surface) for m in restored.models] == [
+            ("Fable", "Fable", None),
+            ("Fable·cli", "Fable", "cli"),
+        ]
+
+    def test_cache_without_scope_fields_still_loads(self, tmp_path):
+        """Caches written before scoped rows carried model/surface must not be rejected."""
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "groups": [
+                            {
+                                "key": "weekly",
+                                "overall": {"label": "Weekly", "utilization": 42.0, "resets_at": None},
+                                "models": [{"label": "Fable", "utilization": 5.0, "resets_at": None}],
+                            }
+                        ]
+                    },
+                    "fetched_at": "2026-01-27T12:00:00+00:00",
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        weekly = _group(loaded, "weekly")
+        assert weekly is not None
+        assert [(m.label, m.model, m.surface) for m in weekly.models] == [("Fable", None, None)]
 
     def test_cache_limit_with_wrong_typed_fields_is_dropped(self, tmp_path):
         """A wrong-typed `label`/`utilization` must die here, not at render time.
@@ -947,6 +1078,72 @@ class TestModelVisibilityConfig:
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
         assert output is not None
         assert "Fable" not in output
+
+    @staticmethod
+    def _data_with_scoped_fable():
+        """Weekly with both the model-wide Fable row and a narrower Fable·cli one."""
+        resets = datetime.now(UTC) + timedelta(days=4)
+        return UsageData(
+            groups=[
+                _weekly_group(
+                    2.0,
+                    resets,
+                    models=[
+                        UsageLimit("Fable", 34.0, resets, model="Fable"),
+                        UsageLimit("Fable·cli", 12.0, resets, model="Fable", surface="cli"),
+                    ],
+                )
+            ],
+            fetched_at=datetime.now(UTC),
+        )
+
+    def test_bare_model_name_covers_its_scoped_rows(self, make_render_context, minimal_input_data, tmp_path):
+        """An existing `fable` config entry keeps covering the narrower Fable·cli row."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_scoped_fable()
+            output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
+        assert output is not None
+        assert "Fable" not in output
+
+    def test_bare_model_name_in_always_show_also_forces_scoped_rows(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """Documented consequence of symmetric matching: `always_show` widens the same way.
+
+        A bare `Fable` entry force-shows a 0% `Fable·cli` row the user never configured. Kept
+        symmetric with `never_show` on purpose — a new scoped row from the API should surface
+        rather than stay invisible — so this asserts the surprising direction stays intentional.
+        """
+        resets = datetime.now(UTC) + timedelta(days=4)
+        data = UsageData(
+            groups=[
+                _weekly_group(
+                    2.0,
+                    resets,
+                    models=[
+                        UsageLimit("Fable", 0.0, None, model="Fable"),
+                        UsageLimit("Fable·cli", 0.0, None, model="Fable", surface="cli"),
+                    ],
+                )
+            ],
+            fetched_at=datetime.now(UTC),
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = data
+            output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
+        assert output is not None
+        assert "Fable·cli" in output
+
+    def test_scoped_name_targets_only_that_row(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._data_with_scoped_fable()
+            output = UsageLimitsModule(ctx, {"models_never_show": ["fable·cli"]}).render()
+        assert output is not None
+        assert "Fable·cli" not in output
+        assert "Fable" in output
 
 
 class TestConfigBackCompat:
