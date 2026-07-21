@@ -57,9 +57,11 @@ Anthropic отдаёт per-model недельные лимиты (Sonnet, нед
 ```python
 @dataclass
 class UsageLimit:
-    label: str                  # "Session" / "Weekly" / "Fable"
+    label: str                  # "Session" / "Weekly" / "Fable" / "Fable·cli"
     utilization: float          # из percent (int) или legacy utilization (float)
     resets_at: datetime | None
+    model: str | None = None    # scope.model.display_name
+    surface: str | None = None  # scope.surface
 
 @dataclass
 class UsageGroup:
@@ -79,8 +81,14 @@ class UsageData:
 
 - Раскладываем элементы по `group`. Порядок групп: `session`, затем `weekly`.
 - `scope == null` → `overall` группы. Ярлык: `session` → `"Session"`, `weekly_all` → `"Weekly"`.
-- `scope.model` присутствует → элемент в `models`; ярлык = `scope.model.display_name`.
-  Если `display_name` пустой/отсутствует — элемент пропускаем.
+- `scope` — объект → строка идентифицируется **парой `(model, surface)`**, а не одной моделью:
+  API умеет сузить лимит по модели, по поверхности или по обеим сразу, и две строки,
+  различающиеся только `surface`, — разные квоты, которые нельзя схлопывать. Ярлык собирается
+  из пары: `"Fable"` / `"cli"` / `"Fable·cli"`. Если ни `model`, ни `surface` не дают непустой
+  строки — элемент пропускаем. Повтор той же пары в ответе — аномалия API, берём первую строку.
+  `surface` показывается **как есть**, без интерпретации: поле не задокументировано и в живых
+  ответах всегда `null`, так что любое наше сопоставление было бы гаданием. Смысл — не дать
+  узкой квоте выдать себя за общемодельную.
 - `percent` → `utilization`; `resets_at` парсим как раньше (ISO, при ошибке → `None`).
 - Окно: `session` → `FIVE_HOUR_WINDOW` (5.0), `weekly` → `SEVEN_DAY_WINDOW` (168.0).
 - Неизвестные значения `group` (гипотетические новые окна) игнорируем — окно для них
@@ -230,4 +238,7 @@ Usage: 5h 11% (2h 30m) | 7d 2% (Thu 17:00) | Fable 34% (Fri 03:59) | Opus 88% (F
 
 - Переход цветовой индикации на API-поле `severity`.
 - Поддержка гипотетических новых значений `group` (кроме session/weekly).
-- Отображение `is_active`, `surface`, денежных полей (`*_dollars`, `spend`, `extra_usage`).
+- Отображение `is_active`, денежных полей (`*_dollars`, `spend`, `extra_usage`).
+- **Интерпретация** `surface` (сопоставление значений с человекочитаемыми названиями поверхностей,
+  отдельная ось группировки, своя конфигурация показа). Само поле теперь входит в ключ строки и
+  попадает в ярлык сырым — см. «Парсинг массива `limits`».
