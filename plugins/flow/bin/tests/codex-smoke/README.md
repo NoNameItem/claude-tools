@@ -59,7 +59,7 @@ policy. If it does, Step 4 below tells you exactly what to rip out before shippi
   is deliberately *not* the rule is Step 8, which exists specifically to test what happens when
   it's violated.
 - **Never execute this protocol against your real `$CODEX_HOME`.** Always export a throwaway one
-  first (Setup, item 4).
+  first (Setup, item 2).
 - Do not run this protocol unattended; every gate (`/hooks` trust prompt, approval prompts,
   confirmation prompts inside `flow:create-codex-agents`) requires you to read Codex's own output
   and respond.
@@ -68,16 +68,70 @@ policy. If it does, Step 4 below tells you exactly what to rip out before shippi
 
 Perform this once per protocol run (repeat for a second Flow version only in Step 8).
 
+> **Order is load-bearing — do these items in the order written.** Each one establishes state the
+> later ones depend on: the throwaway `CODEX_HOME` must exist **before** anything is installed (or
+> the install lands in your real profile and is absent from the smoke session), and the fake-`PATH`
+> shell must exist **before** the Codex session starts (a running process never picks up a parent
+> shell's later `PATH` changes). Do not reorder them, and do not start Codex early "to save a
+> restart".
+
 1. **Require the minimum Codex CLI version** (see Requirements above) — `codex --version` must
    report `0.144.6` or later. Abort otherwise.
 
-2. **Copy the current `plugins/flow` tree to a temporary plugin/marketplace location.** Do not
+2. **Use a temporary project and a temporary `CODEX_HOME` — before anything is installed.**
+
+   ```bash
+   SMOKE_PROJECT="$(mktemp -d -t flow-codex-smoke-project)"
+   git -C "$SMOKE_PROJECT" init -q
+   export CODEX_HOME="$(mktemp -d -t flow-codex-smoke-home)"
+   ```
+
+   Run every `codex`/`codex exec` invocation below with this `CODEX_HOME` exported in the same
+   shell, and `cd "$SMOKE_PROJECT"` first. If your Codex CLI build does not support relocating
+   `CODEX_HOME`, note that limitation in your results log and fall back to a dedicated OS user or
+   VM instead of your real profile — never run the rest of this protocol against your everyday
+   `~/.codex`.
+
+3. **Fakes for `bd`, `gh`, and `git` — before the Codex session starts.** Everywhere Steps 3, 5,
+   6, and 7 could otherwise mutate or contact a real beads store or a real GitHub/GitLab remote,
+   put fake executables ahead of the real ones on `PATH` inside `$SMOKE_PROJECT`:
+
+   ```bash
+   FAKE_BIN="$SMOKE_PROJECT/.smoke-fakes"
+   mkdir -p "$FAKE_BIN"
+   cat > "$FAKE_BIN/bd" <<'SH'
+   #!/bin/sh
+   echo '{"nodes":[],"edges":[]}'
+   SH
+   cat > "$FAKE_BIN/gh" <<'SH'
+   #!/bin/sh
+   echo '[]'
+   SH
+   cat > "$FAKE_BIN/git" <<'SH'
+   #!/bin/sh
+   case "$1" in
+     branch) echo "smoke/fake-branch" ;;
+     *) exit 0 ;;
+   esac
+   SH
+   chmod +x "$FAKE_BIN/bd" "$FAKE_BIN/gh" "$FAKE_BIN/git"
+   export PATH="$FAKE_BIN:$PATH"
+   ```
+
+   Confirm `which bd`, `which gh`, `which git` resolve to `$FAKE_BIN` **before** starting Codex.
+   This `PATH` prefix is set in your **own** shell — it is not the transient, per-tool-call
+   `PATH` prologue the `PreToolUse` hook adds (that one you are about to observe, not create).
+   If you ever change `PATH` (or any other exported variable) after a session has started, you
+   must **restart that session**; the running process keeps the environment it was launched with.
+
+4. **Copy the current `plugins/flow` tree to a temporary plugin/marketplace location.** Do not
    point Codex at your working checkout directly — a temp copy guarantees nothing you do during
    the smoke (including Step 4's fake write-probe helper, added and removed only in the copy)
    touches the repository you are validating.
 
    ```bash
    SMOKE_ROOT="$(mktemp -d -t flow-codex-smoke)"
+   mkdir -p "$SMOKE_ROOT/plugins"
    cp -R "$(pwd)/plugins/flow" "$SMOKE_ROOT/plugins/flow"
    mkdir -p "$SMOKE_ROOT/.claude-plugin"
    cat > "$SMOKE_ROOT/.claude-plugin/marketplace.json" <<'JSON'
@@ -106,28 +160,21 @@ Perform this once per protocol run (repeat for a second Flow version only in Ste
    file. The important invariant is that the marketplace/plugin entry resolves to
    `$SMOKE_ROOT/plugins/flow`, a copy, never `plugins/flow` in your real checkout.
 
-3. **Install only that temporary version.** Add the throwaway marketplace and install `flow` from
+5. **Install only that temporary version.** Add the throwaway marketplace and install `flow` from
    it, using whatever native Codex command performs the equivalent of Claude Code's
    `/plugin marketplace add` / `/plugin install`. Do not also have a non-smoke Flow version
    enabled in the same profile at this point (see the abort rule above; Step 8 revisits this
    deliberately).
 
-4. **Use a temporary project and a temporary `CODEX_HOME`.**
+   Codex keeps installed-plugin and marketplace metadata under `CODEX_HOME`, which is why item
+   2 exports the throwaway one first: run this with your real `CODEX_HOME` and the install both
+   pollutes your everyday profile and is missing from the smoke session started below. Before
+   continuing, confirm the install actually landed in the throwaway profile (e.g. it appears in
+   Codex's plugin listing while `CODEX_HOME` points at the temp directory).
 
-   ```bash
-   SMOKE_PROJECT="$(mktemp -d -t flow-codex-smoke-project)"
-   git -C "$SMOKE_PROJECT" init -q
-   export CODEX_HOME="$(mktemp -d -t flow-codex-smoke-home)"
-   ```
-
-   Run every `codex`/`codex exec` invocation below with this `CODEX_HOME` exported in the same
-   shell, and `cd "$SMOKE_PROJECT"` first. If your Codex CLI build does not support relocating
-   `CODEX_HOME`, note that limitation in your results log and fall back to a dedicated OS user or
-   VM instead of your real profile — never run the rest of this protocol against your everyday
-   `~/.codex`.
-
-5. **Trust the hooks explicitly through `/hooks`.** Start a Codex session in `$SMOKE_PROJECT`
-   with `CODEX_HOME` exported, and run:
+6. **Trust the hooks explicitly through `/hooks`.** Start a Codex session in `$SMOKE_PROJECT`
+   with `CODEX_HOME` and the fake `PATH` from items 2/3 exported in **this same shell**, and
+   run:
 
    ```text
    /hooks
@@ -138,42 +185,11 @@ Perform this once per protocol run (repeat for a second Flow version only in Ste
    this one-time step before either hook runs — do not skip it and do not assume a default-trust
    state.
 
-6. Keep this session's transcript/output visible for the remaining steps — Steps 3–8 ask you to
+7. Keep this session's transcript/output visible for the remaining steps — Steps 3–8 ask you to
    inspect exactly what Codex reports for each hook-modified tool call. The exact facility your
    Codex CLI build exposes for this (verbose/debug output, a `--json` event stream, or the
    session transcript file under `$CODEX_HOME`) may vary by build; use whichever one 0.144.6
    actually gives you, and record which one you used in your results log.
-
-7. **Fakes for `bd`, `gh`, and `git`.** Everywhere Steps 3, 5, 6, and 7 could otherwise mutate or
-   contact a real beads store or a real GitHub/GitLab remote, put fake executables ahead of the
-   real ones on `PATH` inside `$SMOKE_PROJECT`:
-
-   ```bash
-   FAKE_BIN="$SMOKE_PROJECT/.smoke-fakes"
-   mkdir -p "$FAKE_BIN"
-   cat > "$FAKE_BIN/bd" <<'SH'
-   #!/bin/sh
-   echo '{"nodes":[],"edges":[]}'
-   SH
-   cat > "$FAKE_BIN/gh" <<'SH'
-   #!/bin/sh
-   echo '[]'
-   SH
-   cat > "$FAKE_BIN/git" <<'SH'
-   #!/bin/sh
-   case "$1" in
-     branch) echo "smoke/fake-branch" ;;
-     *) exit 0 ;;
-   esac
-   SH
-   chmod +x "$FAKE_BIN/bd" "$FAKE_BIN/gh" "$FAKE_BIN/git"
-   export PATH="$FAKE_BIN:$PATH"
-   ```
-
-   Confirm `which bd`, `which gh`, `which git` resolve to `$FAKE_BIN` before proceeding. This
-   `PATH` prefix is set in your **own** shell before starting Codex — it is not the transient,
-   per-tool-call `PATH` prologue the `PreToolUse` hook adds (that one you are about to observe,
-   not create).
 
 8. Tear-down for this setup lives at the end of this document (Cleanup) — read it now so you
    know what to remove once every step below is done.
@@ -202,7 +218,7 @@ flow-link-doc task Git "$(git branch --show-current)"
 Because of the Setup fakes, `bd`, `gh`, and `git` here resolve to the no-op/fixed-output fakes,
 not real ones — none of these five calls can mutate real beads state or a real git identity.
 
-For **each** of the five calls, inspect the `PreToolUse` hook's event output (per Setup item 6)
+For **each** of the five calls, inspect the `PreToolUse` hook's event output (per Setup item 7)
 and verify all five properties from the design doc:
 
 1. **One exact canonical prologue precedes each original command.** The prologue is generated by
@@ -276,25 +292,49 @@ authorization bypass.
 
    Restart the Codex session (a new plugin file requires a fresh session to be picked up).
 
-2. From `$SMOKE_PROJECT`, with `CODEX_HOME` still exported to the throwaway home, start Codex
-   with a temporary read-only sandbox and no approval prompt, and ask it to run the probe:
+2. **Positive control first — prove the probe can fail this test.** Without this, step 3's
+   `test ! -e must-not-exist` passes whenever the probe simply never ran, which is exactly how a
+   safety check ends up unable to fail. In `$SMOKE_PROJECT`, with a **writable** sandbox, have
+   Codex run the probe by name as its own shell tool call:
+
+   ```bash
+   rm -f must-not-exist      # a leftover from an interrupted attempt would fake a pass below
+   codex exec --sandbox workspace-write --ask-for-approval never \
+     "Run exactly this shell command and nothing else: flow-write-probe"
+   test -e must-not-exist   # MUST exit 0 — the probe really does write when permitted
+   rm -f must-not-exist
+   ```
+
+   If `must-not-exist` is absent here, the probe did not run at all (helper not resolved, session
+   not restarted after item 1, wrong `$SMOKE_ROOT` copy installed). **Fix that before proceeding**
+   — do not continue to step 3, whose result would be meaningless.
+
+3. Now repeat with a read-only sandbox and no approval prompt — the actual test:
 
    ```bash
    codex --version
    codex exec --sandbox read-only --ask-for-approval never \
-     "Run the supplied Flow smoke skill that invokes a fake flow-write-probe attempting to create ./must-not-exist."
+     "Run exactly this shell command and nothing else: flow-write-probe"
    test ! -e must-not-exist
    ```
 
-3. **Expected:**
+   Name the helper as a literal command rather than describing a "smoke skill that invokes it":
+   this repo ships **no** such skill (the only fixture skill is `allowed-tools-canary`, which runs
+   `flow-require-bd` and refuses to write), so a descriptive prompt leaves it to the model whether
+   the probe runs at all.
+
+4. **Expected:**
 
    - `codex --version` reports `0.144.6` or later;
    - the `PreToolUse` hook still rewrites the command (same canonical-prologue check as Step 3);
+   - the transcript shows Codex actually attempting the `flow-write-probe` call and the write
+     being **denied** — not the model declining to run it, which is a different outcome and does
+     not test the sandbox;
    - the read-only sandbox denies the write attempt from `flow-write-probe` regardless of the
      hook's `permissionDecision: "allow"`;
    - `test ! -e must-not-exist` exits `0` — the file is absent.
 
-4. **Explicit fallback instruction — do not skip this.** If the write succeeds, or if this Codex
+5. **Explicit fallback instruction — do not skip this.** If the write succeeds, or if this Codex
    build otherwise treats the hook's `permissionDecision: "allow"` as bypassing the sandbox or
    approval policy, this smoke has failed the single load-bearing safety assumption of the
    `PreToolUse` resolver. In that case:
@@ -325,7 +365,7 @@ Test each of the following **separately** (fresh `CODEX_HOME`/session per case i
 failures don't compound):
 
 1. **Untrusted plugin hooks.** Skip or explicitly decline the `/hooks` trust step from Setup
-   item 5, then run one of the Step 3 command shapes (e.g. `flow-actor`).
+   item 6, then run one of the Step 3 command shapes (e.g. `flow-actor`).
 
    Expected: Codex reports the hook source as untrusted/inactive; the command runs with **no**
    PATH prologue rewrite (bare `flow-actor` either fails to resolve or falls through to whatever
@@ -380,7 +420,7 @@ adapter's `spawn_agent` contract in `hooks/runtime/codex.md`.
 ### 6a. Profile setup across four temporary project shapes
 
 For each of the four project shapes below, use a **fresh** temporary project directory
-(`mktemp -d`, `git init`) with the fake `bd`/`gh`/`git` from Setup item 7 still ahead on `PATH`,
+(`mktemp -d`, `git init`) with the fake `bd`/`gh`/`git` from Setup item 3 still ahead on `PATH`,
 and drive `flow:create-codex-agents` (invoked in Codex as `$flow:create-codex-agents`):
 
 1. **Fresh** — empty project, no `.codex/agents/` at all. Expect: all three tiers (`flow-fast`,
@@ -491,13 +531,38 @@ that a collision is treated as a **configuration failure**, never silently resol
 
    ```bash
    SMOKE_ROOT_2="$(mktemp -d -t flow-codex-smoke-2)"
+   mkdir -p "$SMOKE_ROOT_2/plugins"
    cp -R "$(pwd)/plugins/flow" "$SMOKE_ROOT_2/plugins/flow"
    # bump plugins/flow/.claude-plugin/plugin.json's "version" field in the copy, e.g. to
    # a "+smoke2" suffix, purely so the two copies are visually distinguishable in listings.
+   mkdir -p "$SMOKE_ROOT_2/.claude-plugin"
+   cat > "$SMOKE_ROOT_2/.claude-plugin/marketplace.json" <<'JSON'
+   {
+     "name": "flow-codex-smoke-2",
+     "owner": { "name": "flow-codex-smoke" },
+     "metadata": {
+       "description": "Second throwaway marketplace for the Flow Codex collision test only.",
+       "version": "0.0.0-smoke2",
+       "pluginRoot": "./plugins"
+     },
+     "plugins": [
+       {
+         "name": "flow",
+         "source": { "source": "local", "path": "./plugins/flow" },
+         "description": "Second throwaway smoke copy of the Flow plugin."
+       }
+     ]
+   }
+   JSON
    ```
 
+   The `mkdir -p "$SMOKE_ROOT_2/plugins"` and the second `marketplace.json` are both required for
+   the same reason as Setup item 4: `cp -R` does not create intermediate directories, and there is
+   no marketplace to install from until one is written. Adapt the `source` shape to your Codex
+   build's syntax exactly as in Setup item 4.
+
    Install/enable this second copy through the same throwaway marketplace mechanism as Setup
-   item 3, **without ending the current Codex session** and without disabling the first copy.
+   item 5, **without ending the current Codex session** and without disabling the first copy.
 
 2. Repeat one of the Step 3 command shapes (e.g. `flow-actor`) in this now-dual-version session,
    and inspect the hook event output.
@@ -527,7 +592,7 @@ that a collision is treated as a **configuration failure**, never silently resol
 After finishing every step you intend to run:
 
 1. Remove the temporary plugin/marketplace registration(s) from the Codex profile under
-   `$CODEX_HOME` (Setup item 3, and the second copy from Step 8 if you ran it).
+   `$CODEX_HOME` (Setup item 5, and the second copy from Step 8 if you ran it).
 2. Delete the throwaway directories:
 
    ```bash
@@ -540,7 +605,7 @@ After finishing every step you intend to run:
    unset CODEX_HOME
    ```
 
-   and restore `PATH` to whatever it was before Setup item 7's fake-`bd`/`gh`/`git` prefix (a
+   and restore `PATH` to whatever it was before Setup item 3's fake-`bd`/`gh`/`git` prefix (a
    fresh shell is the simplest way to guarantee this).
 4. Confirm your real project's `.codex/config.toml` (if any) was never opened or edited during
    this run — it should not appear anywhere in your shell history for this session except,
