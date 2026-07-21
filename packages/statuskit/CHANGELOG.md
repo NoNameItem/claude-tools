@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.4.0...statuskit-0.5.0) (2026-07-21)
+
+
+### Features
+
+* **statuskit:** dynamic per-model usage limits ([#112](https://github.com/NoNameItem/claude-tools/issues/112)) ([291b32e](https://github.com/NoNameItem/claude-tools/commit/291b32ea7a652445b568839c5b5991dcc1cfa2c6))
+
 ## [0.4.0](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.3.2...statuskit-0.4.0) (2026-07-14)
 
 
