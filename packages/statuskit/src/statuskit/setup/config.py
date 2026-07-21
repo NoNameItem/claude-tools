@@ -59,14 +59,15 @@ DEFAULT_CONFIG = """\
 # [usage_limits]
 # show_session = true
 # show_weekly = true
-# show_sonnet = false
+# models_always_show = ["Fable"]     # always show these models, even at 0%
+# models_never_show = []             # never show these models
 # show_reset_time = true
 # multiline = true
 # show_progress_bar = false
 # bar_width = 10
 # session_time_format = "remaining"  # "remaining", "reset_at"
 # weekly_time_format = "reset_at"    # "remaining", "reset_at"
-# sonnet_time_format = "reset_at"    # "remaining", "reset_at"
+# model_time_format = "reset_at"     # "remaining", "reset_at"
 # cache_ttl = 60
 """
 
