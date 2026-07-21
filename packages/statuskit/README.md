@@ -186,14 +186,15 @@ Displays API usage limits with color-coded warnings based on consumption rate.
 |-----------|------|---------|-------------|
 | `show_session` | bool | `true` | Show 5-hour session limit |
 | `show_weekly` | bool | `true` | Show 7-day weekly limit |
-| `show_sonnet` | bool | `false` | Show Sonnet-only weekly limit |
+| `models_always_show` | list | `[]` | Model display names to always show, even at 0% |
+| `models_never_show` | list | `[]` | Model display names to never show |
 | `show_reset_time` | bool | `true` | Show time until reset |
 | `multiline` | bool | `true` | Display each limit on separate line |
 | `show_progress_bar` | bool | `false` | Show visual progress bar |
 | `bar_width` | int | `10` | Progress bar width in characters |
 | `session_time_format` | string | `"remaining"` | Time format for session limit |
 | `weekly_time_format` | string | `"reset_at"` | Time format for weekly limit |
-| `sonnet_time_format` | string | `"reset_at"` | Time format for Sonnet limit |
+| `model_time_format` | string | `"reset_at"` | Time format for per-model limits |
 | `cache_ttl` | int | `60` | Cache lifetime in seconds |
 
 **Time format values:**

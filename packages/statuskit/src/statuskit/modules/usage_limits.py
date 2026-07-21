@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,26 +28,50 @@ API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
 CACHE_FILENAME = "usage_limits.json"
 
+FIVE_HOUR_WINDOW = 5.0
+SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY  # 168.0
+
+# group key -> window hours / overall label / single-line short label / render order
+_GROUP_WINDOWS = {"session": FIVE_HOUR_WINDOW, "weekly": float(SEVEN_DAY_WINDOW)}
+_GROUP_LABELS = {"session": "Session", "weekly": "Weekly"}
+_GROUP_SHORT = {"session": "5h", "weekly": "7d"}
+_GROUP_ORDER = ("session", "weekly")
+_SCOPE_SEPARATOR = "·"  # joins model and surface in a scoped row's label, e.g. "Fable·cli"
+
 
 @dataclass
 class UsageLimit:
-    """Single usage limit with utilization percentage and reset time."""
+    """A single displayable limit: a label, utilization %, and optional reset time.
 
+    `model` / `surface` mirror the API's `scope` object and together identify a scoped row.
+    A scoped limit is keyed by the PAIR, not by the model alone: the API can narrow a limit by
+    model, by surface, or by both, and two rows differing only in `surface` are different
+    quotas that must not collapse into one another. Both are None for a group's `overall`.
+    """
+
+    label: str  # "Session" / "Weekly" / "Fable" / "Fable·cli"
     utilization: float  # 0-100
-    resets_at: datetime | None  # None when limit not yet used or API issue
+    resets_at: datetime | None  # None when not yet used or API issue
+    model: str | None = None
+    surface: str | None = None
+
+
+@dataclass
+class UsageGroup:
+    """A window group (session / weekly) with an overall limit and per-model sub-limits."""
+
+    key: str  # "session" | "weekly"
+    window_hours: float  # 5.0 or 168.0 — used by the color heuristic
+    overall: UsageLimit | None = None  # scope-less limit (session / weekly_all)
+    models: list[UsageLimit] = field(default_factory=list)  # weekly_scoped per-model limits
 
 
 @dataclass
 class UsageData:
-    """Container for all usage limits."""
+    """All usage groups plus fetch/attempt timestamps."""
 
-    session: UsageLimit | None  # five_hour
-    weekly: UsageLimit | None  # seven_day
-    sonnet: UsageLimit | None  # seven_day_sonnet
-    fetched_at: datetime  # when the data was actually fetched (for display / staleness)
-    # When the API was last hit (success OR failure) — the rate-limiter keys off this so a
-    # failing fetch still throttles instead of hammering. Defaults to fetched_at for callers
-    # and cache files predating this field.
+    groups: list[UsageGroup]
+    fetched_at: datetime
     last_attempt_at: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -54,37 +79,165 @@ class UsageData:
             self.last_attempt_at = self.fetched_at
 
 
-def parse_api_response(response: dict) -> UsageData:
-    """Parse API response into UsageData.
+def _as_dict(value: object) -> dict:
+    """Return `value` when it is a dict, else an empty dict.
 
-    Args:
-        response: Raw API response dict
-
-    Returns:
-        UsageData with parsed limits
+    API and cache payloads are untrusted: a key can hold a truthy non-dict (a model id string
+    instead of a model object during an API shape change). A bare `x or {}` still lets that
+    through, and the following `.get()` then raises AttributeError out of the parse path.
     """
+    return value if isinstance(value, dict) else {}
 
-    def parse_limit(data: dict | None) -> UsageLimit | None:
-        if data is None:
-            return None
-        utilization = data.get("utilization")
-        if utilization is None:
-            return None
-        resets_at_str = data.get("resets_at")
-        resets_at = None
-        if resets_at_str:
-            try:
-                resets_at = datetime.fromisoformat(resets_at_str)
-            except (ValueError, TypeError):
-                pass  # Malformed date string, treat as no reset time
-        return UsageLimit(utilization=utilization, resets_at=resets_at)
 
-    return UsageData(
-        session=parse_limit(response.get("five_hour")),
-        weekly=parse_limit(response.get("seven_day")),
-        sonnet=parse_limit(response.get("seven_day_sonnet")),
-        fetched_at=datetime.now(UTC),
-    )
+def _parse_cache_datetime(value: object) -> datetime | None:
+    """Parse an ISO timestamp from a cache payload, or None when missing/malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _coerce_utilization(value: object) -> float | None:
+    """Percent as a finite float, or None when the payload value is unusable.
+
+    The single gate for BOTH the API and the cache parser — they were drifting apart, and a
+    value rejected on one path but accepted on the other is how a bogus quota gets rendered.
+    Rejects, specifically:
+      * bool — `float(True)` is 1.0, so a malformed `"percent": true` would silently render 1%;
+      * non-numerics (str/list/dict) — a numeric-looking string is still a shape change, and the
+        renderer's `> 0` comparison and `:.0f` format assume a real number;
+      * NaN / Infinity — json.loads() accepts those bare tokens, and they survive float() only
+        to raise ValueError/OverflowError inside format_progress_bar's int().
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _scope_label(model: str | None, surface: str | None) -> str | None:
+    """Display label for a (model, surface) pair, or None when the pair is empty.
+
+    The surface is shown verbatim rather than interpreted: the field is undocumented and always
+    null in live responses today, so any mapping we invented would be a guess. Showing it raw
+    keeps a narrower quota from masquerading as the model-wide one.
+    """
+    if model and surface:
+        return f"{model}{_SCOPE_SEPARATOR}{surface}"
+    return model or surface or None
+
+
+def _parse_limit_fields(
+    utilization: object,
+    resets_at_str: str | None,
+    label: str,
+    model: str | None = None,
+    surface: str | None = None,
+) -> UsageLimit | None:
+    """Build a UsageLimit from raw utilization/reset fields, or None if utilization is unusable."""
+    util = _coerce_utilization(utilization)
+    if util is None:
+        return None
+    resets_at = None
+    if resets_at_str:
+        try:
+            resets_at = datetime.fromisoformat(resets_at_str)
+        except (ValueError, TypeError):
+            pass  # Malformed date string, treat as no reset time
+    return UsageLimit(label=label, utilization=util, resets_at=resets_at, model=model, surface=surface)
+
+
+def _parse_limits_array(limits: list) -> list[UsageGroup]:
+    """Parse the self-describing `limits` array into ordered session/weekly groups."""
+    groups: dict[str, UsageGroup] = {}
+
+    def group_for(key: str | None) -> UsageGroup | None:
+        if key not in _GROUP_WINDOWS:
+            return None  # unknown window (e.g. future "monthly") — window unknown, skip
+        if key not in groups:
+            groups[key] = UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key])
+        return groups[key]
+
+    seen_scopes: set[tuple[str, str | None, str | None]] = set()
+
+    for item in limits:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("group")
+        group = group_for(key)
+        if group is None:
+            continue
+        scope = item.get("scope")
+        if scope is None:
+            # The group's scope-less limit. A scoped item must never land here, or the displayed
+            # Session/Weekly percentage would silently be some narrower quota.
+            limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), _GROUP_LABELS[key])
+            if limit is not None:
+                group.overall = limit
+            continue
+        if not isinstance(scope, dict):
+            continue  # malformed scope — not the overall limit, and nothing to key a row by
+
+        # A scoped row is identified by the (model, surface) PAIR. Either half may be absent;
+        # both must be non-empty strings when present, since the label reaches `.casefold()` and
+        # the row formatter.
+        model_obj = scope.get("model")
+        model = _as_dict(model_obj).get("display_name") if isinstance(model_obj, dict) else None
+        surface = scope.get("surface")
+        if not isinstance(model, str) or not model:
+            model = None
+        if not isinstance(surface, str) or not surface:
+            surface = None
+        label = _scope_label(model, surface)
+        if label is None:
+            continue  # scope object carrying neither a usable model nor a usable surface
+        scope_key = (key, model, surface)
+        if scope_key in seen_scopes:
+            continue  # duplicate row for the same scope — keep the first, never double-count
+        limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), label, model=model, surface=surface)
+        if limit is not None:
+            seen_scopes.add(scope_key)
+            group.models.append(limit)
+
+    ordered = [groups[k] for k in _GROUP_ORDER if k in groups]
+    return [g for g in ordered if g.overall is not None or g.models]
+
+
+def _parse_legacy(response: dict) -> list[UsageGroup]:
+    """Fallback: build groups from legacy top-level keys (five_hour / seven_day / seven_day_sonnet)."""
+    groups: list[UsageGroup] = []
+
+    five_hour = _as_dict(response.get("five_hour"))
+    session_overall = _parse_limit_fields(five_hour.get("utilization"), five_hour.get("resets_at"), "Session")
+    if session_overall is not None:
+        groups.append(UsageGroup("session", FIVE_HOUR_WINDOW, overall=session_overall))
+
+    seven_day = _as_dict(response.get("seven_day"))
+    weekly = UsageGroup("weekly", _GROUP_WINDOWS["weekly"])
+    weekly.overall = _parse_limit_fields(seven_day.get("utilization"), seven_day.get("resets_at"), "Weekly")
+    sonnet_raw = _as_dict(response.get("seven_day_sonnet"))
+    sonnet = _parse_limit_fields(sonnet_raw.get("utilization"), sonnet_raw.get("resets_at"), "Sonnet", model="Sonnet")
+    if sonnet is not None:
+        weekly.models.append(sonnet)
+    if weekly.overall is not None or weekly.models:
+        groups.append(weekly)
+
+    return groups
+
+
+def parse_api_response(response: object) -> UsageData:
+    """Parse an API response into UsageData, preferring the `limits` array over legacy keys."""
+    # Typed `object`, not `dict`: the payload comes straight from json.loads(), so a top-level
+    # array or string is possible and would otherwise raise AttributeError out of the module.
+    if not isinstance(response, dict):
+        return UsageData(groups=[], fetched_at=datetime.now(UTC))
+    limits = response.get("limits")
+    if isinstance(limits, list) and limits:
+        groups = _parse_limits_array(limits)
+    else:
+        groups = _parse_legacy(response)
+    return UsageData(groups=groups, fetched_at=datetime.now(UTC))
 
 
 def calculate_color(utilization: float, remaining_hours: float, window_hours: float) -> str:
@@ -248,60 +401,97 @@ class UsageCache:
         self.cache_file = cache_dir / CACHE_FILENAME
 
     def load(self) -> UsageData | None:
-        """Load cached data.
+        """Load cached data, or None when the file is missing or carries no usable timestamp.
 
-        Returns:
-            UsageData or None if cache doesn't exist or is corrupted
+        A legacy (pre-groups) or otherwise unreadable payload does NOT yield None as long as a
+        timestamp survives: the limits are dropped (empty `groups` renders nothing), but
+        `last_attempt_at` is preserved. It is the only thing throttling the API — discarding it
+        makes a failing API get re-hit on every single statusline render.
         """
         try:
             if not self.cache_file.exists():
                 return None
 
-            data = json.loads(self.cache_file.read_text())
-            fetched_at = datetime.fromisoformat(data["fetched_at"])
+            data = _as_dict(json.loads(self.cache_file.read_text()))
+            fetched_at = _parse_cache_datetime(data.get("fetched_at"))
+            last_attempt_at = _parse_cache_datetime(data.get("last_attempt_at"))
+            # Independent keys: a missing/malformed `fetched_at` must not take a valid
+            # `last_attempt_at` down with it.
+            stamp = fetched_at if fetched_at is not None else last_attempt_at
+            if stamp is None:
+                return None  # no usable timestamp at all — nothing worth keeping
 
-            def parse_limit(d: dict | None) -> UsageLimit | None:
-                if d is None:
+            def stamps_only() -> UsageData:
+                return UsageData(groups=[], fetched_at=stamp, last_attempt_at=last_attempt_at)
+
+            def deserialize_limit(d: dict | None) -> UsageLimit | None:
+                if not isinstance(d, dict):
                     return None
-                utilization = d.get("utilization")
+                # `label` and `utilization` must be type-checked HERE, not left to the caller:
+                # neither dict.get() nor the dataclass constructor raises on a wrong type, so a
+                # corrupt cache value would sail past load()'s except block and only blow up at
+                # render time (`label.casefold()`, `utilization > 0`, `f"{...:.0f}%"`).
+                label = d.get("label", "")
+                if not isinstance(label, str):
+                    return None
+                utilization = _coerce_utilization(d.get("utilization"))
                 if utilization is None:
                     return None
-                resets_at_str = d.get("resets_at")
+                scope_model = d.get("model")
+                scope_surface = d.get("surface")
+                # Absent on caches written before scoped rows were keyed by the pair.
+                if not isinstance(scope_model, str) or not scope_model:
+                    scope_model = None
+                if not isinstance(scope_surface, str) or not scope_surface:
+                    scope_surface = None
                 resets_at = None
+                resets_at_str = d.get("resets_at")
                 if resets_at_str:
                     try:
                         resets_at = datetime.fromisoformat(resets_at_str)
                     except (ValueError, TypeError):
-                        pass  # Malformed date string, treat as no reset time
-                return UsageLimit(utilization=utilization, resets_at=resets_at)
+                        pass
+                return UsageLimit(
+                    label=label,
+                    utilization=utilization,
+                    resets_at=resets_at,
+                    model=scope_model,
+                    surface=scope_surface,
+                )
 
-            last_attempt_at = fetched_at
-            last_attempt_str = data.get("last_attempt_at")
-            if last_attempt_str:
-                try:
-                    last_attempt_at = datetime.fromisoformat(last_attempt_str)
-                except (ValueError, TypeError):
-                    pass  # Malformed timestamp, fall back to fetched_at
+            groups_raw = _as_dict(data.get("data")).get("groups")
+            if not isinstance(groups_raw, list):
+                # Legacy {session,weekly,sonnet} cache, or a payload we cannot read: the limits
+                # are a miss, but the timestamps still throttle the API.
+                return stamps_only()
 
-            return UsageData(
-                session=parse_limit(data["data"].get("session")),
-                weekly=parse_limit(data["data"].get("weekly")),
-                sonnet=parse_limit(data["data"].get("sonnet")),
-                fetched_at=fetched_at,
-                last_attempt_at=last_attempt_at,
-            )
-        except (json.JSONDecodeError, KeyError, OSError):
+            try:
+                groups: list[UsageGroup] = []
+                for g in groups_raw:
+                    if not isinstance(g, dict):
+                        continue
+                    key = g.get("key", "")
+                    window = _GROUP_WINDOWS.get(key, _GROUP_WINDOWS["weekly"])
+                    raw_models = g.get("models")
+                    models = [
+                        m
+                        for m in (deserialize_limit(x) for x in (raw_models if isinstance(raw_models, list) else []))
+                        if m is not None
+                    ]
+                    groups.append(
+                        UsageGroup(
+                            key=key, window_hours=window, overall=deserialize_limit(g.get("overall")), models=models
+                        )
+                    )
+            except (ValueError, TypeError, AttributeError):
+                return stamps_only()  # malformed group payload — keep the throttle timestamps
+
+            return UsageData(groups=groups, fetched_at=stamp, last_attempt_at=last_attempt_at)
+        except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError, AttributeError):
             return None
 
     def save(self, data: UsageData) -> None:
-        """Save data to cache atomically.
-
-        Uses temp file + rename for atomic writes to prevent
-        race conditions with concurrent reads.
-
-        Args:
-            data: UsageData to cache
-        """
+        """Save data to cache atomically (temp file + rename)."""
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -309,28 +499,30 @@ class UsageCache:
                 if limit is None:
                     return None
                 return {
+                    "label": limit.label,
                     "utilization": limit.utilization,
+                    "model": limit.model,
+                    "surface": limit.surface,
                     "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
             last_attempt_at = data.last_attempt_at or data.fetched_at
             cache_data = {
                 "data": {
-                    "session": serialize_limit(data.session),
-                    "weekly": serialize_limit(data.weekly),
-                    "sonnet": serialize_limit(data.sonnet),
+                    "groups": [
+                        {
+                            "key": g.key,
+                            "overall": serialize_limit(g.overall),
+                            "models": [serialize_limit(m) for m in g.models],
+                        }
+                        for g in data.groups
+                    ],
                 },
                 "fetched_at": data.fetched_at.isoformat(),
                 "last_attempt_at": last_attempt_at.isoformat(),
             }
 
-            # Atomic write: temp file + rename
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                dir=self.cache_dir,
-                suffix=".tmp",
-                delete=False,
-            ) as f:
+            with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
                 f.write(json.dumps(cache_data))
                 temp_path = Path(f.name)
 
@@ -340,11 +532,6 @@ class UsageCache:
                 temp_path.unlink(missing_ok=True)
         except OSError:
             pass
-
-
-# Window sizes in hours
-FIVE_HOUR_WINDOW = 5.0
-SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY
 
 
 # Shared by the three *_time_format fields below (same choices, same examples).
@@ -358,14 +545,26 @@ _TIME_FORMAT_CHOICES = {
 class UsageLimitsParams:
     show_session: bool = param(True, "Show 5-hour session limit")
     show_weekly: bool = param(True, "Show 7-day weekly limit")
-    show_sonnet: bool = param(False, "Show Sonnet-only 7-day limit")
+    # Both match a bare model name OR a full model·surface label, symmetrically: `fable` covers
+    # every Fable row including narrower scoped ones, `fable·cli` targets exactly that row. So a
+    # bare name in always_show will also force-show a scoped Fable row the user never configured.
+    models_always_show: list[str] = param(
+        [],
+        "Model (or model·surface) names to always show, even at 0%; a bare name covers its scoped rows",
+        type_=list[str],
+    )
+    models_never_show: list[str] = param(
+        [],
+        "Model (or model·surface) names to never show; a bare name covers its scoped rows",
+        type_=list[str],
+    )
     show_reset_time: bool = param(True, "Show time until / when reset occurs")
     multiline: bool = param(True, "Multi-line output (one limit per line)")
     show_progress_bar: bool = param(False, "Show ASCII progress bar")
     bar_width: int = param(10, "Progress bar character width")
     session_time_format: str = param("remaining", "Session time display", choices=_TIME_FORMAT_CHOICES)
     weekly_time_format: str = param("reset_at", "Weekly time display", choices=_TIME_FORMAT_CHOICES)
-    sonnet_time_format: str = param("reset_at", "Sonnet time display", choices=_TIME_FORMAT_CHOICES)
+    model_time_format: str = param("reset_at", "Per-model time display", choices=_TIME_FORMAT_CHOICES)
     cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
 
 
@@ -373,7 +572,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
     """Module for displaying API usage limits."""
 
     name = "usage_limits"
-    description = "API usage limits (5h session, 7d weekly, Sonnet-only)"
+    description = "API usage limits (5h session, 7d weekly, per-model)"
 
     def __init__(self, ctx: RenderContext, raw_section: dict) -> None:
         """Initialize module: parse params, then set up the rate-limited cache."""
@@ -386,8 +585,8 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
         parts: list[str] = []
 
-        # Main output
-        if data:
+        # Main output (only when there is something visible to show)
+        if data and self._visible_groups(data):
             if self.params.multiline:
                 parts.append(self._render_multiline(data))
             else:
@@ -430,67 +629,135 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         # Try to fetch fresh data
         new_data = fetch_usage_api(token)
 
-        # Determine what to save and return
-        if new_data:
+        # Determine what to return, and (separately) what to persist.
+        to_save: UsageData | None
+        if new_data and new_data.groups:
             data = new_data
+            to_save = new_data
+        elif new_data:
+            # The request succeeded but nothing parsed — most likely the API changed shape.
+            # RETURN the empty result rather than silently falling back to the cache: a stale but
+            # plausible-looking statusline would hide the breakage and the user would never learn
+            # statuskit needs updating. But do NOT persist it — writing an empty payload over the
+            # last known-good cache would poison every LATER render that legitimately falls back
+            # (no token / rate limited / API down), long after this hiccup passed.
+            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
+            data = new_data
+            # With no cache to protect there is nothing to poison, and persisting the empty
+            # payload is what keeps last_attempt_at advancing — otherwise the failing API would
+            # be re-hit on every single render.
+            to_save = cached if cached is not None else new_data
         else:
             self._debug_messages.append("API failed, using cache")
             data = cached
-            # Advance the attempt clock on the stale cache so the next render throttles
-            # instead of hammering, while keeping fetched_at (true data age) untouched.
-            if data is not None:
-                data.last_attempt_at = datetime.now(UTC)
+            to_save = cached
+
+        # Advance the attempt clock on whatever we persist so the next render throttles instead of
+        # hammering, while keeping fetched_at (true data age) untouched.
+        if to_save is not None and to_save is not new_data:
+            to_save.last_attempt_at = datetime.now(UTC)
 
         # Save so the advanced attempt clock (and any fresh data) persists across renders.
-        if self.cache and data:
-            self.cache.save(data)
+        if self.cache and to_save:
+            self.cache.save(to_save)
 
         if not data:
             self._debug_messages.append("No data available")
 
         return data
 
-    def _render_multiline(self, data: UsageData) -> str:
-        """Render multiline format."""
-        lines = [colored("Usage:", attrs=["dark"])]
-        items = self._get_display_items(data)
+    def _visible_groups(self, data: UsageData) -> list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]]:
+        """For each group, return (group, overall-or-None-if-hidden, visible models)."""
+        always = {n.casefold() for n in self.params.models_always_show}
+        never = {n.casefold() for n in self.params.models_never_show}
+        result: list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]] = []
+        for g in data.groups:
+            show_overall = g.overall is not None and (
+                (g.key == "session" and self.params.show_session) or (g.key == "weekly" and self.params.show_weekly)
+            )
+            visible_models = []
+            for m in g.models:
+                # Match the full label AND the bare model name, so an existing `fable` entry keeps
+                # covering a narrower `Fable·cli` row; `fable·cli` targets just that one.
+                names = {m.label.casefold()}
+                if m.model:
+                    names.add(m.model.casefold())
+                if names & never:
+                    continue
+                if names & always or m.utilization > 0 or m.resets_at is not None:
+                    visible_models.append(m)
+            if show_overall or visible_models:
+                result.append((g, g.overall if show_overall else None, visible_models))
+        return result
 
-        for i, (label, limit, window, time_fmt) in enumerate(items):
-            is_last = i == len(items) - 1
-            prefix = colored("└" if is_last else "├", attrs=["dark"])
-            line = self._format_line(label, limit, window, time_fmt)
-            lines.append(f"{prefix} {line}")
+    def _time_format_for(self, group_key: str, is_model: bool) -> str:
+        if is_model:
+            return self.params.model_time_format
+        return self.params.session_time_format if group_key == "session" else self.params.weekly_time_format
+
+    def _label_width(self, groups: list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]]) -> int:
+        """Column width (including trailing colon) sized to the longest visible label."""
+        labels: list[str] = []
+        for _g, overall, models in groups:
+            if overall is not None:
+                labels.append(overall.label)
+            labels.extend(m.label for m in models)
+        return max((len(label) for label in labels), default=0) + 1
+
+    def _render_multiline(self, data: UsageData) -> str:
+        """Render nested multiline: models indented under their group's overall row."""
+        groups = self._visible_groups(data)
+        width = self._label_width(groups)
+        lines = [colored("Usage:", attrs=["dark"])]
+
+        for i, (g, overall, models) in enumerate(groups):
+            is_last_top = i == len(groups) - 1
+            if overall is not None:
+                prefix = colored("└" if is_last_top else "├", attrs=["dark"])
+                row = self._format_row(
+                    overall.label,
+                    overall,
+                    g.window_hours,
+                    self._time_format_for(g.key, False),
+                    width,
+                    self.params.bar_width,
+                )
+                lines.append(f"{prefix} {row}")
+                for j, m in enumerate(models):
+                    child = colored("└" if j == len(models) - 1 else "├", attrs=["dark"])
+                    row = self._format_row(
+                        m.label, m, g.window_hours, self.params.model_time_format, width, self.params.bar_width
+                    )
+                    lines.append(f"  {child} {row}")
+            else:
+                # No overall shown for this group — models render at the top level.
+                for j, m in enumerate(models):
+                    is_last = is_last_top and j == len(models) - 1
+                    prefix = colored("└" if is_last else "├", attrs=["dark"])
+                    row = self._format_row(
+                        m.label, m, g.window_hours, self.params.model_time_format, width, self.params.bar_width
+                    )
+                    lines.append(f"{prefix} {row}")
 
         return "\n".join(lines)
 
     def _render_single_line(self, data: UsageData) -> str:
-        """Render single-line format."""
-        parts = []
-        items = self._get_display_items(data)
-
-        for label, limit, window, time_fmt in items:
-            if "Session" in label:
-                short_label = "5h"
-            elif "Weekly" in label:
-                short_label = "7d"
-            else:
-                short_label = "Sonnet"
-            part = self._format_short(short_label, limit, window, time_fmt)
-            parts.append(part)
-
+        """Render flat single-line: session, weekly, then each visible model."""
+        parts: list[str] = []
+        for g, overall, models in self._visible_groups(data):
+            if overall is not None:
+                short = _GROUP_SHORT.get(g.key, g.key)
+                parts.append(self._format_short(short, overall, g.window_hours, self._time_format_for(g.key, False)))
+            parts.extend(self._format_short(m.label, m, g.window_hours, self.params.model_time_format) for m in models)
         sep = colored(" | ", attrs=["dark"])
         return colored("Usage: ", attrs=["dark"]) + sep.join(parts)
 
-    def _get_display_items(self, data: UsageData) -> list[tuple]:
-        """Get list of (label, limit, window_hours, time_format) to display."""
-        items = []
-        if self.params.show_session and data.session:
-            items.append(("Session:", data.session, FIVE_HOUR_WINDOW, self.params.session_time_format))
-        if self.params.show_weekly and data.weekly:
-            items.append(("Weekly:", data.weekly, SEVEN_DAY_WINDOW, self.params.weekly_time_format))
-        if self.params.show_sonnet and data.sonnet:
-            items.append(("Sonnet:", data.sonnet, SEVEN_DAY_WINDOW, self.params.sonnet_time_format))
-        return items
+    def _format_row(
+        self, label: str, limit: UsageLimit, window: float, time_fmt: str, width: int, bar_width: int
+    ) -> str:
+        """Format one multiline row with a colon-suffixed, width-padded label."""
+        label_str = colored(f"{label + ':':<{width}}", attrs=["dark"])
+        return self._format_limit(label_str, limit, window, time_fmt, bar_width)
 
     def _format_limit(
         self,
@@ -542,11 +809,6 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
         return f"{label_str}{bar} {util_str}{time_str}"
-
-    def _format_line(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
-        """Format a single line for multiline output."""
-        label_str = colored(f"{label:8}", attrs=["dark"])
-        return self._format_limit(label_str, limit, window, time_fmt, self.params.bar_width)
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
