@@ -69,6 +69,26 @@ class UsageData:
             self.last_attempt_at = self.fetched_at
 
 
+def _as_dict(value: object) -> dict:
+    """Return `value` when it is a dict, else an empty dict.
+
+    API and cache payloads are untrusted: a key can hold a truthy non-dict (a model id string
+    instead of a model object during an API shape change). A bare `x or {}` still lets that
+    through, and the following `.get()` then raises AttributeError out of the parse path.
+    """
+    return value if isinstance(value, dict) else {}
+
+
+def _parse_cache_datetime(value: object) -> datetime | None:
+    """Parse an ISO timestamp from a cache payload, or None when missing/malformed."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _parse_limit_fields(utilization: float | None, resets_at_str: str | None, label: str) -> UsageLimit | None:
     """Build a UsageLimit from raw utilization/reset fields, or None if utilization is missing."""
     if utilization is None:
@@ -106,7 +126,7 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
             continue
         scope = item.get("scope")
         model = scope.get("model") if isinstance(scope, dict) else None
-        if model:
+        if isinstance(model, dict):
             display_name = model.get("display_name")
             if not display_name:
                 continue  # scoped limit without a usable label
@@ -117,7 +137,8 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
             limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), _GROUP_LABELS[key])
             if limit is not None:
                 group.overall = limit
-        # else: scoped but not model-scoped (e.g. a future surface-scoped limit) — skip it.
+        # else: scoped but not usably model-scoped — a future surface-scoped limit, or a
+        # malformed `model` that is not an object — skip it.
         # `overall` is the group's scope-less limit, so an unrecognized scoped item must never
         # overwrite it, or the displayed Session/Weekly percentage would silently be wrong.
 
@@ -129,27 +150,30 @@ def _parse_legacy(response: dict) -> list[UsageGroup]:
     """Fallback: build groups from legacy top-level keys (five_hour / seven_day / seven_day_sonnet)."""
     groups: list[UsageGroup] = []
 
-    five_hour = response.get("five_hour") or {}
+    five_hour = _as_dict(response.get("five_hour"))
     session_overall = _parse_limit_fields(five_hour.get("utilization"), five_hour.get("resets_at"), "Session")
     if session_overall is not None:
         groups.append(UsageGroup("session", FIVE_HOUR_WINDOW, overall=session_overall))
 
-    seven_day = response.get("seven_day") or {}
+    seven_day = _as_dict(response.get("seven_day"))
     weekly = UsageGroup("weekly", _GROUP_WINDOWS["weekly"])
     weekly.overall = _parse_limit_fields(seven_day.get("utilization"), seven_day.get("resets_at"), "Weekly")
-    sonnet_raw = response.get("seven_day_sonnet")
-    if isinstance(sonnet_raw, dict):
-        sonnet = _parse_limit_fields(sonnet_raw.get("utilization"), sonnet_raw.get("resets_at"), "Sonnet")
-        if sonnet is not None:
-            weekly.models.append(sonnet)
+    sonnet_raw = _as_dict(response.get("seven_day_sonnet"))
+    sonnet = _parse_limit_fields(sonnet_raw.get("utilization"), sonnet_raw.get("resets_at"), "Sonnet")
+    if sonnet is not None:
+        weekly.models.append(sonnet)
     if weekly.overall is not None or weekly.models:
         groups.append(weekly)
 
     return groups
 
 
-def parse_api_response(response: dict) -> UsageData:
+def parse_api_response(response: object) -> UsageData:
     """Parse an API response into UsageData, preferring the `limits` array over legacy keys."""
+    # Typed `object`, not `dict`: the payload comes straight from json.loads(), so a top-level
+    # array or string is possible and would otherwise raise AttributeError out of the module.
+    if not isinstance(response, dict):
+        return UsageData(groups=[], fetched_at=datetime.now(UTC))
     limits = response.get("limits")
     if isinstance(limits, list) and limits:
         groups = _parse_limits_array(limits)
@@ -319,13 +343,28 @@ class UsageCache:
         self.cache_file = cache_dir / CACHE_FILENAME
 
     def load(self) -> UsageData | None:
-        """Load cached data. Returns None on missing/corrupt file or legacy (pre-groups) format."""
+        """Load cached data, or None when the file is missing or carries no usable timestamp.
+
+        A legacy (pre-groups) or otherwise unreadable payload does NOT yield None as long as a
+        timestamp survives: the limits are dropped (empty `groups` renders nothing), but
+        `last_attempt_at` is preserved. It is the only thing throttling the API — discarding it
+        makes a failing API get re-hit on every single statusline render.
+        """
         try:
             if not self.cache_file.exists():
                 return None
 
-            data = json.loads(self.cache_file.read_text())
-            fetched_at = datetime.fromisoformat(data["fetched_at"])
+            data = _as_dict(json.loads(self.cache_file.read_text()))
+            fetched_at = _parse_cache_datetime(data.get("fetched_at"))
+            last_attempt_at = _parse_cache_datetime(data.get("last_attempt_at"))
+            # Independent keys: a missing/malformed `fetched_at` must not take a valid
+            # `last_attempt_at` down with it.
+            stamp = fetched_at if fetched_at is not None else last_attempt_at
+            if stamp is None:
+                return None  # no usable timestamp at all — nothing worth keeping
+
+            def stamps_only() -> UsageData:
+                return UsageData(groups=[], fetched_at=stamp, last_attempt_at=last_attempt_at)
 
             def deserialize_limit(d: dict | None) -> UsageLimit | None:
                 if not isinstance(d, dict):
@@ -342,28 +381,34 @@ class UsageCache:
                         pass
                 return UsageLimit(label=d.get("label", ""), utilization=utilization, resets_at=resets_at)
 
-            groups_raw = data["data"].get("groups")
-            if groups_raw is None:
-                return None  # legacy {session,weekly,sonnet} format — treat as cache miss
+            groups_raw = _as_dict(data.get("data")).get("groups")
+            if not isinstance(groups_raw, list):
+                # Legacy {session,weekly,sonnet} cache, or a payload we cannot read: the limits
+                # are a miss, but the timestamps still throttle the API.
+                return stamps_only()
 
-            groups: list[UsageGroup] = []
-            for g in groups_raw:
-                key = g.get("key", "")
-                window = _GROUP_WINDOWS.get(key, _GROUP_WINDOWS["weekly"])
-                models = [m for m in (deserialize_limit(x) for x in g.get("models", [])) if m is not None]
-                groups.append(
-                    UsageGroup(key=key, window_hours=window, overall=deserialize_limit(g.get("overall")), models=models)
-                )
+            try:
+                groups: list[UsageGroup] = []
+                for g in groups_raw:
+                    if not isinstance(g, dict):
+                        continue
+                    key = g.get("key", "")
+                    window = _GROUP_WINDOWS.get(key, _GROUP_WINDOWS["weekly"])
+                    raw_models = g.get("models")
+                    models = [
+                        m
+                        for m in (deserialize_limit(x) for x in (raw_models if isinstance(raw_models, list) else []))
+                        if m is not None
+                    ]
+                    groups.append(
+                        UsageGroup(
+                            key=key, window_hours=window, overall=deserialize_limit(g.get("overall")), models=models
+                        )
+                    )
+            except (ValueError, TypeError, AttributeError):
+                return stamps_only()  # malformed group payload — keep the throttle timestamps
 
-            last_attempt_at = fetched_at
-            last_attempt_str = data.get("last_attempt_at")
-            if last_attempt_str:
-                try:
-                    last_attempt_at = datetime.fromisoformat(last_attempt_str)
-                except (ValueError, TypeError):
-                    pass
-
-            return UsageData(groups=groups, fetched_at=fetched_at, last_attempt_at=last_attempt_at)
+            return UsageData(groups=groups, fetched_at=stamp, last_attempt_at=last_attempt_at)
         except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError, AttributeError):
             return None
 

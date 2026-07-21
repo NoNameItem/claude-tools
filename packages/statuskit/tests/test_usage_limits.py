@@ -126,6 +126,37 @@ class TestParseLimitsArray:
         assert weekly.overall.utilization == 42.0
         assert weekly.models == []
 
+    def test_scoped_with_non_dict_model_is_skipped(self):
+        # `model` as a bare id string (an API shape change) must not raise AttributeError out of
+        # the parser — one malformed entry would otherwise suppress the whole usage module.
+        response = {
+            "limits": [
+                {"kind": "weekly_all", "group": "weekly", "percent": 42.0, "resets_at": None, "scope": None},
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 7.0,
+                    "resets_at": None,
+                    "scope": {"model": "claude-fable-5"},
+                },
+            ]
+        }
+        data = parse_api_response(response)
+        weekly = _group(data, "weekly")
+        assert weekly is not None
+        assert weekly.overall is not None
+        assert weekly.overall.utilization == 42.0
+        assert weekly.models == []
+
+    def test_non_dict_response_yields_no_groups(self):
+        # json.loads() can hand back a list or a string; the parser must degrade, not raise.
+        assert parse_api_response(["not", "a", "dict"]).groups == []
+
+    def test_legacy_keys_with_non_dict_values_are_skipped(self):
+        # `x or {}` lets a truthy non-dict through; the following .get() would raise.
+        response = {"five_hour": "unavailable", "seven_day": 0, "seven_day_sonnet": ["nope"]}
+        assert parse_api_response(response).groups == []
+
     def test_scoped_non_model_limit_alone_yields_no_group(self):
         # With no scope-less entry, a lone surface-scoped item must not become the overall.
         response = {
@@ -376,8 +407,12 @@ class TestUsageCache:
                 assert mock_tmp.call_args[1]["delete"] is False
                 mock_replace.assert_called_once()
 
-    def test_old_format_cache_returns_none(self, tmp_path):
-        """Legacy cache file (session/weekly/sonnet dict) loads as None, no exception."""
+    def test_old_format_cache_keeps_timestamps_without_limits(self, tmp_path):
+        """Legacy cache (session/weekly/sonnet dict): limits are a miss, timestamps survive.
+
+        The timestamps are the only thing throttling the API — dropping them (returning None)
+        would make a failing API get re-hit on every render.
+        """
         cache = UsageCache(cache_dir=tmp_path)
         (tmp_path / "usage_limits.json").write_text(
             json.dumps(
@@ -388,16 +423,38 @@ class TestUsageCache:
                         "sonnet": {"utilization": 0.0, "resets_at": None},
                     },
                     "fetched_at": "2026-01-27T12:00:00+00:00",
+                    "last_attempt_at": "2026-01-27T12:30:00+00:00",
                 }
             )
         )
-        assert cache.load() is None
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.groups == []
+        assert loaded.fetched_at == datetime(2026, 1, 27, 12, 0, 0, tzinfo=UTC)
+        assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
+
+    def test_malformed_fetched_at_keeps_last_attempt(self, tmp_path):
+        """`fetched_at` and `last_attempt_at` are independent keys — one bad value keeps the other."""
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": "session", "overall": None, "models": []}]},
+                    "fetched_at": "not-a-date",
+                    "last_attempt_at": "2026-01-27T12:30:00+00:00",
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
 
     def test_corrupt_cache_returns_none(self, tmp_path):
-        """Valid JSON but malformed fields (bad date, wrong-shaped data) must not crash load()."""
+        """No usable timestamp at all -> None; a malformed payload with one -> timestamps only."""
         cache = UsageCache(cache_dir=tmp_path)
         cache_file = tmp_path / "usage_limits.json"
 
+        # Neither timestamp is parseable -> nothing worth keeping.
         cache_file.write_text(
             json.dumps(
                 {"data": {"groups": [{"key": "session", "overall": None, "models": []}]}, "fetched_at": "not-a-date"}
@@ -406,6 +463,12 @@ class TestUsageCache:
         assert cache.load() is None
 
         cache_file.write_text(json.dumps({"data": ["not", "a", "dict"], "fetched_at": "2026-01-27T12:00:00+00:00"}))
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.groups == []
+        assert loaded.fetched_at == datetime(2026, 1, 27, 12, 0, 0, tzinfo=UTC)
+
+        cache_file.write_text("{not json at all")
         assert cache.load() is None
 
 
