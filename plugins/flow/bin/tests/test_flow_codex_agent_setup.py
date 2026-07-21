@@ -450,3 +450,67 @@ def test_error_result_matches_the_command_shape(tmp_path: Path, command: str, ha
     assert ("failed" in result) is has_write_keys
     assert result["global_conflicts"] == ["boom"]
     assert result["conflicts"] == [{"reason": "boom"}]
+
+
+def test_write_failure_removes_the_partial_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A write that fails after `O_EXCL` created the file must not leave the target behind.
+
+    A truncated profile is worse than none: the next run cannot parse it, `malformed_identity`
+    cannot recover a unique name, and the whole create is blocked as an ambiguous identity.
+    """
+    original_fdopen = os.fdopen
+
+    class FailingStream:
+        def __init__(self, stream: object) -> None:
+            self._stream = stream
+
+        def __enter__(self) -> FailingStream:
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            self._stream.close()
+            return False
+
+        def write(self, _: str) -> int:
+            msg = "[Errno 28] No space left on device"
+            raise OSError(msg)
+
+    def failing_fdopen(fd: int, *args: object, **kwargs: object) -> FailingStream:
+        return FailingStream(original_fdopen(fd, *args, **kwargs))
+
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
+    result = create_profiles(tmp_path, make_request_for_all_profiles())
+
+    assert result["created"] == []
+    assert len(result["failed"]) == 3
+    assert list((tmp_path / ".codex" / "agents").glob("*.toml")) == [], "partial files must be cleaned up"
+
+
+def test_pre_creation_failure_never_deletes_an_existing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An OSError raised BEFORE `O_EXCL` ran must not trigger the partial-file cleanup.
+
+    `reject_symlink_components` runs inside the same `try` and can itself raise OSError
+    (`resolve(strict=True)` on a vanished root, `is_symlink()` on EACCES/ESTALE). `os.open`
+    never ran then, so the target may hold a complete file written by someone else -- the
+    cleanup is gated on having created it, and this pins that.
+    """
+    agents = tmp_path / ".codex" / "agents"
+    original = _codex_agents.reject_symlink_components
+    concurrent_text = 'name = "flow-fast"\n# written by a concurrent writer\n'
+
+    def racing_check(project_root: Path, target: Path) -> None:
+        original(project_root, target)
+        if target.name == "flow-fast.toml":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(concurrent_text)
+            msg = "[Errno 116] Stale file handle"
+            raise OSError(msg)
+
+    monkeypatch.setattr(_codex_agents, "reject_symlink_components", racing_check)
+    result = create_profiles(tmp_path, make_request_for_all_profiles())
+
+    assert (agents / "flow-fast.toml").read_text() == concurrent_text, "must not delete a file we did not create"
+    assert any(item["name"] == "flow-fast" for item in result["failed"])

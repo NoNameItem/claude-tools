@@ -425,10 +425,19 @@ def create_profiles(project_root: Path, request: dict[str, object]) -> dict[str,
     if not blocked:
         for item in plan["missing"]:
             target = agents_dir / f"{item['name']}.toml"
+            # Set the instant `O_EXCL` proves WE created this file, and never before: the
+            # OSError handler below unlinks only when it is set. `reject_symlink_components`
+            # runs inside the same try and can itself raise OSError (`resolve(strict=True)` on
+            # a vanished root; `is_symlink()` on EACCES/ESTALE), and in that case `os.open`
+            # never ran -- so `target` may hold a complete file written by someone else, which
+            # an unconditional unlink would destroy. FileExistsError only covers the collision
+            # O_EXCL itself detects, not one surfacing as an OSError from the pre-check.
+            created_here = False
             try:
                 reject_symlink_components(project_root, target)
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 fd = os.open(target, flags, 0o600)
+                created_here = True
                 with os.fdopen(fd, "w") as stream:
                     stream.write(item["content"])
             except FileExistsError:
@@ -440,7 +449,22 @@ def create_profiles(project_root: Path, request: dict[str, object]) -> dict[str,
                 plan["profiles"][item["name"]]["reason"] = str(exc)
                 plan["conflicts"].append({"name": item["name"], "reason": str(exc)})
             except OSError as exc:
-                failed.append({"name": item["name"], "reason": str(exc)})
+                # Clean up a half-written target we created. `O_EXCL` may have created the file
+                # before write/flush failed (ENOSPC, quota, I/O), leaving it empty or truncated
+                # -- worse than nothing: the next run cannot parse it, and `malformed_identity`
+                # cannot recover a unique name from a partial write, so `_parse_agent_file`
+                # reports an ambiguous identity and blocks the WHOLE create instead of retrying
+                # this one tier. Gated on `created_here`, so a pre-creation OSError never
+                # deletes a file this call did not create.
+                reason = str(exc)
+                if created_here:
+                    try:
+                        target.unlink()
+                    except OSError as cleanup_exc:
+                        # A failed cleanup is exactly the state this handler exists to avoid, so
+                        # say so instead of swallowing it -- the leftover will block the next run.
+                        reason = f"{exc}; leftover partial file could not be removed: {cleanup_exc}"
+                failed.append({"name": item["name"], "reason": reason})
             else:
                 plan["profiles"][item["name"]]["status"] = "created"
                 created.append({"name": item["name"], "path": str(target)})
