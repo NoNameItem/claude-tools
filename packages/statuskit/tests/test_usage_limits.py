@@ -148,6 +148,45 @@ class TestParseLimitsArray:
         assert weekly.overall.utilization == 42.0
         assert weekly.models == []
 
+    def test_scoped_with_non_string_display_name_is_skipped(self):
+        # A truthy non-str label would reach _visible_groups' .casefold() and crash the render.
+        response = {
+            "limits": [
+                {"kind": "weekly_all", "group": "weekly", "percent": 42.0, "resets_at": None, "scope": None},
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 7.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": 12345}},
+                },
+                {
+                    "kind": "weekly_scoped",
+                    "group": "weekly",
+                    "percent": 8.0,
+                    "resets_at": None,
+                    "scope": {"model": {"display_name": {"nested": "object"}}},
+                },
+            ]
+        }
+        data = parse_api_response(response)
+        weekly = _group(data, "weekly")
+        assert weekly is not None
+        assert weekly.models == []
+        assert weekly.overall is not None
+        assert weekly.overall.utilization == 42.0
+
+    def test_non_finite_utilization_is_skipped(self):
+        # json.loads() accepts the bare NaN / Infinity tokens, and a non-finite value survives
+        # float() only to crash the renderer: int(nan / 100 * width) raises ValueError.
+        response = json.loads(
+            '{"limits": ['
+            '{"kind":"weekly_all","group":"weekly","percent":NaN,"resets_at":null,"scope":null},'
+            '{"kind":"session","group":"session","percent":Infinity,"resets_at":null,"scope":null}'
+            "]}"
+        )
+        assert parse_api_response(response).groups == []
+
     def test_non_dict_response_yields_no_groups(self):
         # json.loads() can hand back a list or a string; the parser must degrade, not raise.
         assert parse_api_response(["not", "a", "dict"]).groups == []
@@ -449,6 +488,42 @@ class TestUsageCache:
         assert loaded is not None
         assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
 
+    def test_cache_limit_with_wrong_typed_fields_is_dropped(self, tmp_path):
+        """A wrong-typed `label`/`utilization` must die here, not at render time.
+
+        Neither `dict.get()` nor the dataclass constructor raises on a bad type, so such a value
+        would sail past load()'s except block and only blow up later in `_visible_groups`
+        (`label.casefold()`, `utilization > 0`) — outside any handler.
+        """
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "data": {
+                        "groups": [
+                            {
+                                "key": "weekly",
+                                "overall": {"label": "Weekly", "utilization": 42.0, "resets_at": None},
+                                "models": [
+                                    {"label": 12345, "utilization": 5.0, "resets_at": None},
+                                    {"label": "Fable", "utilization": "not-a-number", "resets_at": None},
+                                    {"label": "Opus", "utilization": 7.0, "resets_at": None},
+                                ],
+                            }
+                        ]
+                    },
+                    "fetched_at": "2026-01-27T12:00:00+00:00",
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        weekly = _group(loaded, "weekly")
+        assert weekly is not None
+        assert weekly.overall is not None
+        assert weekly.overall.label == "Weekly"
+        assert [m.label for m in weekly.models] == ["Opus"]
+
     def test_corrupt_cache_returns_none(self, tmp_path):
         """No usable timestamp at all -> None; a malformed payload with one -> timestamps only."""
         cache = UsageCache(cache_dir=tmp_path)
@@ -709,6 +784,59 @@ class TestGetUsageDataRateLimited:
         assert session is not None
         assert session.overall is not None
         assert session.overall.utilization == 50.0
+
+    def test_empty_parse_is_kept_and_noted_in_debug(self, make_render_context, minimal_input_data, tmp_path):
+        """A fetch that parses no limits must NOT silently fall back to the cache.
+
+        Falling back would render a stale-but-plausible statusline and hide the fact that the API
+        changed shape — the user would never learn statuskit needs updating. Keep the empty
+        result, and say why in debug output.
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+        module.cache.save(
+            UsageData(
+                groups=[_session_group(10.0, datetime.now(UTC) + timedelta(hours=2))],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                result = module._get_usage_data()
+        assert result is not None
+        assert result.groups == []  # empty result kept, cache NOT used as a cover-up
+        assert any("parsed no limits" in m for m in module._debug_messages)
+
+        # ...but the empty payload must NOT be written over the last known-good cache: a later
+        # render that legitimately falls back (no token / rate limited / API down) would then get
+        # the poisoned empty data long after this hiccup passed.
+        reloaded = module.cache.load()
+        assert reloaded is not None
+        session = _group(reloaded, "session")
+        assert session is not None
+        assert session.overall is not None
+        assert session.overall.utilization == 10.0
+
+    def test_empty_parse_still_throttles_when_no_cache_exists(self, make_render_context, minimal_input_data, tmp_path):
+        """With no cache to protect, the empty payload IS persisted — it carries the attempt clock.
+
+        Otherwise nothing records that an attempt happened and the failing API is re-hit on every
+        render (the throttle bug from the previous round, one branch over).
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                module._get_usage_data()
+        reloaded = module.cache.load()
+        assert reloaded is not None
+        assert reloaded.last_attempt_at is not None
 
     def test_throttles_after_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
@@ -103,6 +104,11 @@ def _parse_limit_fields(utilization: float | None, resets_at_str: str | None, la
         util = float(utilization)
     except (ValueError, TypeError):
         return None  # Non-numeric utilization, skip this limit
+    if not math.isfinite(util):
+        # json.loads() accepts the bare NaN / Infinity tokens, and a non-finite value survives
+        # float() only to blow up in the renderer: int(nan / 100 * width) raises ValueError,
+        # int(inf ...) raises OverflowError.
+        return None
     return UsageLimit(label=label, utilization=util, resets_at=resets_at)
 
 
@@ -128,7 +134,9 @@ def _parse_limits_array(limits: list) -> list[UsageGroup]:
         model = scope.get("model") if isinstance(scope, dict) else None
         if isinstance(model, dict):
             display_name = model.get("display_name")
-            if not display_name:
+            # Must be a non-empty *str*, not merely truthy: the label reaches
+            # `_visible_groups`'s `.casefold()` and the row formatter, which both assume text.
+            if not isinstance(display_name, str) or not display_name:
                 continue  # scoped limit without a usable label
             limit = _parse_limit_fields(item.get("percent"), item.get("resets_at"), display_name)
             if limit is not None:
@@ -369,9 +377,18 @@ class UsageCache:
             def deserialize_limit(d: dict | None) -> UsageLimit | None:
                 if not isinstance(d, dict):
                     return None
-                utilization = d.get("utilization")
-                if utilization is None:
+                # `label` and `utilization` must be type-checked HERE, not left to the caller:
+                # neither dict.get() nor the dataclass constructor raises on a wrong type, so a
+                # corrupt cache value would sail past load()'s except block and only blow up at
+                # render time (`label.casefold()`, `utilization > 0`, `f"{...:.0f}%"`).
+                label = d.get("label", "")
+                if not isinstance(label, str):
                     return None
+                utilization = d.get("utilization")
+                if not isinstance(utilization, int | float) or isinstance(utilization, bool):
+                    return None
+                if not math.isfinite(utilization):
+                    return None  # json.loads() accepts bare NaN/Infinity — see _parse_limit_fields
                 resets_at = None
                 resets_at_str = d.get("resets_at")
                 if resets_at_str:
@@ -379,7 +396,7 @@ class UsageCache:
                         resets_at = datetime.fromisoformat(resets_at_str)
                     except (ValueError, TypeError):
                         pass
-                return UsageLimit(label=d.get("label", ""), utilization=utilization, resets_at=resets_at)
+                return UsageLimit(label=label, utilization=float(utilization), resets_at=resets_at)
 
             groups_raw = _as_dict(data.get("data")).get("groups")
             if not isinstance(groups_raw, list):
@@ -538,20 +555,37 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         # Try to fetch fresh data
         new_data = fetch_usage_api(token)
 
-        # Determine what to save and return
-        if new_data:
+        # Determine what to return, and (separately) what to persist.
+        to_save: UsageData | None
+        if new_data and new_data.groups:
             data = new_data
+            to_save = new_data
+        elif new_data:
+            # The request succeeded but nothing parsed — most likely the API changed shape.
+            # RETURN the empty result rather than silently falling back to the cache: a stale but
+            # plausible-looking statusline would hide the breakage and the user would never learn
+            # statuskit needs updating. But do NOT persist it — writing an empty payload over the
+            # last known-good cache would poison every LATER render that legitimately falls back
+            # (no token / rate limited / API down), long after this hiccup passed.
+            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
+            data = new_data
+            # With no cache to protect there is nothing to poison, and persisting the empty
+            # payload is what keeps last_attempt_at advancing — otherwise the failing API would
+            # be re-hit on every single render.
+            to_save = cached if cached is not None else new_data
         else:
             self._debug_messages.append("API failed, using cache")
             data = cached
-            # Advance the attempt clock on the stale cache so the next render throttles
-            # instead of hammering, while keeping fetched_at (true data age) untouched.
-            if data is not None:
-                data.last_attempt_at = datetime.now(UTC)
+            to_save = cached
+
+        # Advance the attempt clock on whatever we persist so the next render throttles instead of
+        # hammering, while keeping fetched_at (true data age) untouched.
+        if to_save is not None and to_save is not new_data:
+            to_save.last_attempt_at = datetime.now(UTC)
 
         # Save so the advanced attempt clock (and any fresh data) persists across renders.
-        if self.cache and data:
-            self.cache.save(data)
+        if self.cache and to_save:
+            self.cache.save(to_save)
 
         if not data:
             self._debug_messages.append("No data available")
