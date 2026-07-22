@@ -88,6 +88,14 @@ GH_STATUS_STATES = ["EXPECTED", "PENDING", "ERROR", "FAILURE", "SUCCESS"]       
 фактический count из `nodes`, `0` для отсутствующих. `checkRunCount` / `statusContextCount`
 остаются суммой реальных (ненулевых) записей — так и отдаёт GitHub. `nodes` без изменений.
 
+> **Уточнение по реализации.** В итоге сидинг нулями сузили до *активного* подмножества
+> состояний (`_GH_ZERO_CHECK_STATES` = `REQUESTED/QUEUED/IN_PROGRESS/WAITING/PENDING`,
+> `_GH_ZERO_STATUS_STATES` = `EXPECTED/PENDING`), а не всего енума. Терминальные состояния
+> (`COMPLETED`/`SUCCESS`/…) приходят реальными count из `nodes`, а на баг и его регресс-тест
+> влияют только нулевые *активные* состояния — так что достаточно и точнее засеивать именно их.
+> Тупли совпадают с продуктовыми `GH_ACTIVE_CHECK_STATES` / `GH_ACTIVE_STATUS_STATES`, поэтому
+> фикстура и фикс связаны, а не совпадают случайно.
+
 `_gh_page` (отдельный билдер для теста пагинации в `test_flow_wait_ci.py`) не трогаем — он
 про другой сценарий, его `check_counts` заданы явно и не содержат активных состояний.
 
