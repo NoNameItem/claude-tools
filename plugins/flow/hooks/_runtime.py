@@ -80,14 +80,24 @@ def rewrite_pre_tool_use(payload: dict[str, Any], plugin_root: Path) -> HookOutp
 
 def render_session_context(env: Mapping[str, str]) -> str:
     """Compose the shared contract with exactly one active harness adapter."""
-    root_value = env.get("PLUGIN_ROOT") or env.get("CLAUDE_PLUGIN_ROOT")
+    # Both hook manifests launch this via ${CLAUDE_PLUGIN_ROOT}, so that value is the
+    # authoritative plugin root the hook actually ran from, under either harness. PLUGIN_ROOT is
+    # Codex's own marker -- but a user's shell may export an UNRELATED PLUGIN_ROOT, so bare
+    # presence is not a reliable Codex signal. Resolve the root from CLAUDE_PLUGIN_ROOT first and
+    # treat PLUGIN_ROOT as Codex only when it resolves to that same root; otherwise a stray
+    # PLUGIN_ROOT would both select codex.md AND load runtime files from that unrelated path,
+    # silently disabling Flow for a plain Claude Code session.
+    claude_root = env.get("CLAUDE_PLUGIN_ROOT")
+    codex_root = env.get("PLUGIN_ROOT")
+    root_value = claude_root or codex_root
     if not root_value:
         message = "Flow plugin root is unavailable"
         raise ValueError(message)
     plugin_root = Path(root_value).resolve()
+    is_codex = bool(codex_root) and Path(codex_root).resolve() == plugin_root
     runtime = plugin_root / "hooks" / "runtime"
     common = (runtime / "common.md").read_text(encoding="utf-8")
-    adapter_name = "codex.md" if env.get("PLUGIN_ROOT") else "claude-code.md"
+    adapter_name = "codex.md" if is_codex else "claude-code.md"
     adapter = (runtime / adapter_name).read_text(encoding="utf-8")
     return (common + "\n\n" + adapter).replace(
         "{{FLOW_PATH_EXPORT}}",

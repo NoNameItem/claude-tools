@@ -260,6 +260,45 @@ def test_claude_session_uses_only_claude_adapter(flow_plugin_root: Path) -> None
     assert "FLOW HARNESS: Codex" not in context
 
 
+def test_codex_adapter_selected_when_roots_resolve_equal(
+    flow_plugin_root: Path,
+    tmp_path: Path,
+) -> None:
+    # A genuine Codex session where PLUGIN_ROOT and CLAUDE_PLUGIN_ROOT name the SAME plugin root
+    # via different literals (here a symlink vs its target). is_codex compares resolved paths, so
+    # codex.md must still win -- a naive string compare would wrongly fall through to Claude.
+    link = tmp_path / "codex-root-link"
+    link.symlink_to(flow_plugin_root)
+    context = render_session_context(
+        {
+            "PLUGIN_ROOT": str(link),
+            "CLAUDE_PLUGIN_ROOT": str(flow_plugin_root),
+        }
+    )
+    assert "FLOW RUNTIME ACTIVE" in context
+    assert "FLOW HARNESS: Codex" in context
+    assert "FLOW HARNESS: Claude Code" not in context
+
+
+def test_stray_plugin_root_does_not_select_codex(
+    flow_plugin_root: Path,
+    tmp_path: Path,
+) -> None:
+    # A plain Claude Code session whose shell happens to export an UNRELATED PLUGIN_ROOT: the
+    # authoritative CLAUDE_PLUGIN_ROOT must win for both adapter choice and file resolution.
+    # Selecting Codex here would load runtime files from the stray path (raising / disabling
+    # Flow) instead of the real plugin root.
+    context = render_session_context(
+        {
+            "PLUGIN_ROOT": str(tmp_path / "unrelated"),
+            "CLAUDE_PLUGIN_ROOT": str(flow_plugin_root),
+        }
+    )
+    assert "FLOW RUNTIME ACTIVE" in context
+    assert "FLOW HARNESS: Claude Code" in context
+    assert "FLOW HARNESS: Codex" not in context
+
+
 @pytest.mark.parametrize(
     ("env", "adapter"),
     [
