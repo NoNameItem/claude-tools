@@ -165,8 +165,10 @@ def _gh_poll(owner: str, repo: str, pr: int, sha: str) -> GHSnap | None:
     active = (
         # rollup `state` uses the same StatusState enum as per-context checks; PENDING/EXPECTED are non-terminal.
         rollup.get("state") in {"EXPECTED", "PENDING"}
-        or any(s in GH_ACTIVE_CHECK_STATES for s in check_counts)
-        or any(s in GH_ACTIVE_STATUS_STATES for s in status_counts)
+        # Count, don't test key presence: GitHub returns the full state enum incl. zero-count
+        # active states, so `s in check_counts` was always true -> never terminal (claude-tools-r1r).
+        or any(check_counts.get(s, 0) > 0 for s in GH_ACTIVE_CHECK_STATES)
+        or any(status_counts.get(s, 0) > 0 for s in GH_ACTIVE_STATUS_STATES)
     )
     signature = (
         contexts.get("checkRunCount"),
