@@ -89,6 +89,13 @@ import json as _json  # noqa: E402  (local alias; module-level json used by call
 
 SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
+# GitHub returns EVERY enum state in checkRun/statusContext CountsByState (count=0 for absent
+# states), so a fixture that emits only non-zero states hides the "key vs count" bug
+# (claude-tools-r1r). Seed the active states (mirroring flow-wait-ci's GH_ACTIVE_*_STATES) at 0
+# so an all-terminal rollup still carries them; real counts from `nodes` overlay on top.
+_GH_ZERO_CHECK_STATES = ("REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING")
+_GH_ZERO_STATUS_STATES = ("EXPECTED", "PENDING")
+
 _GH_FAKE = """#!/usr/bin/env python3
 import sys, json
 from pathlib import Path
@@ -126,7 +133,7 @@ def fake_gh(tmp_path):
             base = {
                 "PATH": f"{tmp_path}:/usr/bin:/bin",
                 "WAIT_INTERVAL": "0",
-                "WAIT_TIMEOUT": "30",
+                "WAIT_TIMEOUT": "5",
                 "WAIT_GRACE": "30",
             }
             base.update(overrides)
@@ -169,9 +176,15 @@ def gh_response(*, nodes=None, merge="CLEAN", head=SHA, rollup_state="SUCCESS", 
                 "state": rollup_state,
                 "contexts": {
                     "checkRunCount": sum(check_counts.values()),
-                    "checkRunCountsByState": [{"state": k, "count": v} for k, v in check_counts.items()],
+                    "checkRunCountsByState": [
+                        {"state": s, "count": check_counts.get(s, 0)}
+                        for s in {**dict.fromkeys(_GH_ZERO_CHECK_STATES, 0), **check_counts}
+                    ],
                     "statusContextCount": sum(status_counts.values()),
-                    "statusContextCountsByState": [{"state": k, "count": v} for k, v in status_counts.items()],
+                    "statusContextCountsByState": [
+                        {"state": s, "count": status_counts.get(s, 0)}
+                        for s in {**dict.fromkeys(_GH_ZERO_STATUS_STATES, 0), **status_counts}
+                    ],
                     "nodes": node_list,
                 },
             }
