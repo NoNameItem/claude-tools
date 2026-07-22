@@ -136,10 +136,14 @@ second workflow or skill implementation.
 session context. It runs for startup, resume, and context-resetting lifecycle events supported by
 the harness, including clear and compact.
 
-The hook chooses the adapter in one centralized boundary. Codex exposes the Codex-specific
-`PLUGIN_ROOT` and also exposes `CLAUDE_PLUGIN_ROOT` for compatibility; Claude Code exposes
-`CLAUDE_PLUGIN_ROOT`. Therefore `PLUGIN_ROOT` selects the Codex adapter and its absence selects
-the Claude Code adapter. No skill performs environment detection.
+The hook chooses the adapter in one centralized boundary. Both manifests launch the hook via
+`${CLAUDE_PLUGIN_ROOT}`, so that value is the authoritative plugin root under either harness.
+Codex exposes the Codex-specific `PLUGIN_ROOT` and also exposes `CLAUDE_PLUGIN_ROOT` for
+compatibility, pointing at the same plugin root; Claude Code exposes only `CLAUDE_PLUGIN_ROOT`.
+Therefore the runtime root is resolved from `CLAUDE_PLUGIN_ROOT`, and `PLUGIN_ROOT` selects the
+Codex adapter only when it resolves to that same root — a bare `PLUGIN_ROOT` a user happens to
+export in their shell must not misroute a plain Claude Code session. No skill performs
+environment detection.
 
 Codex requires users to review and trust newly installed or changed plugin hooks. Installation
 documentation must mention this one-time step, the `/hooks` command, and the degraded behavior
