@@ -1,8 +1,6 @@
 """Tests for flow-wait-ci (GitHub + GitLab backends of the review-loop wait)."""
 
-# INP001: test dir is an implicit namespace package (no __init__.py, matching the
-# other plugins/flow/bin/tests/ files); the suppression is intentional, not an oversight.
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import json
 

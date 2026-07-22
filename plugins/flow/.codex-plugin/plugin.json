@@ -8,5 +8,6 @@
     "workflow",
     "task-management"
   ],
-  "hooks": "./hooks/claude-hooks.json"
+  "skills": "./skills/",
+  "hooks": "./hooks/codex-hooks.json"
 }

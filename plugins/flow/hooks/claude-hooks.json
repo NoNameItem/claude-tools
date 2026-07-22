@@ -1,0 +1,18 @@
+{
+  "description": "Flow runtime adapter for Claude Code",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-start\"",
+            "timeout": 10,
+            "statusMessage": "Loading Flow runtime"
+          }
+        ]
+      }
+    ]
+  }
+}

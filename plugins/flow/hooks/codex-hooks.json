@@ -1,0 +1,31 @@
+{
+  "description": "Flow runtime adapter for Codex",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-start\"",
+            "timeout": 10,
+            "statusMessage": "Loading Flow runtime"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/codex-pre-tool-use\"",
+            "timeout": 10,
+            "statusMessage": "Resolving Flow helpers"
+          }
+        ]
+      }
+    ]
+  }
+}

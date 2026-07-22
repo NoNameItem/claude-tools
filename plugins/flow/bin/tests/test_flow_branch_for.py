@@ -1,6 +1,6 @@
 """Tests for flow-branch-for."""
 
-# ruff: noqa: INP001
+# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import json
 

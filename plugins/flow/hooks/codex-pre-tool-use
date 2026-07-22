@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Resolve bare Flow helpers in Codex shell calls."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+from _runtime import rewrite_pre_tool_use
+
+
+def main() -> int:
+    try:
+        payload = json.load(sys.stdin)
+        plugin_root = os.environ.get("PLUGIN_ROOT")
+        if not plugin_root:
+            message = "PLUGIN_ROOT is unavailable"
+            raise ValueError(message)
+        output = rewrite_pre_tool_use(payload, Path(plugin_root).resolve())
+        if output is not None:
+            print(json.dumps(output))
+    except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
+        print(json.dumps({"systemMessage": f"Flow helper resolver inactive: {exc}"}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

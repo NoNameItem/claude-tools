@@ -1,6 +1,6 @@
 ---
 name: init-worktree
-description: Internal sub-step — initialize a newly created worktree's project environment. Called by flow:start and flow:continue via the Skill tool after they create a worktree; not for direct use. Detects project type from CLAUDE.md, README, or config files, proposes setup commands, and runs them on confirmation.
+description: Internal sub-step — initialize a newly created worktree's project environment. Called by flow:start and flow:continue through the active harness's skill mechanism after they create a worktree; not for direct use. Detects project type from CLAUDE.md, README, or config files, proposes setup commands, and runs them on confirmation.
 allowed-tools: Bash Read
 ---
 
