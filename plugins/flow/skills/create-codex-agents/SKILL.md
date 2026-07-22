@@ -64,11 +64,23 @@ Existing `.codex` state cannot be trusted at face value:
 
 ## Workflow
 
+**Before Step 1 — resolve the project root.** Every `flow-codex-agent-setup` call below takes
+`--project-root <project root>`, and the helper treats that path as authoritative: it writes
+`<project root>/.codex/agents/…` verbatim and never resolves a working-tree top-level itself. So
+`<project root>` must be the **top-level of the current working tree** — the path
+`git rev-parse --show-toplevel` prints (inside a linked worktree that is the worktree's own root,
+which is exactly what the helper expects), not wherever this skill happened to be invoked. Use
+that output as `<project root>` in **every** call below (inspect, preview, create). If the command
+fails (the current directory is not inside a git checkout), ask the user for the intended project
+root in plain text — never fall back to the current directory, or a run from `src/` would create
+`src/.codex/agents/…` instead of the project-level `.codex/agents` this skill promises.
+
 ### 1. Inspect and display the target
 
-Run `flow-codex-agent-setup inspect --project-root <project root>`. Display the exact project
-root and the `.codex/agents` directory it targets, taken verbatim from the JSON result — never
-infer or recompute these paths yourself.
+Run `flow-codex-agent-setup inspect --project-root <project root>` (the `<project root>` you
+resolved above). Display the exact project root and the `.codex/agents` directory it targets,
+taken verbatim from the **JSON result** — never infer or recompute the values the helper reports
+back (those two paths); the only path you supply is the resolved `<project root>` argument.
 
 ### 2. Show compatible profiles and conflicts before asking anything
 
@@ -167,6 +179,8 @@ exit code checks, so the two never disagree.
 
 This skill does exactly the ten steps above. It does not decide the model or reasoning effort
 for the user, does not choose whether to run on Python 3.11+ (the helper itself reports a clear
-error and exits nonzero if the interpreter running it is older), does not touch anything under a
-user's home directory, and does not select or override `agent_type` at dispatch time — that is
-the Codex adapter's job, downstream of these files existing.
+error and exits nonzero if the interpreter running it is older), does not read or write global
+Codex state outside the project such as `~/.codex` (the project's own `.codex/agents/` may itself
+live under `$HOME` when the checkout does — that is in scope), and does not select or override
+`agent_type` at dispatch time — that is the Codex adapter's job, downstream of these files
+existing.
