@@ -135,3 +135,168 @@ class TestRowPrimitives:
         assert _ledger.id_advanced(None, "9") is False
         assert _ledger.id_advanced("9", None) is True
         assert _ledger.id_advanced("abc", "def") is True  # non-numeric ids: any change counts
+
+
+from conftest import run_helper  # noqa: E402  # after the sys.path bootstrap above
+
+
+def meta_doc(comments, number=96, url="https://github.com/o/r/pull/96", platform="github"):
+    return {
+        "platform": platform,
+        "unit": {"number": number, "branch": "b", "url": url},
+        "me": "me",
+        "counts": {"total": len(comments), "already_replied": 0, "actionable": len(comments)},
+        "comments": comments,
+    }
+
+
+def inline_comment(comment_id, *, is_bot=False, body="finding", thread=None, **overrides):
+    item = {
+        "user": "coderabbitai" if is_bot else "alice",
+        "is_bot": is_bot,
+        "kind": "inline",
+        "path": "a.py",
+        "start_line": None,
+        "line": 42,
+        "outdated": False,
+        "already_replied": False,
+        "comment_id": comment_id,
+        "discussion_id": None,
+        "summary_id": None,
+        "body": body,
+        "thread": thread or [],
+        "diff_hunk": "@@ -40,3 +40,3 @@\n x",
+        "side": "RIGHT",
+        "position": None,
+        "snippet": None,
+        "ref": "IGNORED",  # the collector's per-round ref — reconcile allocates its own
+    }
+    item.update(overrides)
+    return item
+
+
+class LedgerHarness:
+    """Runs flow-review-ledger with the cache base pointed at a tmp dir."""
+
+    def __init__(self, tmp_path):
+        self.tmp_path = tmp_path
+        self.env = {"XDG_CACHE_HOME": str(tmp_path / "cache"), "PATH": "/usr/bin:/bin"}
+
+    def write_meta(self, meta, name="metadata.json"):
+        path = self.tmp_path / name
+        path.write_text(json.dumps(meta), encoding="utf-8")
+        return str(path)
+
+    def run(self, *args):
+        return run_helper("flow-review-ledger", *args, env=self.env)
+
+    def reconcile(self, meta, name="metadata.json"):
+        result = self.run("reconcile", "--meta", self.write_meta(meta, name))
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def ledger(self, meta):
+        path = _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"])
+        return _ledger.load_ledger(path)
+
+
+@pytest.fixture
+def harness(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    return LedgerHarness(tmp_path)
+
+
+class TestReconcileInsert:
+    def test_first_round_inserts_every_comment_as_open(self, harness):
+        meta = meta_doc([inline_comment(1), inline_comment(2, is_bot=True)])
+        out = harness.reconcile(meta)
+        assert out["round"] == 1
+        assert out["counts"]["total"] == 2
+        assert {e["ref"] for e in out["working_set"]} == {"U1", "C1"}
+        assert all(e["status"] == "open" for e in out["working_set"])
+
+    def test_stdout_carries_the_resolved_ledger_path(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        out = harness.reconcile(meta)
+        assert out["ledger"] == str(_ledger.ledger_path(meta["unit"]["url"], 96))
+        assert Path(out["ledger"]).is_file()
+
+    def test_ref_prefix_follows_is_bot(self, harness):
+        meta = meta_doc([inline_comment(1), inline_comment(2, is_bot=True), inline_comment(3, is_bot=True)])
+        harness.reconcile(meta)
+        rows = harness.ledger(meta)["rows"]
+        assert rows["1"]["ref"] == "U1"
+        assert rows["2"]["ref"] == "C1"
+        assert rows["3"]["ref"] == "C2"
+
+    def test_collector_ref_is_ignored(self, harness):
+        meta = meta_doc([inline_comment(1, ref="C7")])
+        harness.reconcile(meta)
+        assert harness.ledger(meta)["rows"]["1"]["ref"] == "U1"
+
+    def test_kind_and_identity_are_stamped_on_insert(self, harness):
+        meta = meta_doc([inline_comment(None, kind="summary", summary_id=900)])
+        harness.reconcile(meta)
+        row = harness.ledger(meta)["rows"]["900"]
+        assert row["kind"] == "summary"
+        assert row["thread_mark"] is None  # a summary has no thread → nothing to mark
+        assert row["thread_id"] == "900"
+        assert row["platform"] == "github"
+        assert row["first_seen_round"] == 1
+
+    def test_existing_row_keeps_its_ref_and_counter_does_not_move(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))
+        rows = harness.ledger(meta)["rows"]
+        assert rows["1"]["ref"] == "U1"
+        assert rows["2"]["ref"] == "U2"
+
+    def test_round_counter_increments_per_run(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        assert harness.reconcile(meta)["round"] == 2
+        assert harness.ledger(meta)["round"] == 2
+
+    def test_snapshot_fields_are_refreshed_every_round(self, harness):
+        harness.reconcile(meta_doc([inline_comment(1, body="old", line=42)]))
+        harness.reconcile(meta_doc([inline_comment(1, body="new", line=61, outdated=True)]))
+        row = harness.ledger(meta_doc([]))["rows"]["1"]
+        assert row["body"] == "new"
+        assert row["line"] == 61
+        assert row["outdated"] is True
+
+    def test_identity_fields_survive_a_conflicting_snapshot(self, harness):
+        harness.reconcile(meta_doc([inline_comment(1, is_bot=True)]))
+        harness.reconcile(meta_doc([inline_comment(1, is_bot=True, kind="summary")]))
+        assert harness.ledger(meta_doc([]))["rows"]["1"]["kind"] == "inline"  # kind is set-on-insert
+
+    def test_working_entry_carries_the_cap_table_columns(self, harness):
+        out = harness.reconcile(meta_doc([inline_comment(1, body="x" * 400, is_bot=True)]))
+        entry = out["working_set"][0]
+        assert entry["is_bot"] is True
+        assert entry["path"] == "a.py"
+        assert entry["line"] == 42
+        assert entry["outdated"] is False
+        assert len(entry["brief"]) == _ledger.BRIEF_CHARS
+
+    def test_comment_without_any_platform_id_is_skipped(self, harness):
+        meta = meta_doc([inline_comment(None, summary_id=None)])
+        out = harness.reconcile(meta)
+        assert out["working_set"] == []
+        assert out["counts"]["total"] == 0
+
+    def test_corrupt_ledger_is_rebuilt_not_fatal(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 96)
+        path.write_text("{ corrupt", encoding="utf-8")
+        out = harness.reconcile(meta)
+        assert out["round"] == 1  # degraded to an empty ledger, then re-inserted
+        assert out["working_set"][0]["ref"] == "U1"
+
+    def test_missing_unit_url_exits_with_a_message_not_a_traceback(self, harness):
+        result = harness.run("reconcile", "--meta", harness.write_meta(meta_doc([inline_comment(1)], url="")))
+        assert result.returncode == 2
+        assert "flow-review-ledger:" in result.stderr
+        assert "Traceback" not in result.stderr

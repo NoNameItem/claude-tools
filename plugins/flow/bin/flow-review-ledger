@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Persistent per-PR review ledger for flow:review-comments.
+
+    flow-review-ledger reconcile --meta metadata.json
+    flow-review-ledger get       --ref C1 [--meta metadata.json | --url URL --number N]
+    flow-review-ledger record    --decisions decisions.json --head SHA [--meta … | --url … --number …]
+    flow-review-ledger stats     [--meta … | --url … --number …] [--last-round]
+    flow-review-ledger purge     [--meta … | --url … --number …]
+
+Durable working memory keyed by thread id: what was found, what was decided about it, and
+whether the thread has advanced since. Pure stdlib. Every untrusted value (bodies, thread
+replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
+reaches a command line.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import _ledger
+
+
+def read_json(path: str) -> object:
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def resolve_unit(args: argparse.Namespace) -> tuple[str, object]:
+    """(url, number) from --meta's `unit`, or from explicit --url/--number."""
+    if getattr(args, "meta", None):
+        meta = read_json(args.meta)
+        unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
+        return unit.get("url", ""), unit.get("number")
+    return getattr(args, "url", "") or "", getattr(args, "number", None)
+
+
+# ---- reconcile ---------------------------------------------------------------
+
+
+def alloc_ref(doc: dict, is_bot: bool) -> str:
+    """Draw the next stable ref for a NEW row: `C` for bots, `U` for humans.
+
+    Allocate-once: an existing row keeps its ref forever and a number is never reused, so a
+    ref identifies the same finding across every round (the working set is therefore the
+    sparse, gappy `status != done` subset — gaps are settled findings).
+    """
+    prefix = "C" if is_bot else "U"
+    counters = doc["next_ref"]
+    number = int(counters.get(prefix, 1))
+    counters[prefix] = number + 1
+    return f"{prefix}{number}"
+
+
+def refresh_snapshot(row: dict, item: dict) -> None:
+    """Rebuild the current-snapshot fields from the fresh collector output. Durable and
+    set-on-insert fields are untouched."""
+    for field in _ledger.SNAPSHOT_FIELDS:
+        row[field] = item.get(field)
+
+
+def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
+    kind = item.get("kind") or "inline"
+    row = {
+        "thread_id": thread_id,
+        "platform": (doc.get("unit") or {}).get("platform"),
+        "ref": alloc_ref(doc, bool(item.get("is_bot"))),
+        "kind": kind,
+        "status": "open",
+        "decision": None,
+        "reason": None,
+        "followup_task_id": None,
+        "thread_mark": None if kind == "summary" else _ledger.last_reply_id(item),
+        "first_seen_round": round_no,
+        "last_round": round_no,
+        "head": None,
+    }
+    refresh_snapshot(row, item)
+    return row
+
+
+def working_entry(row: dict) -> dict:
+    """The display projection Phase 2 needs for its cap table — no bodies, no threads."""
+    brief = " ".join((row.get("body") or "").split())[: _ledger.BRIEF_CHARS]
+    return {
+        "ref": row.get("ref"),
+        "status": row.get("status"),
+        "kind": row.get("kind"),
+        "is_bot": bool(row.get("is_bot")),
+        "path": row.get("path"),
+        "start_line": row.get("start_line"),
+        "line": row.get("line"),
+        "outdated": bool(row.get("outdated")),
+        "decision": row.get("decision"),
+        "first_seen_round": row.get("first_seen_round"),
+        "brief": brief,
+    }
+
+
+def counts_of(doc: dict) -> dict:
+    rows = list(doc.get("rows", {}).values())
+    counts = {status: sum(1 for row in rows if row.get("status") == status) for status in _ledger.STATUSES}
+    counts["total"] = len(rows)
+    counts["working"] = len(rows) - counts["done"]
+    return counts
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    meta = read_json(args.meta)
+    unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
+    path = _ledger.ledger_path(unit.get("url", ""), unit.get("number"))
+    doc = _ledger.load_ledger(path)
+    doc["unit"] = {"platform": meta.get("platform"), "number": unit.get("number"), "url": unit.get("url")}
+    doc["round"] = int(doc.get("round", 0)) + 1
+    round_no = doc["round"]
+
+    working = []
+    for item in meta.get("comments") or []:
+        thread_id = _ledger.thread_id_of(item)
+        if thread_id is None:
+            continue  # no platform id → not trackable
+        row = doc["rows"].get(thread_id)
+        if row is None:
+            row = new_row(thread_id, item, doc, round_no)
+            doc["rows"][thread_id] = row
+        else:
+            refresh_snapshot(row, item)
+        if row["status"] != "done":
+            working.append(working_entry(row))
+
+    _ledger.save_ledger(path, doc)
+    print(json.dumps({"round": round_no, "ledger": str(path), "counts": counts_of(doc), "working_set": working}))
+    return 0
+
+
+# ---- entry point -------------------------------------------------------------
+
+
+def add_unit_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--meta")
+    parser.add_argument("--url")
+    parser.add_argument("--number")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="flow-review-ledger")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--meta", required=True)
+    reconcile.set_defaults(func=cmd_reconcile)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except (OSError, ValueError) as exc:  # LedgerPathError is a ValueError
+        print(f"flow-review-ledger: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
