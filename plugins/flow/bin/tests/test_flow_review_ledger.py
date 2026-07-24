@@ -562,3 +562,27 @@ class TestStats:
         result = harness.run("stats", "--url", "https://github.com/o/r/pull/99", "--number", "99")
         assert result.returncode == 0
         assert "No ledger" in result.stdout
+
+
+class TestPurge:
+    def test_unlinks_the_ledger(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 96)
+        assert path.is_file()
+        result = harness.run("purge", "--url", meta["unit"]["url"], "--number", "96")
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
+
+    def test_missing_ledger_is_a_no_op(self, harness):
+        result = harness.run("purge", "--url", "https://github.com/o/r/pull/99", "--number", "99")
+        assert result.returncode == 0
+        assert "No ledger" in result.stdout
+
+    def test_purging_one_pr_leaves_another_alone(self, harness):
+        first = meta_doc([inline_comment(1)], number=96, url="https://github.com/o/r/pull/96")
+        second = meta_doc([inline_comment(2)], number=97, url="https://github.com/o/r/pull/97")
+        harness.reconcile(first, name="m1.json")
+        harness.reconcile(second, name="m2.json")
+        harness.run("purge", "--url", first["unit"]["url"], "--number", "96")
+        assert _ledger.ledger_path(second["unit"]["url"], 97).is_file()

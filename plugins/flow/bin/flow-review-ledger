@@ -285,6 +285,19 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- purge -------------------------------------------------------------------
+
+
+def cmd_purge(args: argparse.Namespace) -> int:
+    """Remove one PR's ledger. Path + unlink only; no untrusted data, idempotent."""
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    existed = path.is_file()
+    path.unlink(missing_ok=True)
+    print(f"Removed ledger {path}" if existed else f"No ledger at {path}")
+    return 0
+
+
 # ---- entry point -------------------------------------------------------------
 
 
@@ -317,6 +330,10 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--last-round", action="store_true")
     add_unit_args(stats)
     stats.set_defaults(func=cmd_stats)
+
+    purge = sub.add_parser("purge")
+    add_unit_args(purge)
+    purge.set_defaults(func=cmd_purge)
 
     return parser
 
