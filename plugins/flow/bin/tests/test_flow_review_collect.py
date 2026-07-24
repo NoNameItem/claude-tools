@@ -845,3 +845,122 @@ def test_gitlab_me_parsed_from_json(fake_glab_api):
     fake_glab_api.set("discussions", "[]")
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
     assert doc["me"] == "alice"
+
+
+def test_github_thread_replies_carry_id_created_at_and_is_bot(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 10,
+                    "in_reply_to_id": None,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 3,
+                    "start_line": None,
+                    "original_line": 3,
+                    "original_start_line": None,
+                    "body": "root",
+                    "diff_hunk": "@@ -1,4 +1,4 @@\n a\n b\n c\n d",
+                },
+                {
+                    "id": 11,
+                    "in_reply_to_id": 10,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "body": "reply",
+                    "created_at": "2026-07-20T10:00:00Z",
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    reply = doc["comments"][0]["thread"][0]
+    assert reply["user"] == "coderabbitai[bot]"
+    assert reply["body"] == "reply"
+    assert reply["id"] == 11
+    assert reply["created_at"] == "2026-07-20T10:00:00Z"
+    assert reply["is_bot"] is True
+
+
+def test_github_kind_inline_file_and_summary(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 3,
+                    "start_line": None,
+                    "original_line": 3,
+                    "original_start_line": None,
+                    "body": "inline",
+                    "diff_hunk": "@@ -1,4 +1,4 @@\n a\n b\n c\n d",
+                },
+                {
+                    "id": 2,
+                    "user": {"login": "alice"},
+                    "path": "b.py",
+                    "subject_type": "file",
+                    "line": None,
+                    "start_line": None,
+                    "original_line": None,
+                    "original_start_line": None,
+                    "body": "file-level",
+                    "diff_hunk": None,
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", json.dumps([{"id": 900, "user": {"login": "coderabbitai"}, "body": "walkthrough"}]))
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    kinds = {c["body"]: c["kind"] for c in doc["comments"]}
+    assert kinds == {"inline": "inline", "file-level": "file", "walkthrough": "summary"}
+
+
+def test_gitlab_kind_and_thread_reply_fields(fake_glab_api):
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 7, "source_branch": "b", "web_url": "u", "state": "opened"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "id": 1,
+                            "author": {"username": "alice"},
+                            "body": "root",
+                            "position": {"new_path": "a.py", "new_line": 5},
+                        },
+                        {
+                            "id": 2,
+                            "author": {"username": "project_1_bot"},
+                            "body": "reply",
+                            "created_at": "2026-07-20T10:00:00Z",
+                        },
+                    ],
+                },
+                {"id": "d2", "notes": [{"id": 3, "author": {"username": "bob"}, "body": "general"}]},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "7", "--platform", "gitlab", env=fake_glab_api.env()))
+    by_body = {c["body"]: c for c in doc["comments"]}
+    assert by_body["root"]["kind"] == "inline"
+    assert by_body["general"]["kind"] == "summary"
+    reply = by_body["root"]["thread"][0]
+    assert reply["id"] == 2
+    assert reply["created_at"] == "2026-07-20T10:00:00Z"
+    assert reply["is_bot"] is True

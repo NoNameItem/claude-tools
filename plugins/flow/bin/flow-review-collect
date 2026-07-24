@@ -137,6 +137,24 @@ def is_bot(login: str) -> bool:
     return "[bot]" in low or "coderabbit" in low or low.endswith(("-bot", "_bot"))
 
 
+def thread_reply(user: str, body: str, reply_id: object, created_at: object) -> dict:
+    """One thread reply. `id` lets reconcile compute `thread_mark`; the rest is display context."""
+    return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": is_bot(user)}
+
+
+def gh_kind(comment: dict) -> str:
+    """`file` for a GitHub file-level comment (subject_type: file), else `inline`.
+
+    Some API responses omit `subject_type`; a comment with neither a current nor an original
+    line is file-level by construction, so treat that as `file` too.
+    """
+    if comment.get("subject_type") == "file":
+        return "file"
+    if comment.get("line") is None and comment.get("original_line") is None:
+        return "file"
+    return "inline"
+
+
 def assign_refs(items: list[dict]) -> None:
     """Assign U-refs to humans then C-refs to bots, in list order. Mutates each item."""
     humans = [it for it in items if not it["is_bot"]]
@@ -261,7 +279,15 @@ def gh_collect(number: str | None) -> dict:
         if str(cid) in resolved_ids:
             continue  # resolved thread → drop entirely
         replies = [r for r in comments if r.get("in_reply_to_id") == cid]
-        thread = [{"user": (r.get("user") or {}).get("login", "?"), "body": r.get("body", "")} for r in replies]
+        thread = [
+            thread_reply(
+                (r.get("user") or {}).get("login", "?"),
+                r.get("body", ""),
+                r.get("id"),
+                r.get("created_at"),
+            )
+            for r in replies
+        ]
         outdated = c.get("line") is None and c.get("original_line") is not None
         line = c.get("original_line") if outdated else c.get("line")
         start_line = c.get("original_start_line") if outdated else c.get("start_line")
@@ -271,6 +297,7 @@ def gh_collect(number: str | None) -> dict:
             {
                 "user": login,
                 "is_bot": is_bot(login),
+                "kind": gh_kind(c),
                 "path": c.get("path"),
                 "start_line": start_line,
                 "line": line,
@@ -318,6 +345,7 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
             {
                 "user": login,
                 "is_bot": bot,
+                "kind": "summary",
                 "path": "(summary)",
                 "start_line": None,
                 "line": None,
@@ -395,7 +423,15 @@ def gl_collect(number: str | None) -> dict:
         if resolvable and all(n.get("resolved") for n in resolvable):
             continue  # every resolvable note in the discussion is resolved → drop entirely
         root, replies = notes[0], notes[1:]
-        thread = [{"user": (n.get("author") or {}).get("username", "?"), "body": n.get("body", "")} for n in replies]
+        thread = [
+            thread_reply(
+                (n.get("author") or {}).get("username", "?"),
+                n.get("body", ""),
+                n.get("id"),
+                n.get("created_at"),
+            )
+            for n in replies
+        ]
         latest = thread[-1]["user"] if thread else None
         username = (root.get("author") or {}).get("username", "?")
         position = root.get("position")
@@ -410,6 +446,7 @@ def gl_collect(number: str | None) -> dict:
             {
                 "user": username,
                 "is_bot": is_bot(username),
+                "kind": "inline" if position else "summary",
                 "path": path,
                 "start_line": start_line,
                 "line": line,
