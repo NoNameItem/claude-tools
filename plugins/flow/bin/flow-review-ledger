@@ -221,6 +221,70 @@ def cmd_record(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- stats -------------------------------------------------------------------
+
+DECISION_LABELS = (
+    ("fix", "fix"),
+    ("wont_fix", "won't-fix"),
+    ("follow_up", "follow-up"),
+    ("outdated", "outdated"),
+    ("skip", "skip"),
+)
+
+
+def fold_stats(doc: dict, last_round_only: bool) -> dict:
+    rows = list(doc.get("rows", {}).values())
+    if last_round_only:
+        rows = [row for row in rows if row.get("last_round") == doc.get("round")]
+    return {
+        "tracked": len(rows),
+        "status": {status: sum(1 for row in rows if row.get("status") == status) for status in _ledger.STATUSES},
+        "decisions": {
+            key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
+            for key, _ in DECISION_LABELS
+        },
+        "followups": [row["followup_task_id"] for row in rows if row.get("followup_task_id")],
+    }
+
+
+def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
+    unit = doc.get("unit") or {}
+    noun, marker = ("MR", "!") if unit.get("platform") == "gitlab" else ("PR", "#")
+    try:
+        host, segments = _ledger.split_project(unit.get("url", ""))
+        location = "/".join([host, *segments])
+    except _ledger.LedgerPathError:
+        location = unit.get("url") or "?"
+    suffix = " (last pass)" if last_round_only else ""
+    lines = [
+        f"Ledger {noun} {marker}{unit.get('number')} ({location}) — round {doc.get('round', 0)}{suffix}",
+        f"  Tracked: {folded['tracked']} findings",
+    ]
+    breakdown = " · ".join(
+        f"{label} {folded['decisions'][key]}" for key, label in DECISION_LABELS if folded["decisions"][key]
+    )
+    done = f"  Done: {folded['status']['done']}"
+    lines.append(f"{done}  ({breakdown})" if breakdown else done)
+    lines.append(
+        f"  Pending: {folded['status']['pending']}   "
+        f"Skipped: {folded['status']['skipped']}   Open: {folded['status']['open']}"
+    )
+    if folded["followups"]:
+        lines.append(f"  Follow-ups filed: {len(folded['followups'])} ({', '.join(folded['followups'])})")
+    return "\n".join(lines)
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    if not path.is_file():
+        print(f"No ledger for {url} (nothing tracked yet).")
+        return 0
+    doc = _ledger.load_ledger(path)
+    print(render_stats(doc, fold_stats(doc, args.last_round), args.last_round))
+    return 0
+
+
 # ---- entry point -------------------------------------------------------------
 
 
@@ -248,6 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--head", required=True)
     add_unit_args(record)
     record.set_defaults(func=cmd_record)
+
+    stats = sub.add_parser("stats")
+    stats.add_argument("--last-round", action="store_true")
+    add_unit_args(stats)
+    stats.set_defaults(func=cmd_stats)
 
     return parser
 

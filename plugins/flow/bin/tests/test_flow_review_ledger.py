@@ -504,3 +504,61 @@ class TestRecord:
         harness.reconcile(meta)
         self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
         assert harness.reconcile(meta)["working_set"] == []
+
+
+class TestStats:
+    def _decide(self, harness, meta, decisions, head="h"):
+        path = harness.tmp_path / "d.json"
+        path.write_text(json.dumps(decisions), encoding="utf-8")
+        assert (
+            harness.run(
+                "record", "--meta", harness.write_meta(meta), "--decisions", str(path), "--head", head
+            ).returncode
+            == 0
+        )
+
+    def test_cumulative_block(self, harness):
+        comments = [inline_comment(i) for i in range(1, 5)]
+        meta = meta_doc(comments)
+        harness.reconcile(meta)
+        self._decide(
+            harness,
+            meta,
+            {
+                "U1": {"status": "done", "decision": "fix"},
+                "U2": {"status": "done", "decision": "wont_fix"},
+                "U3": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"},
+                "U4": {"status": "pending", "decision": "fix"},
+            },
+        )
+        out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        assert "Ledger PR #96 (github.com/o/r) — round 1" in out
+        assert "Tracked: 4 findings" in out
+        assert "Done: 3" in out
+        assert "fix 1" in out
+        assert "won't-fix 1" in out
+        assert "follow-up 1" in out
+        assert "Pending: 1" in out
+        assert "Follow-ups filed: 1 (ct-42)" in out
+
+    def test_last_round_filters_to_the_current_pass(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        self._decide(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))  # round 2 inserts U2
+        out = harness.run("stats", "--meta", harness.write_meta(meta), "--last-round").stdout
+        assert "Tracked: 1 findings" in out
+        assert "Open: 1" in out
+
+    def test_gitlab_unit_is_labelled_mr(self, harness):
+        meta = meta_doc(
+            [inline_comment(1)], number=7, url="https://gitlab.com/g/p/-/merge_requests/7", platform="gitlab"
+        )
+        harness.reconcile(meta)
+        out = harness.run("stats", "--url", meta["unit"]["url"], "--number", "7").stdout
+        assert "Ledger MR !7 (gitlab.com/g/p)" in out
+
+    def test_missing_ledger_reports_and_exits_zero(self, harness):
+        result = harness.run("stats", "--url", "https://github.com/o/r/pull/99", "--number", "99")
+        assert result.returncode == 0
+        assert "No ledger" in result.stdout
