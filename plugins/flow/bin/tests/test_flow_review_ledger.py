@@ -28,10 +28,10 @@ class TestCacheBase:
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         assert _ledger.cache_base() == Path("~/.cache").expanduser()
 
-    def test_windows_uses_localappdata(self, tmp_path, monkeypatch):
+    def test_windows_uses_localappdata(self, monkeypatch):
         monkeypatch.setattr(_ledger.os, "name", "nt")
-        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-        assert _ledger.cache_base() == tmp_path / "local"
+        monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+        assert _ledger.cache_base() == _ledger.Path(r"C:\Users\me\AppData\Local")
 
 
 class TestSplitProject:
