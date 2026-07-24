@@ -300,3 +300,92 @@ class TestReconcileInsert:
         assert result.returncode == 2
         assert "flow-review-ledger:" in result.stderr
         assert "Traceback" not in result.stderr
+
+
+def reply(reply_id, *, user="coderabbitai", body="ack", is_bot=True):
+    return {"user": user, "body": body, "id": reply_id, "created_at": "2026-07-20T10:00:00Z", "is_bot": is_bot}
+
+
+def settle(harness, meta, ref, *, thread_mark, status="done", decision="fix"):
+    """Mark a row done directly in the ledger (Task 6's `record` does this in production)."""
+    path = _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"])
+    doc = _ledger.load_ledger(path)
+    row = _ledger.find_row_by_ref(doc, ref)
+    row["status"] = status
+    row["decision"] = decision
+    row["thread_mark"] = thread_mark
+    _ledger.save_ledger(path, doc)
+
+
+class TestReconcileLifecycle:
+    def test_already_replied_seeds_the_row_as_done(self, harness):
+        meta = meta_doc([inline_comment(1, already_replied=True, thread=[reply(50)])])
+        out = harness.reconcile(meta)
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["status"] == "done"
+        assert row["thread_mark"] == 50
+        assert out["working_set"] == []
+
+    def test_done_row_is_excluded_from_the_next_round(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=None)
+        assert harness.reconcile(meta)["working_set"] == []
+
+    def test_pending_and_skipped_rows_stay_in_the_working_set(self, harness):
+        meta = meta_doc([inline_comment(1), inline_comment(2)])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=None, status="pending")
+        settle(harness, meta, "U2", thread_mark=None, status="skipped", decision="skip")
+        statuses = {e["ref"]: e["status"] for e in harness.reconcile(meta)["working_set"]}
+        assert statuses == {"U1": "pending", "U2": "skipped"}
+
+    def test_done_row_reopens_when_a_new_reply_appears(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=50)
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51, body="objection")])]))
+        assert [e["ref"] for e in out["working_set"]] == ["U1"]
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["status"] == "open"
+        assert row["decision"] == "fix"  # the prior verdict is kept as history for the analyst
+
+    def test_reopened_row_returns_with_its_original_ref(self, harness):
+        meta = meta_doc([inline_comment(1, is_bot=True, thread=[reply(50)]), inline_comment(2, is_bot=True)])
+        harness.reconcile(meta)
+        settle(harness, meta, "C1", thread_mark=50)
+        out = harness.reconcile(
+            meta_doc([inline_comment(1, is_bot=True, thread=[reply(50), reply(51)]), inline_comment(2, is_bot=True)])
+        )
+        assert {e["ref"] for e in out["working_set"]} == {"C1", "C2"}
+
+    def test_no_reopen_loop_when_the_thread_mark_is_current(self, harness):
+        """The bot ack case: the bot stays the latest replier forever, but the mark is current."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50), reply(51)])])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=51)
+        assert harness.reconcile(meta)["working_set"] == []
+        assert harness.reconcile(meta)["working_set"] == []
+
+    def test_done_summary_never_reopens(self, harness):
+        summary = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
+        meta = meta_doc([summary])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=None, decision="follow_up")
+        # a rerun re-imports the SAME review id → the row is still done → no duplicate follow-up
+        assert harness.reconcile(meta)["working_set"] == []
+
+    def test_new_summary_review_gets_a_new_row(self, harness):
+        first = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
+        meta = meta_doc([first])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=None, decision="follow_up")
+        second = inline_comment(None, kind="summary", summary_id=901, path="(summary)", line=None)
+        out = harness.reconcile(meta_doc([first, second]))
+        assert [e["ref"] for e in out["working_set"]] == ["U2"]
+
+    def test_open_row_is_not_touched_by_the_reopen_rule(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)])]))
+        assert [e["status"] for e in out["working_set"]] == ["open"]

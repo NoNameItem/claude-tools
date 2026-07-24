@@ -68,7 +68,9 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
         "platform": (doc.get("unit") or {}).get("platform"),
         "ref": alloc_ref(doc, bool(item.get("is_bot"))),
         "kind": kind,
-        "status": "open",
+        # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
+        # after a purge) — never the re-surface trigger; that is `thread_mark`.
+        "status": "done" if item.get("already_replied") else "open",
         "decision": None,
         "reason": None,
         "followup_task_id": None,
@@ -79,6 +81,21 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
     }
     refresh_snapshot(row, item)
     return row
+
+
+def reopen_if_advanced(row: dict, item: dict) -> None:
+    """A done row re-opens iff its thread carries a reply we have not accounted for.
+
+    One rule covers all three real continuations — reviewer objects, reviewer acknowledges,
+    human posts an instruction — because it keys on the reply ID, not authorship (the agent's
+    replies and the human's manual comments come from the SAME account). A `summary` has no
+    thread, so it never re-opens: that is the deterministic elf.31 fix (a re-imported review
+    carries the same, immutable summary id). The prior `decision`/`reason` are kept as history.
+    """
+    if row.get("status") != "done" or row.get("kind") == "summary":
+        return
+    if _ledger.id_advanced(_ledger.last_reply_id(item), row.get("thread_mark")):
+        row["status"] = "open"
 
 
 def working_entry(row: dict) -> dict:
@@ -126,6 +143,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             row = new_row(thread_id, item, doc, round_no)
             doc["rows"][thread_id] = row
         else:
+            reopen_if_advanced(row, item)
             refresh_snapshot(row, item)
         if row["status"] != "done":
             working.append(working_entry(row))
