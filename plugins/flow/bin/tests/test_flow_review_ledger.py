@@ -389,3 +389,48 @@ class TestReconcileLifecycle:
         harness.reconcile(meta)
         out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)])]))
         assert [e["status"] for e in out["working_set"]] == ["open"]
+
+
+class TestGet:
+    def test_prints_exactly_the_matching_row(self, harness):
+        meta = meta_doc([inline_comment(1, body="the finding", thread=[reply(50)])])
+        harness.reconcile(meta)
+        result = harness.run("get", "--ref", "U1", "--meta", harness.write_meta(meta))
+        assert result.returncode == 0, result.stderr
+        row = json.loads(result.stdout)
+        assert row["ref"] == "U1"
+        assert row["thread_id"] == "1"
+        assert row["body"] == "the finding"
+        assert row["diff_hunk"].startswith("@@")
+        assert row["thread"][0]["id"] == 50
+
+    def test_carries_the_durable_history_of_a_reopened_row(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=50, decision="wont_fix")
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51, body="objection")])]))
+        row = json.loads(harness.run("get", "--ref", "U1", "--meta", harness.write_meta(meta)).stdout)
+        assert row["status"] == "open"
+        assert row["decision"] == "wont_fix"  # prior verdict visible to the analyst
+        assert row["thread"][-1]["body"] == "objection"
+
+    def test_resolves_the_path_from_explicit_url_and_number(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = harness.run("get", "--ref", "U1", "--url", meta["unit"]["url"], "--number", "96")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["ref"] == "U1"
+
+    def test_unknown_ref_exits_nonzero_with_a_message(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = harness.run("get", "--ref", "C9", "--meta", harness.write_meta(meta))
+        assert result.returncode == 1
+        assert "C9" in result.stderr
+        assert result.stdout.strip() == ""
+
+    def test_shares_the_lookup_with_find_row_by_ref(self, harness):
+        meta = meta_doc([inline_comment(1), inline_comment(2, is_bot=True)])
+        harness.reconcile(meta)
+        emitted = json.loads(harness.run("get", "--ref", "C1", "--meta", harness.write_meta(meta)).stdout)
+        assert emitted == _ledger.find_row_by_ref(harness.ledger(meta), "C1")
