@@ -169,6 +169,58 @@ def cmd_get(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- record ------------------------------------------------------------------
+
+
+def validate_decisions(decisions: object) -> None:
+    """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing)."""
+    if not isinstance(decisions, dict):
+        msg = "decisions file must be a JSON object keyed by ref"
+        raise ValueError(msg)
+    for ref, entry in decisions.items():
+        if not isinstance(entry, dict):
+            msg = f"decision for {ref} must be an object"
+            raise ValueError(msg)
+        status = entry.get("status")
+        if status is not None and status not in _ledger.STATUSES:
+            msg = f"decision for {ref} has unknown status {status!r}"
+            raise ValueError(msg)
+        decision = entry.get("decision")
+        if decision is not None and decision not in _ledger.DECISIONS:
+            msg = f"decision for {ref} has unknown decision {decision!r}"
+            raise ValueError(msg)
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    decisions = read_json(args.decisions)
+    validate_decisions(decisions)
+
+    doc = _ledger.load_ledger(path)
+    unknown = []
+    for ref, entry in decisions.items():
+        row = _ledger.find_row_by_ref(doc, ref)
+        if row is None:
+            unknown.append(ref)
+            continue
+        if entry.get("status") is not None:
+            row["status"] = entry["status"]
+        for field in ("decision", "reason", "followup_task_id"):
+            if field in entry:
+                row[field] = entry[field]
+        if entry.get("thread_mark") is not None:
+            row["thread_mark"] = entry["thread_mark"]
+        row["last_round"] = doc.get("round", 0)
+        row["head"] = args.head
+    _ledger.save_ledger(path, doc)
+
+    if unknown:
+        print(f"flow-review-ledger: no row for ref(s) {', '.join(sorted(unknown))}", file=sys.stderr)
+    print(json.dumps({"recorded": len(decisions) - len(unknown), "unknown": sorted(unknown)}))
+    return 0
+
+
 # ---- entry point -------------------------------------------------------------
 
 
@@ -190,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
     get.add_argument("--ref", required=True)
     add_unit_args(get)
     get.set_defaults(func=cmd_get)
+
+    record = sub.add_parser("record")
+    record.add_argument("--decisions", required=True)
+    record.add_argument("--head", required=True)
+    add_unit_args(record)
+    record.set_defaults(func=cmd_record)
 
     return parser
 

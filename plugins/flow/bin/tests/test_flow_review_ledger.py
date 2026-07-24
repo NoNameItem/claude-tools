@@ -434,3 +434,73 @@ class TestGet:
         harness.reconcile(meta)
         emitted = json.loads(harness.run("get", "--ref", "C1", "--meta", harness.write_meta(meta)).stdout)
         assert emitted == _ledger.find_row_by_ref(harness.ledger(meta), "C1")
+
+
+class TestRecord:
+    def _record(self, harness, meta, decisions, head="abc1234"):
+        path = harness.tmp_path / "decisions.json"
+        path.write_text(json.dumps(decisions), encoding="utf-8")
+        return harness.run("record", "--meta", harness.write_meta(meta), "--decisions", str(path), "--head", head)
+
+    def test_applies_a_decision_by_ref(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = self._record(
+            harness,
+            meta,
+            {"U1": {"status": "done", "decision": "fix", "reason": "guard added", "thread_mark": 77}},
+        )
+        assert result.returncode == 0, result.stderr
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["status"] == "done"
+        assert row["decision"] == "fix"
+        assert row["reason"] == "guard added"
+        assert row["thread_mark"] == 77
+        assert row["head"] == "abc1234"
+        assert row["last_round"] == 1
+
+    def test_records_a_followup_task_id(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"}})
+        assert harness.ledger(meta)["rows"]["1"]["followup_task_id"] == "ct-42"
+
+    def test_pending_and_skipped_are_written_verbatim(self, harness):
+        meta = meta_doc([inline_comment(1), inline_comment(2)])
+        harness.reconcile(meta)
+        self._record(
+            harness,
+            meta,
+            {"U1": {"status": "pending", "decision": "fix"}, "U2": {"status": "skipped", "decision": "skip"}},
+        )
+        rows = harness.ledger(meta)["rows"]
+        assert rows["1"]["status"] == "pending"
+        assert rows["2"]["status"] == "skipped"
+
+    def test_reason_with_shell_metacharacters_survives_verbatim(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        hostile = "won't fix: `$(id)` and a FLOW_RC_EOF line\nsecond line"
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "reason": hostile}})
+        assert harness.ledger(meta)["rows"]["1"]["reason"] == hostile
+
+    def test_unknown_ref_warns_but_still_records_the_rest(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = self._record(harness, meta, {"U1": {"status": "done"}, "C9": {"status": "done"}})
+        assert result.returncode == 0
+        assert "C9" in result.stderr
+        assert json.loads(result.stdout) == {"recorded": 1, "unknown": ["C9"]}
+
+    def test_invalid_status_writes_nothing(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = self._record(harness, meta, {"U1": {"status": "finished"}})
+        assert result.returncode == 2
+        assert harness.ledger(meta)["rows"]["1"]["status"] == "open"
+
+    def test_recorded_row_is_excluded_on_the_next_reconcile(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
+        assert harness.reconcile(meta)["working_set"] == []
