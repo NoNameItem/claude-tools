@@ -198,17 +198,27 @@ would advance the head SHA and break `flow:review-loop`'s convergence check). `r
 every collected comment into it by thread id, refreshes the current-snapshot fields, preserves the
 durable ones, and prints:
 
-`{round, ledger, counts:{total,open,skipped,pending,done,working}, working_set:[{ref, status, kind,
-is_bot, path, start_line, line, outdated, decision, first_seen_round, brief}]}`
+`{round, ledger, counts:{total,open,skipped,pending,done,deleted,working}, working_set:[{ref, status,
+kind, is_bot, path, start_line, line, outdated, decision, first_seen_round, brief}]}`
 
 Read `working-set.json`:
 - Store `ledger` as `{LEDGER}` — Phase 4.2 passes it to `flow-comment-card --ledger`.
 - `working_set` **empty** → report and stop:
   "{counts.done} handled (ledger), {counts.total} tracked on this PR/MR — nothing to act on."
-- Otherwise the **working set** is exactly `working_set[]` (every non-`done` row: fresh `open`
-  findings, `skipped` ones the user deferred, `pending` ones whose reply was withheld, and any
-  `done` row whose thread advanced — a reviewer objected, a reviewer acknowledged, or **the human
-  posted an instruction**).
+- Otherwise the **working set** is exactly `working_set[]` — every row in a non-terminal status:
+  fresh `open` findings, `skipped` ones the user deferred, `pending` ones whose reply was withheld,
+  and any settled row whose thread advanced (a reviewer objected, a reviewer acknowledged, or **the
+  human posted an instruction**).
+
+**Two statuses are terminal, and neither is the agent's doing.** `done` is settled by this workflow;
+`deleted` means the thread is gone from the platform, which `reconcile` detects because the collector
+reports every thread it can see and absence is therefore unambiguous. A `deleted` row returns to
+`open` by itself if the thread reappears.
+
+**Resolving a thread on the platform settles its row.** A thread the reviewer or the human marks
+resolved arrives flagged, and `reconcile` moves it to `done` without a reply — so a finding can leave
+the working set between rounds with the agent doing nothing. Un-resolving it re-opens the row the
+same way, which is the supported way for a human to pull a settled finding back into the loop.
 
 **Refs are stable, not contiguous.** A `ref` is allocated once, the first time a finding enters the
 ledger, and is never reassigned — so "the C3 that was won't-fixed in round 1" still means C3 in
@@ -833,7 +843,9 @@ Options:
 
 #### 5.7. Reply on the platform
 
-Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref}` and take three fields from it: `platform`, `kind`, and **`thread_id`** — the row's only reply target. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
+Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref} --meta "$FLOW_RC_DIR/metadata.json"` — the
+locator is required, exactly as in Phase 3; without it the command exits 2 before reading the row —
+and take three fields from it: `platform`, `kind`, and **`thread_id`** — the row's only reply target. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
@@ -944,6 +956,12 @@ Then:
 flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
   --decisions "$FLOW_RC_DIR/decisions.json" --head "$(git rev-parse HEAD)"
 ```
+
+**A non-zero exit means part of this round was not recorded** — a ref in the file had no row, so its
+transition never landed while the refs that did match were saved. Do not treat the round as durable:
+read the `unknown` list `record` printed, report those refs to the user as unrecorded, and say that
+they will re-surface next round even though their reply is already posted. Silence here is what turns
+one unrecorded ref into a duplicate reply or a second follow-up task for the same finding.
 
 Rules for filling it in — one entry per ref that reached Phase 5:
 

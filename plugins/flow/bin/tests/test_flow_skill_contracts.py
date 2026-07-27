@@ -409,3 +409,39 @@ def test_review_comments_thread_mark_null_rule_is_scoped_to_threadless_rows() ->
     required_field_section = text.split("**`thread_mark` is a REQUIRED field", 1)[1].split("#### 5.8", 1)[0]
     assert re.search(r"\bthreadless\b", required_field_section)
     assert re.search(r"GitLab", required_field_section)
+
+
+def test_review_comments_every_ledger_get_carries_a_locator() -> None:
+    # `flow-review-ledger get` has no implicit current-PR context: without `--meta` (or
+    # `--url`/`--number`) `resolve_unit` yields ("", None) and `ledger_path` exits 2 before the row
+    # is ever read. A documented command that cannot run as written fails on EVERY invocation, so
+    # check the whole file rather than one phase -- the Phase 3 example is correct and would mask a
+    # broken sibling under a plain substring check.
+    # `--ref` is what distinguishes an INVOCATION from prose naming the subcommand ("analysed via
+    # `flow-review-ledger get`"), which needs no flags and must not fail this test.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    for match in re.finditer(r"flow-review-ledger get\s+--ref\b[^`\n]*", text):
+        command = match.group(0)
+        assert "--meta" in command or "--url" in command, f"`{command.strip()}` has no locator flag"
+
+
+def test_review_comments_5_7a_reacts_to_a_failed_record() -> None:
+    # `record` exits non-zero when a decisions ref has no row: those transitions were NOT made
+    # durable, so the finding keeps a working status and re-surfaces next round -- after its reply
+    # was already posted. Nothing reads the JSON payload, so the exit code is the only signal, and
+    # the prose must tell the agent to act on it instead of assuming the round was recorded.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
+    assert re.search(r"non-zero|exit\s+code", section, re.IGNORECASE), "5.7a must check `record`'s exit code"
+
+
+def test_review_comments_knows_the_deleted_status_and_platform_resolution() -> None:
+    # `reconcile` now emits two terminal statuses: `done` (settled by us) and `deleted` (the thread
+    # is gone from the platform). Prose that calls the working set "every non-`done` row" contradicts
+    # that, and a `counts` schema without `deleted` sends the agent looking for a key that exists.
+    # Resolving a thread by hand also settles its row now, which is why a finding can leave the
+    # working set without the agent doing anything.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert re.search(r"counts:\{[^}]*deleted", text), "the reconcile counts schema must list `deleted`"
+    assert not re.search(r"every\s+non-`?done`?\s+row", text), "two statuses are terminal now, not just `done`"
+    assert re.search(r"resolve", text, re.IGNORECASE), "prose must explain that resolving a thread settles its row"

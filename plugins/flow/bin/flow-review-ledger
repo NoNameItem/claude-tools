@@ -70,21 +70,37 @@ def alloc_ref(doc: dict, is_bot: bool) -> str:
 
 def refresh_snapshot(row: dict, item: dict) -> None:
     """Rebuild the current-snapshot fields from the fresh collector output. Durable and
-    set-on-insert fields are untouched."""
+    set-on-insert fields are untouched.
+
+    `resolved` is the one field whose domain is THREE-valued — True / False / None, where
+    None means "not determined this round" (GitHub's resolution side-query degrades instead
+    of aborting the collection). It therefore cannot be replaced blindly like the others:
+    `apply_resolution` compares the NEXT round's value against the stored one to spot an
+    un-resolve, so overwriting a known answer with "unknown" erases exactly what that
+    comparison needs. One failed side-query would then make a later genuine un-resolve
+    invisible and strand the finding as `done` forever. Keep the last KNOWN answer.
+    """
+    remembered_resolution = row.get("resolved")
     for field in _ledger.SNAPSHOT_FIELDS:
         row[field] = item.get(field)
+    if row["resolved"] is None:
+        row["resolved"] = remembered_resolution
 
 
 def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
     kind = item.get("kind") or "inline"
     row = {
+        # The BARE platform id — the reply target. The ledger's own key is namespaced
+        # (`_ledger.row_key_of`); the two must not be conflated, or a prefixed value would
+        # reach `.../comments/{id}/replies` and 404 every reply.
         "thread_id": thread_id,
         "platform": (doc.get("unit") or {}).get("platform"),
         "ref": alloc_ref(doc, bool(item.get("is_bot"))),
         "kind": kind,
         # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
-        # after a purge) — never the re-surface trigger; that is `thread_mark`.
-        "status": "done" if item.get("already_replied") else "open",
+        # after a purge) — never the re-surface trigger; that is `thread_mark`. A thread the
+        # platform reports as RESOLVED seeds `done` too: it is settled by definition.
+        "status": "done" if item.get("already_replied") or item.get("resolved") else "open",
         "decision": None,
         "reason": None,
         "followup_task_id": None,
@@ -117,6 +133,42 @@ def reopen_if_advanced(row: dict, item: dict) -> None:
         row["status"] = "open"
 
 
+def apply_resolution(row: dict, item: dict, was_resolved: bool) -> None:
+    """Platform resolution drives status: resolved settles a row, un-resolving reopens it.
+
+    Call BEFORE `refresh_snapshot`, which overwrites `row["resolved"]` with this round's
+    value — `was_resolved` is the previous round's, and the transition is what matters.
+
+    `resolved is None` means "resolution state unknown this round", not "not resolved": on
+    GitHub it comes from a side-query that degrades to unknown rather than aborting the whole
+    collection. Treating unknown as False would mass-reopen every settled thread the moment
+    that query hiccupped, so an unknown leaves the status exactly as it was.
+    """
+    now = item.get("resolved")
+    if now is None:
+        return
+    if now:
+        row["status"] = "done"
+    elif was_resolved and row.get("status") == "done":
+        # Someone hit "Unresolve" — an explicit request to look again, which no reply id
+        # advanced, so `reopen_if_advanced` would never catch it.
+        row["status"] = "open"
+
+
+def mark_absent(doc: dict, seen: set[str]) -> None:
+    """A tracked row missing from this round's snapshot is gone from the platform → `deleted`.
+
+    Absence is unambiguous only because the collector drops nothing: a resolved thread now
+    arrives flagged instead of filtered, and the listing calls raise on any API error rather
+    than returning a short page, so "not in the snapshot" cannot mean "not fetched". Without
+    this, such a row would keep a working status forever — counted as outstanding, yet unable
+    to appear in a working set again, since only items present in the snapshot are iterated.
+    """
+    for key, row in doc.get("rows", {}).items():
+        if key not in seen and row.get("status") not in _ledger.TERMINAL_STATUSES:
+            row["status"] = "deleted"
+
+
 def working_entry(row: dict) -> dict:
     """The display projection Phase 2 needs for its cap table — no bodies, no threads."""
     brief = " ".join((row.get("body") or "").split())[: _ledger.BRIEF_CHARS]
@@ -135,11 +187,21 @@ def working_entry(row: dict) -> dict:
     }
 
 
-def counts_of(doc: dict) -> dict:
+def counts_of(doc: dict, working: list | None = None) -> dict:
+    """Status tallies for the whole ledger, plus `working` — the size of the CURRENT set.
+
+    `working` must be the list `reconcile` actually emitted, not a tally over all rows:
+    SKILL.md's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two
+    populations differ (a row can be persisted but absent from this round's snapshot). The
+    row-derived fallback is only for callers with no snapshot in hand.
+    """
     rows = list(doc.get("rows", {}).values())
     counts = {status: sum(1 for row in rows if row.get("status") == status) for status in _ledger.STATUSES}
     counts["total"] = len(rows)
-    counts["working"] = len(rows) - counts["done"]
+    if working is None:
+        counts["working"] = sum(1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES)
+    else:
+        counts["working"] = len(working)
     return counts
 
 
@@ -158,22 +220,37 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         raise ValueError(msg)
 
     working = []
+    seen: set[str] = set()
     for item in comments or []:
         thread_id = _ledger.thread_id_of(item)
-        if thread_id is None:
+        key = _ledger.row_key_of(item)
+        if thread_id is None or key is None:
             continue  # no platform id → not trackable
-        row = doc["rows"].get(thread_id)
+        seen.add(key)
+        row = doc["rows"].get(key)
         if row is None:
             row = new_row(thread_id, item, doc, round_no)
-            doc["rows"][thread_id] = row
+            doc["rows"][key] = row
         else:
+            if row.get("status") == "deleted":
+                # Being in this round's snapshot is proof the thread exists, which is the
+                # exact opposite of what `deleted` asserts — so the earlier verdict was
+                # wrong and must not be permanent. Back to `open` rather than the pre-delete
+                # status, which the row does not remember; a re-triage is the safe direction.
+                row["status"] = "open"
+            # `was_resolved` must be read BEFORE refresh_snapshot overwrites it.
+            was_resolved = bool(row.get("resolved"))
             reopen_if_advanced(row, item)
+            apply_resolution(row, item, was_resolved)
             refresh_snapshot(row, item)
-        if row["status"] != "done":
+        if row["status"] not in _ledger.TERMINAL_STATUSES:
             working.append(working_entry(row))
 
+    mark_absent(doc, seen)
+
     _ledger.save_ledger(path, doc)
-    print(json.dumps({"round": round_no, "ledger": str(path), "counts": counts_of(doc), "working_set": working}))
+    payload = {"round": round_no, "ledger": str(path), "counts": counts_of(doc, working), "working_set": working}
+    print(json.dumps(payload))
     return 0
 
 
@@ -260,9 +337,16 @@ def cmd_record(args: argparse.Namespace) -> int:
         row["head"] = args.head
     _ledger.save_ledger(path, doc)
 
-    if unknown:
-        print(f"flow-review-ledger: no row for ref(s) {', '.join(sorted(unknown))}", file=sys.stderr)
     print(json.dumps({"recorded": len(decisions) - len(unknown), "unknown": sorted(unknown)}))
+    if unknown:
+        # Non-zero per the plugin's exit-code convention (AGENTS.md: "no silent failures").
+        # The transitions that DID apply are already saved above — the caller's decisions are
+        # never lost — but the caller must not treat the batch as durable: an unrecorded
+        # finding keeps a working status, re-surfaces next round, and gets re-triaged after a
+        # reply was already posted for it. Nothing inspects the JSON, so the exit code is the
+        # only signal that reaches Phase 5.7a.
+        print(f"flow-review-ledger: no row for ref(s) {', '.join(sorted(unknown))}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -318,6 +402,10 @@ def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
         f"  Pending: {folded['status']['pending']}   "
         f"Skipped: {folded['status']['skipped']}   Open: {folded['status']['open']}"
     )
+    if folded["status"]["deleted"]:
+        # Only when non-zero: threads vanishing from a PR is the exception, and a permanent
+        # "Deleted: 0" would read as noise on every clean run.
+        lines.append(f"  Deleted upstream: {folded['status']['deleted']}")
     if folded["followups"]:
         lines.append(f"  Follow-ups filed: {len(folded['followups'])} ({', '.join(folded['followups'])})")
     return "\n".join(lines)

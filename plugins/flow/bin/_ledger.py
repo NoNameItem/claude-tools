@@ -20,9 +20,15 @@ from urllib.parse import urlsplit
 SCHEMA = 1
 BRIEF_CHARS = 120  # chars of `body` kept for the Phase-2 cap table
 
-STATUSES = ("open", "skipped", "pending", "done")
+STATUSES = ("open", "skipped", "pending", "done", "deleted")
 DECISIONS = ("fix", "wont_fix", "follow_up", "outdated", "skip")
 KINDS = ("inline", "file", "summary")
+
+# Statuses that take a row OUT of the working set. `done` is settled by us, `deleted` is
+# settled by the platform (the thread no longer exists). Every "is this row still work?"
+# test goes through this set — a literal `status != "done"` would silently pull `deleted`
+# rows back into the working set the moment a second terminal status existed.
+TERMINAL_STATUSES = frozenset({"done", "deleted"})
 
 # Current-snapshot fields: refreshed from the collector every round. Durable fields
 # (status/decision/reason/followup_task_id/thread_mark/first_seen_round/last_round/head) and the
@@ -35,6 +41,7 @@ SNAPSHOT_FIELDS = (
     "line",
     "outdated",
     "already_replied",
+    "resolved",
     "diff_hunk",
     "snippet",
     "side",
@@ -47,6 +54,13 @@ SNAPSHOT_FIELDS = (
 # GitLab `/-/merge_requests/<iid>` (and the legacy form without the `-`).
 _ROUTE_MARKERS = ("pull", "pulls", "merge_requests")
 _UNSAFE_SEGMENTS = frozenset({".", ".."})
+
+# Ports that carry no information because the scheme already implies them: including them
+# would make `https://host/…` and `https://host:443/…` — the same origin — two ledgers.
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+_NT_CACHE_DEFAULT = "~/AppData/Local"
+_POSIX_CACHE_DEFAULT = "~/.cache"
 
 
 class LedgerPathError(ValueError):
@@ -63,13 +77,25 @@ def cache_base_setting() -> str:
     patched global state into pytest's own machinery and aborts the whole session.
     """
     if os.name == "nt":
-        return os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
-    return os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+        return os.environ.get("LOCALAPPDATA") or _NT_CACHE_DEFAULT
+    return os.environ.get("XDG_CACHE_HOME") or _POSIX_CACHE_DEFAULT
 
 
 def cache_base() -> Path:
-    """The OS cache root. Windows: %LOCALAPPDATA%; POSIX (incl. WSL): $XDG_CACHE_HOME."""
-    return Path(cache_base_setting()).expanduser()
+    """The OS cache root. Windows: %LOCALAPPDATA%; POSIX (incl. WSL): $XDG_CACHE_HOME.
+
+    A RELATIVE setting is ignored in favour of the platform default, per the XDG Base
+    Directory spec ("All paths set in these environment variables must be absolute. If an
+    implementation encounters a relative path in any of these variables it should consider
+    the path invalid and ignore it."). `.expanduser()` alone would not catch this: it
+    expands a leading `~` but leaves `.cache` relative, and a relative root resolves against
+    the process cwd — which for a helper launched from the repo puts the ledger INSIDE the
+    working tree, the one thing this module's docstring guarantees never happens.
+    """
+    base = Path(cache_base_setting()).expanduser()
+    if not base.is_absolute():
+        base = Path(_NT_CACHE_DEFAULT if os.name == "nt" else _POSIX_CACHE_DEFAULT).expanduser()
+    return base
 
 
 def _locate_route(segments: list[str]) -> int | None:
@@ -100,6 +126,13 @@ def split_project(url: str) -> tuple[str, list[str]]:
     """
     parts = urlsplit(url or "")
     host = (parts.hostname or "").lower()
+    # `.hostname` drops the port, but the port is part of the ORIGIN: two self-hosted forges
+    # behind one hostname on different ports own different PRs, and without this they would
+    # share (and clobber) one ledger file. Joined with `_`, never `:` — a colon is illegal in
+    # an NTFS path component, and this path is built on Windows too.
+    port = parts.port
+    if port is not None and port != _DEFAULT_PORTS.get((parts.scheme or "").lower()):
+        host = f"{host}_{port}"
     raw_segments = [segment for segment in parts.path.split("/") if segment]
     route_index = _locate_route(raw_segments)
     if route_index is not None:
@@ -193,12 +226,36 @@ def find_row_by_ref(doc: dict, ref: str) -> dict | None:
     return None
 
 
+# Which id field carries the thread, and the namespace its value belongs to. GitHub numbers
+# review bodies and inline comments from SEPARATE sequences, so the same integer can name both
+# — the prefix is what keeps them apart as ledger keys.
+_THREAD_SOURCES = (("comment_id", "comment"), ("discussion_id", "discussion"), ("summary_id", "summary"))
+
+
 def thread_id_of(item: dict) -> str | None:
-    """The platform thread id: GitHub inline comment, GitLab discussion, or GitHub review body."""
-    for key in ("comment_id", "discussion_id", "summary_id"):
+    """The BARE platform thread id: GitHub inline comment, GitLab discussion, or review body.
+
+    Bare on purpose — this value is the row's reply target and goes straight into a platform
+    API path (`.../comments/{id}/replies`, `.../discussions/{id}/notes`). Use `row_key_of`
+    for the ledger key; a namespaced value reaching the API is a 404 on every reply.
+    """
+    for key, _prefix in _THREAD_SOURCES:
         value = item.get(key)
         if value is not None:
             return str(value)
+    return None
+
+
+def row_key_of(item: dict) -> str | None:
+    """The ledger row key: `<source>:<id>`, or None when the item carries no platform id.
+
+    Namespaced because the key's only job is identity WITHIN the ledger, where ids from
+    three independent platform sequences share one dict. Never sent to a platform API.
+    """
+    for key, prefix in _THREAD_SOURCES:
+        value = item.get(key)
+        if value is not None:
+            return f"{prefix}:{value}"
     return None
 
 
