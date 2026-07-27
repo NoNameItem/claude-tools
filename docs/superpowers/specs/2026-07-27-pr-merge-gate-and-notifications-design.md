@@ -179,6 +179,61 @@ hashtags. Layout, validated against the iOS and desktop clients:
 - Buttons: `Pull request` everywhere; `Checks` only on `failed`.
 - The footer goes last, after tables and collapsible blocks.
 
+**Emphasis rule.** Bold marks exactly what needs attention, and nothing else: the failed gate in the
+verdict line, the failing rows of the check table, the names of failed jobs (the explanatory tail
+such as `— Quality Gate failed` stays regular), and breached Sonar conditions. A green notification
+therefore contains no bold at all, which makes "bold = problem" unambiguous.
+
+### Sonar block
+
+For every SonarCloud project analysed on the PR, the result notification carries a collapsible block
+reproducing what Sonar reports in the PR itself:
+
+```
+Sonar · statuskit — Quality Gate passed
+  ✅ New issues                6
+  ✅ Accepted issues           0
+  ✅ Security hotspots         0
+  ✅ Coverage on new code      96.8% (≥ 80)
+  ✅ Duplication on new code   0.0% (≤ 3)
+  ✅ New lines                 1357
+  See analysis details on SonarQube Cloud
+```
+
+Rendered as a **header-less two-column table** inside `<details>`, collapsed when the gate passed and
+open when it failed.
+
+**Data source: the SonarCloud Web API, not the comment.** The check run's `output.summary` contains
+the same figures, but as human-readable markdown (`![](…/passed.svg '') [6 New issues](…)`) — no
+contract, and it would have to be parsed with regexes. The API is structured and gives strictly
+more:
+
+| | `output.summary` | Web API |
+|---|---|---|
+| Contract | markdown, may change silently | documented endpoints |
+| Gate thresholds | absent | `conditions[].errorThreshold` → `(≥ 80)` |
+| Per-metric status | inferred from image filename | `conditions[].status` |
+| Extra metrics | none | `new_lines`, anything else on demand |
+
+Two calls per project: `api/measures/component` (metric values) and
+`api/qualitygates/project_status` (gate status, thresholds, per-condition status). The project key
+does **not** need to be known in advance — it is extracted from the `details_url` of the check run
+whose `app.slug == "sonarqubecloud"` (`…/dashboard?id=NoNameItem_statuskit&pullRequest=112`), which
+the aggregator already has in the rollup. Monorepo projects therefore each get their own block with
+no configuration. Public projects answer anonymously; `SONAR_TOKEN` is passed anyway so private ones
+would work too.
+
+Metrics not returned by the API (Sonar omits `new_coverage` and `new_duplicated_lines_density` when
+there is nothing to measure — verified on PR #114) are rendered as `—` rather than a fake `0.0%`.
+
+**Degradation.** If the Sonar API is unreachable, the block falls back to the check run's
+`output.title` alone (`Quality Gate passed` / `failed`) without metrics. There is deliberately no
+second parser: one path for the numbers, and a notification that never fails because of Sonar.
+
+Note that a metric can show a green icon while being non-zero — `new_violations` is not part of this
+repo's quality gate (which is built on ratings), so 6 new issues still render as ✅. Icons reflect
+the gate, not intuition.
+
 **Fallback.** If `sendRichMessage` fails, the script retries with plain `sendMessage`. That parser
 rejects rich tags (`h1`, `table`, `details`, `ul`, `p`, `footer` — verified: *"Unsupported start tag
 h3"*), so the fallback is a **separate rendering**, not the same HTML: bold title, verdict line,
@@ -189,7 +244,8 @@ h3"*), so the fallback is a **separate rendering**, not the same HTML: bold titl
 | File | Role |
 |---|---|
 | `.github/scripts/pr_summary.py` | JSON in (required contexts, rollup, thread count) → verdict out. Mirrors the `review_gate.py` split: bash does I/O, Python decides. |
-| `.github/scripts/telegram_notify.py` | Verdict + PR metadata → payload; sends, with fallback. |
+| `.github/scripts/sonar_pr_status.py` | Sonar check runs from the rollup → project keys → metrics and gate status via the Web API. Degrades to `output.title` on failure. |
+| `.github/scripts/telegram_notify.py` | Verdict + PR metadata + Sonar blocks → payload; sends, with fallback. |
 | `.github/workflows/_reusable-pr-summary.yml` | Collects the inputs, calls both scripts, maintains the marker. |
 | `.github/actions/telegram-notify/action.yml` | Thin wrapper over `telegram_notify.py`; the hand-rolled Markdown escaping (`action.yml:50-60`) is removed. |
 | `.github/workflows/coderabbit-notify.yml` | Deleted. |
@@ -207,7 +263,8 @@ Quality Gate failure on `master` should be visible.
 
 The external checks `SonarCloud Code Analysis` (Sonar App) and `SonarCloud` (code scanning via
 GitHub Advanced Security) keep arriving and stay informational — they are the detail view, while the
-blocking verdict comes from our own job.
+blocking verdict comes from our own job. The former is also what the aggregator keys off to discover
+which Sonar projects were analysed (see "Sonar block").
 
 Accepted cost: CI gains a dependency on SonarCloud availability, and the job grows by the gate
 computation time (~25 s on PR #114). Fork PRs are unaffected — the Sonar job is already skipped
@@ -217,8 +274,12 @@ there (`_reusable-python-ci.yml:191-193`).
 
 - `pr_summary.py`: table-driven unit tests over every verdict, plus missing context, non-terminal
   context, fork PR (gate dropped), and stale head SHA.
+- `sonar_pr_status.py`: project-key extraction from `details_url`; metric formatting including the
+  absent-metric `—` case; threshold rendering for both comparators (`LT` → `≥`, `GT` → `≤`);
+  per-condition icons; degradation when the API returns an error or times out.
 - `telegram_notify.py`: golden-output tests for all four verdicts in both renderings; escaping of
-  titles containing `<`, `>`, `&`; button composition; `skip_entity_detection` present.
+  titles containing `<`, `>`, `&`; button composition; `skip_entity_detection` present; the emphasis
+  rule (bold present exactly on failures, absent on a green notification).
 - Manual: one throwaway PR exercising green, red and unresolved-comments paths, plus a gate re-run
   to confirm the verdict flip re-notifies.
 
@@ -243,5 +304,7 @@ head SHA and will need a push or re-run before they can merge.
   SHAs.
 - Reading required contexts from the branch-rules API means a ruleset edit changes notification
   behaviour with no code change — intended, but worth knowing when debugging.
+- The Sonar block adds a dependency on `sonarcloud.io` at notification time; it degrades to the gate
+  title alone, so an outage costs detail, not the notification.
 - The verdict reflects the moment every check settled. Resolving threads afterwards does not
   re-notify: that would require watching review events, which this design deliberately leaves out.
