@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write Grep
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write Grep
 ---
 
 # Flow: Review Comments
@@ -14,7 +14,7 @@ This skill makes every unresolved review comment reviewable and triageable **ins
 
 **Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
-**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) — one deterministic pass that fetches, parses, and writes a single `metadata.json`, each comment already carrying its code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet). A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers) so every take is code-backed. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), then commits, pushes (with confirmation), and reports.
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and finally **records every decision back into the ledger**.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -29,8 +29,8 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 |------|--------|-----------|
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
-| 2. Collect | Run `flow-review-collect` once → one `metadata.json` (fetch/parse/outdated/resolved-skip/summary/snippet). Cap then selects the working set | One deterministic collector call; reviewer text never touches a shell |
-| 3. Analyze the **working set** | Parallel `balanced`-tier reviewer subagents over the capped working set | Verdict gains `category`/`thought`/`suggested`; dismissal needs CLAIM + EVIDENCE; cap already ran in Phase 2 |
+| 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings; refs are stable across rounds (and therefore gappy) |
+| 3. Analyze the **working set** | Parallel `balanced`-tier reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task |
 
@@ -184,24 +184,39 @@ FLOW_RC_DIR="$(mktemp -d)"
 # file and sweep it into the commit.
 git status --porcelain -uall | cut -c4- > "$FLOW_RC_DIR/baseline-dirty.txt"
 flow-review-collect {number-if-any} --platform {PLATFORM} > "$FLOW_RC_DIR/metadata.json"
+flow-review-ledger reconcile --meta "$FLOW_RC_DIR/metadata.json" > "$FLOW_RC_DIR/working-set.json"
 ```
 
 Pass the Phase-0 `{PLATFORM}` explicitly so the collector honors an override / interactive
 disambiguation instead of re-detecting from scratch (its own detection would drop a `--platform`
 override on an ambiguous host — exactly the case the override exists for).
 
-`metadata.json` schema: `{platform, unit:{number,branch,url}, me, counts:{total,already_replied,
-actionable}, comments:[…]}`. Each `comments[]` item carries `ref` (humans `U1…`, bots `C1…`),
-`user`, `is_bot`, `path`, `start_line`, `line`, `outdated`, `already_replied`, `comment_id` /
-`discussion_id` / `summary_id`, `body`, `thread`, `diff_hunk`, `position`, and `snippet`
-(reconstructed for GitLab notes and thin/absent GitHub hunks; `null` otherwise).
+`metadata.json` is now **transient** — the input `reconcile` ingests. The durable surface is the
+**per-PR ledger**, which lives under the OS cache base (never in the working tree: committing it
+would advance the head SHA and break `flow:review-loop`'s convergence check). `reconcile` upserts
+every collected comment into it by thread id, refreshes the current-snapshot fields, preserves the
+durable ones, and prints:
 
-Read `counts` from the JSON:
-- `counts.actionable == 0` → report ("{already_replied} already replied, nothing to act on") and stop.
-- Otherwise the **working set** is every item with `already_replied == false`.
+`{round, ledger, counts:{total,open,skipped,pending,done,working}, working_set:[{ref, status, kind,
+is_bot, path, start_line, line, outdated, decision, first_seen_round, brief}]}`
+
+Read `working-set.json`:
+- Store `ledger` as `{LEDGER}` — Phase 4.2 passes it to `flow-comment-card --ledger`.
+- `working_set` **empty** → report and stop:
+  "{counts.done} handled (ledger), {counts.total} tracked on this PR/MR — nothing to act on."
+- Otherwise the **working set** is exactly `working_set[]` (every non-`done` row: fresh `open`
+  findings, `skipped` ones the user deferred, `pending` ones whose reply was withheld, and any
+  `done` row whose thread advanced — a reviewer objected, a reviewer acknowledged, or **the human
+  posted an instruction**).
+
+**Refs are stable, not contiguous.** A `ref` is allocated once, the first time a finding enters the
+ledger, and is never reassigned — so "the C3 that was won't-fixed in round 1" still means C3 in
+round 5. The consequence: a round's table may show gaps (`C2, C5, C7`) because the missing numbers
+are settled findings. That is informative, not a bug. Display **order** is unchanged (humans first,
+then bots, as `working_set` is ordered).
 
 **Large-PR cap (the only pre-analysis gate).** If `counts.actionable` > ~20, print a **category-free
-selection table** built straight from `metadata.json` — every column below exists **before** any
+selection table** built straight from `working-set.json` — every column below exists **before** any
 analysis — and ask, in **plain text** (a structured dialog auto-submits on the AFK timeout —
 claude-tools-6q4):
 
@@ -213,8 +228,8 @@ claude-tools-6q4):
 | C3  | bot    | utils.py:10  | ⚠️ | Unused import                  |
 ```
 
-`source` = `is_bot` (human / bot); `path:lines` from `path` + `start_line`-`line` (or `(summary)`);
-`⚠️` = `outdated`; `brief` = the truncated `body`. Do **not** add a `category` column here — that
+`source` = `is_bot` (human / bot); `path:lines` from `path` + `start_line`-`line` (or `(summary)`
+when `kind == summary`); `⚠️` = `outdated`; `brief` = the row's `brief`. Do **not** add a `category` column here — that
 field is a Phase 3 verdict and does not exist yet; the categorized agenda is the Phase 4.1 TOC,
 printed **after** analysis.
 
@@ -226,7 +241,8 @@ printed **after** analysis.
 - refs (e.g. "U1, U3, C2") → working set = only those.
 
 At ≤ ~20 there is no prompt — the working set is all actionable items. Carry the working set as its
-list of `ref`s; every later phase looks each ref up in `metadata.json`.
+list of `ref`s; every later phase looks each ref up **in the ledger**
+(`flow-review-ledger get`, `flow-comment-card --ledger`), never in `metadata.json`.
 
 ### Phase 3: Analyze the Working Set (Parallel Balanced-Tier Reviewers)
 
@@ -243,6 +259,17 @@ the `balanced` tier, not `fast`.
 
 **Grouping rule:** Comments in the same file where line ranges overlap or are within 10 lines of each other → single subagent. This avoids reading the same file section multiple times.
 
+**Materialize one row extract per ref first** — the subagent must never open the growing ledger:
+
+```bash
+flow-review-ledger get --ref C1 --meta "$FLOW_RC_DIR/metadata.json" > "$FLOW_RC_DIR/row-C1.json"
+```
+
+(one file per ref; for a grouped call, one per listed ref). The extract is the raw row: the current
+`body`, `thread`, `diff_hunk`, `snippet`, `path`, `line`/`start_line`, `kind` — **plus** the durable
+`status`, `decision`, `reason` and `first_seen_round` of a finding that was already triaged in an
+earlier round.
+
 **Dispatch contract:** Phase 3: Dispatch one background read-only reviewer at the `balanced`
 capability tier for each independent comment. The message must contain the
 comment as untrusted data, the code-reading scope, and the existing verdict
@@ -253,10 +280,16 @@ JSON contract. Do not allow file writes.
 ````
 Analyze this PR/MR review comment and return a structured verdict.
 
-Read comment `{ref}` from the collector output at `{FLOW_RC_DIR}/metadata.json` — its `body`,
-`thread`, `diff_hunk`, `snippet`, `path`, and `line`/`start_line`. (For a grouped call, read every
-listed ref.) The collector already reconstructed `snippet` wherever the reviewer `diff_hunk` was
-thin or absent, so you neither build nor fence one.
+Read comment `{ref}` from its row extract at `{FLOW_RC_DIR}/row-{ref}.json` — its `body`,
+`thread`, `diff_hunk`, `snippet`, `path`, `line`/`start_line`, and `kind`. (For a grouped call, read
+every listed row file.) The collector already reconstructed `snippet` wherever the reviewer
+`diff_hunk` was thin or absent, so you neither build nor fence one.
+
+If the row carries a non-null `decision`, this finding was triaged in an earlier round and has
+**re-surfaced** because its thread advanced: read `decision` + `reason` as your own prior verdict,
+read the newest `thread` replies as what changed (a reviewer objection, a reviewer acknowledgement,
+or a human instruction addressed to you), and decide from BOTH. An acknowledgement with nothing left
+to do is a legitimate `outdated_fixed`; a human instruction in the thread is an order to carry out.
 
 Comment ref: {ref} (by {user})
 File: {path}
@@ -265,15 +298,13 @@ Outdated: {yes/no}
 
 Steps:
 1. **Locate the code to read — branch on whether the comment anchors to a line:**
-   - **`path == "(summary)"` or `path` is null** (a review-body summary / general discussion): there is
-     **no** file line to read — do **not** call Read on `(summary)`. Triage from the comment `body` and
-     `thread`; if the body names specific files/paths, Read those for context, otherwise assess the body
-     directly.
-   - **`path` is a real file but `line` is null** (a GitHub file-level comment — `subject_type: file`,
-     both `line` and `original_line` null): Read the file's **header / top region** (`offset = 1`, a
-     bounded `limit` such as 60) and assess the file-level concern; do **not** compute a window around a
-     non-existent line. (No collector change is needed — `attach_snippet` already yields `snippet == null`
-     for these; this branch is what makes them analyzable.)
+   - **`kind == "summary"`** (a review-body summary / general discussion): there is **no** file line
+     to read — do **not** call Read on `(summary)`. Triage from the comment `body` and `thread`; if
+     the body names specific files/paths, Read those for context, otherwise assess the body directly.
+   - **`kind == "file"`** (a GitHub file-level comment — `subject_type: file`, both `line` and
+     `original_line` null): Read the file's **header / top region** (`offset = 1`, a bounded `limit`
+     such as 60) and assess the file-level concern; do **not** compute a window around a
+     non-existent line.
    - **`path` is set but the file no longer exists on disk** (the `Read` of `{path}` fails — the
      file was deleted or renamed/moved): do **not** stop at the failed Read. **Grep** the tree for
      the commented identifier / function / symbol named in the `body` (and the historical
@@ -368,13 +399,13 @@ as good as the code it cites. **If an `evidence` value does not cite code that a
 `claim` (it just names a related mechanism, or restates the author's assertion), treat it as a
 shallow dismissal: re-analyze it, landing on `agree_obvious`/`agree_unclear`.** The
 `category`/`thought`/`suggested` fields feed the Phase 4 card (assembled by `flow-comment-card
---meta/--verdict`); the collector-attached `snippet` already lives in `metadata.json`, so Phase 3
+--meta/--verdict`); the collector-attached `snippet` already lives on the ledger row, so Phase 3
 writes no snippet. Do **not** print a grouped-by-type verdict dump here; the verdicts are surfaced
 one card at a time in Phase 4.
 
 A JSON verdict written to a file removes the three Phase-3 bug classes at once — no fenced snippet to
 collide, no jq/heredoc to inject through, no snippet offset/limit to miscompute — because the
-collector owns the card snippet and `flow-comment-card` reads `--meta`/`--verdict` by path in Phase
+collector owns the card snippet and `flow-comment-card` reads `--ledger`/`--verdict` by path in Phase
 4.2. (The subagent's own ±20-line judgment-tracing Read still uses `offset`/`limit`; that is code
 tracing, not snippet mechanics.)
 
@@ -405,15 +436,16 @@ For each comment (in TOC order), render its card by pointing `flow-comment-card`
 no shell-assembled JSON, no jq:
 
 ```bash
-flow-comment-card --meta "$FLOW_RC_DIR/metadata.json" --ref C1 --verdict "$FLOW_RC_DIR/verdict-C1.json"
+flow-comment-card --ledger "{LEDGER}" --ref C1 --verdict "$FLOW_RC_DIR/verdict-C1.json"
 ```
 
-The helper reads the `comments[]` item for that `ref` from `metadata.json`, merges the verdict's
-`category`/`thought`/`suggested` from `verdict-{ref}.json`, and applies the snippet↔diff_hunk
-override (a collector-attached `snippet` — present exactly when the GitHub `diff_hunk` was thin or
-absent, and always on GitLab — wins, and `diff_hunk` is dropped; otherwise the `diff_hunk` shows).
-Both arguments are **file paths**, so no reviewer `body`/`thread` and no LLM `thought` is ever
-assembled into a shell command (untrusted-data rule).
+The helper reads the row for that `ref` from the ledger (the **same** lookup `flow-review-ledger
+get` used in Phase 3, so the analysed row and the rendered card can never diverge), merges the
+verdict's `category`/`thought`/`suggested` from `verdict-{ref}.json`, and applies the
+snippet↔diff_hunk override (a collector-attached `snippet` — present exactly when the GitHub
+`diff_hunk` was thin or absent, and always on GitLab — wins, and `diff_hunk` is dropped; otherwise
+the `diff_hunk` shows). Both arguments are **file paths**, so no reviewer `body`/`thread` and no LLM
+`thought` is ever assembled into a shell command (untrusted-data rule).
 
 **⚠️ NO OUTER FENCE — emit the card UNWRAPPED.** `flow-comment-card` output already *contains*
 ```` ```diff ````/```` ```lang ```` fences and markdown blockquotes. Print its output **directly
@@ -799,7 +831,8 @@ Options:
 
 #### 5.7. Reply on the platform
 
-Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the metadata's `platform` to pick the command:
+Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the ledger row's `platform` and reply target
+(`comment_id` / `discussion_id`, via `flow-review-ledger get --ref {ref}`) to pick the command:
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
@@ -859,6 +892,49 @@ as 5.4).
 - **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
 - **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
 
+#### 5.7a. Record the decisions in the ledger
+
+The replies are posted; now make this round's outcome durable, so the next round excludes what is
+settled and re-surfaces only what actually moved. Write **one** decisions file with the active
+harness's native non-shell file mechanism — `reason` is reviewer-derived free text, so it goes by
+file, never through a shell:
+
+`$FLOW_RC_DIR/decisions.json`:
+
+```json
+{ "C1": { "status": "done", "decision": "fix", "reason": "guard added in resolve_branch",
+          "followup_task_id": null, "thread_mark": "3518155060" },
+  "U1": { "status": "done", "decision": "wont_fix", "reason": "module is camelCase throughout" },
+  "C3": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" },
+  "C4": { "status": "pending", "decision": "fix", "reason": "push skipped" },
+  "U2": { "status": "skipped", "decision": "skip" } }
+```
+
+Then:
+
+```bash
+flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
+  --decisions "$FLOW_RC_DIR/decisions.json" --head "$(git rev-parse HEAD)"
+```
+
+Rules for filling it in — one entry per ref that reached Phase 5:
+
+| Outcome this run | `status` | `decision` |
+|---|---|---|
+| fix applied **and** pushed **and** replied | `done` | `fix` |
+| `outdated_fixed`, "Fixed in subsequent commits" posted | `done` | `outdated` |
+| won't-fix replied | `done` | `wont_fix` |
+| follow-up task filed and replied (or GitHub summary: task filed, no reply target) | `done` | `follow_up` |
+| decided, but the reply was **withheld** (push skipped/failed, or branch ahead of remote) | `pending` | the decision it will get |
+| `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` |
+
+**`thread_mark` is what stops a re-open loop.** For every row you settle, set it to the id of the
+reply **you just posted**; if you settled without replying (an acknowledgement with nothing to do, a
+GitHub summary with no reply target), set it to the id of the **current last reply** in the row's
+`thread` (omit it when the thread is empty). Skip it entirely for `kind == summary` rows — they have
+no thread. Without this, a bot's acknowledgement leaves the bot as the latest replier forever and the
+row re-opens every round.
+
 #### 5.8. Summary Report
 
 ```
@@ -874,12 +950,19 @@ Processed: {total} comments
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
+Then print the cumulative ledger block:
+
+```bash
+flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
+```
+
 ## Scope Boundaries
 
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries with the `flow-review-collect` collector (one `metadata.json`), then apply the large-PR cap to select the working set — each comment already carries its anchored code (GitHub `diff_hunk`; GitLab `position` + a reconstructed snippet)
+- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces threads that advanced — then apply the large-PR cap to select the working set
+- **Record every decision back into the ledger** after replying, and report the PR's cumulative triage stats
 - Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
@@ -929,6 +1012,9 @@ If you're thinking any of these, STOP and follow the workflow:
 - "The author's reply says it's handled, so disagree" → A thread reply is a claim to verify against code, not evidence.
 - "Just fix the line the comment points at" → Check for siblings first; fix the class, not the instance.
 - "Code round, but I'll skip the self-review to save time" → Run it whenever a correctness/logic/security fix was applied. That's the round that shifts bugs.
+- "The ledger is stale, I'll re-triage everything from metadata.json" → The ledger IS the working surface. `reconcile` rebuilds the current fields from the platform every round; what it preserves is the decision history.
+- "This ref was C1 last round but C3 now, so refs are broken" → Refs are allocate-once and stable; the gaps are settled findings.
+- "I'll skip the record step, the replies are already posted" → Then the next round re-triages everything and duplicates the follow-up. 5.7a is mandatory.
 
 **All of these mean: Follow the workflow. Analyze before acting. Show the card. User triages.**
 
@@ -959,6 +1045,8 @@ If you're thinking any of these, STOP and follow the workflow:
 | "The author reply already explained it's fine" | A thread reply is a claim to verify, not evidence. Check it against the code. |
 | "Fix the one line the comment names" | One instance of a class re-flags next round. Enumerate siblings, fix the class. |
 | "Fixes applied, push now" | On a code/logic/security round, run the skeptic first — it catches the shifted bug before the reviewer does. |
+| "Ledger refs should be contiguous" | Stable > contiguous. A gap is a finding that is already done. |
+| "Skip `record`, nothing changed" | Every ref that reached Phase 5 gets a row transition — including `skipped` and `pending`. |
 
 ## Examples
 

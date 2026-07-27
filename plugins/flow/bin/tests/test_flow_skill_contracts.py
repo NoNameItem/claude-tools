@@ -222,3 +222,35 @@ def test_old_allowed_tools_design_is_marked_superseded() -> None:
     text = (FLOW_ROOT.parents[1] / "docs/superpowers/specs/2026-07-07-flow-allowed-tools-audit-design.md").read_text()
     assert "Superseded for Codex" in text
     assert "2026-07-17-flow-codex-support-design.md" in text
+
+
+# --- Task: persistent per-PR review ledger (claude-tools-elf.39) -----------------------------
+
+REVIEW_COMMENTS_SKILL = FLOW_ROOT / "skills" / "review-comments" / "SKILL.md"
+
+
+def test_review_comments_grants_and_drives_the_ledger() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "Bash(flow-review-ledger:*)" in allowed_tools(text)
+    for invocation in (
+        "flow-review-ledger reconcile --meta",
+        "flow-review-ledger get --ref",
+        "flow-review-ledger record",
+        "flow-review-ledger stats",
+    ):
+        assert invocation in text, f"review-comments is missing `{invocation}`"
+
+
+def test_review_comments_reads_rows_not_the_collector_document() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "row-{ref}.json" in text  # Phase 3 analyses a per-ref extract
+    assert "flow-comment-card --ledger" in text
+    assert "flow-comment-card --meta" not in text
+    # Phase 3 must not point a subagent at the whole collector document any more
+    assert "from the collector output at" not in text
+
+
+def test_review_comments_branches_on_kind_not_the_summary_sentinel() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "`kind`" in text
+    assert '`path == "(summary)"` or `path` is null' not in text
