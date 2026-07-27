@@ -313,6 +313,19 @@ def test_review_comments_decisions_example_always_carries_thread_mark() -> None:
     assert missing == [], f"done entries without `thread_mark` (they will re-open): {missing}"
 
 
+def test_review_comments_5_7a_states_the_null_merge_rule() -> None:
+    # `record` merges a decisions entry the way JSON merge does: an ABSENT key is a no-op, an
+    # explicit `null` CLEARS the field. 5.7a's own example depends on the clear (`C1` carries
+    # `"followup_task_id": null` to drop the id an earlier `follow_up` round filed), so the prose
+    # must state that rule -- not the stale "record writes the field only when the entry supplies
+    # a non-null id", which would make the example inert and leave a stale task id on the row.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
+    assert "only when the entry supplies a non-null id" not in section
+    assert re.search(r"\bclears\b", section), "5.7a must say that an explicit null clears the field"
+    assert re.search(r"\bomit", section), "5.7a must say that an omitted key leaves the value unchanged"
+
+
 def test_review_comments_replies_to_the_ledger_thread_id() -> None:
     # The ledger row stores `thread_id` only (new_row + SNAPSHOT_FIELDS) — never `comment_id` or
     # `discussion_id`. A reply template keyed on those cannot be filled from `flow-review-ledger

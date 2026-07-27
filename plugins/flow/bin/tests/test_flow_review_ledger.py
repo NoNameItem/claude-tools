@@ -62,7 +62,39 @@ class TestSplitProject:
             _ledger.split_project("https://github.com/../evil/pull/1")
 
 
+class TestDeriveNumber:
+    def test_github_and_gitlab_routes(self):
+        assert _ledger.derive_number("https://github.com/o/r/pull/96") == "96"
+        assert _ledger.derive_number("https://github.com/o/r/pulls/96") == "96"
+        assert _ledger.derive_number("https://gitlab.com/g/p/-/merge_requests/7") == "7"
+        assert _ledger.derive_number("https://gitlab.com/g/p/merge_requests/7") == "7"
+        assert _ledger.derive_number("https://github.com/o/r") is None
+        assert _ledger.derive_number("") is None
+
+    def test_rightmost_route_marker_wins_over_a_project_segment_named_pull(self):
+        """A GitLab subgroup literally named `pull` must not shadow the real `merge_requests`
+        route: the URL below is project `group/pull/12`, MR `7` — not PR 12."""
+        assert _ledger.derive_number("https://gitlab.com/group/pull/12/-/merge_requests/7") == "7"
+
+    def test_github_repo_segment_named_pull_does_not_swallow_the_route(self):
+        """`.index()` stops at the FIRST `pull`; with a repo named `pull` that one is followed by
+        the route marker, not a digit, so the real number must still be found."""
+        assert _ledger.derive_number("https://github.com/o/pull/pull/7") == "7"
+
+    def test_trailing_segments_after_the_number_are_ignored(self):
+        assert _ledger.derive_number("https://github.com/o/r/pull/96/files") == "96"
+
+
 class TestLedgerPath:
+    def test_zero_padded_number_resolves_to_the_same_ledger(self, tmp_path, monkeypatch):
+        """`/pull/0012` and `--number 12` are the same PR — they must not start two ledgers."""
+        monkeypatch.setattr(_ledger.os, "name", "posix")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        url = "https://github.com/o/r/pull/12"
+        padded = _ledger.derive_number("https://github.com/o/r/pull/0012")
+        assert _ledger.ledger_path(url, padded) == _ledger.ledger_path(url, 12)
+        assert _ledger.ledger_path(url, "0012").name == "pr-12.json"
+
     def test_nested_under_cache_base(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_ledger.os, "name", "posix")
         monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
@@ -526,13 +558,56 @@ class TestRecord:
         second = harness.ledger(meta)["rows"]["1"]
         assert first == second
 
-    def test_explicit_null_is_a_no_op_for_every_field(self, harness):
-        """elf.53(c): the ledger's convention — an explicit JSON null never clears a durable
-        field, it means "no new information supplied" (already true for `thread_mark`,
-        pinned by test_done_without_thread_mark_reopens_on_our_own_reply). Applied uniformly
-        to `status`/`decision`/`reason`/`followup_task_id`/`thread_mark`."""
+    def _settle_all_fields(self, harness, meta):
+        self._record(
+            harness,
+            meta,
+            {
+                "U1": {
+                    "status": "done",
+                    "decision": "follow_up",
+                    "reason": "deferred",
+                    "followup_task_id": "ct-1",
+                    "thread_mark": 50,
+                }
+            },
+        )
+
+    def test_omitting_a_key_is_a_no_op_for_every_field(self, harness):
+        """Half of the convention: an ABSENT key means "no new information" — the stored value
+        survives. (The other half: an explicit null CLEARS, see the tests below.)"""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
+        self._settle_all_fields(harness, meta)
+        before = dict(harness.ledger(meta)["rows"]["1"])
+        result = self._record(harness, meta, {"U1": {}})
+        assert result.returncode == 0, result.stderr
+        after = harness.ledger(meta)["rows"]["1"]
+        for field in ("status", "decision", "reason", "followup_task_id", "thread_mark"):
+            assert after[field] == before[field], field
+
+    def test_explicit_null_clears_decision_reason_and_followup_task_id(self, harness):
+        """The other half: ordinary JSON-merge semantics — an explicit null CLEARS the field."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._settle_all_fields(harness, meta)
+        result = self._record(harness, meta, {"U1": {"decision": None, "reason": None, "followup_task_id": None}})
+        assert result.returncode == 0, result.stderr
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["decision"] is None
+        assert row["reason"] is None
+        assert row["followup_task_id"] is None
+        assert row["status"] == "done"  # untouched: the key was absent
+
+    def test_null_followup_task_id_clears_a_previous_rounds_task(self, harness):
+        """review-comments/SKILL.md 5.7a's canonical decisions.json writes
+        `"followup_task_id": null` on a `fix` entry for exactly this reason: a ref decided
+        `follow_up` in an earlier round and re-decided `fix` now must NOT keep the stale task id
+        (it re-surfaces in "Follow-ups filed" the moment a later round decides `follow_up` again
+        without supplying a fresh one)."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
         self._record(
             harness,
             meta,
@@ -541,29 +616,44 @@ class TestRecord:
                     "status": "done",
                     "decision": "fix",
                     "reason": "guard added",
-                    "followup_task_id": "ct-1",
+                    "followup_task_id": None,
                     "thread_mark": 50,
                 }
             },
         )
-        before = dict(harness.ledger(meta)["rows"]["1"])
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["followup_task_id"] is None
+        assert row["decision"] == "fix"
+        # and it stays cleared through a later `follow_up` that files no task
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "thread_mark": 50}})
+        assert harness.ledger(meta)["rows"]["1"]["followup_task_id"] is None
+
+    def test_explicit_null_status_is_rejected_and_writes_nothing(self, harness):
+        """`status` is the one NON-nullable field: the row has no "no status" state, so a null
+        there is malformed input, rejected like an unknown status — all-or-nothing."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = self._record(harness, meta, {"U1": {"status": None, "decision": "fix"}})
+        assert result.returncode == 2
+        assert "Traceback" not in result.stderr
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["status"] == "open"
+        assert row["decision"] is None  # nothing written at all
+
+    def test_null_thread_mark_on_a_summary_row_is_the_skill_example(self, harness):
+        """5.7a's `C5` entry: a GitHub `kind == "summary"` row has no thread, so its mark is
+        `null`. Clearing an already-empty mark is inert, and a summary never re-opens."""
+        summary = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
+        meta = meta_doc([summary])
+        harness.reconcile(meta)
         result = self._record(
             harness,
             meta,
-            {
-                "U1": {
-                    "status": None,
-                    "decision": None,
-                    "reason": None,
-                    "followup_task_id": None,
-                    "thread_mark": None,
-                }
-            },
+            {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-9", "thread_mark": None}},
         )
         assert result.returncode == 0, result.stderr
-        after = harness.ledger(meta)["rows"]["1"]
-        for field in ("status", "decision", "reason", "followup_task_id", "thread_mark"):
-            assert after[field] == before[field], field
+        assert harness.ledger(meta)["rows"]["900"]["thread_mark"] is None
+        assert harness.reconcile(meta)["working_set"] == []
 
     def test_record_against_a_missing_ledger_reports_instead_of_creating_one(self, harness):
         """elf.52(c): Phase 5.7a always runs `record` right after `reconcile` in the same run,
@@ -597,17 +687,25 @@ class TestRecord:
         self._record(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
         assert harness.ledger(meta)["rows"]["1"]["thread_mark"] == 50  # unchanged, pre-reply
 
-        # an explicit null is the same no-op, which is why 5.7a may write `"thread_mark": null`
-        # for a `kind == "summary"` row (whose mark is None on insert anyway)
-        self._record(harness, meta, {"U1": {"status": "done", "thread_mark": None}})
-        assert harness.ledger(meta)["rows"]["1"]["thread_mark"] == 50
-
         posted = [reply(50), reply(5001, user="me", is_bot=False, body="Won't fix: …")]
         out = harness.reconcile(meta_doc([inline_comment(1, thread=posted)]))
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
         row = harness.ledger(meta)["rows"]["1"]
         assert row["status"] == "open"
         assert row["decision"] == "wont_fix"  # the settled verdict is kept, but it re-triages
+
+    def test_null_thread_mark_on_a_threaded_row_clears_it_and_re_opens(self, harness):
+        """The same trap by the other door: on a row that HAS a thread, an explicit null clears
+        the mark, so the next reply reads as an advance (`id_advanced(current, None)` is True) and
+        the settled row re-opens. `null` is for `kind == "summary"` rows only; a threaded `done`
+        entry must carry the id of the reply just posted."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": None}})
+        assert harness.ledger(meta)["rows"]["1"]["thread_mark"] is None
+        out = harness.reconcile(meta)
+        assert [e["ref"] for e in out["working_set"]] == ["U1"]
+        assert harness.ledger(meta)["rows"]["1"]["status"] == "open"
 
 
 class TestStats:
@@ -734,6 +832,27 @@ class TestPurge:
         assert result.returncode == 2
         assert "flow-review-ledger:" in result.stderr
         assert "Traceback" not in result.stderr
+
+    def test_zero_padded_url_purges_the_same_ledger(self, harness):
+        """A zero-padded link must hit the ledger `--number 12` created, not a second one."""
+        meta = meta_doc([inline_comment(1)], number=12, url="https://github.com/o/r/pull/12")
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 12)
+        assert path.is_file()
+        result = harness.run("purge", "--url", "https://github.com/o/r/pull/0012")
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
+
+    def test_subgroup_named_pull_purges_the_merge_request_not_the_subgroup(self, harness):
+        """The rightmost route marker decides: project `group/pull/12`, MR `7`."""
+        url = "https://gitlab.com/group/pull/12/-/merge_requests/7"
+        meta = meta_doc([inline_comment(1)], number=7, url=url, platform="gitlab")
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(url, 7)
+        assert path.is_file()
+        result = harness.run("purge", "--url", url)
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
 
     def test_explicit_number_still_wins_and_behaviour_is_unchanged(self, harness):
         """elf.52(b): both skill call sites pass --number too — that path must stay byte-identical."""

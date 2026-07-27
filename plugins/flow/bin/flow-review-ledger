@@ -11,6 +11,10 @@ Durable working memory keyed by thread id: what was found, what was decided abou
 whether the thread has advanced since. Pure stdlib. Every untrusted value (bodies, thread
 replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
 reaches a command line.
+
+`record`'s decisions file merges into a row the way JSON merge does: an ABSENT key leaves the
+stored value alone, an explicit `null` CLEARS it. Clearable fields: `decision`, `reason`,
+`followup_task_id`, `thread_mark`. `status` is not clearable — a null there is rejected.
 """
 
 from __future__ import annotations
@@ -196,23 +200,33 @@ def validate_decisions(decisions: object) -> None:
         if not isinstance(entry, dict):
             msg = f"decision for {ref} must be an object"
             raise ValueError(msg)
-        status = entry.get("status")
-        if status is not None and status not in _ledger.STATUSES:
-            msg = f"decision for {ref} has unknown status {status!r}"
-            raise ValueError(msg)
+        if "status" in entry:
+            status = entry["status"]
+            if status is None:
+                # Every other durable field is nullable and a null CLEARS it; `status` is an enum
+                # with no empty member, so a null there can only be a mistake.
+                msg = f"decision for {ref} has a null status — omit the key to leave it unchanged"
+                raise ValueError(msg)
+            if status not in _ledger.STATUSES:
+                msg = f"decision for {ref} has unknown status {status!r}"
+                raise ValueError(msg)
         decision = entry.get("decision")
         if decision is not None and decision not in _ledger.DECISIONS:
             msg = f"decision for {ref} has unknown decision {decision!r}"
             raise ValueError(msg)
 
 
-#: Every field `record` can update on a row. An explicit JSON null on any of these is a
-#: no-op — "no new information supplied" — never a request to clear the stored value.
-#: `thread_mark` already worked this way (a `done` entry that omits/nulls it deliberately
-#: keeps its pre-reply mark, see `test_done_without_thread_mark_reopens_on_our_own_reply`);
-#: applying the same rule to the other four removes the prior `in entry`-vs-`is not None`
-#: asymmetry and rules out a stray null in a decisions file silently wiping a durable field.
-RECORD_FIELDS = ("status", "decision", "reason", "followup_task_id", "thread_mark")
+#: Every field `record` can update on a row, with ordinary JSON-merge semantics:
+#: an ABSENT key is a no-op ("this round supplied no new information"), an explicit JSON
+#: `null` CLEARS the stored value. review-comments 5.7a's canonical decisions.json relies on
+#: the clear — a ref re-decided `fix` writes `"followup_task_id": null` to drop the task id an
+#: earlier `follow_up` round filed, and a GitHub `kind == "summary"` row writes
+#: `"thread_mark": null` because it has no thread.
+#: `status` is the one exception: it is a non-nullable enum (a row is always in exactly one of
+#: `_ledger.STATUSES`), so `validate_decisions` rejects an explicit null rather than writing a
+#: row that belongs to no status bucket.
+NULLABLE_FIELDS = ("decision", "reason", "followup_task_id", "thread_mark")
+RECORD_FIELDS = ("status", *NULLABLE_FIELDS)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -235,7 +249,7 @@ def cmd_record(args: argparse.Namespace) -> int:
             unknown.append(ref)
             continue
         for field in RECORD_FIELDS:
-            if entry.get(field) is not None:
+            if field in entry:
                 row[field] = entry[field]
         row["last_round"] = doc.get("round", 0)
         row["head"] = args.head
@@ -350,7 +364,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_unit_args(get)
     get.set_defaults(func=cmd_get)
 
-    record = sub.add_parser("record")
+    record = sub.add_parser(
+        "record",
+        description=(
+            "Merge a decisions file into the ledger. Per entry, an ABSENT key is a no-op and an "
+            "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id, "
+            "thread_mark (null = 'no thread', for a kind == 'summary' row — on a threaded row a "
+            "cleared mark makes the finding re-open). status is not clearable: null is rejected."
+        ),
+    )
     record.add_argument("--decisions", required=True)
     record.add_argument("--head", required=True)
     add_unit_args(record)

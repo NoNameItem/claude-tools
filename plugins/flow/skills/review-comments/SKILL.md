@@ -921,8 +921,22 @@ file, never through a shell:
 ```
 
 `C1`/`U1`/`C3` each carry the id of the reply just posted. `C5` is a GitHub `kind == "summary"` row:
-no thread, no reply, so its mark is `null`. `C4`/`U2` are not `done`, so they stay in the working set
-on their own.
+no thread, no reply, so its mark is `null`. `C1`'s `"followup_task_id": null` drops the task id an
+earlier round filed when it decided `follow_up` — this round it is a `fix`. `C4`/`U2` are not `done`,
+so they stay in the working set on their own.
+
+**How an entry merges into the row** — ordinary JSON-merge semantics, per field:
+
+| In the entry | Effect on the row |
+|---|---|
+| key absent | no-op — the stored value survives ("this round supplied nothing new") |
+| key with a value | overwrites |
+| key with an explicit `null` | **clears** the field (`decision`, `reason`, `followup_task_id`, `thread_mark`) |
+
+`status` is the one field that cannot be cleared — a row is always in exactly one status, so
+`record` rejects `"status": null` outright (nothing in the file is written). Write a null only when
+you mean "this row no longer has one": a reversed `follow_up` clears `followup_task_id`, a summary
+row clears `thread_mark`.
 
 Then:
 
@@ -945,10 +959,11 @@ Rules for filling it in — one entry per ref that reached Phase 5:
 | `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` | omit |
 
 **`thread_mark` is a REQUIRED field on every `done` entry** — the id of the reply just posted, or
-`null` for a `kind == "summary"` row that has no thread. It is what stops the re-open loop. `record`
-writes the field **only** when the entry supplies a non-null id, so a `done` entry that omits it
-keeps its pre-reply mark — the reply you just posted then reads as a thread advance, `reconcile`
-re-opens the finding next round, and it re-triages and re-replies forever.
+`null` for a `kind == "summary"` row that has no thread. It is what stops the re-open loop, and both
+ways of not supplying an id break it: **omit** the key on a threaded row and it keeps its pre-reply
+mark; write an explicit **`null`** on a threaded row and the mark is cleared to "nothing accounted
+for". Either way the reply you just posted reads as a thread advance, `reconcile` re-opens the
+finding next round, and it re-triages and re-replies forever. `null` is for summary rows only.
 
 #### 5.8. Summary Report
 

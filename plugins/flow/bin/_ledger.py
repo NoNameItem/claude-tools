@@ -92,24 +92,31 @@ def derive_number(url: str) -> str | None:
     Recognises GitHub `.../pull/<n>` (and `/pulls/<n>`) and GitLab `.../-/merge_requests/<n>`
     (with or without the leading `-`, since the segment split just looks for `merge_requests`
     directly followed by a digit). Lets `--url` alone stand in for `--number` on the CLI.
+
+    Scanned RIGHT-TO-LEFT: the route lives at the END of the URL, while an earlier `pull` /
+    `merge_requests` segment can only be part of the project path (a GitLab subgroup or repo
+    may legitimately be named `pull`). Taking the leftmost match would resolve
+    `gitlab.com/group/pull/12/-/merge_requests/7` to 12 — a different, real PR's ledger.
     """
     segments = [segment for segment in urlsplit(url or "").path.split("/") if segment]
-    for marker in ("pull", "pulls", "merge_requests"):
-        if marker in segments:
-            index = segments.index(marker)
-            if index + 1 < len(segments) and segments[index + 1].isdigit():
-                return segments[index + 1]
+    for index in range(len(segments) - 2, -1, -1):
+        if segments[index] in ("pull", "pulls", "merge_requests") and segments[index + 1].isdigit():
+            return segments[index + 1]
     return None
 
 
 def ledger_path(url: str, number: object) -> Path:
-    """<cache-base>/flow/review-ledger/<host>/<project…>/pr-<n>.json"""
+    """<cache-base>/flow/review-ledger/<host>/<project…>/pr-<n>.json
+
+    The number is normalised to its canonical decimal form, so a zero-padded link
+    (`/pull/0012`) and `--number 12` resolve to ONE ledger instead of two.
+    """
     host, segments = split_project(url)
     text = str(number if number is not None else "").strip().lstrip("!#")
     if not (text.isascii() and text.isdigit()):
         msg = f"PR/MR number must be numeric, got {number!r}"
         raise LedgerPathError(msg)
-    return cache_base().joinpath("flow", "review-ledger", host, *segments, f"pr-{text}.json")
+    return cache_base().joinpath("flow", "review-ledger", host, *segments, f"pr-{int(text)}.json")
 
 
 def empty_ledger(unit: dict | None = None) -> dict:
