@@ -29,12 +29,22 @@ def read_json(path: str) -> object:
 
 
 def resolve_unit(args: argparse.Namespace) -> tuple[str, object]:
-    """(url, number) from --meta's `unit`, or from explicit --url/--number."""
+    """(url, number) from --meta's `unit`, or from explicit --url/--number.
+
+    When only --url is given, the number is derived from its route segment (GitHub
+    `.../pull/<n>`, GitLab `.../-/merge_requests/<n>`) so hand-use of e.g. `purge --url …`
+    doesn't require repeating the number the URL already carries. A URL with no derivable
+    number leaves `number` as None, and `ledger_path` raises its existing clear error.
+    """
     if getattr(args, "meta", None):
         meta = read_json(args.meta)
         unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
         return unit.get("url", ""), unit.get("number")
-    return getattr(args, "url", "") or "", getattr(args, "number", None)
+    url = getattr(args, "url", "") or ""
+    number = getattr(args, "number", None)
+    if number is None:
+        number = _ledger.derive_number(url)
+    return url, number
 
 
 # ---- reconcile ---------------------------------------------------------------
@@ -133,8 +143,13 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     doc["round"] = int(doc.get("round", 0)) + 1
     round_no = doc["round"]
 
+    comments = meta.get("comments") if isinstance(meta, dict) else None
+    if comments is not None and not isinstance(comments, list):
+        msg = f"meta.comments must be a list, got {type(comments).__name__}"
+        raise ValueError(msg)
+
     working = []
-    for item in meta.get("comments") or []:
+    for item in comments or []:
         thread_id = _ledger.thread_id_of(item)
         if thread_id is None:
             continue  # no platform id → not trackable
@@ -191,9 +206,24 @@ def validate_decisions(decisions: object) -> None:
             raise ValueError(msg)
 
 
+#: Every field `record` can update on a row. An explicit JSON null on any of these is a
+#: no-op — "no new information supplied" — never a request to clear the stored value.
+#: `thread_mark` already worked this way (a `done` entry that omits/nulls it deliberately
+#: keeps its pre-reply mark, see `test_done_without_thread_mark_reopens_on_our_own_reply`);
+#: applying the same rule to the other four removes the prior `in entry`-vs-`is not None`
+#: asymmetry and rules out a stray null in a decisions file silently wiping a durable field.
+RECORD_FIELDS = ("status", "decision", "reason", "followup_task_id", "thread_mark")
+
+
 def cmd_record(args: argparse.Namespace) -> int:
     url, number = resolve_unit(args)
     path = _ledger.ledger_path(url, number)
+    if not path.is_file():
+        # Phase 5.7a always runs `record` immediately after `reconcile` in the same run, which
+        # unconditionally saves the ledger — so a missing file here means something upstream
+        # went wrong. Materialising an empty round-0 document would silently hide that.
+        msg = f"no ledger at {path} — run reconcile before record"
+        raise ValueError(msg)
     decisions = read_json(args.decisions)
     validate_decisions(decisions)
 
@@ -204,13 +234,9 @@ def cmd_record(args: argparse.Namespace) -> int:
         if row is None:
             unknown.append(ref)
             continue
-        if entry.get("status") is not None:
-            row["status"] = entry["status"]
-        for field in ("decision", "reason", "followup_task_id"):
-            if field in entry:
+        for field in RECORD_FIELDS:
+            if entry.get(field) is not None:
                 row[field] = entry[field]
-        if entry.get("thread_mark") is not None:
-            row["thread_mark"] = entry["thread_mark"]
         row["last_round"] = doc.get("round", 0)
         row["head"] = args.head
     _ledger.save_ledger(path, doc)
@@ -243,7 +269,11 @@ def fold_stats(doc: dict, last_round_only: bool) -> dict:
             key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
             for key, _ in DECISION_LABELS
         },
-        "followups": [row["followup_task_id"] for row in rows if row.get("followup_task_id")],
+        "followups": [
+            row["followup_task_id"]
+            for row in rows
+            if row.get("decision") == "follow_up" and row.get("followup_task_id")
+        ],
     }
 
 

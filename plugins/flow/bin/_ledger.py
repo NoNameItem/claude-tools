@@ -86,6 +86,22 @@ def split_project(url: str) -> tuple[str, list[str]]:
     return host, segments
 
 
+def derive_number(url: str) -> str | None:
+    """The PR/MR number embedded in a URL's route segment, or None if the URL carries none.
+
+    Recognises GitHub `.../pull/<n>` (and `/pulls/<n>`) and GitLab `.../-/merge_requests/<n>`
+    (with or without the leading `-`, since the segment split just looks for `merge_requests`
+    directly followed by a digit). Lets `--url` alone stand in for `--number` on the CLI.
+    """
+    segments = [segment for segment in urlsplit(url or "").path.split("/") if segment]
+    for marker in ("pull", "pulls", "merge_requests"):
+        if marker in segments:
+            index = segments.index(marker)
+            if index + 1 < len(segments) and segments[index + 1].isdigit():
+                return segments[index + 1]
+    return None
+
+
 def ledger_path(url: str, number: object) -> Path:
     """<cache-base>/flow/review-ledger/<host>/<project…>/pr-<n>.json"""
     host, segments = split_project(url)

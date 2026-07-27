@@ -301,6 +301,14 @@ class TestReconcileInsert:
         assert "flow-review-ledger:" in result.stderr
         assert "Traceback" not in result.stderr
 
+    def test_non_list_comments_exits_with_a_message_not_a_traceback(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        meta["comments"] = "not-a-list"  # elf.52(a): malformed --meta must not traceback
+        result = harness.run("reconcile", "--meta", harness.write_meta(meta))
+        assert result.returncode == 2
+        assert "flow-review-ledger:" in result.stderr
+        assert "Traceback" not in result.stderr
+
 
 def reply(reply_id, *, user="coderabbitai", body="ack", is_bot=True):
     return {"user": user, "body": body, "id": reply_id, "created_at": "2026-07-20T10:00:00Z", "is_bot": is_bot}
@@ -499,6 +507,78 @@ class TestRecord:
         assert result.returncode == 2
         assert harness.ledger(meta)["rows"]["1"]["status"] == "open"
 
+    def test_invalid_decision_writes_nothing(self, harness):
+        """elf.53(a): mirrors test_invalid_status_writes_nothing for the `decision` field."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = self._record(harness, meta, {"U1": {"decision": "maybe"}})
+        assert result.returncode == 2
+        assert harness.ledger(meta)["rows"]["1"]["decision"] is None
+
+    def test_re_recording_the_same_decision_is_a_no_op(self, harness):
+        """elf.53(b): recording an identical decision twice must not change the row further."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        decision = {"U1": {"status": "done", "decision": "fix", "reason": "guard added", "thread_mark": 50}}
+        self._record(harness, meta, decision)
+        first = dict(harness.ledger(meta)["rows"]["1"])
+        self._record(harness, meta, decision)
+        second = harness.ledger(meta)["rows"]["1"]
+        assert first == second
+
+    def test_explicit_null_is_a_no_op_for_every_field(self, harness):
+        """elf.53(c): the ledger's convention — an explicit JSON null never clears a durable
+        field, it means "no new information supplied" (already true for `thread_mark`,
+        pinned by test_done_without_thread_mark_reopens_on_our_own_reply). Applied uniformly
+        to `status`/`decision`/`reason`/`followup_task_id`/`thread_mark`."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._record(
+            harness,
+            meta,
+            {
+                "U1": {
+                    "status": "done",
+                    "decision": "fix",
+                    "reason": "guard added",
+                    "followup_task_id": "ct-1",
+                    "thread_mark": 50,
+                }
+            },
+        )
+        before = dict(harness.ledger(meta)["rows"]["1"])
+        result = self._record(
+            harness,
+            meta,
+            {
+                "U1": {
+                    "status": None,
+                    "decision": None,
+                    "reason": None,
+                    "followup_task_id": None,
+                    "thread_mark": None,
+                }
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        after = harness.ledger(meta)["rows"]["1"]
+        for field in ("status", "decision", "reason", "followup_task_id", "thread_mark"):
+            assert after[field] == before[field], field
+
+    def test_record_against_a_missing_ledger_reports_instead_of_creating_one(self, harness):
+        """elf.52(c): Phase 5.7a always runs `record` right after `reconcile` in the same run,
+        so a missing ledger at `record` time means something upstream went wrong — silently
+        materialising an empty round-0 document would hide that. `record` must fail loudly and
+        must not create the ledger file."""
+        meta = meta_doc([inline_comment(1)])
+        path = _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"])
+        assert not path.exists()
+        result = self._record(harness, meta, {"U1": {"status": "done"}})
+        assert result.returncode != 0
+        assert "flow-review-ledger:" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not path.exists()
+
     def test_recorded_row_is_excluded_on_the_next_reconcile(self, harness):
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
@@ -587,6 +667,21 @@ class TestStats:
         assert result.returncode == 0
         assert "No ledger" in result.stdout
 
+    def test_reversed_decision_no_longer_counts_as_a_followup(self, harness):
+        """elf.54: a `follow_up` decision reversed to `fix` must drop out of the "Follow-ups
+        filed" count even though the stale `followup_task_id` is still sitting on the row."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        self._decide(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
+        out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        assert "Follow-ups filed: 1 (ct-1)" in out
+
+        # re-opened and re-decided as `fix` in a later round; followup_task_id is not cleared
+        self._decide(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        assert harness.ledger(meta)["rows"]["1"]["followup_task_id"] == "ct-1"  # stale id lingers
+        out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        assert "Follow-ups filed" not in out
+
 
 class TestPurge:
     def test_unlinks_the_ledger(self, harness):
@@ -610,3 +705,41 @@ class TestPurge:
         harness.reconcile(second, name="m2.json")
         harness.run("purge", "--url", first["unit"]["url"], "--number", "96")
         assert _ledger.ledger_path(second["unit"]["url"], 97).is_file()
+
+    def test_derives_number_from_github_url_when_number_omitted(self, harness):
+        """elf.52(b): `--url` alone carries the number in `.../pull/<n>`."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 96)
+        assert path.is_file()
+        result = harness.run("purge", "--url", meta["unit"]["url"])
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
+
+    def test_derives_number_from_gitlab_url_when_number_omitted(self, harness):
+        """elf.52(b): GitLab's `.../-/merge_requests/<n>` route."""
+        meta = meta_doc(
+            [inline_comment(1)], number=7, url="https://gitlab.com/g/p/-/merge_requests/7", platform="gitlab"
+        )
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 7)
+        assert path.is_file()
+        result = harness.run("purge", "--url", meta["unit"]["url"])
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
+
+    def test_url_without_a_number_keeps_the_clear_error(self, harness):
+        """elf.52(b): when the URL carries no number, the original clear error is unchanged."""
+        result = harness.run("purge", "--url", "https://github.com/o/r")
+        assert result.returncode == 2
+        assert "flow-review-ledger:" in result.stderr
+        assert "Traceback" not in result.stderr
+
+    def test_explicit_number_still_wins_and_behaviour_is_unchanged(self, harness):
+        """elf.52(b): both skill call sites pass --number too — that path must stay byte-identical."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        path = _ledger.ledger_path(meta["unit"]["url"], 96)
+        result = harness.run("purge", "--url", meta["unit"]["url"], "--number", "96")
+        assert result.returncode == 0, result.stderr
+        assert not path.exists()
