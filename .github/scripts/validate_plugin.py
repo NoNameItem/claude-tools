@@ -52,6 +52,10 @@ CODEX_KIND_EXPECTATION = {
     CODEX_MCP: "a path or an inline object",
 }
 
+# Marketplace files: Claude's, and Codex's native path (codex-rs/core-plugins/src/marketplace.rs).
+CLAUDE_MARKETPLACE = Path(".claude-plugin/marketplace.json")
+CODEX_MARKETPLACE = Path(".agents/plugins/marketplace.json")
+
 
 @dataclass
 class PluginValidationResult:
@@ -259,9 +263,11 @@ def validate_plugin(
     uniqueness_result = validate_name_uniqueness(plugin_path, plugin_data)
     result.merge(uniqueness_result)
 
-    # Validate marketplace registration (Task 6)
-    marketplace_result = validate_marketplace_registration(plugin_path, plugin_data, repo_root)
-    result.merge(marketplace_result)
+    # Validate marketplace registration, symmetrically per harness:
+    # Claude manifest -> Claude marketplace; Codex manifest (if any) -> Codex marketplace.
+    result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root))
+    if (plugin_path / ".codex-plugin" / "plugin.json").exists():
+        result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root, CODEX_MARKETPLACE))
 
     return result
 
@@ -413,27 +419,33 @@ def _source_matches(mp_source: object, expected_relative: str) -> tuple[bool, st
     return err is None, err
 
 
-def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo_root: Path) -> PluginValidationResult:
-    """Validate plugin is registered in marketplace.
+def validate_marketplace_registration(
+    plugin_path: Path,
+    plugin_json: dict,
+    repo_root: Path,
+    marketplace_rel: Path = CLAUDE_MARKETPLACE,
+) -> PluginValidationResult:
+    """Validate the plugin is registered in the given marketplace file.
 
     Checks:
-    - Plugin is listed in .claude-plugin/marketplace.json
-    - Name matches between plugin.json and marketplace
-    - Source path matches plugin location
+    - Plugin is listed in <marketplace_rel>
+    - Name matches between plugin.json and the marketplace entry
+    - Source path matches the plugin location
     """
     result = PluginValidationResult()
-    marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
+    marketplace_path = repo_root / marketplace_rel
+    rel = marketplace_rel.as_posix()
 
     # Check marketplace exists
     if not marketplace_path.exists():
-        result.add_error("marketplace.json not found at .claude-plugin/marketplace.json")
+        result.add_error(f"marketplace.json not found at {rel}")
         return result
 
     # Parse marketplace
     try:
         marketplace_data = json.loads(marketplace_path.read_text())
     except json.JSONDecodeError as e:
-        result.add_error(f"Invalid marketplace.json: {e}")
+        result.add_error(f"Invalid marketplace.json ({rel}): {e}")
         return result
 
     plugins = marketplace_data.get("plugins", [])
@@ -455,19 +467,21 @@ def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo
         if mp_name == plugin_name:
             found = True
             if source_err is not None:
-                result.add_error(f"Marketplace source invalid for '{plugin_name}': {source_err}")
+                result.add_error(f"Marketplace source invalid for '{plugin_name}' in {rel}: {source_err}")
             elif not source_ok:
-                result.add_error(f"Marketplace source mismatch: '{mp_name}' does not point at '{expected_relative}'")
+                result.add_error(
+                    f"Marketplace source mismatch in {rel}: '{mp_name}' does not point at '{expected_relative}'"
+                )
             break
 
         # Entry not matched by name, but its source points at this plugin's location.
         if source_ok:
             found = True
-            result.add_error(f"Name mismatch: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
+            result.add_error(f"Name mismatch in {rel}: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
             break
 
     if not found:
-        result.add_error(f"Plugin '{plugin_name}' not registered in marketplace")
+        result.add_error(f"Plugin '{plugin_name}' not registered in marketplace {rel}")
 
     return result
 

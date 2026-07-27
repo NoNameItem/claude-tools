@@ -809,3 +809,87 @@ class TestValidateMarketplace:
         result = validate_plugin(plugin_dir, tmp_path)
         assert result.success is False
         assert any("unsupported source value" in e for e in result.errors)
+
+
+class TestCodexMarketplaceRegistration:
+    """A plugin shipping a Codex manifest must also be in the Codex marketplace."""
+
+    @staticmethod
+    def _write_marketplaces(repo_root: Path, *, codex_entry_name: str | None) -> None:
+        """Write the Claude marketplace, plus the Codex one when a name is given."""
+        entry = {
+            "name": "dual",
+            "source": {
+                "source": "git-subdir",
+                "url": "https://github.com/NoNameItem/claude-tools",
+                "path": "plugins/dual",
+                "ref": "dual-1.0.0",
+            },
+        }
+        claude_dir = repo_root / ".claude-plugin"
+        claude_dir.mkdir(exist_ok=True)
+        (claude_dir / "marketplace.json").write_text(json.dumps({"plugins": [entry]}))
+
+        if codex_entry_name is None:
+            return
+        codex_dir = repo_root / ".agents" / "plugins"
+        codex_dir.mkdir(parents=True, exist_ok=True)
+        codex_entry = {**entry, "name": codex_entry_name}
+        (codex_dir / "marketplace.json").write_text(json.dumps({"plugins": [codex_entry]}))
+
+    @staticmethod
+    def _make_plugin(repo_root: Path, *, with_codex_manifest: bool) -> Path:
+        """A minimal plugin at <repo_root>/plugins/dual."""
+        plugin_dir = repo_root / "plugins" / "dual"
+        claude_plugin = plugin_dir / ".claude-plugin"
+        claude_plugin.mkdir(parents=True)
+        (claude_plugin / "plugin.json").write_text(json.dumps({"name": "dual", "version": "1.0.0"}))
+        if with_codex_manifest:
+            codex_plugin = plugin_dir / ".codex-plugin"
+            codex_plugin.mkdir()
+            (codex_plugin / "plugin.json").write_text(json.dumps({"name": "dual", "version": "1.0.0"}))
+        return plugin_dir
+
+    def test_registered_in_both_marketplaces_is_valid(self, tmp_path: Path) -> None:
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
+        self._write_marketplaces(tmp_path, codex_entry_name="dual")
+
+        result = validate_plugin(plugin_dir, tmp_path)
+
+        assert result.success is True
+        assert result.errors == []
+
+    def test_codex_manifest_without_codex_marketplace_fails(self, tmp_path: Path) -> None:
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
+        self._write_marketplaces(tmp_path, codex_entry_name=None)
+
+        result = validate_plugin(plugin_dir, tmp_path)
+
+        assert result.success is False
+        assert any(".agents/plugins/marketplace.json" in error for error in result.errors)
+
+    def test_codex_marketplace_name_mismatch_fails(self, tmp_path: Path) -> None:
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
+        self._write_marketplaces(tmp_path, codex_entry_name="wrong-name")
+
+        result = validate_plugin(plugin_dir, tmp_path)
+
+        assert result.success is False
+        assert any("Name mismatch" in error and ".agents/plugins/marketplace.json" in error for error in result.errors)
+
+    def test_codex_marketplace_not_required_without_codex_manifest(self, tmp_path: Path) -> None:
+        from ..validate_plugin import validate_plugin
+
+        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=False)
+        self._write_marketplaces(tmp_path, codex_entry_name=None)
+
+        result = validate_plugin(plugin_dir, tmp_path)
+
+        assert result.success is True
+        assert result.errors == []
