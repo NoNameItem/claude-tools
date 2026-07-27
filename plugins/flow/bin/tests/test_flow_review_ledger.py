@@ -505,6 +505,30 @@ class TestRecord:
         self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
         assert harness.reconcile(meta)["working_set"] == []
 
+    def test_done_without_thread_mark_reopens_on_our_own_reply(self, harness):
+        """The negative twin: `record` keeps the pre-reply mark when the entry omits `thread_mark`.
+
+        `record` cannot know the id of a reply it did not post, so this is deliberate — the
+        SETTLING side (review-comments 5.7a) must always supply the id of the reply it just sent.
+        Pinned so the trap stays visible: omit it and the settled finding re-opens forever.
+        """
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        self._record(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
+        assert harness.ledger(meta)["rows"]["1"]["thread_mark"] == 50  # unchanged, pre-reply
+
+        # an explicit null is the same no-op, which is why 5.7a may write `"thread_mark": null`
+        # for a `kind == "summary"` row (whose mark is None on insert anyway)
+        self._record(harness, meta, {"U1": {"status": "done", "thread_mark": None}})
+        assert harness.ledger(meta)["rows"]["1"]["thread_mark"] == 50
+
+        posted = [reply(50), reply(5001, user="me", is_bot=False, body="Won't fix: …")]
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=posted)]))
+        assert [e["ref"] for e in out["working_set"]] == ["U1"]
+        row = harness.ledger(meta)["rows"]["1"]
+        assert row["status"] == "open"
+        assert row["decision"] == "wont_fix"  # the settled verdict is kept, but it re-triages
+
 
 class TestStats:
     def _decide(self, harness, meta, decisions, head="h"):

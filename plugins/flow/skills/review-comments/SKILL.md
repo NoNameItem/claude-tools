@@ -64,8 +64,9 @@ Resolve `PLATFORM` in this order — stop at the first that decides:
 | Unit | Pull Request, number | Merge Request, **iid** (the `!42` number) |
 | Repo identifier | `owner/repo` (`gh repo view --json nameWithOwner -q .nameWithOwner`) | **URL-encoded** project path `group%2Frepo` (from remote URL path; `/` → `%2F`) |
 | Detect unit for current branch | `gh pr view --json number,title,headRefName,url` | `glab mr view <iid> --output json` (fields: `iid`, `title`, `source_branch`, `web_url`, `state`) |
-| Fetch / threads / outdated / resolved-skip / bot-summary / authenticated user | handled by the collector (`flow-review-collect`) — see the Phase 2 `metadata.json` schema | same collector, same schema (GitLab `discussions` endpoint, `position`/`new_line`, `system`-note skip) |
-| Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{comment_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{discussion_id}/notes" --raw-field body=…` — keyed by **`discussion_id`, not comment id** |
+| Fetch / threads / outdated / resolved-skip / bot-summary / authenticated user | handled by the collector (`flow-review-collect`), then reconciled into the ledger — see Phase 2 | same collector, same reconcile (GitLab `discussions` endpoint, `position`/`new_line`, `system`-note skip) |
+| Reply target | the ledger row's `thread_id` **is** the review comment id | the ledger row's `thread_id` **is** the discussion id — a reply is a new note in that discussion, never addressed to a comment id |
+| Reply | `gh api repos/{o}/{r}/pulls/{n}/comments/{thread_id}/replies -f body=…` | `glab api --method POST "projects/{id}/merge_requests/{iid}/discussions/{thread_id}/notes" --raw-field body=…` |
 
 > **`glab` command verification:** the exact `glab` flags (`--output json`, `--method`, `--raw-field`, `--paginate`) and whether the `projects/:id` shorthand resolves the current repo can vary by `glab` version. If a documented command fails, fall back to the explicit URL-encoded project path (`projects/group%2Frepo/...`) and verify with `glab api --help` / `glab mr --help`.
 
@@ -215,7 +216,7 @@ round 5. The consequence: a round's table may show gaps (`C2, C5, C7`) because t
 are settled findings. That is informative, not a bug. Display **order** is unchanged (humans first,
 then bots, as `working_set` is ordered).
 
-**Large-PR cap (the only pre-analysis gate).** If `counts.actionable` > ~20, print a **category-free
+**Large-PR cap (the only pre-analysis gate).** If `counts.working` > ~20, print a **category-free
 selection table** built straight from `working-set.json` — every column below exists **before** any
 analysis — and ask, in **plain text** (a structured dialog auto-submits on the AFK timeout —
 claude-tools-6q4):
@@ -234,13 +235,14 @@ field is a Phase 3 verdict and does not exist yet; the categorized agenda is the
 printed **after** analysis.
 
 ```
-{actionable} comments — analyze all, or select a subset? (all / <comma-separated refs>)
+{counts.working} comments — analyze all, or select a subset? (all / <comma-separated refs>)
 ```
 
-- `all` → working set = all actionable items.
+- `all` → working set = every row in `working_set[]`.
 - refs (e.g. "U1, U3, C2") → working set = only those.
 
-At ≤ ~20 there is no prompt — the working set is all actionable items. Carry the working set as its
+`counts.working` is the count `reconcile` prints (`len(working_set)`) — the only pre-analysis size
+signal that exists. At ≤ ~20 there is no prompt — the working set is all of `working_set[]`. Carry the working set as its
 list of `ref`s; every later phase looks each ref up **in the ledger**
 (`flow-review-ledger get`, `flow-comment-card --ledger`), never in `metadata.json`.
 
@@ -250,7 +252,7 @@ Analyze **every** comment in the working set selected in Phase 2 — the large-P
 selected that set, so there is **no** further "process all? yes/select/no" gate here. The
 per-comment card (Phase 4) is the decision surface, and its take must be a real, code-backed
 assessment; a take written without reading the code is exactly the shallow dismissal this skill
-fights. (Below the ~20 cap the working set is simply all actionable comments.)
+fights. (Below the ~20 cap the working set is simply every row in `working_set[]`.)
 
 For each comment to analyze (or group of comments in the same file with overlapping line
 ranges), dispatch a **`balanced`-tier reviewer subagent**. Analysis is where a shallow read
@@ -831,8 +833,7 @@ Options:
 
 #### 5.7. Reply on the platform
 
-Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Use the ledger row's `platform` and reply target
-(`comment_id` / `discussion_id`, via `flow-review-ledger get --ref {ref}`) to pick the command:
+Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref}` and take three fields from it: `platform`, `kind`, and **`thread_id`** — the row's only reply target. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
@@ -855,18 +856,18 @@ it as a **quoted** command substitution `"$(cat …)"` — which captures the fi
 argument with no shell re-parsing, so a `Won't fix:` rationale that quotes reviewer text (backticks, `$`,
 or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break out.
 
-**GitHub** (reply addressed by `comment_id`):
+**GitHub** (`thread_id` = the review comment id; a reply to that comment's thread):
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies \
+gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
   -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
 ```
 
-**GitLab** (reply addressed by `discussion_id`, NOT a comment id — a new note in the discussion):
+**GitLab** (`thread_id` = the discussion id, NOT a comment id — a new note in the discussion):
 
 ```bash
 glab api --method POST \
-  "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
+  "projects/{project}/merge_requests/{iid}/discussions/{thread_id}/notes" \
   --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
 ```
 
@@ -883,7 +884,7 @@ every reply you send — 5.7a's `thread_mark` needs it.
 | won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the **recorded rejection reason** (= the card's `thought` only when the verdict was `disagree`; otherwise the explicit reason collected at triage, invariant 2) |
 | follow-up | `"Filed as follow-up: {task-id}"` (the beads task from 5.4) |
 
-**Do NOT reply to comments where `already_replied` is true.**
+**Reply to every working-set ref that reached Phase 5 with a `fix` / `won't-fix` / `follow-up` decision, including rows whose `already_replied` is true.** `already_replied` is a **seeding** signal `reconcile` uses on first insert — it settles a thread we had already answered before the ledger existed — not a per-round mute. A row that reaches Phase 5 with `already_replied` true is a **re-surfaced** row: its thread advanced past `thread_mark` while our own account was the last replier, which is exactly the "a human posted an instruction in the thread" case. It gets this round's reply like any other.
 
 **Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks /
 `$` / quotes, including quoted reviewer text) need no special handling — the Write-tool-to-file +
@@ -891,9 +892,11 @@ every reply you send — 5.7a's `thread_mark` needs it.
 body from a shell heredoc: a reviewer line equal to the delimiter would truncate it (the same failure
 as 5.4).
 
-**Summary / general items:**
-- **GitHub:** a `(summary)` item has `comment_id == null` (it comes from the review body, not an inline thread) — there is no inline reply target. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
-- **GitLab:** a `(summary)` / general item still has a `discussion_id`, so reply to it normally with the GitLab command.
+**Summary / general items — discriminate by `kind`, not by a missing field:**
+- **GitHub, `kind == "summary"`:** the row's `thread_id` is the **review** id (the item comes from the review body, not an inline thread), and GitHub has no reply endpoint for it. Record its decision in the 5.8 summary report; do NOT attempt a reply. (A follow-up filed from a GitHub summary item is still created — only the reply is skipped.)
+- **GitLab, `kind == "summary"`:** a general note is still a discussion, so its `thread_id` **is** a working reply target — reply to it with the GitLab command above, exactly like an inline row.
+
+GitHub + `kind == "summary"` is the **only** combination with no reply target.
 
 #### 5.7a. Record the decisions in the ledger
 
@@ -907,11 +910,19 @@ file, never through a shell:
 ```json
 { "C1": { "status": "done", "decision": "fix", "reason": "guard added in resolve_branch",
           "followup_task_id": null, "thread_mark": "3518155060" },
-  "U1": { "status": "done", "decision": "wont_fix", "reason": "module is camelCase throughout" },
-  "C3": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" },
+  "U1": { "status": "done", "decision": "wont_fix", "reason": "module is camelCase throughout",
+          "thread_mark": "3518155061" },
+  "C3": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12",
+          "thread_mark": "3518155062" },
+  "C5": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-13",
+          "thread_mark": null },
   "C4": { "status": "pending", "decision": "fix", "reason": "push skipped" },
   "U2": { "status": "skipped", "decision": "skip" } }
 ```
+
+`C1`/`U1`/`C3` each carry the id of the reply just posted. `C5` is a GitHub `kind == "summary"` row:
+no thread, no reply, so its mark is `null`. `C4`/`U2` are not `done`, so they stay in the working set
+on their own.
 
 Then:
 
@@ -922,21 +933,22 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
 
 Rules for filling it in — one entry per ref that reached Phase 5:
 
-| Outcome this run | `status` | `decision` |
-|---|---|---|
-| fix applied **and** pushed **and** replied | `done` | `fix` |
-| `outdated_fixed`, "Fixed in subsequent commits" posted | `done` | `outdated` |
-| won't-fix replied | `done` | `wont_fix` |
-| follow-up task filed and replied (or GitHub summary: task filed, no reply target) | `done` | `follow_up` |
-| decided, but the reply was **withheld** (push skipped/failed, or branch ahead of remote) | `pending` | the decision it will get |
-| `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` |
+| Outcome this run | `status` | `decision` | `thread_mark` |
+|---|---|---|---|
+| fix applied **and** pushed **and** replied | `done` | `fix` | id of the reply just posted |
+| `outdated_fixed`, "Fixed in subsequent commits" posted | `done` | `outdated` | id of the reply just posted |
+| won't-fix replied | `done` | `wont_fix` | id of the reply just posted |
+| follow-up task filed and replied | `done` | `follow_up` | id of the reply just posted |
+| settled with no reply sent (acknowledgement with nothing to do) | `done` | the decision it earned | id of the current last reply in the row's `thread` |
+| GitHub `kind == "summary"` (task filed, no reply target) | `done` | `follow_up` | `null` — a summary has no thread |
+| decided, but the reply was **withheld** (push skipped/failed, or branch ahead of remote) | `pending` | the decision it will get | omit |
+| `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` | omit |
 
-**`thread_mark` is what stops a re-open loop.** For every row you settle, set it to the id of the
-reply **you just posted**; if you settled without replying (an acknowledgement with nothing to do, a
-GitHub summary with no reply target), set it to the id of the **current last reply** in the row's
-`thread` (omit it when the thread is empty). Skip it entirely for `kind == summary` rows — they have
-no thread. Without this, a bot's acknowledgement leaves the bot as the latest replier forever and the
-row re-opens every round.
+**`thread_mark` is a REQUIRED field on every `done` entry** — the id of the reply just posted, or
+`null` for a `kind == "summary"` row that has no thread. It is what stops the re-open loop. `record`
+writes the field **only** when the entry supplies a non-null id, so a `done` entry that omits it
+keeps its pre-reply mark — the reply you just posted then reads as a thread advance, `reconcile`
+re-opens the finding next round, and it re-triages and re-replies forever.
 
 #### 5.8. Summary Report
 
@@ -995,7 +1007,7 @@ If you're thinking any of these, STOP and follow the workflow:
 
 - "It's probably GitHub, I'll skip platform detection" → Run Phase 0 first. Never assume.
 - "gh works everywhere" → `gh` only talks to GitHub hosts; a GitLab remote needs `glab`.
-- "I'll reply on GitLab using the comment id" → GitLab keys replies by `discussion_id`, not a comment id.
+- "I'll reply on GitLab using the comment id" → the row's `thread_id` IS the discussion id on GitLab; a reply is a new note in that discussion, never addressed to a comment id.
 - "I'll wrap the card in a ``` fence so it's clearly a card" → NO. The card already contains ```-fences; wrap it and the highlighting, diff colors, and blockquotes stop rendering. Emit it UNWRAPPED.
 - "The comment text is enough, skip the code block" → The card MUST carry the anchored code (`diff_hunk` or reconstructed `snippet`); showing the code in the terminal is the whole point.
 - "I'll truncate the long comment on the card" → Show the FULL body. Only the TOC brief is truncated.
@@ -1027,7 +1039,7 @@ If you're thinking any of these, STOP and follow the workflow:
 |--------|---------|
 | "Repo's probably GitHub, skip detection" | Always run Phase 0. The wrong CLI fails on the first command. |
 | "gh works everywhere" | `gh` only speaks to GitHub hosts. Use `glab` for GitLab (incl. self-hosted). |
-| "Reply by comment id on GitLab" | GitLab keys replies by `discussion_id` (a new note in the discussion), not a comment id. |
+| "Reply by comment id on GitLab" | The row's `thread_id` IS the discussion id on GitLab — a reply is a new note in that discussion, not a reply to a comment id. |
 | "Nitpick is obviously correct" | Nitpicks deserve skepticism. Evaluate if change genuinely improves code. |
 | "Skip subagents for small PRs" | Subagents keep context clean. Always use them for file reads and analysis. |
 | "Apply fixes then show the card" | Show the card FIRST. The user triages each comment before any change. |
@@ -1135,7 +1147,7 @@ Agent: [Pushes]
        [Replies sequentially — only after the successful push:
          U1: "Won't fix: the module uses camelCase consistently; renaming one breaks it"
          C1: "Fixed: guard branch_name against detached HEAD; applied across the class at 2 sites."
-         C2: (GitHub summary, comment_id == null → no reply; recorded in summary)]
+         C2: (GitHub `kind == "summary"` → no reply target; recorded in summary)]
        Processed: 3 comments
          Fixed: 1 (C1)   Generalized: C1 → detached-HEAD guard → 2 sites
          Won't fix: 1 (U1 — module is camelCase)
@@ -1149,7 +1161,7 @@ Agent: [Pushes]
 - Collected a per-comment fix / won't-fix / **follow-up** decision; executed once in Phase 5
 - Generalized the accepted fix and ran the pre-push self-review on the code round
 - Filed the deferred item as a beads task under the path-inferred epic, then `flow-sync push`
-- Replied to every comment except the GitHub null-`comment_id` summary; asked before push
+- Replied to every comment except the GitHub `kind == "summary"` item; asked before push
 
 ### BAD: Blindly accept nitpick
 
@@ -1257,10 +1269,12 @@ The collector emits a summary/general item with `path: "(summary)"` and no `line
 has no code block** — the header shows `(summary)` and it carries the full text + take only. It is
 still triageable (including **follow-up**). Reply targets differ:
 
-- **GitHub:** a summary item comes from the review body, so `comment_id == null` — there is **no
-  reply target**. Record its decision in the 5.8 summary report; do **not** attempt a reply. (A
-  follow-up task is still created if chosen.)
-- **GitLab:** a summary/general item still has a `discussion_id`, so reply to it normally.
+- **GitHub, `kind == "summary"`:** the item comes from the review body, so the row's `thread_id`
+  is a **review** id and GitHub has no reply endpoint for it — there is **no reply target**. Record
+  its decision in the 5.8 summary report; do **not** attempt a reply. (A follow-up task is still
+  created if chosen.)
+- **GitLab, `kind == "summary"`:** a general note is still a discussion, so its `thread_id` is a
+  working reply target — reply to it normally.
 
 ### Platform CLI / API Error
 
@@ -1363,7 +1377,7 @@ fail**. The card still shows source + full text + take.
 
 The pre-analysis gate exists **only** for large PRs (see Phase 2). The collector always returns the
 full `metadata.json`, but the cap decides how much of it enters analysis, so a big review never
-floods the main context. If `counts.actionable` is **more than ~20**:
+floods the main context. If `counts.working` (= `len(working_set)`) is **more than ~20**:
 
 1. Print the **category-free** selection table (refs, source, path:lines, ⚠️ outdated, brief — no
    `category` and no full bodies yet; `category` is a Phase 3 verdict that does not exist pre-analysis).
@@ -1373,7 +1387,7 @@ floods the main context. If `counts.actionable` is **more than ~20**:
    prior-round `decision`/`reason`/`thread` context matters most). The categorized Phase 4.1 TOC
    (with `category`) is printed here, after analysis.
 
-Below the threshold, the working set is all actionable comments — go straight to card-by-card
+Below the threshold, the working set is every row in `working_set[]` — go straight to card-by-card
 triage; no prompt.
 
 ## The Bottom Line

@@ -10,6 +10,7 @@ helpers. `sonar-sync` is the sole named exception (not yet migrated).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -248,14 +249,15 @@ def test_review_comments_reads_rows_not_the_collector_document() -> None:
     # Whitespace-tolerant: `--meta` must not follow `flow-comment-card` even across a line wrap
     # or multiple spaces (the source prose wraps long lines, which a literal substring check misses).
     assert not re.search(r"flow-comment-card\s+--meta\b", text)
-    # Phase 3 must not point a subagent at the whole collector document any more
-    assert "from the collector output at" not in text
+    # Phase 3 must not point a subagent at the whole collector document any more.
+    # Whitespace-tolerant like the guard above: a line wrap must not defeat the check.
+    assert not re.search(r"from\s+the\s+collector\s+output\s+at", text)
 
 
 def test_review_comments_branches_on_kind_not_the_summary_sentinel() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "`kind`" in text
-    assert '`path == "(summary)"` or `path` is null' not in text
+    assert not re.search(r'`path\s*==\s*"\(summary\)"`\s+or\s+`path`\s+is\s+null', text)
 
 
 def test_review_comments_edge_case_points_at_the_ledger_not_metadata() -> None:
@@ -263,7 +265,7 @@ def test_review_comments_edge_case_points_at_the_ledger_not_metadata() -> None:
     # metadata.json. The "Very Large Number of Comments" edge case must follow the same rule
     # for the subset it selects, instead of contradicting it.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert "look each ref up in `metadata.json`" not in text
+    assert not re.search(r"look\s+each\s+ref\s+up\s+in\s+`metadata\.json`", text)
     edge_case = text.split("Very Large Number of Comments", 1)[1].split("###", 1)[0]
     assert "the ledger" in edge_case
     assert "flow-review-ledger get" in edge_case
@@ -274,7 +276,7 @@ def test_review_comments_good_example_teaches_the_reconcile_flow() -> None:
     # subagents reading metadata.json directly) — it should teach collect -> reconcile -> working
     # set -> per-ref row extract, consistent with Phase 2/3.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert "each subagent reading its comment from metadata.json" not in text
+    assert not re.search(r"each\s+subagent\s+reading\s+its\s+comment\s+from\s+metadata\.json", text)
     good_example = text.split("### GOOD:", 1)[1].split("### ", 1)[0]
     assert "reconcile" in good_example
     assert "flow-review-ledger get" in good_example
@@ -284,7 +286,7 @@ def test_review_comments_followup_description_reads_the_ledger_row() -> None:
     # 5.4's follow-up description must not read the reviewer's comment text from metadata.json
     # (transient collector output) -- it must point at the ledger row, like the rest of Phase 3-5.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert "the reviewer's comment text read from `metadata.json`" not in text
+    assert not re.search(r"the\s+reviewer's\s+comment\s+text\s+read\s+from\s+`metadata\.json`", text)
 
 
 def test_review_comments_captures_the_reply_id_for_thread_mark() -> None:
@@ -294,6 +296,59 @@ def test_review_comments_captures_the_reply_id_for_thread_mark() -> None:
     phase_5_7 = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
     assert re.search(r"capture", phase_5_7, re.IGNORECASE)
     assert "thread_mark" in phase_5_7
+
+
+def test_review_comments_decisions_example_always_carries_thread_mark() -> None:
+    # `record` writes `thread_mark` only when the entry supplies it (flow-review-ledger:212), so a
+    # `done` entry that omits it keeps its pre-reply mark: the reply the agent posts has a higher
+    # id, `reopen_if_advanced` fires, and the settled finding re-opens every round. The canonical
+    # example must teach the rule 5.7a states. A `kind == "summary"` row carries an explicit `null`
+    # (it has no thread), so the key is present on every `done` entry without exception.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    block = text.split("$FLOW_RC_DIR/decisions.json", 1)[1].split("```json", 1)[1].split("```", 1)[0]
+    decisions = json.loads(block)
+    missing = sorted(
+        ref for ref, entry in decisions.items() if entry.get("status") == "done" and "thread_mark" not in entry
+    )
+    assert missing == [], f"done entries without `thread_mark` (they will re-open): {missing}"
+
+
+def test_review_comments_replies_to_the_ledger_thread_id() -> None:
+    # The ledger row stores `thread_id` only (new_row + SNAPSHOT_FIELDS) — never `comment_id` or
+    # `discussion_id`. A reply template keyed on those cannot be filled from `flow-review-ledger
+    # get`, and metadata.json is off limits from Phase 2 on.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    phase = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
+    assert "{thread_id}" in phase
+    assert "{comment_id}" not in phase
+    assert "{discussion_id}" not in phase
+    # The no-reply-target case is GitHub's summary; discriminate it by `kind`, not a missing field
+    assert not re.search(r"comment_id\s*==\s*null", text)
+
+
+def test_review_comments_cap_gates_on_a_count_reconcile_emits() -> None:
+    # reconcile prints counts {total, open, skipped, pending, done, working}. `counts.actionable`
+    # is the COLLECTOR's key: gating on it reads a missing key and the large-PR cap never fires.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert not re.search(r"counts\.actionable", text)
+    assert "counts.working" in text
+
+
+def test_review_comments_already_replied_does_not_mute_a_resurfaced_row() -> None:
+    # `already_replied` is true exactly when the last replier was our own account — which is the
+    # documented "a human posted an instruction in the thread" re-open case. A blanket
+    # do-not-reply rule triages the re-surfaced row and then silently drops its reply.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert not re.search(r"Do\s+NOT\s+reply\s+to\s+comments\s+where\s+`already_replied`\s+is\s+true", text)
+    phase = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
+    assert "already_replied" in phase
+    assert "re-surfaced" in phase
+
+
+def test_review_comments_platform_table_points_at_the_reconcile_output() -> None:
+    # Phase 2 documents `reconcile`'s output shape, not the collector document's schema.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert not re.search(r"Phase\s+2\s+`metadata\.json`\s+schema", text)
 
 
 # --- Task 11: review-loop reports ledger stats, done purges the ledger -----------------------
