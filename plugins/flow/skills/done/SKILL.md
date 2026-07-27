@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
 # Flow: Done
@@ -53,8 +53,12 @@ Continue to step 2.
 Check if PR exists for current branch:
 
 ```bash
-gh pr view --json state,url 2>/dev/null || echo "NO_PR"
+gh pr view --json state,url,number 2>/dev/null || echo "NO_PR"
 ```
+
+Capture `PR_URL` (`.url`) and `PR_NUMBER` (`.number`) — Step 8 needs them to purge this PR's review
+ledger. A generic branch short-circuits this step and has no PR, which is exactly when the purge is
+irrelevant.
 
 **If NO PR exists:**
 
@@ -252,6 +256,7 @@ Gather cleanup targets:
 
 - **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 - **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"` — does remote branch exist?
+- **Review ledger:** present when Step 1 captured `PR_NUMBER` (the PR's `flow:review-comments` memory, stored under the OS cache dir — never in the repo).
 - Local branch is always present (we're on it).
 
 #### 8.3. Show branch name and ask once
@@ -265,6 +270,7 @@ Delete branch and associated resources?
   - Worktree: .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
   - Local branch: feature/claude-tools-elf.6-delete-branches-worktrees
   - Remote branch: origin/feature/claude-tools-elf.6-delete-branches-worktrees
+  - Review ledger for PR #<PR_NUMBER>
 
 (yes/no)
 ```
@@ -273,17 +279,25 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 
 #### 8.4. If yes — execute in order
 
-1. **If in worktree:** `cd` to the main repo root (parent of `.worktrees/`)
-2. **Remove worktree:** `git worktree remove <path>` (if in worktree)
-3. **Detect default branch:**
+1. **Purge the PR's review ledger** (only when Step 1 captured a PR number):
+   ```bash
+   flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
+   ```
+   Idempotent and non-blocking — a missing ledger is a no-op. Keeping the branch keeps the ledger
+   (it self-expires after the merge; there is no GC). A task with several `Git:` branches purges only
+   the current branch's ledger — the others self-expire (multi-branch handling is tracked as
+   claude-tools-elf.51; GitLab support as claude-tools-elf.50).
+2. **If in worktree:** `cd` to the main repo root (parent of `.worktrees/`)
+3. **Remove worktree:** `git worktree remove <path>` (if in worktree)
+4. **Detect default branch:**
    ```bash
    DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')
    ```
    Fallback: try `master`, then `main`.
-4. **Switch to default branch:** `git checkout $DEFAULT_BRANCH`
-5. **Pull merged changes:** `git pull`
-6. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
-7. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
+5. **Switch to default branch:** `git checkout $DEFAULT_BRANCH`
+6. **Pull merged changes:** `git pull`
+7. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
+8. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
 
 **Error handling:**
 - Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block.
@@ -307,6 +321,7 @@ No cleanup performed. User can clean up manually later.
 ✅ Ask before closing each parent
 ✅ Run flow-sync push at end
 ✅ Offer to clean up branch and worktree (Step 8)
+✅ Purge the PR's persistent review ledger during cleanup (Step 8)
 ✅ Delete local branch, remote branch, worktree (after confirmation)
 ✅ Switch to default branch and pull after cleanup
 
@@ -586,17 +601,20 @@ Agent: [Checks branch: feature/claude-tools-elf.6-delete-branches-worktrees]
          - Worktree: .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
          - Local branch: feature/claude-tools-elf.6-delete-branches-worktrees
          - Remote branch: origin/feature/claude-tools-elf.6-delete-branches-worktrees
+         - Review ledger for PR #123
 
        (yes/no)
 
 User: yes
-Agent: [cd to main repo root]
+Agent: [flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
+       [cd to main repo root]
        [git worktree remove .worktrees/feature-...]
        [git checkout master]
        [git pull]
        [git branch -d feature/claude-tools-elf.6-...]
        [git push origin --delete feature/claude-tools-elf.6-...]
 
+       ✓ Review ledger purged
        ✓ Worktree removed
        ✓ Switched to master
        ✓ Local branch deleted
@@ -609,7 +627,7 @@ Agent: [cd to main repo root]
 - Checked branch matches task ID
 - Listed all cleanup targets
 - Asked before deleting
-- Executed in correct order (worktree → checkout → delete)
+- Executed in correct order (purge ledger → worktree → checkout → delete)
 
 ### ❌ BAD: Auto-cleanup without asking
 

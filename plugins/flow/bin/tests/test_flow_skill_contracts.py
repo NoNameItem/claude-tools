@@ -294,3 +294,26 @@ def test_review_comments_captures_the_reply_id_for_thread_mark() -> None:
     phase_5_7 = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
     assert re.search(r"capture", phase_5_7, re.IGNORECASE)
     assert "thread_mark" in phase_5_7
+
+
+# --- Task 11: review-loop reports ledger stats, done purges the ledger -----------------------
+
+
+def test_review_loop_drops_repeat_tracking_for_ledger_exclusion() -> None:
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    assert "повторно" not in text  # recurrence detection was cut; done rows never reach round output
+    assert "Repeat-tracking is in-session memory" not in text
+    assert "flow-review-ledger stats" in text
+    assert "Bash(flow-review-ledger:*)" in allowed_tools(text)
+
+
+def test_done_purges_the_ledger() -> None:
+    text = (FLOW_ROOT / "skills" / "done" / "SKILL.md").read_text()
+    assert "--json state,url,number" in text
+    assert "flow-review-ledger purge" in text
+    assert "Bash(flow-review-ledger:*)" in allowed_tools(text)
+
+
+def test_readme_documents_the_ledger_helper() -> None:
+    readme = (FLOW_ROOT / "README.md").read_text()
+    assert "flow-review-ledger" in readme

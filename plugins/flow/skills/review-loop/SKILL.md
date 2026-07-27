@@ -1,7 +1,7 @@
 ---
 name: review-loop
 description: "Use after pushing to a GitHub Pull Request or GitLab Merge Request when you want the automated bot/CI review cycle ridden round after round to convergence, instead of re-invoking flow:review-comments by hand each round. Cross-platform (gh/glab), gate-name-agnostic. Reply-only: it never resolves threads or merges. Not for human-reviewer feedback."
-allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Read
+allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Read
 ---
 
 # Review Loop
@@ -62,7 +62,8 @@ Per-platform primitives used below:
 ### 0. Resolve
 
 Resolve `PLATFORM` + the PR/MR (above). No open PR/MR → stop. Found → show number/iid,
-title, URL; set `ROUND = 0` and continue.
+title, URL; store the unit's `url` and `number`/`iid` as `UNIT_URL` / `UNIT_NUMBER` (the
+convergence report at 1g needs them); set `ROUND = 0` and continue.
 
 ### 1. Each iteration
 
@@ -168,12 +169,11 @@ hand-off, and it colors the final report at (g).
   ── Раунд <ROUND> · head <HEAD_before:0:7> ──
   ```
 
-  For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. For any
-  comment ref review-comments printed in an earlier round (its Phase 2 table / Phase 5.7
-  summary, visible in-context because review-comments runs through the active harness's
-  skill mechanism in this same agent), add a `⚠️ <ref> — повторно (<N>-й раунд)` line.
-  Repeat-tracking is in-session memory (a set of refs seen across iterations); no API
-  queries, no persistence.
+  For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. Do **not**
+  track repeats yourself: `flow:review-comments` keeps a durable per-PR ledger, so a finding that
+  was terminally handled is **excluded** before it ever reaches this round's output, and one that
+  re-surfaces does so only because its thread actually advanced (a reviewer objected, a reviewer
+  acknowledged, or the human posted an instruction) — with its prior verdict attached.
 
 - Invoke `flow:review-comments <number>` through the active harness's skill mechanism and
   preserve all of its confirmation, push, and reply gates. It is interactive and may
@@ -206,9 +206,17 @@ hand-off, and it colors the final report at (g).
   - round **PARTIAL** (step c timed out, you chose "process now") → **partial hand-off:**
     "обработал что было, но пайплайн для `<HEAD_before:0:7>` не добежал (wait timed out) —
     перезапусти `/flow:review-loop`, когда проверки завершатся." Not a clean finish.
-  - round **not** PARTIAL, `failed` **empty** → **clean convergence.** Report a short summary
-    and remind the user that **resolving the threads and merging are theirs to do** (the loop
-    is reply-only).
+  - round **not** PARTIAL, `failed` **empty** → **clean convergence.** Print the PR/MR's cumulative
+    ledger summary:
+
+    ```bash
+    flow-review-ledger stats --url "$UNIT_URL" --number "$UNIT_NUMBER"
+    ```
+
+    (`--url`/`--number` are explicit here — this runs outside `flow:review-comments`, so there is no
+    `metadata.json`; a PR that was never processed prints one "No ledger" line and exits 0.) Then
+    report a short summary and remind the user that **resolving the threads and merging are theirs to
+    do** (the loop is reply-only).
   - round **not** PARTIAL, `failed` **non-empty** (gate (d) option 1, or a threadless red
     check) → **red-check hand-off:** "остановился, проверка `<name>` красная — чини руками."
     Not a clean finish.
@@ -224,10 +232,10 @@ red-pipeline gate (1d) · user "no" at `flow:review-comments` Phase 3 · user Es
 
 There is **no** `max_rounds` auto-stop and no wall-clock cap. Safety comes from the loop
 being interactive — `flow:review-comments` confirms every round (process + push) — plus the
-visible round indicator. A bot ↔ "Won't fix" ping-pong shows up as a comment ref that
-`flow:review-comments` prints again in a later round (its per-round output is visible
-in-context, since it runs through the active harness's skill mechanism in this same agent), flagged `повторно` with
-the round count. The user presses Esc the moment the indicator shows an unproductive dispute.
+visible round indicator. An unproductive bot ↔ "Won't fix" dispute shows up as the same ledger `ref` re-appearing in
+`flow:review-comments` output round after round — a settled finding is excluded, so a ref you keep
+seeing is one whose thread genuinely keeps advancing. The user presses Esc the moment that reads as
+a dispute rather than progress.
 A machine round cap would just as often cut off a productive cycle mid-flight; the human
 decision is better.
 
