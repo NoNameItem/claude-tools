@@ -61,6 +61,22 @@ class TestSplitProject:
         with pytest.raises(_ledger.LedgerPathError):
             _ledger.split_project("https://github.com/../evil/pull/1")
 
+    def test_rightmost_route_marker_wins_over_a_project_segment_named_pull(self):
+        """Mirrors TestDeriveNumber's case with the same URL: the GitLab subgroup literally
+        named `pull` is part of the project path, not the route."""
+        assert _ledger.split_project("https://gitlab.com/group/pull/12/-/merge_requests/7") == (
+            "gitlab.com",
+            ["group", "pull", "12"],
+        )
+
+    def test_github_repo_segment_named_pull_does_not_swallow_the_route(self):
+        """Mirrors TestDeriveNumber's case with the same URL: a repo literally named `pull`
+        must survive in the project path instead of being truncated at the first `pull`."""
+        assert _ledger.split_project("https://github.com/o/pull/pull/7") == (
+            "github.com",
+            ["o", "pull"],
+        )
+
 
 class TestDeriveNumber:
     def test_github_and_gitlab_routes(self):
@@ -112,6 +128,15 @@ class TestLedgerPath:
     def test_non_numeric_number_raises(self):
         with pytest.raises(_ledger.LedgerPathError):
             _ledger.ledger_path("https://github.com/o/r/pull/x", "../../etc/passwd")
+
+    def test_repo_named_pull_and_repo_named_pulls_do_not_collide(self, tmp_path, monkeypatch):
+        """A repo literally named `pull` (own PR #7) and a repo literally named `pulls` (own
+        PR #7) must resolve to different ledgers instead of both truncating to `acme/pr-7.json`."""
+        monkeypatch.setattr(_ledger.os, "name", "posix")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        repo_named_pull = _ledger.ledger_path("https://github.com/acme/pull/pull/7", 7)
+        repo_named_pulls = _ledger.ledger_path("https://github.com/acme/pulls/pull/7", 7)
+        assert repo_named_pull != repo_named_pulls
 
 
 class TestDocumentIO:
@@ -271,10 +296,24 @@ class TestReconcileInsert:
         harness.reconcile(meta)
         row = harness.ledger(meta)["rows"]["900"]
         assert row["kind"] == "summary"
-        assert row["thread_mark"] is None  # a summary has no thread → nothing to mark
+        # this fixture's summary carries no thread (the GitHub review-body case) → nothing to
+        # mark; `thread_mark` is seeded from the thread, not from `kind` — see the GitLab
+        # general-discussion case below, which DOES have a thread and seeds a real mark.
+        assert row["thread_mark"] is None
         assert row["thread_id"] == "900"
         assert row["platform"] == "github"
         assert row["first_seen_round"] == 1
+
+    def test_gitlab_general_discussion_summary_seeds_thread_mark_from_its_thread(self, harness):
+        """A GitLab general (no-position) discussion is emitted by `gl_collect` with
+        `kind == "summary"` too, but — unlike a GitHub review-body summary — it carries a real
+        `discussion_id` and an appendable thread (see `gl_collect`). `thread_mark` must seed
+        from that thread like any other row, not be forced to null because of `kind`."""
+        meta = meta_doc(
+            [inline_comment(None, kind="summary", discussion_id="d1", path="(summary)", line=None, thread=[reply(50)])]
+        )
+        harness.reconcile(meta)
+        assert harness.ledger(meta)["rows"]["d1"]["thread_mark"] == 50
 
     def test_existing_row_keeps_its_ref_and_counter_does_not_move(self, harness):
         meta = meta_doc([inline_comment(1)])
@@ -407,13 +446,47 @@ class TestReconcileLifecycle:
         assert harness.reconcile(meta)["working_set"] == []
         assert harness.reconcile(meta)["working_set"] == []
 
-    def test_done_summary_never_reopens(self, harness):
+    def test_done_github_summary_never_reopens(self, harness):
+        """The GitHub companion case: a review-body summary is threadless, so it can never carry
+        a reply we haven't accounted for — `id_advanced` is False whenever `current` is None,
+        independent of `kind`. That is the deterministic elf.31 guarantee: a re-imported review
+        carries the same, immutable summary id."""
         summary = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
         meta = meta_doc([summary])
         harness.reconcile(meta)
         settle(harness, meta, "U1", thread_mark=None, decision="follow_up")
         # a rerun re-imports the SAME review id → the row is still done → no duplicate follow-up
         assert harness.reconcile(meta)["working_set"] == []
+
+    def test_done_gitlab_general_discussion_reopens_on_a_new_note(self, harness):
+        """The regression this class guards against: `gl_collect` emits a GitLab general
+        (no-position) discussion with `kind == "summary"` too, but it carries a real
+        `discussion_id` and an appendable thread — unlike a GitHub review-body summary, it is
+        NOT threadless. A `done` row for it must still re-open when the discussion gains a new
+        note, or that feedback silently disappears from `flow:review-loop`."""
+        general = inline_comment(
+            None, kind="summary", discussion_id="d1", path="(summary)", line=None, thread=[reply(50)]
+        )
+        meta = meta_doc([general])
+        harness.reconcile(meta)
+        settle(harness, meta, "U1", thread_mark=50)
+        out = harness.reconcile(
+            meta_doc(
+                [
+                    inline_comment(
+                        None,
+                        kind="summary",
+                        discussion_id="d1",
+                        path="(summary)",
+                        line=None,
+                        thread=[reply(50), reply(51, body="one more thing")],
+                    )
+                ]
+            )
+        )
+        assert [e["ref"] for e in out["working_set"]] == ["U1"]
+        row = harness.ledger(meta)["rows"]["d1"]
+        assert row["status"] == "open"
 
     def test_new_summary_review_gets_a_new_row(self, harness):
         first = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
@@ -697,8 +770,10 @@ class TestRecord:
     def test_null_thread_mark_on_a_threaded_row_clears_it_and_re_opens(self, harness):
         """The same trap by the other door: on a row that HAS a thread, an explicit null clears
         the mark, so the next reply reads as an advance (`id_advanced(current, None)` is True) and
-        the settled row re-opens. `null` is for `kind == "summary"` rows only; a threaded `done`
-        entry must carry the id of the reply just posted."""
+        the settled row re-opens. `null` is only for a threadless row (a GitHub review-body
+        summary) — NOT for every `kind == "summary"` row, since a GitLab general-discussion
+        summary has a thread too; a threaded `done` entry must carry the id of the reply just
+        posted."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": None}})

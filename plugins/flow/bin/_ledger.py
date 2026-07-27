@@ -43,9 +43,9 @@ SNAPSHOT_FIELDS = (
     "thread",
 )
 
-# Segments that delimit the project path in a PR/MR URL: GitHub `/pull/<n>`,
+# Segments that mark the route in a PR/MR URL: GitHub `/pull/<n>` (and `/pulls/<n>`),
 # GitLab `/-/merge_requests/<iid>` (and the legacy form without the `-`).
-_ROUTE_MARKERS = frozenset({"pull", "pulls", "merge_requests", "-"})
+_ROUTE_MARKERS = ("pull", "pulls", "merge_requests")
 _UNSAFE_SEGMENTS = frozenset({".", ".."})
 
 
@@ -62,6 +62,26 @@ def cache_base() -> Path:
     return Path(base).expanduser()
 
 
+def _locate_route(segments: list[str]) -> int | None:
+    """Index of the rightmost route-marker segment immediately followed by a digit, or None.
+
+    The single place that decides "where does the route start" — `split_project` and
+    `derive_number` both call it, so they cannot drift apart on the same URL again.
+
+    Scanned RIGHT-TO-LEFT: the route lives at the END of the URL, while an earlier `pull` /
+    `merge_requests` segment can only be part of the project path (a GitLab subgroup or repo
+    may legitimately be named `pull`). Requiring the segment right after the marker to be a
+    digit is what makes stopping at the first right-to-left match safe: a project segment
+    named `pull` is essentially never immediately followed by another segment that is both a
+    digit AND the true route number. Taking the leftmost match would resolve
+    `gitlab.com/group/pull/12/-/merge_requests/7` to 12 — a different, real PR's ledger.
+    """
+    for index in range(len(segments) - 2, -1, -1):
+        if segments[index] in _ROUTE_MARKERS and segments[index + 1].isdigit():
+            return index
+    return None
+
+
 def split_project(url: str) -> tuple[str, list[str]]:
     """('github.com', ['owner', 'repo']) — host + project path segments of a PR/MR URL.
 
@@ -70,12 +90,19 @@ def split_project(url: str) -> tuple[str, list[str]]:
     """
     parts = urlsplit(url or "")
     host = (parts.hostname or "").lower()
+    raw_segments = [segment for segment in parts.path.split("/") if segment]
+    route_index = _locate_route(raw_segments)
+    if route_index is not None:
+        # The GitLab route is `.../-/merge_requests/<n>`: the `-` right before the marker is
+        # the route delimiter, not a project segment, so it must not end up in the project
+        # path either. `derive_number` never needs this because `merge_requests` alone is
+        # its marker; a `-` NOT immediately followed by `merge_requests`+digit is left alone,
+        # so a project legitimately named `-` still survives intact.
+        if route_index > 0 and raw_segments[route_index] == "merge_requests" and raw_segments[route_index - 1] == "-":
+            route_index -= 1
+    project_segments = raw_segments if route_index is None else raw_segments[:route_index]
     segments: list[str] = []
-    for segment in parts.path.split("/"):
-        if not segment:
-            continue
-        if segment in _ROUTE_MARKERS:
-            break
+    for segment in project_segments:
         if segment in _UNSAFE_SEGMENTS:
             msg = f"unsafe path segment {segment!r} in URL {url!r}"
             raise LedgerPathError(msg)
@@ -92,17 +119,10 @@ def derive_number(url: str) -> str | None:
     Recognises GitHub `.../pull/<n>` (and `/pulls/<n>`) and GitLab `.../-/merge_requests/<n>`
     (with or without the leading `-`, since the segment split just looks for `merge_requests`
     directly followed by a digit). Lets `--url` alone stand in for `--number` on the CLI.
-
-    Scanned RIGHT-TO-LEFT: the route lives at the END of the URL, while an earlier `pull` /
-    `merge_requests` segment can only be part of the project path (a GitLab subgroup or repo
-    may legitimately be named `pull`). Taking the leftmost match would resolve
-    `gitlab.com/group/pull/12/-/merge_requests/7` to 12 — a different, real PR's ledger.
     """
     segments = [segment for segment in urlsplit(url or "").path.split("/") if segment]
-    for index in range(len(segments) - 2, -1, -1):
-        if segments[index] in ("pull", "pulls", "merge_requests") and segments[index + 1].isdigit():
-            return segments[index + 1]
-    return None
+    index = _locate_route(segments)
+    return segments[index + 1] if index is not None else None
 
 
 def ledger_path(url: str, number: object) -> Path:

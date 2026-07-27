@@ -302,8 +302,8 @@ def test_review_comments_decisions_example_always_carries_thread_mark() -> None:
     # `record` writes `thread_mark` only when the entry supplies it (flow-review-ledger:212), so a
     # `done` entry that omits it keeps its pre-reply mark: the reply the agent posts has a higher
     # id, `reopen_if_advanced` fires, and the settled finding re-opens every round. The canonical
-    # example must teach the rule 5.7a states. A `kind == "summary"` row carries an explicit `null`
-    # (it has no thread), so the key is present on every `done` entry without exception.
+    # example must teach the rule 5.7a states. A threadless row (GitHub's `kind == "summary"`)
+    # carries an explicit `null`, so the key is present on every `done` entry without exception.
     text = REVIEW_COMMENTS_SKILL.read_text()
     block = text.split("$FLOW_RC_DIR/decisions.json", 1)[1].split("```json", 1)[1].split("```", 1)[0]
     decisions = json.loads(block)
@@ -387,3 +387,25 @@ def test_done_purges_the_ledger() -> None:
 def test_readme_documents_the_ledger_helper() -> None:
     readme = (FLOW_ROOT / "README.md").read_text()
     assert "flow-review-ledger" in readme
+
+
+# --- Follow-up: thread_mark null means threadless, not "is a summary" (claude-tools-elf.39) --
+
+
+def test_review_comments_thread_mark_null_rule_is_scoped_to_threadless_rows() -> None:
+    # A GitHub review-body summary (`kind == "summary"`) is threadless, so `thread_mark: null`
+    # is correct for it. But a GitLab general discussion is ALSO `kind == "summary"` (see
+    # gl_collect) while carrying a real thread and reply target — flow-review-ledger's
+    # `reopen_if_advanced`/`new_row` key on `_ledger.last_reply_id`, not `kind`, precisely
+    # because "summary" alone does not imply "no thread". The unscoped "a summary row/rows"
+    # phrasing must not reappear here.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    # Whitespace-tolerant: a line wrap must not defeat the guard (this repo has shipped a
+    # substring-only guard that a wrap silently evaded, twice).
+    assert not re.search(r"a\s+summary\s+row\s+clears\s+`thread_mark`", text)
+    assert not re.search(r"`null`\s*—\s*a\s+summary\s+has\s+no\s+thread", text)
+    assert not re.search(r"`null`\s+is\s+for\s+summary\s+rows\s+only", text)
+    # The corrected rule must be present: null means threadless, keyed on the thread, not `kind`.
+    required_field_section = text.split("**`thread_mark` is a REQUIRED field", 1)[1].split("#### 5.8", 1)[0]
+    assert re.search(r"\bthreadless\b", required_field_section)
+    assert re.search(r"GitLab", required_field_section)

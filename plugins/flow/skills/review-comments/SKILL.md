@@ -935,8 +935,8 @@ so they stay in the working set on their own.
 
 `status` is the one field that cannot be cleared — a row is always in exactly one status, so
 `record` rejects `"status": null` outright (nothing in the file is written). Write a null only when
-you mean "this row no longer has one": a reversed `follow_up` clears `followup_task_id`, a summary
-row clears `thread_mark`.
+you mean "this row no longer has one": a reversed `follow_up` clears `followup_task_id`, a threadless
+row (GitHub's `kind == "summary"`) clears `thread_mark`.
 
 Then:
 
@@ -954,16 +954,18 @@ Rules for filling it in — one entry per ref that reached Phase 5:
 | won't-fix replied | `done` | `wont_fix` | id of the reply just posted |
 | follow-up task filed and replied | `done` | `follow_up` | id of the reply just posted |
 | settled with no reply sent (acknowledgement with nothing to do) | `done` | the decision it earned | id of the current last reply in the row's `thread` |
-| GitHub `kind == "summary"` (task filed, no reply target) | `done` | `follow_up` | `null` — a summary has no thread |
+| GitHub `kind == "summary"` (task filed, no reply target) | `done` | `follow_up` | `null` — threadless |
 | decided, but the reply was **withheld** (push skipped/failed, or branch ahead of remote) | `pending` | the decision it will get | omit |
 | `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` | omit |
 
 **`thread_mark` is a REQUIRED field on every `done` entry** — the id of the reply just posted, or
-`null` for a `kind == "summary"` row that has no thread. It is what stops the re-open loop, and both
+`null` for a row that is threadless. It is what stops the re-open loop, and both
 ways of not supplying an id break it: **omit** the key on a threaded row and it keeps its pre-reply
 mark; write an explicit **`null`** on a threaded row and the mark is cleared to "nothing accounted
 for". Either way the reply you just posted reads as a thread advance, `reconcile` re-opens the
-finding next round, and it re-triages and re-replies forever. `null` is for summary rows only.
+finding next round, and it re-triages and re-replies forever. `null` is for threadless rows only —
+a GitHub review-body summary (`kind == "summary"`), never a GitLab general discussion: that is also
+`kind == "summary"` but carries a real thread, so it gets a real mark like any other row.
 
 #### 5.8. Summary Report
 

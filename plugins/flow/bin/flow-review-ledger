@@ -88,7 +88,7 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
         "decision": None,
         "reason": None,
         "followup_task_id": None,
-        "thread_mark": None if kind == "summary" else _ledger.last_reply_id(item),
+        "thread_mark": _ledger.last_reply_id(item),
         "first_seen_round": round_no,
         "last_round": round_no,
         "head": None,
@@ -102,11 +102,16 @@ def reopen_if_advanced(row: dict, item: dict) -> None:
 
     One rule covers all three real continuations — reviewer objects, reviewer acknowledges,
     human posts an instruction — because it keys on the reply ID, not authorship (the agent's
-    replies and the human's manual comments come from the SAME account). A `summary` has no
-    thread, so it never re-opens: that is the deterministic elf.31 fix (a re-imported review
-    carries the same, immutable summary id). The prior `decision`/`reason` are kept as history.
+    replies and the human's manual comments come from the SAME account). This is NOT gated on
+    `kind`: a GitHub review-body summary (`kind == "summary"`) happens to be threadless, so
+    `_ledger.last_reply_id` returns None for it and `_ledger.id_advanced` is unconditionally
+    False whenever `current` is None — that is what makes it never re-open, and it is the
+    deterministic elf.31 guarantee (a re-imported review carries the same, immutable summary
+    id). A GitLab general discussion is ALSO `kind == "summary"` (see `gl_collect`) but is NOT
+    threadless — it carries a real thread that can grow a new note — so it must re-open like
+    any other threaded row. The prior `decision`/`reason` are kept as history.
     """
-    if row.get("status") != "done" or row.get("kind") == "summary":
+    if row.get("status") != "done":
         return
     if _ledger.id_advanced(_ledger.last_reply_id(item), row.get("thread_mark")):
         row["status"] = "open"
@@ -369,8 +374,10 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Merge a decisions file into the ledger. Per entry, an ABSENT key is a no-op and an "
             "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id, "
-            "thread_mark (null = 'no thread', for a kind == 'summary' row — on a threaded row a "
-            "cleared mark makes the finding re-open). status is not clearable: null is rejected."
+            "thread_mark (null = 'no thread' — true only for a threadless row, e.g. a GitHub "
+            "review-body summary; on any row that HAS a thread, including a GitLab "
+            "general-discussion summary, a cleared mark makes the finding re-open). status is "
+            "not clearable: null is rejected."
         ),
     )
     record.add_argument("--decisions", required=True)
