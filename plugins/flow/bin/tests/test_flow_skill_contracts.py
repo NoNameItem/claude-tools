@@ -321,7 +321,9 @@ def test_review_comments_5_7a_states_the_null_merge_rule() -> None:
     # a non-null id", which would make the example inert and leave a stale task id on the row.
     text = REVIEW_COMMENTS_SKILL.read_text()
     section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
-    assert "only when the entry supplies a non-null id" not in section
+    # Markdown emphasis markers sit inside the sentence (`**only** when ...`), so a plain
+    # substring guard never matches the prose it means to forbid -- match around them.
+    assert not re.search(r"only\W{0,4}when the entry supplies a non-null id", section)
     assert re.search(r"\bclears\b", section), "5.7a must say that an explicit null clears the field"
     assert re.search(r"\bomit", section), "5.7a must say that an omitted key leaves the value unchanged"
 
