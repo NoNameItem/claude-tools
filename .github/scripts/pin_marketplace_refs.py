@@ -2,10 +2,11 @@
 """Pin each marketplace plugin's source.ref to its release tag.
 
 Run from CI (release-please.yml) after the release-please action when a release
-PR was created/updated. For every plugin in marketplace.json whose source is a
-tag-pinned git-subdir object, this writes the plugin's release tag into
-source.ref ON that plugin's own release-please PR branch — atomic with the
-version bump. Generic over all marketplace plugins; no plugin name is hardcoded.
+PR was created/updated. For every plugin in every existing marketplace file
+whose source is a tag-pinned git-subdir object, this writes the plugin's release
+tag into source.ref ON that plugin's own release-please PR branch, committing
+all pinned marketplace files together — atomic with the version bump. Generic
+over all marketplace plugins; no plugin name is hardcoded.
 """
 
 from __future__ import annotations

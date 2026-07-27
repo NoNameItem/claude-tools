@@ -5,8 +5,7 @@
   },
   "metadata": {
     "description": "Codex-enabled plugins from the NoNameItem toolkit",
-    "version": "1.0.0",
-    "pluginRoot": "./plugins"
+    "version": "1.0.0"
   },
   "plugins": [
     {

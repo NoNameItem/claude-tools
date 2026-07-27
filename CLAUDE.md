@@ -53,6 +53,9 @@ See CONTRIBUTING.md for full details.
 claude-tools/
 ├── .claude-plugin/
 │   └── marketplace.json        # Plugin marketplace definition
+├── .agents/
+│   └── plugins/
+│       └── marketplace.json    # Codex-native marketplace definition
 ├── plugins/
 │   └── flow/                   # Beads workflow plugin
 │       ├── .claude-plugin/
@@ -268,4 +271,9 @@ This skill guides you through proper skill creation, testing, and validation.
      "version": "1.0.0"
    }
    ```
-5. Test locally: `/plugin install your-plugin@nonameitem-toolkit`
+5. If the plugin also ships `.codex-plugin/plugin.json`, additionally register it in
+   `.agents/plugins/marketplace.json` — Codex's native marketplace path. `validate_plugin.py`
+   (run in plugin CI) fails the build if a Codex manifest exists without a matching entry there.
+   Unlike the Claude marketplace, the Codex entry's `source.url` uses the full HTTPS form
+   (e.g. `https://github.com/NoNameItem/claude-tools`), not a relative path.
+6. Test locally: `/plugin install your-plugin@nonameitem-toolkit`

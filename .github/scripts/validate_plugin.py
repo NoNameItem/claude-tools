@@ -55,6 +55,7 @@ CODEX_KIND_EXPECTATION = {
 # Marketplace files: Claude's, and Codex's native path (codex-rs/core-plugins/src/marketplace.rs).
 CLAUDE_MARKETPLACE = Path(".claude-plugin/marketplace.json")
 CODEX_MARKETPLACE = Path(".agents/plugins/marketplace.json")
+CODEX_MANIFEST_REL = Path(".codex-plugin/plugin.json")
 
 
 @dataclass
@@ -195,7 +196,7 @@ def validate_codex_manifest(
 ) -> PluginValidationResult:
     """Validate an optional Codex manifest and its parity with Claude metadata."""
     result = PluginValidationResult()
-    path = plugin_path / ".codex-plugin" / "plugin.json"
+    path = plugin_path / CODEX_MANIFEST_REL
     if not path.exists():
         if required:
             result.add_error("Codex plugin.json not found at .codex-plugin/plugin.json")
@@ -266,7 +267,7 @@ def validate_plugin(
     # Validate marketplace registration, symmetrically per harness:
     # Claude manifest -> Claude marketplace; Codex manifest (if any) -> Codex marketplace.
     result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root))
-    if (plugin_path / ".codex-plugin" / "plugin.json").exists():
+    if (plugin_path / CODEX_MANIFEST_REL).exists():
         result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root, CODEX_MARKETPLACE))
 
     return result
