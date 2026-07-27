@@ -1,4 +1,4 @@
-# PR merge gate and notifications — design
+# CI notifications and merge gate — design
 
 **Task:** claude-tools-5vg.2 (notify-finish doesn't account for review-gate)
 **Date:** 2026-07-27
@@ -40,6 +40,8 @@ Two facts constrain the design and were verified, not assumed:
 
 - Exactly **two** Telegram notifications per PR: one when the PR is created or updated, one when
   every required check has settled, stating whether the PR is mergeable.
+- The same two-message shape for pushes to `master` and for releases, so every CI event reads the
+  same way: an opening message, and a reply with the outcome.
 - A single source of truth for merge rules, with CI failures actually blocking merges.
 - The Quality Gate blocking merges without introducing a conditionally-present required check.
 
@@ -186,22 +188,56 @@ therefore contains no bold at all, which makes "bold = problem" unambiguous.
 
 ### Sonar block
 
-For every SonarCloud project analysed on the PR, the result notification carries a collapsible block
-reproducing what Sonar reports in the PR itself:
+For every SonarCloud project analysed on the PR, the result notification carries **two** collapsible
+blocks, because Sonar's own PR comment answers "what did we find" but not "what blocks the merge".
+
+**Block 1 — the quality gate**, built from `conditions`. Collapsed when the gate passed, open when it
+failed; breached rows in bold:
 
 ```
 Sonar · statuskit — Quality Gate passed
-  ✅ New issues                6
-  ✅ Accepted issues           0
-  ✅ Security hotspots         0
-  ✅ Coverage on new code      96.8% (≥ 80)
-  ✅ Duplication on new code   0.0% (≤ 3)
-  ✅ New lines                 1357
-  See analysis details on SonarQube Cloud
+  ✅ Reliability          A (need A)
+  ✅ Security             A (need A)
+  ✅ Maintainability      A (need A)
+  ✅ Coverage             96.8% (need ≥ 80%)
+  ✅ Duplication          0.0% (need ≤ 3%)
+  ✅ Hotspots reviewed    100.0% (need ≥ 100%)
+  Dashboard
 ```
 
-Rendered as a **header-less two-column table** inside `<details>`, collapsed when the gate passed and
-open when it failed.
+Ratings arrive as `1..5` and are mapped to `A..E`; comparators become `need ≥ 80%` / `need ≤ 3%` /
+`need A`. The row set is **whatever the API returned for this PR** — not a fixed list. On a
+release-please PR only four conditions come back (coverage and duplication are not evaluated when
+there is nothing to measure — verified on #114), and that is correct output, not missing data.
+A corollary worth having: if the gate gains a condition (see `claude-tools-5vg.8`), it shows up in
+Telegram with no code change.
+
+**Block 2 — new code**, always collapsed: the same figures Sonar puts in its PR comment, plus a
+severity breakdown it does not provide:
+
+```
+Sonar · statuskit — new code
+  New issues                6 (critical 5, minor 1)
+  Accepted issues           0
+  Security hotspots         0
+  Coverage on new code      96.8%
+  Duplication on new code   0.0%
+  New lines                 1357
+  Issues on new code
+```
+
+The breakdown costs one cheap call (`api/issues/search` with `ps=1&facets=severities`) and is the
+part that makes a green gate honest: on PR #112 it surfaces five critical smells that the gate,
+correctly, let through.
+
+Both blocks are rendered as **header-less two-column tables**.
+
+**Why not mirror Sonar's comment.** Its icons do not mean "condition satisfied" — on #112 it marked
+`6 New issues` green although `new_violations` is not part of the gate at all, and on #114 it showed
+`0.0% Coverage on New Code` green although `new_coverage` was not evaluated for that PR. It also
+never mentions `Reliability`, `Security` or `Maintainability` — precisely the three conditions
+through which code smells can block a merge. Copying that comment would have reproduced its blind
+spot.
 
 **Data source: the SonarCloud Web API, not the comment.** The check run's `output.summary` contains
 the same figures, but as human-readable markdown (`![](…/passed.svg '') [6 New issues](…)`) — no
@@ -215,8 +251,9 @@ more:
 | Per-metric status | inferred from image filename | `conditions[].status` |
 | Extra metrics | none | `new_lines`, anything else on demand |
 
-Two calls per project: `api/measures/component` (metric values) and
-`api/qualitygates/project_status` (gate status, thresholds, per-condition status). The project key
+Three calls per project: `api/qualitygates/project_status` (gate status, thresholds, per-condition
+status), `api/measures/component` (metric values) and `api/issues/search` with
+`ps=1&facets=severities` (severity breakdown). The project key
 does **not** need to be known in advance — it is extracted from the `details_url` of the check run
 whose `app.slug == "sonarqubecloud"` (`…/dashboard?id=NoNameItem_statuskit&pullRequest=112`), which
 the aggregator already has in the rollup. Monorepo projects therefore each get their own block with
@@ -248,6 +285,9 @@ h3"*), so the fallback is a **separate rendering**, not the same HTML: bold titl
 | `.github/scripts/telegram_notify.py` | Verdict + PR metadata + Sonar blocks → payload; sends, with fallback. |
 | `.github/workflows/_reusable-pr-summary.yml` | Collects the inputs, calls both scripts, maintains the marker. |
 | `.github/actions/telegram-notify/action.yml` | Thin wrapper over `telegram_notify.py`; the hand-rolled Markdown escaping (`action.yml:50-60`) is removed. |
+| `.github/workflows/push.yml` | Two-message pair; `message_id` passed via job output (Part 4). |
+| `.github/workflows/publish.yml` | Same pair, plus release notes and a conditional Sonar block (Part 5). |
+| `.github/scripts/release_notes.py` | GitHub release body (markdown) → rich markup. |
 | `.github/workflows/coderabbit-notify.yml` | Deleted. |
 | `.github/workflows/review-gate.yml` | Add the aggregator call; fix the stale comment at lines 5-6 claiming `claude-review` gates anything — it was removed in `2595a29`. |
 
@@ -270,27 +310,144 @@ Accepted cost: CI gains a dependency on SonarCloud availability, and the job gro
 computation time (~25 s on PR #114). Fork PRs are unaffected — the Sonar job is already skipped
 there (`_reusable-python-ci.yml:191-193`).
 
+## Part 4 — Push to master notifications
+
+Same two-message shape as a PR, but the mechanics are far simpler: there is no review gate on a
+push, and both messages live in the **same workflow run**, so `notify-start` exposes its
+`message_id` as a job output and `notify-finish` replies to it. No aggregator, no commit-status
+marker, no cross-run state.
+
+| Message | Trigger | Sound |
+|---|---|---|
+| **Pushed to master** | `push.yml` start | silent |
+| **Result** | `needs: [validate-commits, python-ci, claude-code-plugin-ci]`, `if: always()` | with sound, replying to the first |
+
+```
+🚀 feat(statuskit): dynamic per-model usage limits
+Pushed to master · a1b2c3d
+claude-tools · master
+```
+
+```
+✅ feat(statuskit): dynamic per-model usage limits
+All checks passed
+[check table]
+[Sonar · statuskit — project state]
+claude-tools · master
+```
+
+The Sonar verdict already arrives inside `Python CI` thanks to `qualitygate.wait`, so the result
+message needs no waiting of its own.
+
+**The Sonar block here shows the overall state of the branch**, not new-code metrics:
+
+```
+Sonar · statuskit — project state
+  Coverage              93.4%
+  Issues                13 (blocker 1, critical 7, major 1, minor 4)
+  Vulnerabilities       1
+  Reliability           A
+  Security              E
+  Maintainability       A
+  Duplication           0.0%
+  Lines of code         2121
+```
+
+Two reasons. First, new-code metrics on `master` are currently meaningless: the new-code period is
+`previous_version`, and since `sonar.projectVersion` is never sent, every analysis is recorded as
+`projectVersion=not provided` — so "new code" on the branch stretches back to **2026-01-26**.
+Second, and more importantly, the overall state is the only place where accumulated problems are
+visible at all: the project currently carries a **BLOCKER vulnerability** which puts
+`security_rating` at **E**, and which no gate will ever surface because the gate only evaluates new
+code (see `claude-tools-5vg.8`).
+
+## Part 5 — Release notifications
+
+`publish.yml` already sends a pair (`Publishing...` → result); it adopts the same rich layout, the
+reply link, and gains two content blocks.
+
+```
+📦 statuskit 0.5.0
+Published to PyPI
+[Release notes — open]
+[Sonar · statuskit — project state]
+claude-tools · statuskit-0.5.0
+```
+
+**Release notes come from GitHub, not from a diff.** release-please already writes them into the
+release body, so `gh api repos/{o}/{r}/releases/tags/{tag} --jq .body` returns finished markdown:
+
+```
+## [0.5.0](…/compare/statuskit-0.4.0...statuskit-0.5.0) (2026-07-21)
+### Features
+* **statuskit:** dynamic per-model usage limits (#112) (291b32e)
+```
+
+It is converted to rich markup (`##`/`###` → `<h2>`/`<h3>`, `*` items → `<ul>`, links preserved) and
+placed in an open `<details>`. Nothing is computed between tags.
+
+**Sonar in a release notification is conditional.** Only projects that exist in SonarCloud get a
+block — the organisation currently holds `NoNameItem_statuskit` and `NoNameItem_read-comics`, so a
+`flow` release has no Sonar block at all. `publish.yml`'s existing `resolve` job already yields the
+project name to key off.
+
+### `sonar.projectVersion` and seeding
+
+Sonar analyses branches and PRs, never tags, so "metrics at a tag" do not exist as such. They become
+available indirectly once analyses are labelled with a version:
+
+- Add `-Dsonar.projectVersion=<version>` to the scanner args in `_reusable-python-ci.yml`. In the
+  monorepo each package is its own Sonar project with its own version, so there is no ambiguity:
+  the version is read from the analysed package (`{matrix.path}/pyproject.toml`, kept in sync with
+  `.release-please-manifest.json` by release-please — both currently say `0.5.0` for statuskit).
+- Sonar then records a `VERSION` event whenever the version changes, which
+  `api/project_analyses/search?category=VERSION` exposes, and
+  `api/measures/search_history` can be queried between two such analyses — giving both the metrics
+  of a released version and the **delta against the previous one**
+  (`coverage 93.4% → 94.1%`, `issues 13 → 11`).
+- As a side effect it repairs the new-code period on `master`, which is what makes branch-level
+  new-code metrics meaningful again.
+
+**Seeding is required and easy to forget.** Today there is no version history at all
+(`projectVersion=not provided` on every analysis back to January). The first `master` analysis
+carrying `projectVersion=0.5.0` creates the anchor point; only the *next* release produces a real
+version-to-version delta. Therefore:
+
+1. Land the `projectVersion` change so the current version gets recorded on the next push to
+   `master` — this is the seeding step and must not be skipped or deferred.
+2. Until a second `VERSION` event exists, the release notification falls back to the current state
+   of `master` with no delta. This is not an error state and must not be reported as one — releases
+   are cut from `master` immediately after the merge, so the numbers are the released ones anyway.
+
 ## Testing
 
 - `pr_summary.py`: table-driven unit tests over every verdict, plus missing context, non-terminal
   context, fork PR (gate dropped), and stale head SHA.
-- `sonar_pr_status.py`: project-key extraction from `details_url`; metric formatting including the
-  absent-metric `—` case; threshold rendering for both comparators (`LT` → `≥`, `GT` → `≤`);
-  per-condition icons; degradation when the API returns an error or times out.
+- `sonar_pr_status.py`: project-key extraction from `details_url`; rating mapping (`1..5` → `A..E`);
+  metric formatting including the absent-metric `—` case; threshold rendering for both comparators
+  (`LT` → `≥`, `GT` → `≤`) and the rating special case (`need A`); a variable condition set (four
+  conditions on a release PR, six on a code PR); severity-breakdown assembly from facets;
+  degradation when the API returns an error or times out.
 - `telegram_notify.py`: golden-output tests for all four verdicts in both renderings; escaping of
   titles containing `<`, `>`, `&`; button composition; `skip_entity_detection` present; the emphasis
   rule (bold present exactly on failures, absent on a green notification).
+- Release-notes conversion: markdown headings, nested list items, links and inline code from a real
+  release body; an empty body (release with no notes) must not produce an empty `<details>`.
 - Manual: one throwaway PR exercising green, red and unresolved-comments paths, plus a gate re-run
-  to confirm the verdict flip re-notifies.
+  to confirm the verdict flip re-notifies; the push pair on merging it; and the release pair on the
+  next release-please merge.
 
 ## Rollout order
 
 The order matters — required contexts with the new names only exist after the workflow change is on
 `master`:
 
-1. Merge the repository change (renamed summary jobs, aggregator, Sonar wait, CodeRabbit removal).
+1. Merge the repository change (renamed summary jobs, aggregator, Sonar wait, `projectVersion`,
+   push/release notifications, CodeRabbit removal).
 2. Then update the ruleset (new required contexts, migrated rules) and delete the classic branch
    protection.
+3. Confirm on the first `master` analysis afterwards that `projectVersion` was recorded (a `VERSION`
+   event appears in `api/project_analyses/search`) — the seeding step from Part 5.
 
 Open PRs created before step 1 will lack `Python CI Gate` / `Claude Code Plugin CI Gate` on their
 head SHA and will need a push or re-run before they can merge.
