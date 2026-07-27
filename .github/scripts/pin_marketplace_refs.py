@@ -16,7 +16,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-MARKETPLACE = Path(".claude-plugin/marketplace.json")
+# Every marketplace file a release must keep pinned. Claude's, and Codex's native path.
+MARKETPLACE_FILES = (
+    Path(".claude-plugin/marketplace.json"),
+    Path(".agents/plugins/marketplace.json"),
+)
 RP_CONFIG = Path("release-please-config.json")
 BRANCH_PREFIX = "release-please--branches--master--components--"
 BOT_NAME = "release-please[bot]"
@@ -51,6 +55,20 @@ def resolve_pins(marketplace: dict, rp_config: dict) -> list[PluginPin]:
     return pins
 
 
+def load_marketplaces(repo: Path) -> list[dict]:
+    """Parsed contents of every marketplace file that exists in the repo."""
+    return [json.loads((repo / rel).read_text()) for rel in MARKETPLACE_FILES if (repo / rel).exists()]
+
+
+def resolve_all_pins(marketplaces: list[dict], rp_config: dict) -> list[PluginPin]:
+    """Unique pins across every marketplace file (a plugin listed twice pins once)."""
+    unique: dict[tuple[str, str], PluginPin] = {}
+    for marketplace in marketplaces:
+        for pin in resolve_pins(marketplace, rp_config):
+            unique.setdefault((pin.name, pin.component), pin)
+    return list(unique.values())
+
+
 def release_branch_name(component: str) -> str:
     """The deterministic release-please PR branch for a component."""
     return f"{BRANCH_PREFIX}{component}"
@@ -78,6 +96,19 @@ def pin_marketplace_file(marketplace_path: Path, name: str, ref: str) -> bool:
             changed = True
     if changed:
         marketplace_path.write_text(json.dumps(data, indent=2) + "\n")
+    return changed
+
+
+def pin_all_marketplaces(repo: Path, name: str, ref: str) -> list[Path]:
+    """Pin `name` to `ref` in every existing marketplace file.
+
+    Returns the repo-relative paths that actually changed.
+    """
+    changed: list[Path] = []
+    for rel in MARKETPLACE_FILES:
+        path = repo / rel
+        if path.exists() and pin_marketplace_file(path, name, ref):
+            changed.append(rel)
     return changed
 
 
@@ -109,22 +140,22 @@ def process_pin(repo: Path, pin: PluginPin) -> str | None:
     _run_git(repo, "checkout", "-B", branch, f"origin/{branch}")
     tag = tag_name(pin.component, read_plugin_version(repo, pin.path))
 
-    if not pin_marketplace_file(repo / MARKETPLACE, pin.name, tag):
+    changed = pin_all_marketplaces(repo, pin.name, tag)
+    if not changed:
         print(f"'{pin.name}' already pinned to {tag}")
         return None
 
-    _run_git(repo, "add", str(MARKETPLACE))
+    _run_git(repo, "add", *[str(rel) for rel in changed])
     _run_git(repo, "commit", "-m", f"chore: pin {pin.name} marketplace ref to {tag}")
     _run_git(repo, "push", "origin", branch)
-    print(f"pinned '{pin.name}' -> {tag}")
+    print(f"pinned '{pin.name}' -> {tag} in {', '.join(rel.as_posix() for rel in changed)}")
     return tag
 
 
 def run(repo: Path) -> int:
     """Pin every resolvable plugin inside its release branch. Returns an exit code."""
-    marketplace = json.loads((repo / MARKETPLACE).read_text())
     rp_config = json.loads((repo / RP_CONFIG).read_text())
-    pins = resolve_pins(marketplace, rp_config)
+    pins = resolve_all_pins(load_marketplaces(repo), rp_config)
     if not pins:
         return 0
 

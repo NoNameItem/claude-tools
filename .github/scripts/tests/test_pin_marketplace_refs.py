@@ -131,6 +131,78 @@ class TestPinMarketplaceFile:
         assert mp.read_text() == original  # byte-for-byte unchanged
 
 
+class TestMultipleMarketplaceFiles:
+    @staticmethod
+    def _write(path: Path, ref: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "flow",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "https://github.com/NoNameItem/claude-tools",
+                                "path": "plugins/flow",
+                                "ref": ref,
+                            },
+                        }
+                    ]
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+
+    def test_pins_every_existing_file(self, tmp_path: Path) -> None:
+        from ..pin_marketplace_refs import pin_all_marketplaces
+
+        self._write(tmp_path / ".claude-plugin" / "marketplace.json", "flow-1.0.0")
+        self._write(tmp_path / ".agents" / "plugins" / "marketplace.json", "flow-1.0.0")
+
+        changed = pin_all_marketplaces(tmp_path, "flow", "flow-1.1.0")
+
+        assert [path.as_posix() for path in changed] == [
+            ".claude-plugin/marketplace.json",
+            ".agents/plugins/marketplace.json",
+        ]
+        for rel in changed:
+            assert json.loads((tmp_path / rel).read_text())["plugins"][0]["source"]["ref"] == "flow-1.1.0"
+
+    def test_absent_file_is_skipped(self, tmp_path: Path) -> None:
+        from ..pin_marketplace_refs import pin_all_marketplaces
+
+        self._write(tmp_path / ".claude-plugin" / "marketplace.json", "flow-1.0.0")
+
+        changed = pin_all_marketplaces(tmp_path, "flow", "flow-1.1.0")
+
+        assert [path.as_posix() for path in changed] == [".claude-plugin/marketplace.json"]
+
+    def test_resolve_all_pins_deduplicates(self) -> None:
+        from ..pin_marketplace_refs import PluginPin, resolve_all_pins
+
+        marketplace = {
+            "plugins": [
+                {
+                    "name": "flow",
+                    "source": {
+                        "source": "git-subdir",
+                        "url": "https://github.com/NoNameItem/claude-tools",
+                        "path": "plugins/flow",
+                        "ref": "flow-1.0.0",
+                    },
+                }
+            ]
+        }
+        rp_config = {"packages": {"plugins/flow": {"package-name": "flow"}}}
+
+        # The same plugin listed in both marketplace files must pin once.
+        pins = resolve_all_pins([marketplace, marketplace], rp_config)
+
+        assert pins == [PluginPin(name="flow", path="plugins/flow", component="flow")]
+
+
 def _git(cwd: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
 
@@ -171,6 +243,30 @@ def _make_repo_with_remote(tmp_path):
     (repo / "release-please-config.json").write_text(
         json.dumps({"packages": {"plugins/flow": {"package-name": "flow"}}}, indent=2) + "\n"
     )
+    codex_mp = repo / ".agents" / "plugins"
+    codex_mp.mkdir(parents=True)
+    (codex_mp / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "mp-codex",
+                "plugins": [
+                    {
+                        "name": "flow",
+                        "description": "x",
+                        "source": {
+                            "source": "git-subdir",
+                            "url": "https://github.com/NoNameItem/claude-tools",
+                            "path": "plugins/flow",
+                            "ref": "flow-1.0.0",
+                        },
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+
     plugin_cp = repo / "plugins" / "flow" / ".claude-plugin"
     plugin_cp.mkdir(parents=True)
     (plugin_cp / "plugin.json").write_text(json.dumps({"name": "flow", "version": "1.0.0"}) + "\n")
@@ -209,6 +305,15 @@ def test_run_pins_release_branch(tmp_path: Path) -> None:
         text=True,
     ).stdout
     assert json.loads(shown)["plugins"][0]["source"]["ref"] == "flow-1.1.0"
+
+    codex_shown = subprocess.run(
+        ["git", "show", f"origin/{branch}:.agents/plugins/marketplace.json"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert json.loads(codex_shown)["plugins"][0]["source"]["ref"] == "flow-1.1.0"
 
 
 def test_run_noop_without_release_branch(tmp_path: Path) -> None:
