@@ -53,13 +53,23 @@ class LedgerPathError(ValueError):
     """The PR/MR URL or number cannot be turned into a ledger path."""
 
 
+def cache_base_setting() -> str:
+    """The raw cache-root setting for this OS, before any Path is built.
+
+    Kept separate from `cache_base` so the platform branch stays assertable on every runner:
+    `Path()` under `os.name == "nt"` builds a WindowsPath, which raises NotImplementedError on
+    POSIX under Python <= 3.12. A test that simulates Windows by patching `os.name` therefore
+    cannot call `cache_base()` on the Linux CI (3.11) at all -- the error escapes from the
+    patched global state into pytest's own machinery and aborts the whole session.
+    """
+    if os.name == "nt":
+        return os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
+    return os.environ.get("XDG_CACHE_HOME") or "~/.cache"
+
+
 def cache_base() -> Path:
     """The OS cache root. Windows: %LOCALAPPDATA%; POSIX (incl. WSL): $XDG_CACHE_HOME."""
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or "~/AppData/Local"
-    else:
-        base = os.environ.get("XDG_CACHE_HOME") or "~/.cache"
-    return Path(base).expanduser()
+    return Path(cache_base_setting()).expanduser()
 
 
 def _locate_route(segments: list[str]) -> int | None:

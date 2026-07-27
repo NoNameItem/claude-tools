@@ -28,10 +28,21 @@ class TestCacheBase:
         monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
         assert _ledger.cache_base() == Path("~/.cache").expanduser()
 
+    # The two Windows cases assert the SETTING, never a constructed Path. Calling `cache_base()`
+    # with `os.name` patched to "nt" builds a WindowsPath, which raises NotImplementedError on
+    # POSIX under Python <= 3.12 -- and because the patch is live global state, the error escapes
+    # into pytest's own tmp_path/cache machinery as an INTERNALERROR that aborts the entire
+    # session. Locally that stayed invisible (Python 3.14 allows the foreign flavour); CI runs the
+    # 3.11 floor, where it does not.
     def test_windows_uses_localappdata(self, monkeypatch):
         monkeypatch.setattr(_ledger.os, "name", "nt")
         monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
-        assert _ledger.cache_base() == _ledger.Path(r"C:\Users\me\AppData\Local")
+        assert _ledger.cache_base_setting() == r"C:\Users\me\AppData\Local"
+
+    def test_windows_falls_back_to_appdata_local(self, monkeypatch):
+        monkeypatch.setattr(_ledger.os, "name", "nt")
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        assert _ledger.cache_base_setting() == "~/AppData/Local"
 
 
 class TestSplitProject:
