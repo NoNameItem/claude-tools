@@ -41,10 +41,22 @@ command rewriting is out of scope.
 
 ### Installing and trusting the plugin
 
-Install and enable Flow through Codex's native plugin flow (same marketplace/plugin source as
-above). After installing, review and trust the plugin's `SessionStart` and `PreToolUse` hooks
-through Codex's `/hooks` command — Codex requires this one-time trust step before the hooks run.
-Changed hook definitions (a plugin upgrade, for example) require re-trusting them again.
+Codex does not use Claude Code's `/plugin marketplace add` and `/plugin install` slash commands.
+Install Flow through Codex's own plugin flow, which reads this repo's Codex marketplace file
+(`.agents/plugins/marketplace.json`):
+
+1. Add the repo's marketplace source:
+
+   ```bash
+   codex plugin marketplace add NoNameItem/claude-tools
+   ```
+
+2. In the `codex` TUI, run `/plugins` and install **flow**. Codex resolves the `git-subdir`
+   source, tag-pinned to `flow-<version>`.
+3. Review and trust the plugin's `SessionStart` and `PreToolUse` hooks through Codex's `/hooks`
+   command — Codex requires this one-time trust step before the hooks run. Changed hook
+   definitions (a plugin upgrade, for example) require re-trusting them again.
+4. Start a new Codex session so the hooks load.
 
 If the hooks are disabled, left untrusted, or excluded by `allow_managed_hooks_only = true` in
 your Codex config, Flow loses its transparent bare-helper `PATH` resolution — Flow reports that

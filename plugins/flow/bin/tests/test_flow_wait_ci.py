@@ -52,9 +52,25 @@ def test_github_terminal_emits_check_lines(fake_gh):
     assert "SUCCESS\tgate" in r.stdout
 
 
+def test_github_terminal_ignores_zero_active_states(fake_gh):
+    # Regression for claude-tools-r1r. Real GitHub returns the full state enum, so
+    # checkRunCountsByState carries count=0 QUEUED/IN_PROGRESS/PENDING/WAITING even when the
+    # pipeline is terminal and green (gh_response now emits that shape). The old
+    # `any(s in GH_ACTIVE_CHECK_STATES for s in check_counts)` iterated dict KEYS, saw those
+    # zero-count active states, and treated the rollup as forever-active -> exit 2 (timeout).
+    # Counting (`check_counts.get(s, 0) > 0`) fixes it -> exit 0. One all-terminal response
+    # suffices; the queue repeats it for the 2-poll stability window.
+    fake_gh.queue([gh_response(nodes=[("check", "CI", "COMPLETED", "SUCCESS")])])
+    r = _gh("42", SHA, "--platform", "github", env=fake_gh.env())
+    assert r.returncode == 0, r.stderr
+    assert "SUCCESS\tCI" in r.stdout
+
+
 def test_github_timeout_exits_2(fake_gh):
     # Rollup present but a check is IN_PROGRESS (active) -> never terminal. WAIT_TIMEOUT=0
     # -> after the first non-terminal poll the deadline is past -> exit 2 (the caller asks).
+    # Counterpart to test_github_terminal_ignores_zero_active_states: a NON-zero active count
+    # (IN_PROGRESS:1) must keep the wait alive even after the fix (count > 0, not key present).
     fake_gh.queue([gh_response(nodes=[("check", "CI", "IN_PROGRESS", None)])])
     r = _gh("42", SHA, "--platform", "github", env=fake_gh.env(WAIT_TIMEOUT="0"))
     assert r.returncode == 2, r.stdout

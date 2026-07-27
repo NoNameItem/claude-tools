@@ -1,0 +1,22 @@
+{
+  "name": "nonameitem-toolkit-codex",
+  "owner": {
+    "name": "NoNameItem"
+  },
+  "metadata": {
+    "description": "Codex-enabled plugins from the NoNameItem toolkit",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "flow",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/NoNameItem/claude-tools",
+        "path": "plugins/flow",
+        "ref": "flow-3.1.0"
+      },
+      "description": "Automated beads workflow skills for Claude Code and Codex"
+    }
+  ]
+}
