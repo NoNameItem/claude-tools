@@ -142,6 +142,121 @@ def test_codex_manifest_symlink_must_not_escape_plugin(temp_plugin: Path) -> Non
     assert "Codex manifest path escapes plugin directory: ./outside-link" in result.errors
 
 
+CLAUDE_METADATA = {"name": "test-plugin", "version": "1.0.0"}
+
+
+def test_codex_apps_accepts_single_existing_path(temp_plugin: Path) -> None:
+    """Should accept `apps` as a single path to an existing file."""
+    from ..validate_plugin import validate_codex_manifest
+
+    (temp_plugin / "flow.app.json").write_text("{}")
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps="./flow.app.json")
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert result.errors == []
+
+
+def test_codex_apps_rejects_a_list(temp_plugin: Path) -> None:
+    """Codex allows only a single path string for `apps`."""
+    from ..validate_plugin import validate_codex_manifest
+
+    (temp_plugin / "flow.app.json").write_text("{}")
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps=["./flow.app.json"])
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert "Codex manifest field 'apps' must be a single path string" in result.errors
+
+
+def test_codex_apps_path_must_exist(temp_plugin: Path) -> None:
+    """Should fail when `apps` points at a missing file."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps="./missing.app.json")
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert "Codex manifest path does not exist: ./missing.app.json" in result.errors
+
+
+def test_codex_hooks_accepts_inline_object(temp_plugin: Path) -> None:
+    """Codex allows an inline hook object instead of a path."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks={"SessionStart": [{"command": "echo hi"}]})
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert result.errors == []
+
+
+def test_codex_hooks_accepts_inline_object_list(temp_plugin: Path) -> None:
+    """Codex allows a list of inline hook objects."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[{"SessionStart": []}, {"PreToolUse": []}])
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert result.errors == []
+
+
+def test_codex_hooks_rejects_mixed_list(temp_plugin: Path) -> None:
+    """A list mixing paths and inline objects is not a Codex shape."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=["./hooks/codex-hooks.json", {"SessionStart": []}])
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert any("Codex manifest field 'hooks' must be" in error for error in result.errors)
+
+
+def test_codex_mcp_servers_accepts_inline_object(temp_plugin: Path) -> None:
+    """Codex allows an inline mcpServers object."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers={"beads": {"command": "bd"}})
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert result.errors == []
+
+
+def test_codex_mcp_servers_path_is_validated(temp_plugin: Path) -> None:
+    """A string mcpServers value is still validated as a path."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers="./missing-mcp.json")
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert "Codex manifest path does not exist: ./missing-mcp.json" in result.errors
+
+
+def test_codex_mcp_servers_rejects_a_list(temp_plugin: Path) -> None:
+    """Codex has no list form for mcpServers."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers=["./mcp.json"])
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert "Codex manifest field 'mcpServers' must be a path or an inline object" in result.errors
+
+
+def test_codex_ignores_non_codex_fields(temp_plugin: Path) -> None:
+    """`agents` is not a Codex field, so it must not produce a path error."""
+    from ..validate_plugin import validate_codex_manifest
+
+    write_codex_manifest(temp_plugin, skills=[], hooks=[], agents="./missing-agents")
+
+    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
+
+    assert result.errors == []
+
+
 def test_optional_codex_manifest_absence_is_allowed(temp_plugin: Path, temp_marketplace: Path) -> None:
     """Should keep Codex support optional when no Codex manifest exists."""
     from ..validate_plugin import validate_plugin

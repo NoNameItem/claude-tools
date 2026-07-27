@@ -29,6 +29,29 @@ KEBAB_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$")
 PATH_FIELDS = ["commands", "agents", "skills", "hooks", "mcpServers", "outputStyles", "lspServers"]
 
+# Codex manifest field schema (openai/codex, codex-rs/core-plugins/src/manifest.rs).
+# Codex ignores unknown keys, so fields absent here (agents, outputStyles, lspServers)
+# are deliberately not validated.
+CODEX_PATHS = "PATHS"  # path string or list of path strings
+CODEX_PATH_SINGLE = "PATH_SINGLE"  # single path string only
+CODEX_HOOKS = "HOOKS"  # path, list of paths, inline object, or list of inline objects
+CODEX_MCP = "MCP"  # path or inline object
+
+CODEX_FIELD_KINDS = {
+    "skills": CODEX_PATHS,
+    "commands": CODEX_PATHS,
+    "apps": CODEX_PATH_SINGLE,
+    "hooks": CODEX_HOOKS,
+    "mcpServers": CODEX_MCP,
+}
+
+CODEX_KIND_EXPECTATION = {
+    CODEX_PATHS: "a path or list of paths",
+    CODEX_PATH_SINGLE: "a single path string",
+    CODEX_HOOKS: "a path, a list of paths, an inline object, or a list of inline objects",
+    CODEX_MCP: "a path or an inline object",
+}
+
 
 @dataclass
 class PluginValidationResult:
@@ -116,6 +139,50 @@ def _codex_manifest_path_error(plugin_path: Path, value: object) -> str | None:
     return None
 
 
+def _codex_single_path_field_errors(plugin_path: Path, field_name: str, value: object) -> list[str]:
+    """Validate a Codex field that must be a single path string (e.g. `apps`)."""
+    if not isinstance(value, str):
+        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[CODEX_PATH_SINGLE]}"]
+    return [error] if (error := _codex_manifest_path_error(plugin_path, value)) else []
+
+
+def _codex_mcp_field_errors(plugin_path: Path, field_name: str, value: object) -> list[str]:
+    """Validate the Codex `mcpServers` field: a path or an inline object."""
+    if isinstance(value, dict):
+        return []  # inline server definition
+    if not isinstance(value, str):
+        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[CODEX_MCP]}"]
+    return [error] if (error := _codex_manifest_path_error(plugin_path, value)) else []
+
+
+def _codex_paths_field_errors(plugin_path: Path, field_name: str, kind: str, value: object) -> list[str]:
+    """Validate a Codex field that accepts a path, a list of paths, or (for hooks only) inline objects.
+
+    Inline shapes (dict / list of dicts) are accepted structurally; their contents
+    are not inspected.
+    """
+    if kind == CODEX_HOOKS:
+        if isinstance(value, dict):
+            return []  # inline hook object
+        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
+            return []  # list of inline hook objects
+        # Anything else falls through to the path / list-of-paths handling below.
+
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[kind]}"]
+    return [error for item in values if (error := _codex_manifest_path_error(plugin_path, item))]
+
+
+def _codex_field_errors(plugin_path: Path, field_name: str, kind: str, value: object) -> list[str]:
+    """Validate one Codex manifest field against its kind."""
+    if kind == CODEX_PATH_SINGLE:
+        return _codex_single_path_field_errors(plugin_path, field_name, value)
+    if kind == CODEX_MCP:
+        return _codex_mcp_field_errors(plugin_path, field_name, value)
+    return _codex_paths_field_errors(plugin_path, field_name, kind, value)
+
+
 def validate_codex_manifest(
     plugin_path: Path,
     claude_manifest: dict,
@@ -149,16 +216,11 @@ def validate_codex_manifest(
                 f"Claude manifest {metadata_key} {claude_manifest.get(metadata_key)!r}"
             )
 
-    for path_field in PATH_FIELDS:
-        values = manifest.get(path_field, [])
-        if isinstance(values, str):
-            values = [values]
-        if not isinstance(values, list):
-            result.add_error(f"Codex manifest field '{path_field}' must be a path or list of paths")
+    for field_name, kind in CODEX_FIELD_KINDS.items():
+        if field_name not in manifest:
             continue
-        for value in values:
-            if error := _codex_manifest_path_error(resolved_plugin_path, value):
-                result.add_error(error)
+        for error in _codex_field_errors(resolved_plugin_path, field_name, kind, manifest[field_name]):
+            result.add_error(error)
     return result
 
 
