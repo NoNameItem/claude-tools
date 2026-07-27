@@ -9,6 +9,7 @@ blockquotes that Claude Code renders natively).
 
 Usage:
     echo "$CARD_JSON" | flow-comment-card
+    flow-comment-card --ledger pr-96.json --ref C1 --verdict verdict.json
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+import _ledger
 
 CATEGORY_EMOJI = {
     "correctness": "🔴",
@@ -49,6 +52,8 @@ def format_lines(start_line, line) -> str | None:
 
 def format_location(card: dict) -> str:
     """Return the '{path}:{lines}' / '{path}' / '(summary)' location segment."""
+    if card.get("kind") == "summary":
+        return "(summary)"  # logical discriminator, not the legacy `path == "(summary)"` sentinel
     path = card.get("path")
     lines = format_lines(card.get("start_line"), card.get("line"))
     if path and lines:
@@ -150,31 +155,30 @@ def merge_card(meta_item: dict, verdict: dict) -> dict:
     return card
 
 
-def _find_item(meta_path: str, ref: str) -> dict:
-    with Path(meta_path).open(encoding="utf-8") as fh:
-        doc = json.load(fh)
-    for item in doc.get("comments", []):
-        if item.get("ref") == ref:
-            return item
-    print(f"Error: ref {ref!r} not found in {meta_path}", file=sys.stderr)
-    sys.exit(1)
+def _find_row(ledger_path: str, ref: str) -> dict:
+    """The ledger row for `ref`, via the SAME lookup `flow-review-ledger get` uses."""
+    row = _ledger.find_row_by_ref(_ledger.load_ledger(Path(ledger_path)), ref)
+    if row is None:
+        print(f"Error: ref {ref!r} not found in {ledger_path}", file=sys.stderr)
+        sys.exit(1)
+    return row
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="flow-comment-card")
-    parser.add_argument("--meta")
+    parser.add_argument("--ledger")
     parser.add_argument("--ref")
     parser.add_argument("--verdict")
     args = parser.parse_args()
 
-    if args.meta or args.ref or args.verdict:
-        if not (args.meta and args.ref and args.verdict):
-            print("Error: --meta, --ref, and --verdict are required together", file=sys.stderr)
+    if args.ledger or args.ref or args.verdict:
+        if not (args.ledger and args.ref and args.verdict):
+            print("Error: --ledger, --ref, and --verdict are required together", file=sys.stderr)
             sys.exit(1)
-        meta_item = _find_item(args.meta, args.ref)
+        row = _find_row(args.ledger, args.ref)
         with Path(args.verdict).open(encoding="utf-8") as fh:
             verdict = json.load(fh)
-        print(render_card(merge_card(meta_item, verdict)))
+        print(render_card(merge_card(row, verdict)))
         return
 
     # stdin path (unchanged)
