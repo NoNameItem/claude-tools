@@ -219,7 +219,7 @@ severity breakdown it does not provide:
 Sonar · statuskit — new code
   New issues                6 (critical 5, minor 1)
   Accepted issues           0
-  Security hotspots         0
+  Vulnerabilities           0
   Coverage on new code      96.8%
   Duplication on new code   0.0%
   New lines                 1357
@@ -231,6 +231,22 @@ part that makes a green gate honest: on PR #112 it surfaces five critical smells
 correctly, let through.
 
 Both blocks are rendered as **header-less two-column tables**.
+
+**Security hotspots are on their way out.** SonarQube Cloud is
+[transitioning hotspots into vulnerabilities](https://docs.sonarsource.com/sonarqube-cloud/deprecations-and-removals#deprecation-of-security-hotspots):
+rules that used to raise a hotspot now raise a vulnerability (type) or a security issue (software
+quality). Therefore the blocks report **vulnerabilities**, not hotspots:
+
+- `new_vulnerabilities` / `vulnerabilities` for the count;
+- `security_issues` / `new_security_issues` where a breakdown is wanted — they return it inline,
+  e.g. `{"total":1,"HIGH":0,"MEDIUM":0,"LOW":0,"INFO":0,"BLOCKER":1}`;
+- a hotspot row is rendered **only when the count is non-zero**, so it disappears on its own as the
+  migration completes.
+
+Note what this already does to the gate: `new_security_hotspots_reviewed ≥ 100%` is satisfied
+trivially today (zero hotspots ⇒ 100% reviewed), so the gate effectively runs on five live
+conditions, not six. Since the gate table is generated from `conditions`, the dead row keeps showing
+as ✅ until the gate itself is revised — tracked in `claude-tools-5vg.8`.
 
 **Why not mirror Sonar's comment.** Its icons do not mean "condition satisfied" — on #112 it marked
 `6 New issues` green although `new_violations` is not part of the gate at all, and on #114 it showed
@@ -345,13 +361,16 @@ message needs no waiting of its own.
 Sonar · statuskit — project state
   Coverage              93.4%
   Issues                13 (blocker 1, critical 7, major 1, minor 4)
-  Vulnerabilities       1
+  Vulnerabilities       1 (blocker 1)
   Reliability           A
   Security              E
   Maintainability       A
   Duplication           0.0%
   Lines of code         2121
 ```
+
+The vulnerability line comes from `security_issues`, which carries its own severity breakdown; the
+hotspot row follows the same rule as in the PR blocks and is omitted while the count is zero.
 
 Two reasons. First, new-code metrics on `master` are currently meaningless: the new-code period is
 `previous_version`, and since `sonar.projectVersion` is never sent, every analysis is recorded as
@@ -426,7 +445,8 @@ version-to-version delta. Therefore:
 - `sonar_pr_status.py`: project-key extraction from `details_url`; rating mapping (`1..5` → `A..E`);
   metric formatting including the absent-metric `—` case; threshold rendering for both comparators
   (`LT` → `≥`, `GT` → `≤`) and the rating special case (`need A`); a variable condition set (four
-  conditions on a release PR, six on a code PR); severity-breakdown assembly from facets;
+  conditions on a release PR, six on a code PR); severity-breakdown assembly from facets and from
+  the inline `security_issues` payload; omission of the hotspot row at zero;
   degradation when the API returns an error or times out.
 - `telegram_notify.py`: golden-output tests for all four verdicts in both renderings; escaping of
   titles containing `<`, `>`, `&`; button composition; `skip_entity_detection` present; the emphasis
