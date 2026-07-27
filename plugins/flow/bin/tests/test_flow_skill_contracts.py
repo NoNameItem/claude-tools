@@ -245,7 +245,9 @@ def test_review_comments_reads_rows_not_the_collector_document() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "row-{ref}.json" in text  # Phase 3 analyses a per-ref extract
     assert "flow-comment-card --ledger" in text
-    assert "flow-comment-card --meta" not in text
+    # Whitespace-tolerant: `--meta` must not follow `flow-comment-card` even across a line wrap
+    # or multiple spaces (the source prose wraps long lines, which a literal substring check misses).
+    assert not re.search(r"flow-comment-card\s+--meta\b", text)
     # Phase 3 must not point a subagent at the whole collector document any more
     assert "from the collector output at" not in text
 
@@ -254,3 +256,41 @@ def test_review_comments_branches_on_kind_not_the_summary_sentinel() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "`kind`" in text
     assert '`path == "(summary)"` or `path` is null' not in text
+
+
+def test_review_comments_edge_case_points_at_the_ledger_not_metadata() -> None:
+    # Phase 2 states the rule: every later phase looks refs up in the ledger, never in
+    # metadata.json. The "Very Large Number of Comments" edge case must follow the same rule
+    # for the subset it selects, instead of contradicting it.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "look each ref up in `metadata.json`" not in text
+    edge_case = text.split("Very Large Number of Comments", 1)[1].split("###", 1)[0]
+    assert "the ledger" in edge_case
+    assert "flow-review-ledger get" in edge_case
+
+
+def test_review_comments_good_example_teaches_the_reconcile_flow() -> None:
+    # The canonical "GOOD" example must not describe the pre-Task-10 flow (no reconcile step,
+    # subagents reading metadata.json directly) — it should teach collect -> reconcile -> working
+    # set -> per-ref row extract, consistent with Phase 2/3.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "each subagent reading its comment from metadata.json" not in text
+    good_example = text.split("### GOOD:", 1)[1].split("### ", 1)[0]
+    assert "reconcile" in good_example
+    assert "flow-review-ledger get" in good_example
+
+
+def test_review_comments_followup_description_reads_the_ledger_row() -> None:
+    # 5.4's follow-up description must not read the reviewer's comment text from metadata.json
+    # (transient collector output) -- it must point at the ledger row, like the rest of Phase 3-5.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "the reviewer's comment text read from `metadata.json`" not in text
+
+
+def test_review_comments_captures_the_reply_id_for_thread_mark() -> None:
+    # 5.7a sets thread_mark to "the id of the reply you just posted", but nothing in 5.7 tells
+    # the agent to capture that id from the gh/glab response. Pin that 5.7 now does.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    phase_5_7 = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
+    assert re.search(r"capture", phase_5_7, re.IGNORECASE)
+    assert "thread_mark" in phase_5_7

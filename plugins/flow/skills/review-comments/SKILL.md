@@ -399,7 +399,7 @@ as good as the code it cites. **If an `evidence` value does not cite code that a
 `claim` (it just names a related mechanism, or restates the author's assertion), treat it as a
 shallow dismissal: re-analyze it, landing on `agree_obvious`/`agree_unclear`.** The
 `category`/`thought`/`suggested` fields feed the Phase 4 card (assembled by `flow-comment-card
---meta/--verdict`); the collector-attached `snippet` already lives on the ledger row, so Phase 3
+--ledger/--verdict`); the collector-attached `snippet` already lives on the ledger row, so Phase 3
 writes no snippet. Do **not** print a grouped-by-type verdict dump here; the verdicts are surfaced
 one card at a time in Phase 4.
 
@@ -731,7 +731,7 @@ early and silently truncates the task body (this repo's own review comments cont
 **Materialize each free-text value with the active harness's native non-shell file mechanism, then
 pass it by file** — that mechanism takes the content as a direct argument that no shell ever parses,
 so delimiter collision and expansion are both impossible. Write the title to `$FLOW_RC_DIR/title-{ref}.txt` and the full description (PR/MR URL,
-`path:lines`, the reviewer's comment text read from `metadata.json`, and the agent's take) to
+`path:lines`, the reviewer's comment text read from the ledger row, and the agent's take) to
 `$FLOW_RC_DIR/desc-{ref}.md`, then:
 
 ```bash
@@ -869,6 +869,9 @@ glab api --method POST \
   "projects/{project}/merge_requests/{iid}/discussions/{discussion_id}/notes" \
   --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
 ```
+
+**Capture the posted reply's id from the API response** (its `.id` field, on both platforms) for
+every reply you send — 5.7a's `thread_mark` needs it.
 
 **Reply format by decision** (identical on both platforms):
 
@@ -1072,8 +1075,10 @@ Agent: Obvious fixes: U1, C1.  Disagree: U2.  Outdated: U3.
 ```
 User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
-       [flow-review-collect → metadata.json; 3 non-replied, below the ~20 cap → working set = all 3]
-       [Analyzes ALL 3 in parallel at the balanced tier, each subagent reading its comment from metadata.json]
+       [flow-review-collect → metadata.json → flow-review-ledger reconcile → working set;
+        3 open, below the ~20 cap → working set = all 3]
+       [Analyzes ALL 3 in parallel at the balanced tier, each subagent reading its row extract
+        from flow-review-ledger get]
 
        Triaging 3 comments (humans first, then bots):
 
@@ -1363,8 +1368,10 @@ floods the main context. If `counts.actionable` is **more than ~20**:
 1. Print the **category-free** selection table (refs, source, path:lines, ⚠️ outdated, brief — no
    `category` and no full bodies yet; `category` is a Phase 3 verdict that does not exist pre-analysis).
 2. Ask, in plain text: "{N} comments — analyze all, or select a subset? (all / <refs>)".
-3. Analyze/triage **only** the selected subset (look each ref up in `metadata.json`). The categorized
-   Phase 4.1 TOC (with `category`) is printed here, after analysis.
+3. Analyze/triage **only** the selected subset (look each ref up **in the ledger**, via
+   `flow-review-ledger get` — never in `metadata.json`; a large PR is exactly where the ledger's
+   prior-round `decision`/`reason`/`thread` context matters most). The categorized Phase 4.1 TOC
+   (with `category`) is printed here, after analysis.
 
 Below the threshold, the working set is all actionable comments — go straight to card-by-card
 triage; no prompt.
