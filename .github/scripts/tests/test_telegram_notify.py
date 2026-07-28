@@ -279,3 +279,145 @@ def test_html_body_is_trusted_but_plain_body_is_escaped() -> None:
     assert "<h2>0.5.0 &lt;beta&gt;</h2>" in render_rich(spec)
     assert "0.5.0 &lt;beta&gt; &amp; more" in render_plain(spec)
     assert "0.5.0 <beta> & more" not in render_plain(spec)
+
+
+class TestBuildPayloads:
+    def test_rich_payload_shape(self) -> None:
+        from ..telegram_notify import build_rich_payload
+
+        payload = build_rich_payload(_spec(reply_to=4711, silent=True), "-100123")
+        assert payload["chat_id"] == "-100123"
+        assert payload["rich_message"]["skip_entity_detection"] is True
+        assert payload["rich_message"]["html"].startswith("<h1>")
+        assert payload["disable_notification"] is True
+        assert payload["reply_parameters"] == {"message_id": 4711, "allow_sending_without_reply": True}
+        assert payload["reply_markup"] == {
+            "inline_keyboard": [[{"text": "Pull request", "url": "https://github.com/o/r/pull/118"}]]
+        }
+
+    def test_rich_payload_without_reply_or_buttons(self) -> None:
+        from ..telegram_notify import build_rich_payload
+
+        payload = build_rich_payload(_spec(reply_to=None, buttons=[]), "-100123")
+        assert "reply_parameters" not in payload
+        assert "reply_markup" not in payload
+
+    def test_plain_payload_shape(self) -> None:
+        from ..telegram_notify import build_plain_payload
+
+        payload = build_plain_payload(_spec(reply_to=4711), "-100123")
+        assert payload["parse_mode"] == "HTML"
+        assert payload["link_preview_options"] == {"is_disabled": True}
+        assert payload["text"].startswith("<b>")
+        assert "reply_markup" not in payload  # the fallback carries links in the text instead
+
+
+class TestSpecFromEnv:
+    def test_builds_a_minimal_spec(self) -> None:
+        from ..telegram_notify import spec_from_env
+
+        spec = spec_from_env(
+            {
+                "NOTIFY_STATUS": "started",
+                "NOTIFY_TITLE": "Add the quota module",
+                "NOTIFY_VERDICT": "PR updated",
+                "NOTIFY_FOOTER": "claude-tools · PR 118",
+                "NOTIFY_BUTTONS": '[{"text": "Pull request", "url": "https://p"}]',
+                "NOTIFY_SILENT": "true",
+            }
+        )
+        assert spec["status"] == "started"
+        assert spec["verdict"] == [{"text": "PR updated"}]
+        assert spec["blocks"] == []
+        assert spec["silent"] is True
+        assert spec["reply_to"] is None
+
+    def test_verdict_json_wins_and_carries_segments(self) -> None:
+        from ..telegram_notify import spec_from_env
+
+        spec = spec_from_env(
+            {
+                "NOTIFY_VERDICT": "ignored",
+                "NOTIFY_VERDICT_JSON": '[{"text": "New commit "}, {"text": "a1b2c3d", "code": true}]',
+            }
+        )
+        assert spec["verdict"] == [{"text": "New commit "}, {"text": "a1b2c3d", "code": True}]
+
+    def test_reply_to_parses_and_tolerates_junk(self) -> None:
+        from ..telegram_notify import spec_from_env
+
+        assert spec_from_env({"NOTIFY_REPLY_TO": "4711"})["reply_to"] == 4711
+        assert spec_from_env({"NOTIFY_REPLY_TO": ""})["reply_to"] is None
+        assert spec_from_env({"NOTIFY_REPLY_TO": "none"})["reply_to"] is None
+
+
+class TestSend:
+    def _install(self, monkeypatch: pytest.MonkeyPatch, responses: list) -> list[dict]:
+        import json as json_mod
+
+        from .. import telegram_notify as mod
+
+        calls: list[dict] = []
+
+        def fake_urlopen(request, timeout: float = 30.0):
+            calls.append({"url": request.full_url, "body": json_mod.loads(request.data)})
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+
+            class _Response:
+                def read(self):
+                    return json_mod.dumps(result).encode()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+            return _Response()
+
+        monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+        return calls
+
+    def test_rich_success_returns_message_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ..telegram_notify import send
+
+        calls = self._install(monkeypatch, [{"ok": True, "result": {"message_id": 4711}}])
+        assert send("TKN", "-100123", _spec()) == 4711
+        assert calls[0]["url"].endswith("/sendRichMessage")
+
+    def test_falls_back_to_send_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+
+        from ..telegram_notify import send
+
+        calls = self._install(
+            monkeypatch,
+            [
+                urllib.error.HTTPError("https://api.telegram.org", 400, "Bad Request", hdrs=None, fp=None),
+                {"ok": True, "result": {"message_id": 99}},
+            ],
+        )
+        assert send("TKN", "-100123", _spec()) == 99
+        assert calls[1]["url"].endswith("/sendMessage")
+        assert calls[1]["body"]["parse_mode"] == "HTML"
+
+    def test_both_fail_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+
+        from ..telegram_notify import send
+
+        error = urllib.error.HTTPError("https://api.telegram.org", 500, "Boom", hdrs=None, fp=None)
+        self._install(monkeypatch, [error, error])
+        assert send("TKN", "-100123", _spec()) is None
+
+    def test_ok_false_triggers_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from ..telegram_notify import send
+
+        calls = self._install(
+            monkeypatch,
+            [{"ok": False, "description": "Unsupported start tag h1"}, {"ok": True, "result": {"message_id": 7}}],
+        )
+        assert send("TKN", "-100123", _spec()) == 7
+        assert len(calls) == 2

@@ -168,7 +168,7 @@ def render_plain(spec: dict) -> str:
 
 
 def _reply_parameters(spec: dict) -> dict:
-    """The optional reply field shared by both methods."""
+    """The optional request fields shared by both methods (reply target and buttons)."""
     extra: dict = {}
     reply_to = spec.get("reply_to")
     if reply_to:
