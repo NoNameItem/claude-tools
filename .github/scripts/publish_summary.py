@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate publish summary from job results.
+"""Generate the publish step summary from job results.
 
 Usage:
     Called from GitHub Actions workflow with NEEDS_JSON env var.
@@ -87,15 +87,6 @@ def main() -> int:
         with Path(summary_path).open("a") as f:
             f.write(summary)
             f.write("\n")
-
-    # Write to GITHUB_OUTPUT for use in other jobs
-    output_path = os.environ.get("GITHUB_OUTPUT")
-    if output_path:
-        with Path(output_path).open("a") as f:
-            # Use heredoc-style delimiter for multiline output
-            f.write("telegram-message<<EOF\n")
-            f.write(summary)
-            f.write("\nEOF\n")
 
     # Also print to stdout for debugging
     print(summary)

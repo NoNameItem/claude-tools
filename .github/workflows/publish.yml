@@ -14,15 +14,20 @@ jobs:
   notify-start:
     name: Notify Start
     runs-on: ubuntu-latest
+    outputs:
+      message-id: ${{ steps.notify.outputs.message-id }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/telegram-notify
+      - id: notify
+        uses: ./.github/actions/telegram-notify
         with:
           status: started
           event-type: release
           title: ${{ github.event.release.tag_name }}
           event-url: ${{ github.event.release.html_url }}
-          message: "Publishing..."
+          message: "Publishing…"
+          footer: "${{ github.event.repository.name }} · ${{ github.event.release.tag_name }}"
+          silent: 'true'
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
@@ -194,8 +199,6 @@ jobs:
     needs: [resolve, publish-pypi]
     if: always()
     runs-on: ubuntu-latest
-    outputs:
-      telegram-message: ${{ steps.summary.outputs.telegram-message }}
     steps:
       - uses: actions/checkout@v4
 
@@ -212,17 +215,70 @@ jobs:
 
   notify-finish:
     name: Notify Finish
-    needs: [resolve, publish-pypi, summary]
+    needs: [notify-start, resolve, publish-pypi, summary]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Build the notification spec
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PROJECT_NAME: ${{ needs.resolve.outputs.project-name }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          PYPI_RESULT: ${{ needs.publish-pypi.result }}
+          FOOTER: "${{ github.event.repository.name }} · ${{ github.event.release.tag_name }}"
+          REPLY_TO: ${{ needs.notify-start.outputs.message-id }}
+        run: |
+          set -euo pipefail
+
+          case "$PYPI_RESULT" in
+            success) STATUS=released; VERDICT="Published to PyPI" ;;
+            skipped) STATUS=released; VERDICT="Released" ;;
+            *)       STATUS=failed;   VERDICT="Publish failed" ;;
+          esac
+
+          # Release notes come from GitHub, not from a diff: release-please already wrote them.
+          gh api "repos/$REPO/releases/tags/$TAG" --jq '.body // ""' \
+            | python3 .github/scripts/release_notes.py > notes.json
+
+          # Sonar is conditional: only projects that exist in SonarCloud produce a block, so a
+          # `flow` release simply has none. There is no version-pinned analysis — Sonar analyses
+          # branches, never tags — so this is the state of master, which is what was released.
+          python3 .github/scripts/sonar_pr_status.py --mode branch --branch master \
+            --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json
+
+          jq -n \
+            --arg status "$STATUS" \
+            --arg title "$PROJECT_NAME $VERSION" \
+            --arg verdict "$VERDICT" \
+            --slurpfile notes notes.json \
+            --slurpfile sonar sonar.json \
+            --arg footer "$FOOTER" \
+            --arg release_url "$RELEASE_URL" \
+            --arg run_url "$RUN_URL" \
+            --arg reply_to "$REPLY_TO" \
+            '{status: $status, title: $title, verdict: [{text: $verdict}],
+              blocks: ((if ($notes[0] | has("html")) then
+                          [{type: "html", title: "Release notes", open: true,
+                            html: $notes[0].html, plain: $notes[0].plain}]
+                        else [] end)
+                       + $sonar[0]),
+              footer: $footer,
+              buttons: ([{text: "Release", url: $release_url}]
+                        + (if $status == "failed" then [{text: "Run", url: $run_url}] else [] end)),
+              silent: false,
+              reply_to: (if $reply_to == "" then null else ($reply_to | tonumber) end)}' > spec.json
+
+          jq -c '{status, blocks: [.blocks[].title]}' spec.json
+
       - uses: ./.github/actions/telegram-notify
         with:
-          status: ${{ (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped') && 'success' || 'failure' }}
-          event-type: release
-          title: "${{ needs.resolve.outputs.project-name }} ${{ needs.resolve.outputs.version }}"
-          event-url: ${{ github.event.release.html_url }}
-          message: ${{ needs.summary.outputs.telegram-message }}
+          spec-file: spec.json
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}

@@ -53,10 +53,6 @@ inputs:
     description: 'Telegram message_id to reply to'
     required: false
     default: ''
-  collect-failed-jobs:
-    description: 'Deprecated and ignored — failed jobs now arrive in the spec file'
-    required: false
-    default: 'false'
   token:
     description: 'Telegram bot token'
     required: true
