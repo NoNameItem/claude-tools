@@ -101,11 +101,13 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
 
-  # Summary jobs for branch protection required checks
+  # Gate jobs for the master ruleset's required status checks.
   # When reusable workflows run, they create sub-jobs like "Python CI / Lint (statuskit)"
-  # but not a parent "Python CI" job. These summary jobs provide that parent check.
+  # but not a parent "Python CI" check run — and the skipped call itself also publishes a
+  # check run named "Python CI", so that name matches two runs. These `if: always()` summary
+  # jobs publish an unambiguous, always-present context for the ruleset to require.
   python-ci-result:
-    name: Python CI
+    name: Python CI Gate
     needs: [python-ci]
     if: always()
     runs-on: ubuntu-latest
@@ -118,7 +120,7 @@ jobs:
           exit 0
 
   claude-code-plugin-ci-result:
-    name: Claude Code Plugin CI
+    name: Claude Code Plugin CI Gate
     needs: [claude-code-plugin-ci]
     if: always()
     runs-on: ubuntu-latest
