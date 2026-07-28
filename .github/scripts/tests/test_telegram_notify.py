@@ -259,3 +259,23 @@ class TestRenderPlain:
             ]
         )
         assert '<a href="https://p">Pull request</a> · <a href="https://c">Checks</a>' in render_plain(spec)
+
+
+def test_html_body_is_trusted_but_plain_body_is_escaped() -> None:
+    """`html` arrives pre-escaped from release_notes._inline; `plain` arrives raw from
+    release_notes._strip_inline and must be escaped here, or `<`/`>`/`&` in it would corrupt the
+    sendMessage HTML parse.
+    """
+    spec = _spec(
+        blocks=[
+            {
+                "type": "html",
+                "title": "Release notes",
+                "html": "<h2>0.5.0 &lt;beta&gt;</h2>",
+                "plain": "0.5.0 <beta> & more",
+            }
+        ]
+    )
+    assert "<h2>0.5.0 &lt;beta&gt;</h2>" in render_rich(spec)
+    assert "0.5.0 &lt;beta&gt; &amp; more" in render_plain(spec)
+    assert "0.5.0 <beta> & more" not in render_plain(spec)
