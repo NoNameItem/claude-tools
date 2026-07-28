@@ -163,6 +163,36 @@ class TestDecide:
         assert decision.verdict == "failed"
         assert decision.failed_jobs == ["Python CI / SonarCloud (statuskit)"]
 
+    def test_failed_jobs_ignores_stale_failure_superseded_by_passing_rerun(self) -> None:
+        decision = decide(
+            _payload(
+                check_runs=[
+                    _run("Validate PR", "success"),
+                    _run("Python CI Gate", "failure"),
+                    _run("Claude Code Plugin CI Gate", "success"),
+                    _run("Python CI / SonarCloud (statuskit)", "failure", started_at="2026-07-27T09:00:00Z"),
+                    _run("Python CI / SonarCloud (statuskit)", "success", started_at="2026-07-27T11:00:00Z"),
+                ]
+            )
+        )
+        assert decision.verdict == "failed"
+        assert decision.failed_jobs == []
+
+    def test_failed_jobs_reports_job_whose_latest_attempt_failed(self) -> None:
+        decision = decide(
+            _payload(
+                check_runs=[
+                    _run("Validate PR", "success"),
+                    _run("Python CI Gate", "failure"),
+                    _run("Claude Code Plugin CI Gate", "success"),
+                    _run("Python CI / SonarCloud (statuskit)", "success", started_at="2026-07-27T09:00:00Z"),
+                    _run("Python CI / SonarCloud (statuskit)", "failure", started_at="2026-07-27T11:00:00Z"),
+                ]
+            )
+        )
+        assert decision.verdict == "failed"
+        assert decision.failed_jobs == ["Python CI / SonarCloud (statuskit)"]
+
     def test_message_id_from_marker(self) -> None:
         assert decide(_payload()).message_id == 4711
 

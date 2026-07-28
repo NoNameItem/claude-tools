@@ -28,6 +28,19 @@ from pathlib import Path
 _API_BASE = "https://api.telegram.org"
 _REQUEST_TIMEOUT = 30.0
 
+# `sendRichMessage` allows 32768 characters of rendered text total
+# (https://core.telegram.org/bots/api, "Rich Message Limits"), and there is no fallback path
+# to a plainer render if it rejects the message. The title is the one field in a spec with no
+# upstream cap the renderer can rely on: it's built from the pushed commit's subject
+# (push.yml, both notify jobs) and git enforces NO length limit on a subject line — that's the
+# genuinely unbounded input. The PR title (pr.yml, _reusable-pr-summary.yml) is capped by
+# GitHub at 256 characters, and the release tag / project version (publish.yml) is internal and
+# short, but the renderer must not depend on a cap it doesn't control. 256 is chosen so every
+# legitimate title (a full 256-character PR title included) passes through untouched, and only a
+# pathological one (e.g. an oversized commit subject) gets cut.
+_TITLE_BUDGET = 256
+_TITLE_TRUNCATION_MARKER = "…"
+
 _ICONS = {
     "started": "🚀",
     "ready": "✅",
@@ -43,6 +56,23 @@ _ICONS = {
 def esc(text: str) -> str:
     """Escape the three characters Telegram's rich-markup parser treats as markup."""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _bound_title(title: object) -> str:
+    """Truncate a raw (unescaped) title to `_TITLE_BUDGET` characters, marker included.
+
+    Must run on the raw title, before `esc()`: truncating the escaped string could cut an
+    entity like `&amp;` in half and emit broken markup.
+
+    Coerces like `esc()` does rather than assuming a string. This sits on the only send path,
+    and a spec whose `title` is `null` (or any non-string) must degrade to a rendered
+    notification, not a `TypeError` — the same posture `parse_marker` and `_post` already take
+    towards malformed input.
+    """
+    text = str(title)
+    if len(text) <= _TITLE_BUDGET:
+        return text
+    return text[: _TITLE_BUDGET - len(_TITLE_TRUNCATION_MARKER)] + _TITLE_TRUNCATION_MARKER
 
 
 def icon_for(status: str) -> str:
@@ -107,7 +137,7 @@ def render_rich(spec: dict) -> str:
     then the footer last. A block without a `title` is emitted bare (the open check table on a
     failure); a block with one is wrapped in `<details>`.
     """
-    parts = [f"<h1>{icon_for(spec.get('status', ''))} {esc(spec.get('title', ''))}</h1>"]
+    parts = [f"<h1>{icon_for(spec.get('status', ''))} {esc(_bound_title(spec.get('title', '')))}</h1>"]
     verdict = _render_segments(spec.get("verdict"))
     if verdict:
         parts.append(f"<p>{verdict}</p>")

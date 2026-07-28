@@ -174,6 +174,50 @@ class TestRenderRich:
     def test_no_verdict_no_paragraph(self) -> None:
         assert "<p>" not in render_rich(_spec(verdict=[], blocks=[]))
 
+    def test_title_under_budget_is_unchanged(self) -> None:
+        title = "A" * 255
+        assert f"<h1>✅ {title}</h1>" in render_rich(_spec(title=title))
+
+    def test_title_at_exactly_the_budget_is_not_truncated(self) -> None:
+        from ..telegram_notify import _TITLE_BUDGET
+
+        title = "A" * _TITLE_BUDGET
+        assert f"<h1>✅ {title}</h1>" in render_rich(_spec(title=title))
+
+    def test_title_over_budget_is_truncated_with_marker(self) -> None:
+        from ..telegram_notify import _TITLE_BUDGET, _TITLE_TRUNCATION_MARKER
+
+        title = "A" * (_TITLE_BUDGET + 100)
+        rendered = render_rich(_spec(title=title))
+        expected = "A" * (_TITLE_BUDGET - len(_TITLE_TRUNCATION_MARKER)) + _TITLE_TRUNCATION_MARKER
+        assert f"<h1>✅ {expected}</h1>" in rendered
+        assert "A" * (_TITLE_BUDGET + 100) not in rendered
+
+    def test_long_title_truncation_does_not_sever_an_entity(self) -> None:
+        """Truncation must run on the raw title before `esc()` — cutting the escaped string could
+        land mid-entity (e.g. inside `&amp;`) and emit broken markup.
+        """
+        from ..telegram_notify import _TITLE_BUDGET, _TITLE_TRUNCATION_MARKER
+
+        # Put the `&` as the very last character kept by truncation: an escape-then-truncate
+        # implementation would cut the resulting "&amp;" entity in half right here.
+        kept = _TITLE_BUDGET - len(_TITLE_TRUNCATION_MARKER)
+        title = "A" * (kept - 1) + "&" + "B" * 50
+        rendered = render_rich(_spec(title=title))
+        expected = "A" * (kept - 1) + "&amp;" + _TITLE_TRUNCATION_MARKER
+        assert f"<h1>✅ {expected}</h1>" in rendered
+        # A severed entity would show up as a bare `&` or a broken/partial escape sequence.
+        assert "&amp;amp;" not in rendered
+
+    def test_non_string_title_renders_instead_of_raising(self) -> None:
+        """`_bound_title` sits on the only send path, so a spec whose `title` is `null` (or any
+        non-string) must still render — the same posture `parse_marker` and `_post` take towards
+        malformed input. It coerces exactly as `esc()` always did, so the output is unchanged
+        from before the bound was introduced.
+        """
+        assert "<h1>✅ None</h1>" in render_rich(_spec(title=None))
+        assert "<h1>✅ 42</h1>" in render_rich(_spec(title=42))
+
 
 def test_html_body_is_trusted_but_text_segments_are_escaped() -> None:
     """`html` block bodies arrive pre-rendered from release_notes._inline and are passed through

@@ -140,16 +140,26 @@ def collect_states(required: list[str], statuses: list[dict], check_runs: list[d
 
 
 def _failed_jobs(check_runs: list[dict]) -> list[str]:
-    """Every completed check run that failed, deduplicated and sorted.
+    """Every check run whose LATEST attempt failed, deduplicated and sorted.
 
     Not limited to required contexts: the useful part of a failure notification is the child
     job that actually broke (`Python CI / SonarCloud (statuskit)`), not the gate that relayed it.
     Gate jobs are excluded because they are already named in the verdict line.
+
+    Re-runs append a new check-run entry rather than replacing the old one (same quirk
+    `collect_states` handles via `by_run`/`_latest`), so a name is only judged by its most
+    recent entry — a job that failed on attempt 1 and passed on re-run must not show up here.
     """
+    by_run: dict[str, list[dict]] = {}
+    for entry in check_runs:
+        name = entry.get("name")
+        if name:
+            by_run.setdefault(name, []).append(entry)
+
     names = {
-        entry["name"]
-        for entry in check_runs
-        if entry.get("name") and _check_run_state(entry) == "failure" and not entry["name"].endswith(" Gate")
+        name
+        for name, entries in by_run.items()
+        if _check_run_state(_latest(entries)) == "failure" and not name.endswith(" Gate")
     }
     return sorted(names)[:_MAX_FAILED_JOBS]
 
