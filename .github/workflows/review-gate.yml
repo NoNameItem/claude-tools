@@ -3,10 +3,9 @@ name: Review Gate
 # Blocks merge until Codex has reviewed the latest commit of a PR.
 #
 # Division of responsibility:
-#   - Claude's review is gated separately by requiring its native `claude-review` check
-#     (it re-runs on every push, so it carries the "latest commit reviewed" guarantee).
-#   - Unresolved findings from either reviewer are gated by the repo's
-#     "Require conversation resolution before merging" setting.
+#   - Codex is the only AI reviewer; Claude's review workflow was removed in 2595a29.
+#   - Unresolved findings are gated by the `master` ruleset's
+#     "require review thread resolution" rule.
 #   - This workflow only asserts that *Codex* has reviewed the head commit.
 #
 # Codex signals its state via reactions/reviews (no check run, no commit status of its own):
