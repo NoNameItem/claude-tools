@@ -62,9 +62,19 @@ jobs:
           is_fork=$(printf '%s' "$pr" | jq --arg repo "$REPO" '.head.repo.full_name != $repo')
 
           # The ruleset drives both the merge gate and this notification: one edit changes both.
-          required=$(gh api "repos/$REPO/rules/branches/master" \
-            --jq '[.[] | select(.type == "required_status_checks")
-                       | .parameters.required_status_checks[].context]' || echo '[]')
+          # A failed READ of the ruleset must not be confused with a ruleset that legitimately
+          # requires nothing: the former has to fail this step loudly (no notification this run
+          # is safer than a false "Ready to merge" built from an empty required-contexts list),
+          # the latter is a real `[]` that flows on unchanged. So the request and the extraction
+          # are two separate steps: capture the raw body and check the command's exit status
+          # first, then run the (unchanged) jq extraction over the captured body.
+          if ! rules_json=$(gh api "repos/$REPO/rules/branches/master"); then
+            echo "::error::Failed to read repos/$REPO/rules/branches/master (required-status-checks ruleset) — cannot compute a merge verdict without it" >&2
+            exit 1
+          fi
+          required=$(printf '%s' "$rules_json" \
+            | jq -c '[.[] | select(.type == "required_status_checks")
+                          | .parameters.required_status_checks[].context]')
 
           statuses=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
             --jq '[.statuses[] | {context, state, target_url, description}]')
