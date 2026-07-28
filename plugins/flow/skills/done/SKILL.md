@@ -279,30 +279,38 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 
 #### 8.4. If yes — execute in order
 
-1. **Purge the PR's review ledger** (only when Step 1 captured a PR number):
-   ```bash
-   flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
-   ```
-   Idempotent and non-blocking — a missing ledger is a no-op. Keeping the branch keeps the ledger
-   (it self-expires after the merge; there is no GC). A task with several `Git:` branches purges only
-   the current branch's ledger — the others self-expire (multi-branch handling is tracked as
-   claude-tools-elf.51; GitLab support as claude-tools-elf.50).
-2. **If in worktree:** `cd` to the main repo root (parent of `.worktrees/`)
-3. **Remove worktree:** `git worktree remove <path>` (if in worktree)
-4. **Detect default branch:**
+1. **If in worktree:** `cd` to the main repo root (parent of `.worktrees/`)
+2. **Remove worktree:** `git worktree remove <path>` (if in worktree)
+3. **Detect default branch:**
    ```bash
    DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/origin/||')
    ```
    Fallback: try `master`, then `main`.
-5. **Switch to default branch:** `git checkout $DEFAULT_BRANCH`
-6. **Pull merged changes:** `git pull`
-7. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
-8. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
+4. **Switch to default branch:** `git checkout $DEFAULT_BRANCH`
+5. **Pull merged changes:** `git pull`
+6. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
+7. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
+8. **Purge the PR's review ledger** — **last, and only if step 6 actually deleted the local branch**
+   (and only when Step 1 captured a PR number):
+   ```bash
+   flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
+   ```
+   **If the branch survived, skip the purge.** The ledger is that PR's only durable review memory:
+   it lives under the OS cache dir, never in the repo, and `purge` unlinks it outright with no
+   backup. Every step above is non-blocking on failure, so a refused `git worktree remove` or a
+   `git branch -d` that reports unmerged work leaves the branch — and usually its open PR — alive.
+   Purging then costs nothing less than every decision recorded on that PR, and the next
+   `flow:review-comments` re-imports findings already settled, re-posting replies and re-filing
+   follow-ups. A retained ledger costs nothing by comparison: it is idempotent to purge later, a
+   missing one is a no-op, and an abandoned one self-expires after the merge (there is no GC). A
+   task with several `Git:` branches purges only the current branch's ledger — the others
+   self-expire (multi-branch handling is tracked as claude-tools-elf.51; GitLab support as
+   claude-tools-elf.50).
 
 **Error handling:**
-- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block.
+- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block — and skip step 8, the branch is still there.
 - Remote branch already deleted (GitHub auto-delete): Catch the error and continue.
-- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED.
+- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED. While the branch remains, skip step 8 — its ledger is still live memory.
 
 #### 8.5. If no — skip, done
 
@@ -606,19 +614,19 @@ Agent: [Checks branch: feature/claude-tools-elf.6-delete-branches-worktrees]
        (yes/no)
 
 User: yes
-Agent: [flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
-       [cd to main repo root]
+Agent: [cd to main repo root]
        [git worktree remove .worktrees/feature-...]
        [git checkout master]
        [git pull]
        [git branch -d feature/claude-tools-elf.6-...]
        [git push origin --delete feature/claude-tools-elf.6-...]
+       [branch is gone → flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
 
-       ✓ Review ledger purged
        ✓ Worktree removed
        ✓ Switched to master
        ✓ Local branch deleted
        ✓ Remote branch deleted
+       ✓ Review ledger purged
 
        Done.
 ```
@@ -627,7 +635,7 @@ Agent: [flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
 - Checked branch matches task ID
 - Listed all cleanup targets
 - Asked before deleting
-- Executed in correct order (purge ledger → worktree → checkout → delete)
+- Executed in correct order (worktree → checkout → delete → purge ledger, only once the branch is actually gone)
 
 ### ❌ BAD: Auto-cleanup without asking
 

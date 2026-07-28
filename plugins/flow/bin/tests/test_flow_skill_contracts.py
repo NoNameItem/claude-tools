@@ -384,6 +384,20 @@ def test_done_purges_the_ledger() -> None:
     assert "Bash(flow-review-ledger:*)" in allowed_tools(text)
 
 
+def test_done_purges_the_ledger_only_after_the_branch_is_actually_gone() -> None:
+    """Purging first destroys durable review memory even when the branch survives. Both cleanup
+    steps that could keep it alive are documented as non-blocking on failure — an uncommitted
+    worktree refuses `git worktree remove`, an unmerged branch refuses `git branch -d` — so the
+    realistic outcome is a live branch whose ledger is already unlinked, with no backup and no
+    copy in the repo. The next `flow:review-comments` on that branch then re-imports every
+    settled finding and can duplicate replies and follow-up tasks."""
+    text = (FLOW_ROOT / "skills" / "done" / "SKILL.md").read_text()
+    purge_at = text.index("flow-review-ledger purge")
+    delete_local_at = text.index("git branch -d")
+    assert purge_at > delete_local_at, "the ledger purge must run after the branch delete, not before it"
+    assert "skip the purge" in text, "the purge must be skipped when cleanup left the branch in place"
+
+
 def test_readme_documents_the_ledger_helper() -> None:
     readme = (FLOW_ROOT / "README.md").read_text()
     assert "flow-review-ledger" in readme

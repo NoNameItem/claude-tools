@@ -85,7 +85,17 @@ def _blockquote(prefix: str, author: str, body: str) -> list[str]:
 def render_comment(card: dict) -> str:
     """Render the comment blockquote plus each reply in its thread."""
     lines = _blockquote("", card.get("author", "?"), card.get("body", ""))
-    for reply in card.get("thread") or []:
+    # `thread` reaches us verbatim from the collector (and, on the `--ledger` path, from a
+    # persisted row), and nothing type-checks it on the way — `load_ledger` validates that a row
+    # IS a dict, never what its fields hold. A truthy non-list is the nasty shape: a string
+    # iterates into single characters and `reply.get` then dies on `str` — as a bare traceback,
+    # since this path has no try/except above it. A list of non-dicts fails the same way one
+    # level down, so both are dropped. The body is the part worth showing; an unusable thread
+    # must not take the whole card with it.
+    thread = card.get("thread")
+    for reply in thread if isinstance(thread, list) else []:
+        if not isinstance(reply, dict):
+            continue
         lines.extend(_blockquote("↳ ", reply.get("user", "?"), reply.get("body", "")))
     return "\n".join(lines)
 

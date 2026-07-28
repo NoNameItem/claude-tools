@@ -126,6 +126,11 @@ def split_project(url: str) -> tuple[str, list[str]]:
     """
     parts = urlsplit(url or "")
     host = (parts.hostname or "").lower()
+    # An IPv6 literal keeps its colons here: `urlsplit` strips only the brackets, so
+    # `https://[2001:db8::1]/…` arrives as `2001:db8::1`. A colon is illegal in an NTFS path
+    # component — the same constraint the port below is written for — so translate them. `-`
+    # keeps the address readable and stays distinct from the `_` that introduces the port.
+    host = host.replace(":", "-")
     # `.hostname` drops the port, but the port is part of the ORIGIN: two self-hosted forges
     # behind one hostname on different ports own different PRs, and without this they would
     # share (and clobber) one ledger file. Joined with `_`, never `:` — a colon is illegal in
@@ -186,17 +191,50 @@ def empty_ledger(unit: dict | None = None) -> dict:
     return {"schema": SCHEMA, "unit": dict(unit or {}), "round": 0, "next_ref": {"U": 1, "C": 1}, "rows": {}}
 
 
+def _is_count(value: object) -> bool:
+    """A whole, non-negative JSON number. `bool` is an `int` subclass, so exclude it explicitly."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _structure_is_sound(doc: dict) -> bool:
+    """Every structural field is either ABSENT — `load_ledger`'s `setdefault` supplies it — or
+    already the right type.
+
+    `setdefault` alone cannot enforce this: it fills a MISSING key and walks straight past a
+    present-but-wrong-typed one. So `{"rows": {}, "next_ref": null}` loaded "successfully" and
+    detonated rounds later inside `alloc_ref`'s `counters.get` as an AttributeError — a type
+    `main()` does not catch, so the helper printed a traceback instead of honouring the
+    degrade-to-empty contract below. Checking here puts the guard on the one door every
+    document enters through, rather than at each of the seven places that consume a field.
+    """
+    rows = doc.get("rows")
+    if not isinstance(rows, dict) or not all(isinstance(row, dict) for row in rows.values()):
+        return False
+    if "unit" in doc and not isinstance(doc["unit"], dict):
+        return False
+    if "round" in doc and not _is_count(doc["round"]):
+        return False
+    if "next_ref" in doc:
+        counters = doc["next_ref"]
+        if not isinstance(counters, dict) or not all(_is_count(value) for value in counters.values()):
+            return False
+    return True
+
+
 def load_ledger(path: Path) -> dict:
     """Read the document. A missing, corrupt, or non-ledger file degrades to an empty ledger.
 
     Graceful degradation is the design's contract: current working data is rebuilt from the
-    platform every round, so only durable memory is lost — never a crash.
+    platform every round, so only durable memory is lost — never a crash. "Corrupt" covers both
+    unparseable bytes and a file that parses but is not shaped like a ledger (see
+    `_structure_is_sound`) — the second kind is the dangerous one, because it fails far from
+    here, in whichever consumer first trusts the field.
     """
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return empty_ledger()
-    if not isinstance(doc, dict) or not isinstance(doc.get("rows"), dict):
+    if not isinstance(doc, dict) or not _structure_is_sound(doc):
         return empty_ledger()
     doc.setdefault("schema", SCHEMA)
     doc.setdefault("unit", {})

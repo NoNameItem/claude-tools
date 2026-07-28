@@ -149,6 +149,16 @@ def apply_resolution(row: dict, item: dict, was_resolved: bool) -> None:
         return
     if now:
         row["status"] = "done"
+        # Settling the row also ACCOUNTS for every reply already in the thread — otherwise the
+        # reply that arrived alongside the resolve stays unaccounted for forever, since nothing
+        # but `record` advances the mark. The first later round whose side-query degrades to
+        # unknown would then let `reopen_if_advanced` fire on that stale mark, and
+        # `apply_resolution` — a no-op on None — could not put the row back: a settled finding
+        # silently re-enters the working set and collects a second reply. Replies posted AFTER
+        # this point still advance past the new mark, so a genuine continuation is not lost.
+        mark = _ledger.last_reply_id(item)
+        if mark is not None:
+            row["thread_mark"] = mark
     elif was_resolved and row.get("status") == "done":
         # Someone hit "Unresolve" — an explicit request to look again, which no reply id
         # advanced, so `reopen_if_advanced` would never catch it.

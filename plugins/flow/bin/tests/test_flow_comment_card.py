@@ -148,6 +148,26 @@ class TestRenderComment:
         card = {"author": "alice", "body": "line one\nline two"}
         assert render_comment(card) == "> **@alice:** line one\n> line two"
 
+    def test_a_thread_that_is_not_a_list_renders_the_body_instead_of_crashing(self):
+        """`thread` is copied verbatim from the collector into the ledger row with no type check,
+        and `--ledger` has no try/except around this call — so a wrong-typed value reaches the
+        user as a raw traceback. A truthy string is the nastiest shape: it iterates into single
+        characters, and `reply.get` then fails on `str`. Degrade to the body, which is the part
+        worth showing."""
+        card = {"author": "alice", "body": "Prefer a constant here.", "thread": "already handled?"}
+        assert render_comment(card) == "> **@alice:** Prefer a constant here."
+
+    def test_thread_entries_that_are_not_mappings_are_skipped(self):
+        """A list of the wrong thing fails one level down from the guard above, on `reply.get`.
+        `load_ledger` cannot catch it either — it validates that a row IS a dict, never what its
+        fields hold — so the usable replies render and the rest are dropped."""
+        card = {
+            "author": "bob",
+            "body": "See below.",
+            "thread": ["oops", {"user": "you", "body": "why?"}, None],
+        }
+        assert render_comment(card) == "> **@bob:** See below.\n> ↳ **@you:** why?"
+
 
 class TestRenderCode:
     def test_diff_hunk_is_preferred(self):

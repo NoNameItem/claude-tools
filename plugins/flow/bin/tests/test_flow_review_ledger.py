@@ -113,6 +113,20 @@ class TestSplitProject:
         assert _ledger.split_project("https://h/o/r/pull/1")[0] == "h"
         assert _ledger.split_project("https://h:443/o/r/pull/1")[0] == "h"
 
+    def test_an_ipv6_literal_host_carries_no_colon_into_the_path(self):
+        """`urlsplit` strips the brackets but keeps the inner colons, and a colon is illegal in an
+        NTFS path component — the same reason the port is folded with `_`. Left alone, the very
+        first `mkdir` for a self-hosted forge reached by IPv6 literal would fail on Windows."""
+        host, segments = _ledger.split_project("https://[2001:db8::1]/o/r/pull/1")
+        assert ":" not in host
+        assert host == "2001-db8--1"
+        assert segments == ["o", "r"]
+
+    def test_an_ipv6_host_with_a_non_default_port_keeps_both_separators_distinct(self):
+        """`-` for the address's own colons, `_` for the port — so the port stays readable as a
+        port instead of blurring into the address."""
+        assert _ledger.split_project("https://[2001:db8::1]:8443/o/r/pull/1")[0] == "2001-db8--1_8443"
+
 
 class TestDeriveNumber:
     def test_github_and_gitlab_routes(self):
@@ -212,6 +226,38 @@ class TestDocumentIO:
         path = tmp_path / "pr-1.json"
         path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
         assert _ledger.load_ledger(path)["rows"] == {}
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            pytest.param({"rows": {}, "next_ref": None}, id="next_ref-null"),
+            pytest.param({"rows": {}, "next_ref": {"U": [1], "C": 1}}, id="next_ref-value-not-a-number"),
+            pytest.param({"rows": {}, "round": [1]}, id="round-not-a-number"),
+            pytest.param({"rows": {}, "unit": "github"}, id="unit-not-a-mapping"),
+            pytest.param({"rows": {"comment:1": "not a row"}}, id="row-not-a-mapping"),
+        ],
+    )
+    def test_structurally_corrupt_fields_load_as_empty(self, tmp_path, doc):
+        """`setdefault` only fills a MISSING key, so a present-but-wrong-typed field survived and
+        detonated later — `next_ref: null` reached `alloc_ref`'s `counters.get` as an
+        AttributeError, which `main()` (catching only OSError/ValueError) let escape as a raw
+        traceback. That contradicts this function's own contract: a file we did not write degrades
+        to an empty ledger, never a crash."""
+        path = tmp_path / "pr-1.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        loaded = _ledger.load_ledger(path)
+        assert loaded == _ledger.empty_ledger()
+
+    def test_a_valid_document_survives_the_structural_check(self, tmp_path):
+        """The guard rejects wrong TYPES, not unfamiliar content: a well-formed ledger — including
+        one whose round has advanced and whose rows are populated — must load unchanged."""
+        path = tmp_path / "pr-1.json"
+        doc = _ledger.empty_ledger({"platform": "github", "number": 1, "url": "u"})
+        doc["round"] = 4
+        doc["next_ref"] = {"U": 3, "C": 7}
+        doc["rows"]["comment:1"] = {"ref": "C1", "thread_id": "1", "status": "open"}
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        assert _ledger.load_ledger(path) == doc
 
 
 class TestRowPrimitives:
@@ -672,6 +718,36 @@ class TestReconcileResolution:
         harness.reconcile(meta)
         harness.reconcile(meta_doc([]))  # the row vanishes from the snapshot entirely
         assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
+
+    def test_settling_a_row_by_resolution_accounts_for_the_replies_already_in_the_thread(self, harness):
+        """Settling a row leaves NO unaccounted reply behind it. Without that, a resolve that
+        arrives together with a new reply settles the status but not `thread_mark`, so the reply
+        stays "unseen" forever: on any later round where the side-query degrades to unknown,
+        `reopen_if_advanced` fires on the stale mark and `apply_resolution` — a no-op on None —
+        cannot undo it. The settled thread silently returns to the working set and gets a second
+        reply."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        row = harness.ledger(meta)["rows"]["comment:1"]
+        assert row["status"] == "done"
+        assert row["thread_mark"] == 51
+
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)])]))
+        assert out["working_set"] == []
+        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
+
+    def test_a_reply_arriving_after_the_resolve_still_reopens_on_an_unknown_round(self, harness):
+        """The counterweight to the test above: accounting for the replies present AT settle time
+        must not deafen the row to genuinely NEW ones. A reply posted after the resolve is exactly
+        the continuation `reopen_if_advanced` exists to catch, and an unknown resolution is no
+        reason to drop it."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
+        assert [e["ref"] for e in out["working_set"]] == ["U1"]
+        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
 
 
 class TestGet:
