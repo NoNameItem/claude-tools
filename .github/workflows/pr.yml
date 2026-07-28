@@ -12,7 +12,6 @@ permissions:
   checks: write
   statuses: write   # the pr-notify marker on the head SHA
   pull-requests: write
-  actions: read  # For fetching failed jobs in notifications
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.action }}
@@ -80,9 +79,23 @@ jobs:
   validate-pr:
     name: Validate PR
     needs: [detect]
+    # `detect` carries no `if:` guard, so it always runs; without `always()` here, a failed or
+    # cancelled `detect` would make this job SKIPPED rather than failed — and `skipped` is a
+    # green required context, so the merge gate would wave the PR through with no validation.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check detect result
+        env:
+          RESULT: ${{ needs.detect.result }}
+        run: |
+          echo "Detect result: $RESULT"
+          case "$RESULT" in
+            success) exit 0 ;;
+            *) exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
 
       - name: Validate PR
@@ -150,11 +163,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check result
+        env:
+          RESULT: ${{ needs.python-ci.result }}
         run: |
-          RESULT="${{ needs.python-ci.result }}"
           echo "Python CI result: $RESULT"
-          [[ "$RESULT" == "failure" ]] && exit 1
-          exit 0
+          # Anything but success/skipped is red — including `cancelled`, so a cancelled run
+          # can never read as a passing gate (that would bypass the merge gate entirely).
+          case "$RESULT" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac
 
   claude-code-plugin-ci-result:
     name: Claude Code Plugin CI Gate
@@ -163,18 +181,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check result
+        env:
+          RESULT: ${{ needs.claude-code-plugin-ci.result }}
         run: |
-          RESULT="${{ needs.claude-code-plugin-ci.result }}"
           echo "Claude Code Plugin CI result: $RESULT"
-          [[ "$RESULT" == "failure" ]] && exit 1
-          exit 0
+          # Anything but success/skipped is red — including `cancelled`, so a cancelled run
+          # can never read as a passing gate (that would bypass the merge gate entirely).
+          case "$RESULT" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac
 
   # The result notification. This is only ONE of the two producers of required checks — the
   # other is review-gate.yml, which makes the same call. pr_summary.py silences whichever call
   # arrives while the other producer is still running.
   pr-summary:
     name: PR Summary
-    needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result]
+    needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result]
     if: always() && github.event_name == 'pull_request'
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:

@@ -117,10 +117,15 @@ jobs:
           # interpolation in a `run:` block: this workflow is also called from
           # pull_request_target, where the title is attacker controlled. The next step reads
           # them as env vars.
+          #
+          # The heredoc delimiter is randomised (GitHub's own guidance for untrusted values):
+          # a title containing a line that happens to equal a fixed delimiter would terminate
+          # the heredoc early and corrupt $GITHUB_OUTPUT.
+          delimiter="PR_TITLE_$(openssl rand -hex 8)"
           {
-            echo "title<<PR_TITLE_EOF"
+            echo "title<<$delimiter"
             printf '%s' "$pr" | jq -r '.title'
-            echo "PR_TITLE_EOF"
+            echo "$delimiter"
             echo "url=$(printf '%s' "$pr" | jq -r '.html_url')"
           } >> "$GITHUB_OUTPUT"
 
@@ -134,11 +139,14 @@ jobs:
           SERVER: ${{ github.server_url }}
         run: |
           set -euo pipefail
+          # `--opt=value`, not `--opt value`: PR_TITLE is attacker-controlled under
+          # pull_request_target and can legally start with `-` (e.g. `-- WIP`), which argparse
+          # would otherwise parse as an option and exit 2, silently losing the notification.
           python3 .github/scripts/pr_summary.py \
-            --title "$TITLE" \
-            --url "$URL" \
-            --footer "${REPO##*/} · PR ${PR}" \
-            --checks-url "${SERVER}/${REPO}/pull/${PR}/checks" \
+            --title="$TITLE" \
+            --url="$URL" \
+            --footer="${REPO##*/} · PR ${PR}" \
+            --checks-url="${SERVER}/${REPO}/pull/${PR}/checks" \
             < payload.json > summary.json
 
           jq -r '"send=\(.send)", "verdict=\(.verdict)", "message-id=\(.message_id // "")", "reason=\(.reason)"' \
