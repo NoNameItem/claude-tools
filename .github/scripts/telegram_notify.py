@@ -213,13 +213,13 @@ def build_plain_payload(spec: dict, chat_id: str) -> dict:
 
 def _post(token: str, method: str, payload: dict) -> dict | None:
     """POST a JSON body to one Bot API method. Returns the parsed body, or None on failure."""
-    request = urllib.request.Request(  # noqa: S310
+    request = urllib.request.Request(  # noqa: S310 - Telegram Bot API URL, not user input
         f"{_API_BASE}/bot{token}/{method}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "User-Agent": "telegram-notify"},
     )
     try:
-        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310 - same URL as above
             body = json.loads(response.read())
     except urllib.error.HTTPError as exc:
         # The Bot API returns its diagnostics in the body of a 4xx — read it, don't discard it.
@@ -230,6 +230,13 @@ def _post(token: str, method: str, payload: dict) -> dict | None:
             return None
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
         print(f"{method} failed: {exc}", file=sys.stderr)
+        return None
+    # The Bot API's contract is a JSON object, but a 4xx body is arbitrary until parsed: a
+    # malformed or unexpected reply (e.g. a bare `true` or a proxy's plain-text error page that
+    # happens to parse as JSON) must degrade to "failed", not raise out of here and skip the
+    # sendMessage fallback entirely.
+    if not isinstance(body, dict):
+        print(f"{method} failed: unexpected response body: {body!r}", file=sys.stderr)
         return None
     if not body.get("ok"):
         print(f"{method} rejected: {body.get('description')}", file=sys.stderr)

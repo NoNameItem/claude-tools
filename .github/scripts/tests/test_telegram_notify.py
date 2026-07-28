@@ -421,3 +421,20 @@ class TestSend:
         )
         assert send("TKN", "-100123", _spec()) == 7
         assert len(calls) == 2
+
+    def test_non_dict_4xx_body_triggers_fallback_instead_of_raising(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A 4xx body that parses to valid JSON but isn't a dict (e.g. Telegram fronted by a
+        proxy that returns a bare `true` or a list) must not raise `AttributeError` out of
+        `_post` — that would skip the `sendMessage` fallback and lose the notification entirely.
+        """
+        import io
+        import urllib.error
+
+        from ..telegram_notify import send
+
+        error = urllib.error.HTTPError(
+            "https://api.telegram.org", 400, "Bad Request", hdrs=None, fp=io.BytesIO(b"true")
+        )
+        calls = self._install(monkeypatch, [error, {"ok": True, "result": {"message_id": 42}}])
+        assert send("TKN", "-100123", _spec()) == 42
+        assert calls[1]["url"].endswith("/sendMessage")

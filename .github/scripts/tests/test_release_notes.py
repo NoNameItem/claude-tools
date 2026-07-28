@@ -36,6 +36,14 @@ class TestConvert:
         html, _ = convert("* fix <T> & <U>\n")
         assert html == "<ul><li>fix &lt;T&gt; &amp; &lt;U&gt;</li></ul>"
 
+    def test_quote_in_link_url_is_escaped(self) -> None:
+        """A `"` in the URL must not close the `href="..."` attribute early — see release_notes.py
+        `_esc_attr`. Otherwise the tag is malformed and `sendRichMessage` rejects the message.
+        """
+        html, _ = convert('* [x](https://a"b)\n')
+        assert html == '<ul><li><a href="https://a&quot;b">x</a></li></ul>'
+        assert '"b">' not in html
+
     def test_plain_rendering_has_no_block_tags(self) -> None:
         _, plain = convert(REAL_BODY)
         for tag in ("<h2", "<h3", "<ul", "<li"):

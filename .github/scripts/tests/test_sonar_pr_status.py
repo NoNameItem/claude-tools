@@ -74,6 +74,13 @@ class TestFormatMeasure:
     def test_formats(self, metric: str, value: str | None, expected: str) -> None:
         assert format_measure(metric, value) == expected
 
+    def test_malformed_percent_value_degrades_instead_of_raising(self) -> None:
+        """A percent metric guards `float(value)` the same way the count branch already does:
+        one malformed value from the API must degrade this row, not blow up `main`'s per-project
+        loop and discard every other project's already-built blocks (see module docstring).
+        """
+        assert format_measure("new_coverage", "not-a-number") == "not-a-number"
+
 
 class TestFormatThreshold:
     @pytest.mark.parametrize(

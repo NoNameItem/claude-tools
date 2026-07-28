@@ -143,7 +143,13 @@ def format_measure(metric: str, value: str | None) -> str:
     if metric.endswith("_rating"):
         return rating_letter(value)
     if metric in _PERCENT_METRICS:
-        return f"{float(value):.1f}%"
+        # A malformed value here must degrade this one row, not the whole notification: `main`
+        # wraps the entire per-project loop in one `except Exception`, so an unguarded ValueError
+        # would discard every other project's already-built blocks along with this one.
+        try:
+            return f"{float(value):.1f}%"
+        except ValueError:
+            return value
     # Counts come back as "1357" but sometimes "1357.0" — normalise to a plain integer.
     try:
         return str(int(float(value)))
@@ -332,9 +338,9 @@ def fetch_json(url: str, token: str | None) -> dict | None:
     headers = {"Accept": "application/json", "User-Agent": "sonar-pr-status"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    request = urllib.request.Request(url, headers=headers)  # noqa: S310
+    request = urllib.request.Request(url, headers=headers)  # noqa: S310 - SonarCloud API URL, not user input
     try:
-        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=_REQUEST_TIMEOUT) as response:  # noqa: S310 - same URL as above
             return json.loads(response.read())
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
         print(f"Sonar API call failed ({url}): {exc}", file=sys.stderr)
@@ -445,7 +451,7 @@ def main() -> int:
         if args.mode == "pr":
             check_runs = []
             if args.check_runs_file:
-                with open(args.check_runs_file) as handle:  # noqa: PTH123
+                with open(args.check_runs_file) as handle:  # noqa: PTH123 - one-off read, no Path object needed
                     check_runs = json.load(handle)
             titles = {
                 key: run.get("output_title") or "Quality Gate"

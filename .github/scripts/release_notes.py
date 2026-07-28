@@ -30,12 +30,23 @@ def _esc(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _esc_attr(text: str) -> str:
+    """Escape a value for use inside a double-quoted HTML attribute (the `href` URL).
+
+    `_esc` deliberately leaves `"` alone — it is not a text-content escape — so a link URL
+    containing one (``[x](https://a"b)``) would otherwise close the `href="..."` attribute
+    early and produce a malformed tag that `sendRichMessage` rejects, degrading the whole
+    notification to the plain fallback.
+    """
+    return text.replace('"', "&quot;")
+
+
 def _inline(text: str) -> str:
     """Escape, then apply the inline markdown both Telegram parsers understand."""
     out = _esc(text)
     out = _CODE.sub(lambda m: f"<code>{m.group('text')}</code>", out)
     out = _BOLD.sub(lambda m: f"<b>{m.group('text')}</b>", out)
-    return _LINK.sub(lambda m: f'<a href="{m.group("url")}">{m.group("text")}</a>', out)
+    return _LINK.sub(lambda m: f'<a href="{_esc_attr(m.group("url"))}">{m.group("text")}</a>', out)
 
 
 def _strip_inline(text: str) -> str:
