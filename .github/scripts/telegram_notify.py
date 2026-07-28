@@ -2,16 +2,17 @@
 """Render and send a CI notification to Telegram.
 
 One notify spec (see docs/superpowers/plans/2026-07-28-pr-merge-gate-and-notifications.md)
-is rendered twice: as Bot API 10.1 rich markup for `sendRichMessage`, and — for the fallback —
-as the small inline subset `sendMessage` accepts. They are separate renderings on purpose: the
-`sendMessage` parser rejects `h1`, `table`, `details`, `ul`, `p` and `footer`.
+is rendered as Bot API 10.1 rich markup for `sendRichMessage`. There is a single rendering path:
+notifications are not critical enough to justify a second, duplicated rendering as insurance
+against `sendRichMessage` failing — if the send fails, `main()` returns 1 and the workflow step
+goes red, which is the intended failure mode.
 
 Emphasis rule: bold marks exactly what needs attention (failed contexts, failing rows, failed
 job names, breached Sonar conditions) and nothing else, so "bold = problem" stays unambiguous.
 
 Usage:
     NOTIFY_SPEC_FILE=spec.json python3 telegram_notify.py            # send
-    NOTIFY_SPEC_FILE=spec.json python3 telegram_notify.py --dry-run  # print both renderings
+    NOTIFY_SPEC_FILE=spec.json python3 telegram_notify.py --dry-run  # print the rendering
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ _ICONS = {
 
 
 def esc(text: str) -> str:
-    """Escape the three characters both Telegram parsers treat as markup."""
+    """Escape the three characters Telegram's rich-markup parser treats as markup."""
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -59,7 +60,7 @@ def _segments(value) -> list:
 
 
 def _render_segments(value) -> str:
-    """Render segments to inline markup understood by both Telegram parsers."""
+    """Render segments to the inline markup Telegram's rich-markup parser understands."""
     out = []
     for segment in _segments(value):
         text = esc(segment.get("text", ""))
@@ -90,28 +91,11 @@ def _rich_block_body(block: dict) -> str:
         body = f"<ul>{items}</ul>"
     else:
         # `html` blocks are pre-rendered rich markup (release_notes.py) — trusted, not escaped.
+        # The block carries only an `html` body — there is no separate `plain` body anymore.
         body = block.get("html", "")
     link = block.get("link")
     if link:
         body += f'<p><a href="{esc(link["url"])}">{esc(link["text"])}</a></p>'
-    return body
-
-
-def _plain_block_body(block: dict) -> str:
-    kind = block.get("type")
-    if kind == "table":
-        lines = []
-        for row in block.get("rows", []):
-            cells = [_render_segments(cell) for cell in row]
-            lines.append(" — ".join(cells) if len(cells) > 1 else cells[0])
-        body = "\n".join(lines)
-    elif kind == "list":
-        body = "\n".join(f"• {_render_segments(item)}" for item in block.get("items", []))
-    else:
-        body = esc(block.get("plain", ""))
-    link = block.get("link")
-    if link:
-        body += f'\n<a href="{esc(link["url"])}">{esc(link["text"])}</a>'
     return body
 
 
@@ -140,35 +124,8 @@ def render_rich(spec: dict) -> str:
     return "".join(parts)
 
 
-def render_plain(spec: dict) -> str:
-    """Render the spec for the `sendMessage` fallback.
-
-    A separate rendering, not a degraded copy: bold title, verdict line, one
-    `<blockquote expandable>` per block, and the links as a text line (the fallback carries no
-    inline keyboard, so the URLs have to survive in the text).
-    """
-    lines = [f"<b>{icon_for(spec.get('status', ''))} {esc(spec.get('title', ''))}</b>"]
-    verdict = _render_segments(spec.get("verdict"))
-    if verdict:
-        lines.append(verdict)
-    for block in spec.get("blocks", []):
-        lines.append("")
-        title = block.get("title")
-        if title:
-            lines.append(f"<b>{esc(title)}</b>")
-        lines.append(f"<blockquote expandable>{_plain_block_body(block)}</blockquote>")
-    buttons = spec.get("buttons") or []
-    if buttons:
-        lines.append("")
-        lines.append(" · ".join(f'<a href="{esc(b["url"])}">{esc(b["text"])}</a>' for b in buttons))
-    footer = spec.get("footer")
-    if footer:
-        lines.append(esc(footer))
-    return "\n".join(lines)
-
-
 def _reply_parameters(spec: dict) -> dict:
-    """The optional request fields shared by both methods (reply target and buttons)."""
+    """The optional request fields for the reply target."""
     extra: dict = {}
     reply_to = spec.get("reply_to")
     if reply_to:
@@ -197,20 +154,6 @@ def build_rich_payload(spec: dict, chat_id: str) -> dict:
     return payload
 
 
-def build_plain_payload(spec: dict, chat_id: str) -> dict:
-    """Build the `sendMessage` fallback body (no inline keyboard — links live in the text)."""
-    payload: dict = {
-        "chat_id": chat_id,
-        "text": render_plain(spec),
-        "parse_mode": "HTML",
-        "link_preview_options": {"is_disabled": True},
-    }
-    if spec.get("silent"):
-        payload["disable_notification"] = True
-    payload.update(_reply_parameters(spec))
-    return payload
-
-
 def _post(token: str, method: str, payload: dict) -> dict | None:
     """POST a JSON body to one Bot API method. Returns the parsed body, or None on failure."""
     request = urllib.request.Request(  # noqa: S310 - Telegram Bot API URL, not user input
@@ -233,8 +176,7 @@ def _post(token: str, method: str, payload: dict) -> dict | None:
         return None
     # The Bot API's contract is a JSON object, but a 4xx body is arbitrary until parsed: a
     # malformed or unexpected reply (e.g. a bare `true` or a proxy's plain-text error page that
-    # happens to parse as JSON) must degrade to "failed", not raise out of here and skip the
-    # sendMessage fallback entirely.
+    # happens to parse as JSON) must degrade to a clean "failed" result, not raise out of here.
     if not isinstance(body, dict):
         print(f"{method} failed: unexpected response body: {body!r}", file=sys.stderr)
         return None
@@ -245,18 +187,16 @@ def _post(token: str, method: str, payload: dict) -> dict | None:
 
 
 def send(token: str, chat_id: str, spec: dict) -> int | None:
-    """Send the notification, falling back to `sendMessage` if the rich send fails.
+    """Send the notification via `sendRichMessage`.
 
-    `sendRichMessage` is young; the fallback covers an API-side regression, and because the
-    fallback is a *different rendering* (not the same HTML) it cannot fail for the same reason.
+    There is only one send path: PR/CI status notifications are not critical enough to justify
+    a second rendering as insurance against this call failing. When it fails, `main()` returns 1
+    and the workflow step goes red — that is the intended and sufficient failure mode.
 
     Returns:
-        The Telegram `message_id`, or ``None`` if both attempts failed.
+        The Telegram `message_id`, or ``None`` if the send failed.
     """
     body = _post(token, "sendRichMessage", build_rich_payload(spec, chat_id))
-    if body is None:
-        print("Falling back to sendMessage", file=sys.stderr)
-        body = _post(token, "sendMessage", build_plain_payload(spec, chat_id))
     if body is None:
         return None
     return body.get("result", {}).get("message_id")
@@ -287,17 +227,14 @@ def spec_from_env(env: dict) -> dict:
 def main() -> int:
     """CLI entrypoint. Returns 0 when a message was sent, 1 otherwise."""
     parser = argparse.ArgumentParser(description="Send a CI notification to Telegram.")
-    parser.add_argument("--dry-run", action="store_true", help="Print both renderings and exit without sending.")
+    parser.add_argument("--dry-run", action="store_true", help="Print the rendering and exit without sending.")
     args = parser.parse_args()
 
     spec_file = os.environ.get("NOTIFY_SPEC_FILE")
     spec = json.loads(Path(spec_file).read_text()) if spec_file else spec_from_env(dict(os.environ))
 
     if args.dry_run:
-        print("--- rich ---")
         print(render_rich(spec))
-        print("--- plain ---")
-        print(render_plain(spec))
         return 0
 
     token = os.environ.get("TELEGRAM_TOKEN")

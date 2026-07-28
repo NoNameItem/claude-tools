@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        # persist-credentials intentionally left default (true): pin_marketplace_refs.py below
+        # runs git operations using this checkout's persisted RELEASE_PLEASE_TOKEN credential.
         with:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}

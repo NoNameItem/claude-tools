@@ -23,12 +23,18 @@ jobs:
       message-id: ${{ steps.notify.outputs.message-id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: commit-info
         run: |
+          # The heredoc delimiter is randomised: a commit subject that happens to equal a fixed
+          # delimiter (e.g. exactly "COMMIT_MSG_EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="COMMIT_MSG_$(openssl rand -hex 8)"
           {
-            echo "message<<COMMIT_MSG_EOF"
+            echo "message<<$delimiter"
             git log -1 --pretty=%s
-            echo "COMMIT_MSG_EOF"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
           echo "short-sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
       - id: notify
@@ -58,6 +64,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Validate commits
         env:
@@ -127,6 +134,9 @@ jobs:
       contents: write
       actions: read
     steps:
+      # persist-credentials intentionally left default (true) on both checkouts below: the
+      # "Commit and push" step runs `git commit` + `git push` in badges-data using the
+      # credential actions/checkout persisted there. Do not add persist-credentials: false here.
       - name: Checkout main
         uses: actions/checkout@v4
         with:
@@ -160,13 +170,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - id: commit-info
         run: |
+          # The heredoc delimiter is randomised: a commit subject that happens to equal a fixed
+          # delimiter (e.g. exactly "COMMIT_MSG_EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="COMMIT_MSG_$(openssl rand -hex 8)"
           {
-            echo "message<<COMMIT_MSG_EOF"
+            echo "message<<$delimiter"
             git log -1 --pretty=%s
-            echo "COMMIT_MSG_EOF"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
           echo "short-sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
 

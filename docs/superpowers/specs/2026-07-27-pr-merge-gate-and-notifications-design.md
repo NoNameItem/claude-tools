@@ -287,10 +287,19 @@ Note that a metric can show a green icon while being non-zero — `new_violation
 repo's quality gate (which is built on ratings), so 6 new issues still render as ✅. Icons reflect
 the gate, not intuition.
 
-**Fallback.** If `sendRichMessage` fails, the script retries with plain `sendMessage`. That parser
-rejects rich tags (`h1`, `table`, `details`, `ul`, `p`, `footer` — verified: *"Unsupported start tag
-h3"*), so the fallback is a **separate rendering**, not the same HTML: bold title, verdict line,
-`<blockquote expandable>` for details, links as a text line. It is tested alongside the primary one.
+**One send path, no fallback.** An earlier revision of this design retried with plain `sendMessage`
+when `sendRichMessage` failed. That required a *second, separate rendering* — the `sendMessage`
+parser rejects the rich tags (`h1`, `table`, `details`, `ul`, `p`, `footer` — verified: *"Unsupported
+start tag h3"*) — and the duplication cost more than the insurance was worth: two renderings mean two
+escaping regimes (an asymmetry that already produced one defect), and the fallback's much smaller
+4096-character ceiling would have bound the message size for a path that never once ran. A CI status
+notification is not critical enough to justify that. `sendRichMessage` is now the only path; when it
+fails the script exits non-zero and the workflow step goes red, which is the intended failure mode.
+
+**Size bounds.** `sendRichMessage` allows up to 32768 characters of rendered text and 500 blocks
+(<https://core.telegram.org/bots/api>, *Rich Message Limits*). Release notes are the only unbounded
+input, so `release_notes.py` bounds them **while assembling** — stopping at an element boundary and
+appending a truncation marker — rather than by cutting the finished HTML, which would sever a tag.
 
 ### Components
 
@@ -298,7 +307,7 @@ h3"*), so the fallback is a **separate rendering**, not the same HTML: bold titl
 |---|---|
 | `.github/scripts/pr_summary.py` | JSON in (required contexts, rollup, thread count) → verdict out. Mirrors the `review_gate.py` split: bash does I/O, Python decides. |
 | `.github/scripts/sonar_pr_status.py` | Sonar check runs from the rollup → project keys → metrics and gate status via the Web API. Degrades to `output.title` on failure. |
-| `.github/scripts/telegram_notify.py` | Verdict + PR metadata + Sonar blocks → payload; sends, with fallback. |
+| `.github/scripts/telegram_notify.py` | Verdict + PR metadata + Sonar blocks → payload; sends via `sendRichMessage` (single path). |
 | `.github/workflows/_reusable-pr-summary.yml` | Collects the inputs, calls both scripts, maintains the marker. |
 | `.github/actions/telegram-notify/action.yml` | Thin wrapper over `telegram_notify.py`; the hand-rolled Markdown escaping (`action.yml:50-60`) is removed. |
 | `.github/workflows/push.yml` | Two-message pair; `message_id` passed via job output (Part 4). |
@@ -474,8 +483,10 @@ head SHA and will need a push or re-run before they can merge.
 
 ## Risks and limitations
 
-- `sendRichMessage` is ~6 weeks old; the fallback path covers an API-side regression, and both
-  renderings are tested.
+- `sendRichMessage` is young (Bot API 10.1, 11 June 2026; 10.2 extended it again on 14 July 2026)
+  and it is the only send path — an API-side regression would break every notification until the
+  repository is fixed. Accepted deliberately: the failure is loud (the step goes red), and a second
+  rendering costs more than it insures for a CI status message.
 - Commit statuses are keyed by `(SHA, context)`, not by PR, so the `pr-notify` marker inherits the
   same theoretical cross-PR collision that `review-gate.yml:24-27` already documents for shared
   SHAs.

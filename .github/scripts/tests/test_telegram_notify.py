@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ..telegram_notify import esc, icon_for, render_plain, render_rich
+from ..telegram_notify import esc, icon_for, render_rich
 
 CHECKS_BLOCK = {
     "type": "table",
@@ -157,7 +157,6 @@ class TestRenderRich:
                     "title": "Release notes",
                     "open": True,
                     "html": "<h2>0.5.0</h2>",
-                    "plain": "0.5.0",
                 }
             ]
         )
@@ -176,109 +175,24 @@ class TestRenderRich:
         assert "<p>" not in render_rich(_spec(verdict=[], blocks=[]))
 
 
-class TestRenderPlain:
-    def test_ready(self) -> None:
-        assert render_plain(_spec()) == (
-            "<b>✅ Add the quota module</b>\n"
-            "Ready to merge\n"
-            "\n"
-            "<b>All checks passed</b>\n"
-            "<blockquote expandable>Validate PR — ✅\n"
-            "review-gate — ✅</blockquote>\n"
-            "\n"
-            '<a href="https://github.com/o/r/pull/118">Pull request</a>\n'
-            "claude-tools · PR 118"
-        )
-
-    def test_block_link_becomes_a_line_in_the_quote(self) -> None:
-        spec = _spec(
-            blocks=[
-                {
-                    "type": "table",
-                    "title": "Sonar · statuskit — project state",
-                    "rows": [["Coverage", "93.4%"]],
-                    "link": {"text": "Dashboard", "url": "https://sonarcloud.io/x"},
-                }
-            ]
-        )
-        assert (
-            "<blockquote expandable>Coverage — 93.4%\n"
-            '<a href="https://sonarcloud.io/x">Dashboard</a></blockquote>' in render_plain(spec)
-        )
-
-    def test_comments_verdict(self) -> None:
-        spec = _spec(status="comments", verdict=[{"text": "All checks passed, unresolved comments: 3"}], blocks=[])
-        assert render_plain(spec).splitlines()[:2] == [
-            "<b>⚠️ Add the quota module</b>",
-            "All checks passed, unresolved comments: 3",
-        ]
-
-    def test_started_has_no_blocks(self) -> None:
-        spec = _spec(
-            status="started",
-            verdict=[{"text": "New commit "}, {"text": "a1b2c3d", "code": True}, {"text": ", checks running"}],
-            blocks=[],
-        )
-        assert render_plain(spec) == (
-            "<b>🚀 Add the quota module</b>\n"
-            "New commit <code>a1b2c3d</code>, checks running\n"
-            "\n"
-            '<a href="https://github.com/o/r/pull/118">Pull request</a>\n'
-            "claude-tools · PR 118"
-        )
-
-    def test_failed_keeps_bold(self) -> None:
-        spec = _spec(
-            status="failed",
-            verdict=[{"text": "Checks failed: "}, {"text": "review-gate", "bold": True}],
-            blocks=[],
-        )
-        assert render_plain(spec).splitlines()[1] == "Checks failed: <b>review-gate</b>"
-
-    def test_no_rich_tags_leak(self) -> None:
-        spec = _spec(
-            blocks=[
-                CHECKS_BLOCK,
-                {"type": "list", "title": "Failed jobs", "items": [["SonarCloud (statuskit)"]]},
-                {"type": "html", "title": "Release notes", "html": "<h2>0.5.0</h2>", "plain": "0.5.0"},
-            ]
-        )
-        rendered = render_plain(spec)
-        for tag in ("<h1", "<h2", "<table", "<details", "<summary", "<ul", "<li", "<footer", "<p>"):
-            assert tag not in rendered
-
-    def test_list_items_become_bullets(self) -> None:
-        spec = _spec(blocks=[{"type": "list", "title": "Failed jobs", "items": [["a"], ["b"]]}])
-        assert "<blockquote expandable>• a\n• b</blockquote>" in render_plain(spec)
-
-    def test_two_buttons_join_with_middot(self) -> None:
-        spec = _spec(
-            buttons=[
-                {"text": "Pull request", "url": "https://p"},
-                {"text": "Checks", "url": "https://c"},
-            ]
-        )
-        assert '<a href="https://p">Pull request</a> · <a href="https://c">Checks</a>' in render_plain(spec)
-
-
-def test_html_body_is_trusted_but_plain_body_is_escaped() -> None:
-    """`html` arrives pre-escaped from release_notes._inline; `plain` arrives raw from
-    release_notes._strip_inline and must be escaped here, or `<`/`>`/`&` in it would corrupt the
-    sendMessage HTML parse.
+def test_html_body_is_trusted_but_text_segments_are_escaped() -> None:
+    """`html` block bodies arrive pre-rendered from release_notes._inline and are passed through
+    un-escaped (see `_rich_block_body`); every ordinary `text` segment still goes through `esc`,
+    so `<`/`>`/`&` in it can't corrupt the surrounding rich markup.
     """
     spec = _spec(
+        verdict=[{"text": "Fix <T> & <U>"}],
         blocks=[
             {
                 "type": "html",
                 "title": "Release notes",
                 "html": "<h2>0.5.0 &lt;beta&gt;</h2>",
-                "plain": "0.5.0 <beta> & more",
             }
-        ]
+        ],
     )
-    assert "<h2>0.5.0 &lt;beta&gt;</h2>" in render_rich(spec)
-    assert "0.5.0 &lt;beta&gt; &amp; more" in render_plain(spec)
-    assert "0.5.0 <beta> & more" not in render_plain(spec)
+    rendered = render_rich(spec)
+    assert "<h2>0.5.0 &lt;beta&gt;</h2>" in rendered
+    assert "<p>Fix &lt;T&gt; &amp; &lt;U&gt;</p>" in rendered
 
 
 class TestBuildPayloads:
@@ -301,15 +215,6 @@ class TestBuildPayloads:
         payload = build_rich_payload(_spec(reply_to=None, buttons=[]), "-100123")
         assert "reply_parameters" not in payload
         assert "reply_markup" not in payload
-
-    def test_plain_payload_shape(self) -> None:
-        from ..telegram_notify import build_plain_payload
-
-        payload = build_plain_payload(_spec(reply_to=4711), "-100123")
-        assert payload["parse_mode"] == "HTML"
-        assert payload["link_preview_options"] == {"is_disabled": True}
-        assert payload["text"].startswith("<b>")
-        assert "reply_markup" not in payload  # the fallback carries links in the text instead
 
 
 class TestSpecFromEnv:
@@ -387,45 +292,27 @@ class TestSend:
         assert send("TKN", "-100123", _spec()) == 4711
         assert calls[0]["url"].endswith("/sendRichMessage")
 
-    def test_falls_back_to_send_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import urllib.error
-
-        from ..telegram_notify import send
-
-        calls = self._install(
-            monkeypatch,
-            [
-                urllib.error.HTTPError("https://api.telegram.org", 400, "Bad Request", hdrs=None, fp=None),
-                {"ok": True, "result": {"message_id": 99}},
-            ],
-        )
-        assert send("TKN", "-100123", _spec()) == 99
-        assert calls[1]["url"].endswith("/sendMessage")
-        assert calls[1]["body"]["parse_mode"] == "HTML"
-
-    def test_both_fail_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_failure_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import urllib.error
 
         from ..telegram_notify import send
 
         error = urllib.error.HTTPError("https://api.telegram.org", 500, "Boom", hdrs=None, fp=None)
-        self._install(monkeypatch, [error, error])
+        calls = self._install(monkeypatch, [error])
         assert send("TKN", "-100123", _spec()) is None
+        assert len(calls) == 1
 
-    def test_ok_false_triggers_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ok_false_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from ..telegram_notify import send
 
-        calls = self._install(
-            monkeypatch,
-            [{"ok": False, "description": "Unsupported start tag h1"}, {"ok": True, "result": {"message_id": 7}}],
-        )
-        assert send("TKN", "-100123", _spec()) == 7
-        assert len(calls) == 2
+        calls = self._install(monkeypatch, [{"ok": False, "description": "Unsupported start tag h1"}])
+        assert send("TKN", "-100123", _spec()) is None
+        assert len(calls) == 1
 
-    def test_non_dict_4xx_body_triggers_fallback_instead_of_raising(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_dict_4xx_body_returns_none_instead_of_raising(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A 4xx body that parses to valid JSON but isn't a dict (e.g. Telegram fronted by a
         proxy that returns a bare `true` or a list) must not raise `AttributeError` out of
-        `_post` — that would skip the `sendMessage` fallback and lose the notification entirely.
+        `_post` — it must degrade to a clean "failed" result (`None`) instead.
         """
         import io
         import urllib.error
@@ -435,6 +322,6 @@ class TestSend:
         error = urllib.error.HTTPError(
             "https://api.telegram.org", 400, "Bad Request", hdrs=None, fp=io.BytesIO(b"true")
         )
-        calls = self._install(monkeypatch, [error, {"ok": True, "result": {"message_id": 42}}])
-        assert send("TKN", "-100123", _spec()) == 42
-        assert calls[1]["url"].endswith("/sendMessage")
+        calls = self._install(monkeypatch, [error])
+        assert send("TKN", "-100123", _spec()) is None
+        assert len(calls) == 1

@@ -17,6 +17,8 @@ jobs:
       message-id: ${{ steps.notify.outputs.message-id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: notify
         uses: ./.github/actions/telegram-notify
         with:
@@ -42,6 +44,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -76,6 +80,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -200,6 +206,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -219,6 +227,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build the notification spec
         env:
@@ -265,7 +275,7 @@ jobs:
             '{status: $status, title: $title, verdict: [{text: $verdict}],
               blocks: ((if ($notes[0] | has("html")) then
                           [{type: "html", title: "Release notes", open: true,
-                            html: $notes[0].html, plain: $notes[0].plain}]
+                            html: $notes[0].html}]
                         else [] end)
                        + $sonar[0]),
               footer: $footer,

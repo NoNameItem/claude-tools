@@ -30,6 +30,8 @@ jobs:
         plugin: ${{ fromJson(inputs.plugins) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -68,6 +70,8 @@ jobs:
         plugin: ${{ fromJson(inputs.plugins) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Check for Python files
         id: check-python
@@ -139,6 +143,8 @@ jobs:
         plugin: ${{ fromJson(inputs.plugins) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Check for plugin tests
         id: check-tests

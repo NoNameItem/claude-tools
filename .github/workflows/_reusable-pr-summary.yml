@@ -46,6 +46,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Collect head SHA state
         id: collect

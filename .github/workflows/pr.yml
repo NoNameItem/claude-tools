@@ -22,10 +22,18 @@ concurrency:
 jobs:
   notify-start:
     name: Notify Start
-    if: github.event_name == 'pull_request'
+    # Same fork guard as the pr-summary job below, for the same reason: this job reads
+    # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID directly, and GitHub withholds repository secrets from
+    # fork-origin runs — so without the guard every external contribution turns this job red
+    # instead of quietly skipping the notification.
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Compose the verdict line
         id: verdict
@@ -97,6 +105,8 @@ jobs:
           esac
 
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Validate PR
         env:
@@ -198,7 +208,12 @@ jobs:
   pr-summary:
     name: PR Summary
     needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result]
-    if: always() && github.event_name == 'pull_request'
+    # Fork guard, matching review-gate.yml's pr-summary job: a fork-origin PR gets no repository
+    # secrets from `secrets: inherit`, so TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID would be empty and
+    # the send step would fail outright instead of just skipping the notification.
+    if: |
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:
       pr-number: ${{ github.event.pull_request.number }}
