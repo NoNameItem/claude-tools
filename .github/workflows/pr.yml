@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   checks: write
+  statuses: write   # the pr-notify marker on the head SHA
   pull-requests: write
   actions: read  # For fetching failed jobs in notifications
 
@@ -22,18 +23,54 @@ concurrency:
 jobs:
   notify-start:
     name: Notify Start
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/telegram-notify
+
+      - name: Compose the verdict line
+        id: verdict
+        env:
+          ACTION: ${{ github.event.action }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # `edited` changes the title or body, not the head — saying "New commit" would lie.
+          if [ "$ACTION" = "edited" ]; then
+            JSON='[{"text": "PR updated, checks running"}]'
+          else
+            JSON=$(jq -nc --arg sha "${HEAD_SHA:0:7}" \
+              '[{text: "New commit "}, {text: $sha, code: true}, {text: ", checks running"}]')
+          fi
+          echo "json=$JSON" >> "$GITHUB_OUTPUT"
+
+      - id: notify
+        uses: ./.github/actions/telegram-notify
         with:
           status: started
           event-type: pr
-          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          title: ${{ github.event.pull_request.title }}
           event-url: ${{ github.event.pull_request.html_url }}
-          message: "Checks started"
+          verdict-json: ${{ steps.verdict.outputs.json }}
+          footer: "${{ github.event.repository.name }} · PR ${{ github.event.pull_request.number }}"
+          silent: 'true'
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # The marker is how the result notification (sent from a different workflow run) finds the
+      # message to reply to. `pending` until a verdict is recorded; the description is the state.
+      - name: Create the pr-notify marker
+        if: steps.notify.outputs.message-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MSG_ID: ${{ steps.notify.outputs.message-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f context=pr-notify \
+            -f description="msg:${MSG_ID}" -f target_url="$RUN_URL" >/dev/null
 
   detect:
     uses: ./.github/workflows/_reusable-detect.yml
@@ -132,22 +169,15 @@ jobs:
           [[ "$RESULT" == "failure" ]] && exit 1
           exit 0
 
-  notify-finish:
-    name: Notify Finish
+  # The result notification. This is only ONE of the two producers of required checks — the
+  # other is review-gate.yml, which makes the same call. pr_summary.py silences whichever call
+  # arrives while the other producer is still running.
+  pr-summary:
+    name: PR Summary
     needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/telegram-notify
-        with:
-          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || (contains(needs.*.result, 'cancelled') && 'cancelled') || 'success' }}
-          event-type: pr
-          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
-          event-url: ${{ github.event.pull_request.html_url }}
-          message: ${{ contains(needs.*.result, 'failure') && 'Finished with errors:' || 'All checks passed' }}
-          collect-failed-jobs: ${{ contains(needs.*.result, 'failure') }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    if: always() && github.event_name == 'pull_request'
+    uses: ./.github/workflows/_reusable-pr-summary.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit

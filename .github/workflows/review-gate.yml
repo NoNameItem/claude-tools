@@ -46,6 +46,7 @@ on:
 
 permissions:
   contents: read
+  checks: read # the PR summary reads the head SHA's check runs
   pull-requests: read
   issues: read # reactions on a PR are read via the Issues API endpoint
   statuses: write # POST the required `review-gate` status to the PR head SHA
@@ -176,3 +177,16 @@ jobs:
             echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
             sleep "$INTERVAL"
           done
+
+  # The second call site of the result notification. `always()` so a failed or superseded gate
+  # still reports; a superseded poll is absorbed by pr_summary.py's stale-head check, which is
+  # exactly why the poll is allowed to run to completion after a new push.
+  pr-summary:
+    name: PR Summary
+    needs: [review-gate-poll]
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_reusable-pr-summary.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit

@@ -1,0 +1,179 @@
+# .github/workflows/_reusable-pr-summary.yml
+name: PR Summary (Reusable)
+
+# Sends the "result" Telegram notification for a PR — the one that says whether the PR is
+# mergeable. Called from BOTH producers of required checks:
+#   * pr.yml            — after Validate PR + the two CI gates
+#   * review-gate.yml   — after the Codex gate posts its commit status
+# Neither can see the other's completion (a status posted with GITHUB_TOKEN starts no workflow
+# run, so `on: status` cannot observe our own gate). So both call this, and pr_summary.py makes
+# every call but the last one silent.
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: 'PR number'
+        required: true
+        type: number
+      head-sha:
+        description: 'PR head SHA — all state is keyed by it'
+        required: true
+        type: string
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: true
+      TELEGRAM_CHAT_ID:
+        required: true
+      SONAR_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  checks: read
+  statuses: write
+  pull-requests: read
+
+jobs:
+  summary:
+    name: PR Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialises the two possible simultaneous calls for one head SHA. `cancel-in-progress:
+    # false` — a cancelled call would be a lost notification, not a saved minute.
+    concurrency:
+      group: pr-summary-${{ inputs.head-sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect head SHA state
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr-number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+        run: |
+          set -euo pipefail
+
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          current_head=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+          is_fork=$(printf '%s' "$pr" | jq --arg repo "$REPO" '.head.repo.full_name != $repo')
+
+          # The ruleset drives both the merge gate and this notification: one edit changes both.
+          required=$(gh api "repos/$REPO/rules/branches/master" \
+            --jq '[.[] | select(.type == "required_status_checks")
+                       | .parameters.required_status_checks[].context]' || echo '[]')
+
+          statuses=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
+            --jq '[.statuses[] | {context, state, target_url, description}]')
+
+          check_runs=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[] | {name, status, conclusion, started_at, html_url,
+                                    app_slug: .app.slug, details_url, output_title: .output.title}]' \
+            | jq -s 'add // []')
+
+          # REST does not expose isResolved on review threads — GraphQL is the only source.
+          unresolved=$(gh api graphql \
+            -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100) { nodes { isResolved } }
+                }
+              }
+            }' \
+            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
+
+          marker=$(printf '%s' "$statuses" \
+            | jq -r 'map(select(.context == "pr-notify")) | first | .description // ""')
+
+          printf '%s' "$check_runs" > check-runs.json
+          jq -n \
+            --arg head_sha "$HEAD_SHA" \
+            --arg current_head "$current_head" \
+            --argjson is_fork "$is_fork" \
+            --argjson required "$required" \
+            --argjson statuses "$statuses" \
+            --argjson check_runs "$check_runs" \
+            --argjson unresolved "$unresolved" \
+            --arg marker "$marker" \
+            '{head_sha: $head_sha, current_head_sha: $current_head, is_fork: $is_fork,
+              required_contexts: $required, statuses: $statuses, check_runs: $check_runs,
+              unresolved_threads: $unresolved, marker_description: $marker}' > payload.json
+
+          # PR title and URL go through GITHUB_OUTPUT, never through inline GitHub Actions
+          # interpolation in a `run:` block: this workflow is also called from
+          # pull_request_target, where the title is attacker controlled. The next step reads
+          # them as env vars.
+          {
+            echo "title<<PR_TITLE_EOF"
+            printf '%s' "$pr" | jq -r '.title'
+            echo "PR_TITLE_EOF"
+            echo "url=$(printf '%s' "$pr" | jq -r '.html_url')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Decide the verdict
+        id: decide
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr-number }}
+          TITLE: ${{ steps.collect.outputs.title }}
+          URL: ${{ steps.collect.outputs.url }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/pr_summary.py \
+            --title "$TITLE" \
+            --url "$URL" \
+            --footer "${REPO##*/} · PR ${PR}" \
+            --checks-url "${SERVER}/${REPO}/pull/${PR}/checks" \
+            < payload.json > summary.json
+
+          jq -r '"send=\(.send)", "verdict=\(.verdict)", "message-id=\(.message_id // "")", "reason=\(.reason)"' \
+            summary.json >> "$GITHUB_OUTPUT"
+          echo "Decision: $(jq -c '{send, reason, verdict}' summary.json)"
+
+      - name: Build Sonar blocks and the final spec
+        if: steps.decide.outputs.send == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PR: ${{ inputs.pr-number }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sonar_pr_status.py \
+            --mode pr --pr "$PR" --check-runs-file check-runs.json > sonar.json
+          jq --slurpfile sonar sonar.json '.spec | .blocks += $sonar[0]' summary.json > spec.json
+
+      - name: Send the notification
+        id: send
+        if: steps.decide.outputs.send == 'true'
+        uses: ./.github/actions/telegram-notify
+        with:
+          spec-file: spec.json
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Record the verdict in the pr-notify marker
+        if: steps.decide.outputs.send == 'true' && steps.send.outputs.message-id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          VERDICT: ${{ steps.decide.outputs.verdict }}
+          ANCHOR_ID: ${{ steps.decide.outputs.message-id }}
+          SENT_ID: ${{ steps.send.outputs.message-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Keep the ORIGINAL anchor: every later notification for this SHA replies to the
+          # "PR updated" message, not to the previous result. Only when no marker existed does
+          # the message just sent become the anchor.
+          MSG_ID="${ANCHOR_ID:-$SENT_ID}"
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=success \
+            -f context=pr-notify \
+            -f description="msg:${MSG_ID} v:${VERDICT}" \
+            -f target_url="$RUN_URL" >/dev/null
+          echo "Marker: msg:${MSG_ID} v:${VERDICT}"
