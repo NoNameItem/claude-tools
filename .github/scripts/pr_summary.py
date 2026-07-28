@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Decide whether a PR's required checks have settled, and build the Telegram notify spec.
+
+Pure decision function for `_reusable-pr-summary.yml`, mirroring the review_gate.py split:
+bash does the I/O (`gh api`), this script decides. The workflow pipes a rollup of the head
+SHA's commit statuses and check runs, the required contexts read from the `master` ruleset,
+the unresolved-thread count and the previous `pr-notify` marker; the script prints one JSON
+document saying whether to send and, if so, exactly what the message contains.
+
+Silence is the default: the aggregator is called from *both* producers of required checks
+(pr.yml and review-gate.yml), so on any given call the other producer is usually still
+running. Only the call that sees every required context in a terminal state speaks.
+
+Usage:
+    python3 pr_summary.py --title "…" --url "…" --footer "…" [--checks-url "…"] < payload.json
+
+Output (stdout):
+    {"send": bool, "reason": str, "verdict": str, "message_id": int|null, "spec": {…}}
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import dataclass, field
+
+# Commit-status states. Anything outside TERMINAL means "still running".
+_TERMINAL_STATUS_STATES = frozenset({"success", "failure", "error"})
+_GOOD_STATUS_STATES = frozenset({"success"})
+
+# check-run conclusions. A run is terminal once `status == "completed"`; the conclusion then
+# decides. `neutral`/`skipped` are green by construction: a skipped reusable-workflow call is
+# how a gate job reports "nothing to do here".
+_GOOD_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+
+# Contexts that only exist for same-repo PRs (a fork run posts no status — by design).
+_SAME_REPO_ONLY = frozenset({"review-gate"})
+
+_MARKER_PATTERN = re.compile(r"\bmsg:(?P<msg>\S+)(?:\s+v:(?P<verdict>\S+))?")
+
+# Icon per resolved state. The validated check-table layout puts the context name in column 1
+# and the icon alone, centred, in column 2 — so a state maps to an icon, not to a word.
+_STATE_ICONS = {
+    "success": "✅",
+    "failure": "❌",
+    "pending": "⏳",
+    "missing": "❔",
+}
+
+# Cap the failed-jobs list so a catastrophic run can't produce a 500-block message.
+_MAX_FAILED_JOBS = 20
+
+
+@dataclass(frozen=True)
+class CheckState:
+    """One required context resolved against the head SHA's rollup."""
+
+    context: str
+    state: str  # "success" | "failure" | "pending" | "missing"
+    url: str | None = None
+
+
+@dataclass
+class Decision:
+    """The aggregator's answer: whether to speak, and what to say."""
+
+    send: bool
+    reason: str
+    verdict: str = ""
+    message_id: int | None = None
+    states: list[CheckState] = field(default_factory=list)
+    failed_contexts: list[str] = field(default_factory=list)
+    failed_jobs: list[str] = field(default_factory=list)
+    unresolved_threads: int = 0
+
+
+def parse_marker(description: str) -> tuple[int | None, str | None]:
+    """Parse the `pr-notify` commit-status description.
+
+    Args:
+        description: e.g. ``"msg:4711 v:ready"``, ``"msg:4711"`` or ``""``.
+
+    Returns:
+        ``(message_id, verdict)``; either element is ``None`` when absent or unparsable.
+        A non-integer message id yields ``None`` rather than raising — a corrupt marker must
+        degrade to "send without a reply", never crash the notification.
+    """
+    match = _MARKER_PATTERN.search(description or "")
+    if not match:
+        return (None, None)
+    raw_id = match.group("msg")
+    message_id = int(raw_id) if raw_id.isdigit() else None
+    return (message_id, match.group("verdict"))
+
+
+def _status_state(entry: dict) -> str:
+    state = entry.get("state") or ""
+    if state not in _TERMINAL_STATUS_STATES:
+        return "pending"
+    return "success" if state in _GOOD_STATUS_STATES else "failure"
+
+
+def _check_run_state(entry: dict) -> str:
+    if entry.get("status") != "completed":
+        return "pending"
+    return "success" if entry.get("conclusion") in _GOOD_CONCLUSIONS else "failure"
+
+
+def _latest(entries: list[dict]) -> dict:
+    """Pick the most recently started entry (re-runs append rather than replace)."""
+    return max(entries, key=lambda e: e.get("started_at") or "")
+
+
+def collect_states(required: list[str], statuses: list[dict], check_runs: list[dict]) -> list[CheckState]:
+    """Resolve each required context against the rollup, preserving the required order.
+
+    Commit statuses win over check runs when a name collides: `review-gate` is published as a
+    status precisely because the job's own check run would be attributed to the base SHA.
+    """
+    by_status = {entry.get("context"): entry for entry in statuses if entry.get("context")}
+    by_run: dict[str, list[dict]] = {}
+    for entry in check_runs:
+        name = entry.get("name")
+        if name:
+            by_run.setdefault(name, []).append(entry)
+
+    states: list[CheckState] = []
+    for context in required:
+        if context in by_status:
+            entry = by_status[context]
+            states.append(CheckState(context, _status_state(entry), entry.get("target_url")))
+        elif context in by_run:
+            entry = _latest(by_run[context])
+            states.append(CheckState(context, _check_run_state(entry), entry.get("html_url")))
+        else:
+            states.append(CheckState(context, "missing", None))
+    return states
+
+
+def _failed_jobs(check_runs: list[dict]) -> list[str]:
+    """Every completed check run that failed, deduplicated and sorted.
+
+    Not limited to required contexts: the useful part of a failure notification is the child
+    job that actually broke (`Python CI / SonarCloud (statuskit)`), not the gate that relayed it.
+    Gate jobs are excluded because they are already named in the verdict line.
+    """
+    names = {
+        entry["name"]
+        for entry in check_runs
+        if entry.get("name") and _check_run_state(entry) == "failure" and not entry["name"].endswith(" Gate")
+    }
+    return sorted(names)[:_MAX_FAILED_JOBS]
+
+
+def decide(payload: dict) -> Decision:
+    """Decide whether to notify for this head SHA, and with what verdict.
+
+    Args:
+        payload: The rollup document described in this module's docstring.
+
+    Returns:
+        A :class:`Decision`. ``send=False`` carries one of the reasons ``stale-head``
+        (the PR advanced — this is the superseded review-gate poll), ``waiting`` (a required
+        context is missing or still running — the other producer will send) or ``duplicate``
+        (the recorded verdict is unchanged).
+    """
+    head_sha = payload.get("head_sha") or ""
+    current = payload.get("current_head_sha") or ""
+    message_id, previous_verdict = parse_marker(payload.get("marker_description", ""))
+
+    # A non-empty mismatch only. An empty `current` means the lookup failed; treating that as
+    # "moved" would silence a real notification on a transient API blip.
+    if current and head_sha and current != head_sha:
+        return Decision(send=False, reason="stale-head", message_id=message_id)
+
+    required = [
+        context
+        for context in payload.get("required_contexts", [])
+        if not (payload.get("is_fork") and context in _SAME_REPO_ONLY)
+    ]
+    states = collect_states(required, payload.get("statuses", []), payload.get("check_runs", []))
+
+    if any(state.state in {"pending", "missing"} for state in states):
+        return Decision(send=False, reason="waiting", message_id=message_id, states=states)
+
+    failed_contexts = [state.context for state in states if state.state == "failure"]
+    unresolved = int(payload.get("unresolved_threads") or 0)
+    if failed_contexts:
+        verdict = "failed"
+    elif unresolved > 0:
+        verdict = "comments"
+    else:
+        verdict = "ready"
+
+    if verdict == previous_verdict:
+        return Decision(send=False, reason="duplicate", verdict=verdict, message_id=message_id, states=states)
+
+    return Decision(
+        send=True,
+        reason="send",
+        verdict=verdict,
+        message_id=message_id,
+        states=states,
+        failed_contexts=failed_contexts,
+        failed_jobs=_failed_jobs(payload.get("check_runs", [])) if failed_contexts else [],
+        unresolved_threads=unresolved,
+    )
+
+
+def _verdict_segments(decision: Decision) -> list[dict]:
+    """The one-line verdict, with bold on exactly the thing that needs attention."""
+    if decision.verdict == "failed":
+        segments: list[dict] = [{"text": "Checks failed: "}]
+        for index, context in enumerate(decision.failed_contexts):
+            if index:
+                segments.append({"text": ", "})
+            segments.append({"text": context, "bold": True})
+        return segments
+    if decision.verdict == "comments":
+        # Count only — locations without the comment text are useless, and quoting the comments
+        # in a notification is out of proportion.
+        return [{"text": f"All checks passed, unresolved comments: {decision.unresolved_threads}"}]
+    return [{"text": "Ready to merge"}]
+
+
+def build_spec(decision: Decision, title: str, url: str, footer: str, checks_url: str | None) -> dict:
+    """Assemble the notify spec (see the plan's shared contract) from a sendable decision."""
+    # Bold the name, never the icon: the icon column already carries the colour.
+    rows = [
+        [
+            {"text": state.context, "bold": state.state == "failure"},
+            {"text": _STATE_ICONS[state.state], "align": "center"},
+        ]
+        for state in decision.states
+    ]
+
+    # On a failure the table is shown BARE so the red rows are the first thing visible; on a
+    # green verdict it collapses behind its own summary.
+    failed = decision.verdict == "failed"
+    checks_block: dict = {"type": "table", "rows": rows}
+    if not failed:
+        checks_block["title"] = "All checks passed"
+    blocks: list[dict] = [checks_block]
+    if decision.failed_jobs:
+        blocks.append(
+            {
+                "type": "list",
+                "title": f"Failed jobs: {len(decision.failed_jobs)}",
+                "open": True,
+                "items": [[{"text": name, "bold": True}] for name in decision.failed_jobs],
+            }
+        )
+
+    buttons = [{"text": "Pull request", "url": url}]
+    if decision.verdict == "failed" and checks_url:
+        buttons.append({"text": "Checks", "url": checks_url})
+
+    return {
+        "status": decision.verdict,
+        "title": title,
+        "verdict": _verdict_segments(decision),
+        "blocks": blocks,
+        "footer": footer,
+        "buttons": buttons,
+        "silent": False,
+        "reply_to": decision.message_id,
+    }
+
+
+def main() -> int:
+    """CLI entrypoint. Always returns 0 — a silent decision is a normal outcome."""
+    parser = argparse.ArgumentParser(description="Decide the PR notification verdict.")
+    parser.add_argument("--title", required=True, help="PR title (the message heading).")
+    parser.add_argument("--url", required=True, help="PR html_url (the primary button).")
+    parser.add_argument("--footer", required=True, help='Footer line, e.g. "claude-tools · PR 118".')
+    parser.add_argument("--checks-url", default=None, help="PR checks tab URL (button on failure).")
+    args = parser.parse_args()
+
+    payload = json.load(sys.stdin)
+    decision = decide(payload)
+
+    result = {
+        "send": decision.send,
+        "reason": decision.reason,
+        "verdict": decision.verdict,
+        "message_id": decision.message_id,
+        "spec": build_spec(decision, args.title, args.url, args.footer, args.checks_url) if decision.send else None,
+    }
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
