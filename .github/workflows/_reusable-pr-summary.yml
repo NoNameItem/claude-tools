@@ -68,7 +68,14 @@ jobs:
           # the latter is a real `[]` that flows on unchanged. So the request and the extraction
           # are two separate steps: capture the raw body and check the command's exit status
           # first, then run the (unchanged) jq extraction over the captured body.
-          if ! rules_json=$(gh api "repos/$REPO/rules/branches/master"); then
+          #
+          # `--paginate` for the same reason the read has to fail loudly: this endpoint pages at
+          # 30, and every ruleset on `master` contributes its own rule entries. A truncated first
+          # page that drops the `required_status_checks` rule yields an empty required list —
+          # which `pr_summary.decide()` reads as "nothing to require" and reports as
+          # "Ready to merge". `--jq` runs per page, so `jq -s 'add // []'` re-joins the pages.
+          if ! rules_json=$(gh api --paginate "repos/$REPO/rules/branches/master" --jq '.' \
+                              | jq -s 'add // []'); then
             echo "::error::Failed to read repos/$REPO/rules/branches/master (required-status-checks ruleset) — cannot compute a merge verdict without it" >&2
             exit 1
           fi
@@ -76,8 +83,12 @@ jobs:
             | jq -c '[.[] | select(.type == "required_status_checks")
                           | .parameters.required_status_checks[].context]')
 
-          statuses=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
-            --jq '[.statuses[] | {context, state, target_url, description}]')
+          # Paged at 30 like every list endpoint here. A truncated page makes a required context
+          # look like it was never reported, which parks the PR at `waiting` forever — and it
+          # would also drop the `pr-notify` marker read below, breaking dedup and the reply anchor.
+          statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
+            --jq '[.statuses[] | {context, state, target_url, description}]' \
+            | jq -s 'add // []')
 
           check_runs=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
             --jq '[.check_runs[] | {name, status, conclusion, started_at, html_url,
@@ -85,16 +96,25 @@ jobs:
             | jq -s 'add // []')
 
           # REST does not expose isResolved on review threads — GraphQL is the only source.
-          unresolved=$(gh api graphql \
+          # Cursor-paginated: a bare `first: 100` silently caps the count, and every thread past
+          # the cap is an unresolved comment the verdict would not know about — i.e. a PR reported
+          # as "Ready to merge" while findings are still open. `gh --paginate` drives the loop
+          # itself, given an `$endCursor` variable and a `pageInfo` selection; `--jq` runs per
+          # page, so the per-page counts are summed with `jq -s 'add // 0'`.
+          unresolved=$(gh api graphql --paginate \
             -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
-            -f query='query($owner: String!, $name: String!, $number: Int!) {
+            -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
               repository(owner: $owner, name: $name) {
                 pullRequest(number: $number) {
-                  reviewThreads(first: 100) { nodes { isResolved } }
+                  reviewThreads(first: 100, after: $endCursor) {
+                    nodes { isResolved }
+                    pageInfo { hasNextPage endCursor }
+                  }
                 }
               }
             }' \
-            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length')
+            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
+            | jq -s 'add // 0')
 
           marker=$(printf '%s' "$statuses" \
             | jq -r 'map(select(.context == "pr-notify")) | first | .description // ""')
