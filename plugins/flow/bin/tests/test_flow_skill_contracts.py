@@ -313,6 +313,28 @@ def test_review_comments_decisions_example_always_carries_thread_mark() -> None:
     assert missing == [], f"done entries without `thread_mark` (they will re-open): {missing}"
 
 
+def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
+    """A filed `bd` task and a posted reply are irreversible and both loops are sequential, so
+    deferring every `record` to 5.7a means a mid-batch failure loses the record of the refs that
+    already succeeded — and the next round re-files the same follow-up or re-posts the same reply
+    against a row that never learned what happened. Both loops must therefore record each ref as it
+    lands, and 5.4's checkpoint must be `pending` (the task exists, the reply does not yet), or a
+    `done` row would settle a finding that was never answered on the platform."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    follow_up = text.split("#### 5.4.", 1)[1].split("#### 5.5.", 1)[0]
+    assert "checkpoint-" in follow_up, "5.4 must record each created task before the next `bd create`"
+    assert '"status": "pending"' in follow_up, "the 5.4 checkpoint is `pending` — the reply is not posted yet"
+    assert "followup_task_id" in follow_up, "the checkpoint must carry the task id that prevents a duplicate"
+    # The checkpoint only prevents a duplicate if something READS it back: `bd create` has no
+    # idempotency key, so a `pending` row re-triaged as `follow-up` files a second task unless 5.4
+    # looks up the stored id first. The write without the read is a no-op dressed as a fix.
+    assert "flow-review-ledger get" in follow_up, "5.4 must read the row before creating a task"
+    assert re.search(r"do not call `bd create`", follow_up), "5.4 must skip `bd create` when a task id already exists"
+    reply = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
+    assert "checkpoint-" in reply, "5.7 must record each ref as its reply is accepted"
+    assert reply.count("flow-review-ledger record") >= 1, "5.7's checkpoint must call `record`"
+
+
 def test_review_comments_5_7a_states_the_null_merge_rule() -> None:
     # `record` merges a decisions entry the way JSON merge does: an ABSENT key is a no-op, an
     # explicit `null` CLEARS the field. 5.7a's own example depends on the clear (`C1` carries
@@ -384,18 +406,22 @@ def test_done_purges_the_ledger() -> None:
     assert "Bash(flow-review-ledger:*)" in allowed_tools(text)
 
 
-def test_done_purges_the_ledger_only_after_the_branch_is_actually_gone() -> None:
-    """Purging first destroys durable review memory even when the branch survives. Both cleanup
-    steps that could keep it alive are documented as non-blocking on failure — an uncommitted
-    worktree refuses `git worktree remove`, an unmerged branch refuses `git branch -d` — so the
-    realistic outcome is a live branch whose ledger is already unlinked, with no backup and no
-    copy in the repo. The next `flow:review-comments` on that branch then re-imports every
-    settled finding and can duplicate replies and follow-up tasks."""
+def test_done_purges_the_ledger_only_once_the_pr_is_terminal() -> None:
+    """The purge destroys durable review memory with no backup and no copy in the repo, so it must
+    key on the one signal that says the review is over: the PR's own state. Branch deletion is the
+    wrong gate in BOTH directions — a branch is routinely kept on purpose after a merge (history,
+    re-reading the review), which would strand a settled ledger forever, and a branch deleted while
+    the PR is still open would license purging live memory, after which the next
+    `flow:review-comments` re-imports every settled finding and can duplicate replies and follow-up
+    tasks. Step 1 therefore has to capture `.state`, and Step 8 has to gate on it."""
     text = (FLOW_ROOT / "skills" / "done" / "SKILL.md").read_text()
-    purge_at = text.index("flow-review-ledger purge")
-    delete_local_at = text.index("git branch -d")
-    assert purge_at > delete_local_at, "the ledger purge must run after the branch delete, not before it"
-    assert "skip the purge" in text, "the purge must be skipped when cleanup left the branch in place"
+    assert "PR_STATE" in text, "Step 1 must capture the PR state the purge gate reads"
+    assert "MERGED` or `CLOSED`" in text, "Step 8 must name the terminal states that permit the purge"
+    assert "skip the purge" in text, "the purge must be skipped while the PR is still open"
+    assert "never on branch deletion" in text or "never branch deletion" in text, (
+        "the gate must be stated as PR state, not branch deletion"
+    )
+    assert "only if step 6 actually deleted the local branch" not in text, "the branch-delete gate must be gone"
 
 
 def test_review_comments_states_the_real_working_set_rule() -> None:

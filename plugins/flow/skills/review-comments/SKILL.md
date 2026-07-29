@@ -14,7 +14,7 @@ This skill makes every unresolved review comment reviewable and triageable **ins
 
 **Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
-**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and finally **records every decision back into the ledger**.
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -32,7 +32,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings; refs are stable across rounds (and therefore gappy) |
 | 3. Analyze the **working set** | Parallel `balanced`-tier reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
-| 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task |
+| 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply → record | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task; **checkpoint each filed task / posted reply into the ledger as it lands** |
 
 ## Platform Support
 
@@ -711,6 +711,21 @@ and **record every `follow-up` ref as `skip` (invariant 4)** so Phase 5.7 does n
 guard cannot fall through to `bd create`. The fix / won't-fix paths need no bd; only the follow-up
 path is blocked.
 
+**Then — drop the refs that already have a task.** A ref can reach this batch with a
+`followup_task_id` already on its row: a previous round filed the task and then died before its
+reply landed (see the checkpoint below), so the row came back as `pending` and was triaged
+`follow-up` again. Creating a second task for it is exactly the duplicate the checkpoint exists to
+prevent, and nothing downstream catches it — `bd create` has no idempotency key. Read each
+follow-up ref's row before creating anything:
+
+```bash
+flow-review-ledger get --meta "$FLOW_RC_DIR/metadata.json" --ref C3
+```
+
+A non-empty `followup_task_id` means the task exists: **do not call `bd create` for that ref.**
+Reuse the stored id as its `{task-id}` for the 5.7 reply and the 5.8 summary, and show it in the
+confirmation prompt below as a reuse, not a creation, so the user sees no phantom second task.
+
 **Parent epic — infer from the comment's path** (repo convention; the user confirms/overrides):
 
 | Comment path starts with | Parent epic |
@@ -732,8 +747,12 @@ text by design — claude-tools-6q4):
 Creating {N} follow-ups:
   C3 → bug  P2  under claude-tools-5dl — Guard branch_name against detached HEAD
   U4 → task P2  under claude-tools-elf — Extract retry helper for flow-sync
+Reusing {M} existing (filed by an earlier round, reply not yet posted):
+  C7 → claude-tools-5vg-12 — Add retry logic to network calls
 Proceed? (yes / edit / no)
 ```
+
+Omit the "Reusing" block when there is none.
 
 - **edit** → adjust the batch (drop/retarget refs) per the user, then re-confirm. Any ref removed
   from the batch is recorded as `skip` (invariant 3/4) — it gets no task and no follow-up reply.
@@ -763,6 +782,30 @@ bd create --title "$(cat "$FLOW_RC_DIR/title-C3.txt")" --type bug --priority 2 \
 The title has no file flag, so pass it as `"$(cat …)"`: a **quoted** command substitution captures the
 file's bytes as a single argument with no re-parsing, so backticks / `$` / a `FLOW_RC_EOF` line reach
 `bd` verbatim.
+
+**Checkpoint each task into the ledger the moment its `bd create` returns** — before moving to the
+next ref. A `bd create` is an irreversible external side effect, and the batch is sequential: if ref
+3 of 5 fails (bd error, a lock, a crash) and the run aborts, the tasks already filed for refs 1-2
+exist in beads but nothing in the ledger knows it, so the next round re-surfaces those rows unchanged
+and files the SAME task again. Write a one-entry decisions file (`$FLOW_RC_DIR/checkpoint-{ref}.json`)
+with the harness's native non-shell file mechanism and record it immediately:
+
+```json
+{ "C3": { "status": "pending", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" } }
+```
+
+```bash
+flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
+  --decisions "$FLOW_RC_DIR/checkpoint-C3.json" --head "$(git rev-parse HEAD)"
+```
+
+The status is **`pending`, not `done`** — the task exists but this round's reply is not posted yet,
+so the row is not settled. That is exactly the state the checkpoint must capture: 5.7's own
+checkpoint flips it to `done` with the reply's `thread_mark`, and an absent key is a no-op under the
+merge rules (5.7a), so neither write clobbers the other's fields. A run that dies between the two
+leaves a `pending` row carrying its `followup_task_id` — the next round re-surfaces it and the
+"drop the refs that already have a task" step above reuses that id instead of filing a duplicate.
+The checkpoint and that step are one mechanism: the write is pointless without the read.
 
 After creating all follow-ups, **persist to the shared beads store**:
 
@@ -918,12 +961,31 @@ as 5.4).
 
 GitHub + `kind == "summary"` is the **only** combination with no reply target.
 
-#### 5.7a. Record the decisions in the ledger
+**Checkpoint each ref into the ledger the moment its reply is accepted** — same rule, same reason as
+the `bd create` loop in 5.4: a posted reply is irreversible and this loop is sequential, so a failure
+at ref 3 of 5 must not cost the record of refs 1-2. Write that ref's final entry (the `status` /
+`decision` / `reason` / `thread_mark` its row earns per the table in 5.7a, using the id of the reply
+just posted) to `$FLOW_RC_DIR/checkpoint-{ref}.json` and record it right away:
 
-The replies are posted; now make this round's outcome durable, so the next round excludes what is
-settled and re-surfaces only what actually moved. Write **one** decisions file with the active
-harness's native non-shell file mechanism — `reason` is reviewer-derived free text, so it goes by
-file, never through a shell:
+```bash
+flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
+  --decisions "$FLOW_RC_DIR/checkpoint-C1.json" --head "$(git rev-parse HEAD)"
+```
+
+A ref whose reply is **withheld** (5.6 skipped/failed, or the branch is ahead of the remote) posts
+nothing, so it has nothing to checkpoint here — it is carried to 5.7a as `pending`.
+
+#### 5.7a. Record the round's remaining decisions
+
+The replies are posted and every ref that produced an external side effect is already checkpointed.
+This step closes the round: it records **everything the checkpoints did not** — refs settled with no
+reply sent, `pending` refs whose reply was withheld, and `skipped` refs — and it is the single place
+the full outcome table below is stated. Re-recording an already-checkpointed ref here is harmless
+(an identical `record` is a no-op), so when in doubt include it: the invariant this step defends is
+that **no ref that reached Phase 5 is left unrecorded**, never that each ref is written exactly once.
+
+Write **one** decisions file with the active harness's native non-shell file mechanism — `reason` is
+reviewer-derived free text, so it goes by file, never through a shell:
 
 `$FLOW_RC_DIR/decisions.json`:
 

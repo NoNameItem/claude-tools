@@ -56,9 +56,9 @@ Check if PR exists for current branch:
 gh pr view --json state,url,number 2>/dev/null || echo "NO_PR"
 ```
 
-Capture `PR_URL` (`.url`) and `PR_NUMBER` (`.number`) — Step 8 needs them to purge this PR's review
-ledger. A generic branch short-circuits this step and has no PR, which is exactly when the purge is
-irrelevant.
+Capture `PR_URL` (`.url`), `PR_NUMBER` (`.number`) and `PR_STATE` (`.state`) — Step 8 needs the first
+two to address this PR's review ledger and the third to decide whether purging it is safe at all. A
+generic branch short-circuits this step and has no PR, which is exactly when the purge is irrelevant.
 
 **If NO PR exists:**
 
@@ -290,27 +290,29 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 5. **Pull merged changes:** `git pull`
 6. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
 7. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
-8. **Purge the PR's review ledger** — **last, and only if step 6 actually deleted the local branch**
-   (and only when Step 1 captured a PR number):
+8. **Purge the PR's review ledger** — **last, and only when the PR is TERMINAL** (`PR_STATE` from
+   Step 1 is `MERGED` or `CLOSED`, and Step 1 captured a PR number):
    ```bash
    flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
    ```
-   **If the branch survived, skip the purge.** The ledger is that PR's only durable review memory:
-   it lives under the OS cache dir, never in the repo, and `purge` unlinks it outright with no
-   backup. Every step above is non-blocking on failure, so a refused `git worktree remove` or a
-   `git branch -d` that reports unmerged work leaves the branch — and usually its open PR — alive.
-   Purging then costs nothing less than every decision recorded on that PR, and the next
-   `flow:review-comments` re-imports findings already settled, re-posting replies and re-filing
-   follow-ups. A retained ledger costs nothing by comparison: it is idempotent to purge later, a
-   missing one is a no-op, and an abandoned one self-expires after the merge (there is no GC). A
-   task with several `Git:` branches purges only the current branch's ledger — the others
-   self-expire (multi-branch handling is tracked as claude-tools-elf.51; GitLab support as
-   claude-tools-elf.50).
+   **The gate is the PR's state, never branch deletion.** Whether the local or remote branch
+   survived is irrelevant in both directions: a branch is routinely kept on purpose after a merge —
+   for history, or to re-read what happened in review — and that must not keep a settled PR's ledger
+   alive forever; conversely a `git branch -d` that succeeded says nothing about whether the PR is
+   still taking review. **If the PR is still open, skip the purge** even when every branch is gone.
+   The ledger is that PR's only durable review memory: it lives under the OS cache dir, never in the
+   repo, and `purge` unlinks it outright with no backup. Purging an open PR's ledger costs nothing
+   less than every decision recorded on it, and the next `flow:review-comments` re-imports findings
+   already settled, re-posting replies and re-filing follow-ups. A retained ledger costs nothing by
+   comparison: it is idempotent to purge later, a missing one is a no-op, and an abandoned one
+   self-expires (there is no GC). A task with several `Git:` branches purges only the current
+   branch's PR ledger — the others self-expire (multi-branch handling is tracked as
+   claude-tools-elf.51; GitLab support as claude-tools-elf.50).
 
 **Error handling:**
-- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block — and skip step 8, the branch is still there.
+- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block — and leave step 8 alone: the purge is gated on `PR_STATE`, not on this step.
 - Remote branch already deleted (GitHub auto-delete): Catch the error and continue.
-- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED. While the branch remains, skip step 8 — its ledger is still live memory.
+- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED. A surviving branch does **not** hold back step 8 — a merged PR's ledger is settled either way — and a deleted one does not license it while the PR is open.
 
 #### 8.5. If no — skip, done
 
@@ -620,7 +622,7 @@ Agent: [cd to main repo root]
        [git pull]
        [git branch -d feature/claude-tools-elf.6-...]
        [git push origin --delete feature/claude-tools-elf.6-...]
-       [branch is gone → flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
+       [PR state is MERGED → flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
 
        ✓ Worktree removed
        ✓ Switched to master
@@ -635,7 +637,7 @@ Agent: [cd to main repo root]
 - Checked branch matches task ID
 - Listed all cleanup targets
 - Asked before deleting
-- Executed in correct order (worktree → checkout → delete → purge ledger, only once the branch is actually gone)
+- Executed in correct order (worktree → checkout → delete → purge ledger, and the purge fired because the PR is MERGED — not because the branch happened to be gone)
 
 ### ❌ BAD: Auto-cleanup without asking
 
