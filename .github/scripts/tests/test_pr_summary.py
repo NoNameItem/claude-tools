@@ -49,7 +49,8 @@ def _payload(**overrides) -> dict:
             _run("Claude Code Plugin CI Gate", "success"),
         ],
         "unresolved_threads": 0,
-        "marker_description": "msg:4711",
+        "anchor_description": "msg:4711",
+        "verdict_description": "",
     }
     payload.update(overrides)
     return payload
@@ -61,6 +62,8 @@ class TestParseMarker:
         [
             ("msg:4711", (4711, None)),
             ("msg:4711 v:ready", (4711, "ready")),
+            # The verdict marker written while no anchor existed: `v:` with no `msg:` at all.
+            ("v:ready", (None, "ready")),
             ("", (None, None)),
             ("garbage", (None, None)),
             ("msg:notanint v:ready", (None, "ready")),
@@ -190,15 +193,51 @@ class TestDecide:
         assert decision.verdict == "ready"
         assert all(state.context != "review-gate" for state in decision.states)
 
-    def test_same_verdict_is_silent(self) -> None:
-        decision = decide(_payload(marker_description="msg:4711 v:ready"))
+    def test_same_verdict_for_the_same_anchor_is_silent(self) -> None:
+        decision = decide(_payload(verdict_description="msg:4711 v:ready"))
         assert decision.send is False
         assert decision.reason == "duplicate"
 
     def test_changed_verdict_re_notifies(self) -> None:
-        decision = decide(_payload(marker_description="msg:4711 v:failed"))
+        decision = decide(_payload(verdict_description="msg:4711 v:failed"))
         assert decision.send is True
         assert decision.verdict == "ready"
+
+    def test_same_verdict_for_a_new_anchor_re_notifies(self) -> None:
+        # The `edited` / `reopened` case: same head SHA, so the verdict is unchanged, but
+        # notify-start sent a fresh "checks running" message and moved the anchor. Dedup keyed on
+        # the verdict alone would swallow this and leave that new message hanging forever.
+        decision = decide(_payload(anchor_description="msg:4712", verdict_description="msg:4711 v:ready"))
+        assert decision.send is True
+        assert decision.verdict == "ready"
+        assert decision.message_id == 4712
+
+    def test_reply_targets_the_current_anchor_not_the_recorded_one(self) -> None:
+        decision = decide(_payload(anchor_description="msg:4712", verdict_description="msg:4711 v:failed"))
+        assert decision.message_id == 4712
+
+    def test_without_an_anchor_dedup_falls_back_to_the_verdict_alone(self) -> None:
+        # No anchor exists (notify-start had not written one when this call ran), so there is no
+        # per-update signal. Re-sending on every call would be worse than staying silent.
+        decision = decide(_payload(anchor_description="", verdict_description="msg:4711 v:ready"))
+        assert decision.send is False
+        assert decision.reason == "duplicate"
+        assert decision.message_id is None
+
+    def test_anchor_appearing_after_an_anchorless_verdict_is_not_a_change(self) -> None:
+        # The aggregator recorded `v:ready` with no `msg:` because no anchor existed yet. When the
+        # real anchor shows up, that must NOT read as an anchor change: the verdict is unchanged,
+        # so nothing new is reported. (Before the marker was split, this path recorded the id of
+        # the message it had just sent as a surrogate anchor, and this call re-sent a duplicate.)
+        decision = decide(_payload(anchor_description="msg:4712", verdict_description="v:ready"))
+        assert decision.send is False
+        assert decision.reason == "duplicate"
+
+    def test_anchorless_verdict_still_re_notifies_when_the_verdict_changes(self) -> None:
+        decision = decide(_payload(anchor_description="msg:4712", verdict_description="v:failed"))
+        assert decision.send is True
+        assert decision.verdict == "ready"
+        assert decision.message_id == 4712
 
     def test_failed_jobs_include_non_required_runs(self) -> None:
         decision = decide(

@@ -93,10 +93,12 @@ Decisions encoded above, so a future reader does not "fix" them:
 - **`SonarCloud Code Analysis` is deliberately not required** — it only exists on PRs with Python
   changes, and a conditionally-present required check blocks a PR forever. The Quality Gate
   blocks through `Python CI Gate` instead (`sonar.qualitygate.wait=true`).
-- **`pr-notify` is deliberately not required, and must never be added.** It is the
-  notification's cross-run marker, not a verdict: it sits at `pending` for as long as the checks
-  are genuinely still running, and the run that decides to stay silent leaves it untouched by
-  design. Making it required would let a bookkeeping status block a merge.
+- **`pr-notify-anchor` and `pr-notify-verdict` are deliberately not required, and must never be
+  added.** They are the notification's cross-run bookkeeping, not verdicts: the anchor records
+  which Telegram message to reply to, the verdict records what was already reported and for which
+  anchor, and a run that decides to stay silent writes neither. Both are posted as `success`
+  precisely so they never read as an unfinished check — but making either required would let
+  bookkeeping block a merge.
 - **`bypass_actors` stays empty.**
 
 ## Step 3 — Delete the classic branch protection
@@ -146,7 +148,8 @@ the released ones anyway.
 Open a scratch PR against `master` and confirm, in order:
 
 1. **Green path** — one silent opener, then exactly one reply saying *Ready to merge* once both
-   producers have finished. The `pr-notify` status shows `msg:<id> v:ready`.
+   producers have finished. `pr-notify-anchor` shows `msg:<id>`; `pr-notify-verdict` shows
+   `msg:<same id> v:ready`.
 2. **Red path** — push a commit that fails lint. The reply says *Checks failed:* with the gate in
    bold, the check table bare (not collapsed), and the failing child job listed.
 3. **Re-run** — re-run the failed job so it passes. A **new** reply arrives with the flipped
@@ -162,6 +165,36 @@ Open a scratch PR against `master` and confirm, in order:
 
 Close the scratch PR. When something misbehaves, the `PR Summary` job's `Decision:` log line
 (`{"send":…,"reason":…,"verdict":…}`) names the branch of `pr_summary.py` that was taken.
+
+## Step 7 — Pin the notification implementation to a trusted revision (`claude-tools-5vg.14`)
+
+This step **only becomes possible after the merge**, which is why it is here rather than in the
+PR: it pins the privileged notification code to `master`, and until this branch lands, `master`
+carries neither `telegram_notify.py` nor `pr_summary.py` — pinning earlier would run the old
+action against the new inputs and silently break every notification on the branch.
+
+The gap it closes: `pr.yml` runs on `pull_request`, so `actions/checkout` takes the PR merge ref.
+`notify-start` then executes `./.github/actions/telegram-notify` — the PR author's copy — while
+holding `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` and `statuses: write`. `_reusable-pr-summary.yml`
+has the same shape for the scripts it runs. Only same-repo PRs reach either job (both carry the
+fork guard), so this is a collaborator-trust boundary, not an anonymous one — but it is one the
+repo has decided to close rather than document.
+
+1. In `.github/actions/telegram-notify/action.yml`, run the script from the action's own
+   checkout rather than the workspace:
+   `python3 "${GITHUB_ACTION_PATH}/../../scripts/telegram_notify.py"`.
+2. In `pr.yml`'s `notify-start`, replace the local reference with a pinned remote one —
+   `uses: NoNameItem/claude-tools/.github/actions/telegram-notify@master` — and drop the
+   `actions/checkout` step, which then has nothing left to provide.
+3. In `_reusable-pr-summary.yml`, pin the checkout: `ref: ${{ github.event.pull_request.base.sha }}`.
+   Its `run:` steps invoke `.github/scripts/*.py` from the workspace, so the checkout is the only
+   lever there.
+4. Verify on a scratch PR that notifications still arrive, then re-run Step 6's green path.
+
+**What this does not close:** on a `pull_request` event GitHub reads the workflow file itself from
+the PR branch, so a PR can still edit `pr.yml` to unpin the reference. That change is a visible
+one-liner in the workflow diff, which is the point — the alternative (moving the notify jobs to
+`pull_request_target`) makes notification changes untestable before merge.
 
 ## Rollback
 

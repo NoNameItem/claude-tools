@@ -4,8 +4,16 @@
 Pure decision function for `_reusable-pr-summary.yml`, mirroring the review_gate.py split:
 bash does the I/O (`gh api`), this script decides. The workflow pipes a rollup of the head
 SHA's commit statuses and check runs, the required contexts read from the `master` ruleset,
-the unresolved-thread count and the previous `pr-notify` marker; the script prints one JSON
+the unresolved-thread count and the two notification markers; the script prints one JSON
 document saying whether to send and, if so, exactly what the message contains.
+
+The markers are two separate commit statuses because they have two separate writers:
+`pr-notify-anchor` (`msg:<id>`) is written only by pr.yml's notify-start and names the newest
+"checks running" message; `pr-notify-verdict` (`msg:<anchor-id> v:<verdict>`) is written only by
+_reusable-pr-summary.yml and says which verdict was already reported, and for which anchor.
+Keeping them apart means neither writer can erase the other, and it is what lets dedup reset per
+PR update instead of per head SHA — an `edited` event moves the anchor, so the same verdict is
+reported again against the new message rather than swallowed as a duplicate.
 
 Silence is the default: the aggregator is called from *both* producers of required checks
 (pr.yml and review-gate.yml), so on any given call the other producer is usually still
@@ -38,7 +46,11 @@ _GOOD_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 # Contexts that only exist for same-repo PRs (a fork run posts no status — by design).
 _SAME_REPO_ONLY = frozenset({"review-gate"})
 
-_MARKER_PATTERN = re.compile(r"\bmsg:(?P<msg>\S+)(?:\s+v:(?P<verdict>\S+))?")
+# Two independent fields, matched independently: either can be absent. The anchor marker carries
+# only `msg:`, and the verdict marker carries only `v:` when it was written while no anchor
+# existed — the aggregator does not own the anchor context, so it must not invent an id for it.
+_MARKER_MSG_PATTERN = re.compile(r"\bmsg:(\S+)")
+_MARKER_VERDICT_PATTERN = re.compile(r"\bv:(\S+)")
 
 # Icon per resolved state. The validated check-table layout puts the context name in column 1
 # and the icon alone, centred, in column 2 — so a state maps to an icon, not to a word.
@@ -77,22 +89,27 @@ class Decision:
 
 
 def parse_marker(description: str) -> tuple[int | None, str | None]:
-    """Parse the `pr-notify` commit-status description.
+    """Parse a notification marker's commit-status description.
+
+    Both markers share one format, so one parser serves both: the anchor carries only ``msg:``,
+    and the verdict marker carries ``v:`` plus — unless it was written while no anchor existed —
+    the ``msg:`` of the anchor it was recorded for.
 
     Args:
-        description: e.g. ``"msg:4711 v:ready"``, ``"msg:4711"`` or ``""``.
+        description: e.g. ``"msg:4711 v:ready"``, ``"msg:4711"``, ``"v:ready"`` or ``""``.
 
     Returns:
         ``(message_id, verdict)``; either element is ``None`` when absent or unparsable.
         A non-integer message id yields ``None`` rather than raising — a corrupt marker must
         degrade to "send without a reply", never crash the notification.
     """
-    match = _MARKER_PATTERN.search(description or "")
-    if not match:
-        return (None, None)
-    raw_id = match.group("msg")
-    message_id = int(raw_id) if raw_id.isdigit() else None
-    return (message_id, match.group("verdict"))
+    text = description or ""
+    msg_match = _MARKER_MSG_PATTERN.search(text)
+    verdict_match = _MARKER_VERDICT_PATTERN.search(text)
+    message_id = None
+    if msg_match and msg_match.group(1).isdigit():
+        message_id = int(msg_match.group(1))
+    return (message_id, verdict_match.group(1) if verdict_match else None)
 
 
 def _status_state(entry: dict) -> str:
@@ -197,7 +214,10 @@ def decide(payload: dict) -> Decision:
     """
     head_sha = payload.get("head_sha") or ""
     current = payload.get("current_head_sha") or ""
-    message_id, previous_verdict = parse_marker(payload.get("marker_description", ""))
+    # The anchor is the reply target; the verdict marker records what was already reported and
+    # which anchor it was reported against. Both are read here, never merged into one status.
+    message_id, _ = parse_marker(payload.get("anchor_description", ""))
+    recorded_anchor, previous_verdict = parse_marker(payload.get("verdict_description", ""))
 
     # A non-empty mismatch only. An empty `current` means the lookup failed; treating that as
     # "moved" would silence a real notification on a transient API blip.
@@ -223,7 +243,19 @@ def decide(payload: dict) -> Decision:
     else:
         verdict = "ready"
 
-    if verdict == previous_verdict:
+    # Dedup is keyed on (anchor, verdict), not on the verdict alone. A head SHA can be re-run
+    # without changing — `pr.yml` fires on `edited` and `reopened` too — and each such run sends a
+    # fresh "checks running" message and moves the anchor. Keying on the verdict alone would
+    # classify the re-run's identical verdict as a duplicate and send nothing, leaving that new
+    # message claiming forever that checks are running.
+    #
+    # Two ways the anchor half of the key can be absent, both meaning "no per-update signal here",
+    # both falling back to verdict-only dedup rather than re-sending:
+    #   * `message_id is None` — no anchor exists right now (notify-start has not written one yet).
+    #   * `recorded_anchor is None` — the verdict was recorded while no anchor existed, so it is
+    #     compatible with whatever anchor appears later. Without this, the anchor appearing after
+    #     a send would look like an anchor CHANGE and re-send the same verdict.
+    if verdict == previous_verdict and (message_id is None or recorded_anchor is None or recorded_anchor == message_id):
         return Decision(send=False, reason="duplicate", verdict=verdict, message_id=message_id, states=states)
 
     return Decision(

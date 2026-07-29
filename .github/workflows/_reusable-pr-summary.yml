@@ -87,7 +87,8 @@ jobs:
 
           # Paged at 30 like every list endpoint here. A truncated page makes a required context
           # look like it was never reported, which parks the PR at `waiting` forever — and it
-          # would also drop the `pr-notify` marker read below, breaking dedup and the reply anchor.
+          # would also drop the two notification markers read below, breaking dedup and the
+          # reply anchor.
           statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
             --jq '[.statuses[] | {context, state, target_url, description}]' \
             | jq -s 'add // []')
@@ -124,8 +125,16 @@ jobs:
             --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
             | jq -s 'add // 0')
 
-          marker=$(printf '%s' "$statuses" \
-            | jq -r 'map(select(.context == "pr-notify")) | first | .description // ""')
+          # Two markers, two writers, two roles — see the "Record the verdict" step at the bottom
+          # of this file and the anchor step in pr.yml:
+          #   pr-notify-anchor  — `msg:<id>`, written ONLY by notify-start, on every PR update.
+          #                       Names the newest "checks running" message to reply to.
+          #   pr-notify-verdict — `msg:<anchor-id> v:<verdict>`, written ONLY by this workflow.
+          #                       Says which verdict was already reported, and FOR WHICH anchor.
+          anchor=$(printf '%s' "$statuses" \
+            | jq -r 'map(select(.context == "pr-notify-anchor")) | first | .description // ""')
+          verdict_marker=$(printf '%s' "$statuses" \
+            | jq -r 'map(select(.context == "pr-notify-verdict")) | first | .description // ""')
 
           printf '%s' "$check_runs" > check-runs.json
           jq -n \
@@ -136,10 +145,12 @@ jobs:
             --argjson statuses "$statuses" \
             --argjson check_runs "$check_runs" \
             --argjson unresolved "$unresolved" \
-            --arg marker "$marker" \
+            --arg anchor "$anchor" \
+            --arg verdict_marker "$verdict_marker" \
             '{head_sha: $head_sha, current_head_sha: $current_head, is_fork: $is_fork,
               required_contexts: $required, statuses: $statuses, check_runs: $check_runs,
-              unresolved_threads: $unresolved, marker_description: $marker}' > payload.json
+              unresolved_threads: $unresolved, anchor_description: $anchor,
+              verdict_description: $verdict_marker}' > payload.json
 
           # PR title and URL go through GITHUB_OUTPUT, never through inline GitHub Actions
           # interpolation in a `run:` block: this workflow is also called from
@@ -201,7 +212,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Record the verdict in the pr-notify marker
+      - name: Record the verdict in the pr-notify-verdict marker
         if: steps.decide.outputs.send == 'true' && steps.send.outputs.message-id != ''
         env:
           GH_TOKEN: ${{ github.token }}
@@ -209,17 +220,33 @@ jobs:
           HEAD_SHA: ${{ inputs.head-sha }}
           VERDICT: ${{ steps.decide.outputs.verdict }}
           ANCHOR_ID: ${{ steps.decide.outputs.message-id }}
-          SENT_ID: ${{ steps.send.outputs.message-id }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Keep the ORIGINAL anchor: every later notification for this SHA replies to the
-          # "PR updated" message, not to the previous result. Only when no marker existed does
-          # the message just sent become the anchor.
-          MSG_ID="${ANCHOR_ID:-$SENT_ID}"
+          # This context is written ONLY here, and `pr-notify-anchor` ONLY by pr.yml's notify-start
+          # — so the two writers never collide and neither needs a read-before-write guard.
+          #
+          # The recorded anchor id is what makes dedup reset per PR update rather than per head
+          # SHA. `decide()` treats a verdict as already-reported only when the anchor it was
+          # recorded FOR is still the current one: an `edited` event sends a fresh "checks running"
+          # message and moves the anchor, so the same verdict is reported again — against the new
+          # message — instead of being swallowed as a duplicate and leaving that message hanging.
+          #
+          # ANCHOR_ID is empty only when no anchor exists at all — notify-start had not written one
+          # yet when this call ran. Then the verdict is recorded WITHOUT an `msg:` field rather
+          # than with the id of the message just sent: this workflow does not own the anchor
+          # context, so an id it invented would not be an anchor, and `decide()` would later read
+          # the real anchor's arrival as an anchor CHANGE and re-send the same verdict. A missing
+          # `msg:` says exactly what happened — "recorded while no anchor was known" — and
+          # `decide()` treats it as compatible with any anchor.
+          if [ -n "$ANCHOR_ID" ]; then
+            DESCRIPTION="msg:${ANCHOR_ID} v:${VERDICT}"
+          else
+            DESCRIPTION="v:${VERDICT}"
+          fi
           gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=success \
-            -f context=pr-notify \
-            -f description="msg:${MSG_ID} v:${VERDICT}" \
+            -f context=pr-notify-verdict \
+            -f description="$DESCRIPTION" \
             -f target_url="$RUN_URL" >/dev/null
-          echo "Marker: msg:${MSG_ID} v:${VERDICT}"
+          echo "Marker: $DESCRIPTION"

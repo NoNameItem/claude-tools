@@ -129,17 +129,28 @@ the other exits silently. The algorithm, identical in both call sites:
 
 **Concurrency and dedup.** The job declares
 `concurrency: group: pr-summary-<head-sha>, cancel-in-progress: false`, which serialises the two
-possible simultaneous calls. State lives in a commit status with context `pr-notify` on the head
-SHA:
+possible simultaneous calls. State lives in **two** commit statuses on the head SHA — one per
+writer, so neither can erase the other:
 
-- the **PR updated** notification creates it — `state: pending`, `description: msg:<message_id>`;
-- the aggregator reads it to obtain `message_id` for `reply_parameters`, and to learn which verdict
-  was already sent;
-- after sending, the aggregator sets `state: success` and
-  `description: msg:<message_id> v:<verdict>`.
+- `pr-notify-anchor` — `state: success`, `description: msg:<message_id>`. Written **only** by
+  `notify-start`, **unconditionally**, on every PR update. It names the newest *checks running*
+  message, which is what `reply_parameters` targets.
+- `pr-notify-verdict` — `state: success`, `description: msg:<anchor_id> v:<verdict>`. Written
+  **only** by the aggregator, after a send. It records what was reported *and which anchor it was
+  reported against*.
 
-A notification is sent only when the marker is absent **or** the verdict differs from the recorded
-one. This is what makes re-runs behave correctly: re-running a failed CI job, or re-running the gate
+A notification is sent unless the recorded verdict matches the computed one **for the current
+anchor**. Keying dedup on the anchor as well as the verdict is what makes an update to an
+unchanged head SHA behave correctly: `pr.yml` also fires on `edited` and `reopened`, each of which
+sends a fresh *checks running* message and moves the anchor, so the same verdict is reported again
+against the new message instead of being swallowed as a duplicate and leaving that message
+claiming forever that checks are running. When no anchor exists at all, dedup falls back to the
+verdict alone.
+
+A single combined marker was the original design and did not survive review: one writer erased the
+other's field, and the read-before-write guard that fixed the erasure froze the anchor instead.
+
+This is also what makes re-runs behave correctly: re-running a failed CI job, or re-running the gate
 after its timeout (which `review-gate.yml:174` explicitly instructs the user to do), produces a
 fresh, accurate notification, while repeated calls with an unchanged verdict stay quiet.
 
@@ -487,8 +498,8 @@ head SHA and will need a push or re-run before they can merge.
   and it is the only send path — an API-side regression would break every notification until the
   repository is fixed. Accepted deliberately: the failure is loud (the step goes red), and a second
   rendering costs more than it insures for a CI status message.
-- Commit statuses are keyed by `(SHA, context)`, not by PR, so the `pr-notify` marker inherits the
-  same theoretical cross-PR collision that `review-gate.yml:24-27` already documents for shared
+- Commit statuses are keyed by `(SHA, context)`, not by PR, so both notification markers inherit
+  the same theoretical cross-PR collision that `review-gate.yml:24-27` already documents for shared
   SHAs.
 - Reading required contexts from the branch-rules API means a ruleset edit changes notification
   behaviour with no code change — intended, but worth knowing when debugging.

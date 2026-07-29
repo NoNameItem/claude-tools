@@ -7,12 +7,13 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
-# Deliberately NO workflow-level `statuses: write`. The pr-notify marker is written by exactly
-# two jobs (notify-start and pr-summary), and each grants itself that permission at job level.
-# Every OTHER job here runs PR-authored code: this workflow triggers on `pull_request`, so
-# actions/checkout takes the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci
-# execute scripts from it. A workflow-level grant would hand that code the ability to forge
-# commit statuses — including `review-gate` and `pr-notify`, which the master ruleset requires.
+# Deliberately NO workflow-level `statuses: write`. The notification markers are written by
+# exactly two jobs (notify-start writes `pr-notify-anchor`, pr-summary writes
+# `pr-notify-verdict`), and each grants itself that permission at job level. Every OTHER job
+# here runs PR-authored code: this workflow triggers on `pull_request`, so actions/checkout takes
+# the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci execute scripts from it.
+# A workflow-level grant would hand that code the ability to forge commit statuses — including
+# `review-gate`, which the master ruleset requires.
 permissions:
   contents: read
   checks: write
@@ -37,18 +38,18 @@ jobs:
     runs-on: ubuntu-latest
     # A job-level block REPLACES the workflow-level set for this job, so everything this job
     # needs is listed here — `contents: read` for the checkout below, and `statuses: write` for
-    # the pr-notify marker. Nothing PR-authored runs in this job.
+    # the anchor marker. Nothing PR-authored runs in this job.
     permissions:
       contents: read
       statuses: write
-    # Deliberately NOT in _reusable-pr-summary.yml's `pr-summary-<sha>` concurrency group, even
-    # though this job writes the same `pr-notify` status. Sharing it would only narrow the
-    # read-write window in the "Check for a recorded verdict" step below — that step is the actual
-    # fix — while costing far more: a queued job is cancelled outright as soon as a third claimant
-    # joins its group (`cancel-in-progress: false` protects only the job already running). That
-    # would take this whole job with it, including the Telegram send above, which needs no
-    # serialisation at all and has no retry. A lost start notification is a worse failure than the
-    # duplicate result message the residual window can cause.
+    # No shared concurrency group with _reusable-pr-summary.yml, and none is needed: this job and
+    # the summary write DIFFERENT commit-status contexts (`pr-notify-anchor` here,
+    # `pr-notify-verdict` there), so they cannot clobber each other's write. That is the whole
+    # point of splitting the marker in two — an earlier single-context design needed a
+    # read-before-write guard here, which in turn froze the anchor across `edited` re-runs. A
+    # shared group would also be actively harmful: a queued job is cancelled outright as soon as a
+    # third claimant joins its group (`cancel-in-progress: false` protects only the job already
+    # running), which would take the Telegram send below with it, and that send has no retry.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,49 +84,23 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      # This is the ACTUAL fix for the race described above: read the marker that's there right
-      # now, and skip the write if it already carries a recorded verdict (`v:...`). Without this,
-      # a POST here always becomes the newest `pr-notify` status — including one that lands AFTER
-      # _reusable-pr-summary.yml recorded a verdict, which would erase it, make `pr_summary.decide()`
-      # see no previous verdict on the next run, and send a duplicate result notification. The
-      # most reachable trigger isn't a scheduler race: `pr.yml` also fires on `edited`, and editing
-      # the PR title/body after checks are green re-runs this job.
+      # The anchor is how the result notification — sent from a different workflow run — finds the
+      # message to reply to. It is written UNCONDITIONALLY, so it always names the newest "checks
+      # running" message for this head SHA.
       #
-      # A read-then-write is not atomic, so a verdict recorded in the gap between the read and the
-      # POST below is still lost. That residual is accepted deliberately: GitHub's commit-status API
-      # has no conditional/compare-and-swap write, and the only way to serialise this job against
-      # the summary — sharing its concurrency group — risks losing the whole job instead (see the
-      # note on the job above). The residual costs a duplicate message; the alternative costs a
-      # missing one.
-      - name: Check for a recorded verdict
-        id: check-verdict
+      # This is the half of the marker that only this job writes. The verdict lives in a separate
+      # context (`pr-notify-verdict`, written only by _reusable-pr-summary.yml), and keeping the
+      # two apart is what makes an unconditional write safe here: the two jobs never target the
+      # same (SHA, context) pair, so neither can erase the other. Merging them into one status was
+      # the earlier design, and it cost two review rounds — first a lost verdict, then a
+      # read-before-write guard that fixed the loss but froze the anchor, so an `edited` re-run
+      # sent a fresh "checks running" message that no result ever replied to.
+      #
+      # `state=success`, not `pending`: this is a marker, not a gate, and a permanently pending
+      # status would read as an unfinished check. It must never be added to the master ruleset's
+      # required contexts — see docs/merge-gate-rollout.md.
+      - name: Record the start message as the reply anchor
         if: steps.notify.outputs.message-id != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          # Mirrors _reusable-pr-summary.yml's "Collect head SHA state" read of the same endpoint,
-          # including the --paginate / jq -s 'add // []' re-join: this list pages at 30, and a
-          # truncated first page could drop the pr-notify status and make a recorded verdict look
-          # absent.
-          description=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
-              --jq '[.statuses[] | select(.context == "pr-notify") | .description]' \
-            | jq -s 'add // []' \
-            | jq -r 'first // ""')
-
-          if [[ "$description" == *" v:"* ]]; then
-            echo "A verdict is already recorded ($description) — skipping the pending write so it is not erased."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # The marker is how the result notification (sent from a different workflow run) finds the
-      # message to reply to. `pending` until a verdict is recorded; the description is the state.
-      - name: Create the pr-notify marker
-        if: steps.notify.outputs.message-id != '' && steps.check-verdict.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -134,7 +109,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
-            -f state=pending -f context=pr-notify \
+            -f state=success -f context=pr-notify-anchor \
             -f description="msg:${MSG_ID}" -f target_url="$RUN_URL" >/dev/null
 
   detect:
