@@ -203,15 +203,29 @@ def counts_of(doc: dict, working: list | None = None) -> dict:
     `working` must be the list `reconcile` actually emitted, not a tally over all rows:
     SKILL.md's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two
     populations differ (a row can be persisted but absent from this round's snapshot). The
-    row-derived fallback is only for callers with no snapshot in hand.
+    row-derived fallback is for a caller with no snapshot in hand; it goes through
+    `_ledger.is_working` so it cannot drift from the loop that builds the real list.
     """
     rows = list(doc.get("rows", {}).values())
-    counts = {status: sum(1 for row in rows if row.get("status") == status) for status in _ledger.STATUSES}
+    # `counts` and `working_set` ride in ONE payload, so the per-status breakdown has to answer the
+    # same question the same way: a terminal status counts every matching row, a non-terminal one
+    # only rows that are still work. Tallying raw statuses here would put `open: 1` next to
+    # `working: 0` in the same object — the disagreement `is_working` exists to end, moved one
+    # field over. Rows dropped that way are not lost: they land in `resolved_upstream`, so the
+    # buckets still reconcile against `total`.
+    counts = {
+        status: sum(
+            1
+            for row in rows
+            if row.get("status") == status and (status in _ledger.TERMINAL_STATUSES or _ledger.is_working(row))
+        )
+        for status in _ledger.STATUSES
+    }
+    counts["resolved_upstream"] = sum(
+        1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES and not _ledger.is_working(row)
+    )
     counts["total"] = len(rows)
-    if working is None:
-        counts["working"] = sum(1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES)
-    else:
-        counts["working"] = len(working)
+    counts["working"] = sum(1 for row in rows if _ledger.is_working(row)) if working is None else len(working)
     return counts
 
 
@@ -253,7 +267,7 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             reopen_if_advanced(row, item)
             apply_resolution(row, item, was_resolved)
             refresh_snapshot(row, item)
-        if row["status"] not in _ledger.TERMINAL_STATUSES:
+        if _ledger.is_working(row):
             working.append(working_entry(row))
 
     mark_absent(doc, seen)
@@ -375,9 +389,24 @@ def fold_stats(doc: dict, last_round_only: bool) -> dict:
     rows = list(doc.get("rows", {}).values())
     if last_round_only:
         rows = [row for row in rows if row.get("last_round") == doc.get("round")]
+    # A terminal status is counted over every row; a NON-terminal one only over rows that are
+    # still work, so a thread the platform resolved is never reported as outstanding. Without
+    # this, `stats` — what review-loop prints in its convergence report — would contradict
+    # `reconcile`: an empty working set alongside `Open: 1`.
+    status_counts = {
+        status: sum(
+            1
+            for row in rows
+            if row.get("status") == status and (status in _ledger.TERMINAL_STATUSES or _ledger.is_working(row))
+        )
+        for status in _ledger.STATUSES
+    }
     return {
         "tracked": len(rows),
-        "status": {status: sum(1 for row in rows if row.get("status") == status) for status in _ledger.STATUSES},
+        "status": status_counts,
+        "resolved_upstream": sum(
+            1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES and not _ledger.is_working(row)
+        ),
         "decisions": {
             key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
             for key, _ in DECISION_LABELS
@@ -416,6 +445,11 @@ def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
         # Only when non-zero: threads vanishing from a PR is the exception, and a permanent
         # "Deleted: 0" would read as noise on every clean run.
         lines.append(f"  Deleted upstream: {folded['status']['deleted']}")
+    if folded["resolved_upstream"]:
+        # Same rule, and the counterpart to the line above: these rows are settled by the
+        # platform rather than by us, so they are out of the working set but were never given a
+        # decision — reporting them under `Open` would be wrong, hiding them entirely worse.
+        lines.append(f"  Resolved upstream: {folded['resolved_upstream']}")
     if folded["followups"]:
         lines.append(f"  Follow-ups filed: {len(folded['followups'])} ({', '.join(folded['followups'])})")
     return "\n".join(lines)

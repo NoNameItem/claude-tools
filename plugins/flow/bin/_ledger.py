@@ -191,6 +191,31 @@ def empty_ledger(unit: dict | None = None) -> dict:
     return {"schema": SCHEMA, "unit": dict(unit or {}), "round": 0, "next_ref": {"U": 1, "C": 1}, "rows": {}}
 
 
+def is_working(row: dict) -> bool:
+    """True when the row is still outstanding work — the ONE answer to that question.
+
+    Two independent verdicts retire a row, and both are consulted here because three call sites
+    (the `reconcile` loop, `counts_of`'s fallback, `fold_stats`) used to answer this separately
+    and could disagree — a row absent from the working set while `stats` still reported it as
+    `Open: 1`:
+
+    - our own terminal `status` — `done` settled by us, `deleted` settled by the platform;
+    - the platform's `resolved` flag, which is deliberately terminal too. A reviewer who wants
+      another look un-resolves the thread or opens a new one; un-resolving brings the row
+      straight back (`apply_resolution`). Re-opening on any reply instead would mean every
+      "thanks, looks good" re-triages a settled finding.
+
+    `resolved` is THREE-valued, so only an explicit True retires the row. None means "not
+    determined this round" — GitHub's resolution side-query degrades instead of aborting the
+    whole collection — and reading that as resolved would retire every outstanding finding the
+    moment that query hiccupped. Consulting the flag here rather than in the re-open path is
+    also what makes the outcome independent of whether the side-query succeeded: the row keeps
+    its last KNOWN answer (see `refresh_snapshot`), so a degraded round decides the same way a
+    clean one does.
+    """
+    return row.get("status") not in TERMINAL_STATUSES and row.get("resolved") is not True
+
+
 def _is_count(value: object) -> bool:
     """A whole, non-negative JSON number. `bool` is an `int` subclass, so exclude it explicitly."""
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0

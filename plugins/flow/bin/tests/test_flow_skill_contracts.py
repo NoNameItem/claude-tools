@@ -398,6 +398,18 @@ def test_done_purges_the_ledger_only_after_the_branch_is_actually_gone() -> None
     assert "skip the purge" in text, "the purge must be skipped when cleanup left the branch in place"
 
 
+def test_review_comments_states_the_real_working_set_rule() -> None:
+    """Phase 2's prose is what the agent reasons from when the tool's output surprises it, so a
+    stale rule there can reintroduce the very bug the code just closed. Membership is no longer
+    "non-terminal status" alone — a thread the platform reports as resolved leaves the working set
+    while its `status` may stay `open`, and the old claim that resolution "moves it to `done`" is
+    now wrong in exactly the case that matters (a degraded resolution side-query)."""
+    text = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
+    assert "every row in a non-terminal status:" not in text, "the working-set rule must also name `resolved`"
+    assert "`resolved` is not `true`" in text
+    assert "moves it to `done` without a reply" not in text, "resolution no longer changes the status"
+
+
 def test_readme_documents_the_ledger_helper() -> None:
     readme = (FLOW_ROOT / "README.md").read_text()
     assert "flow-review-ledger" in readme

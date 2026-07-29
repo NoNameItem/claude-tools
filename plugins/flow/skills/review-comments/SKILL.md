@@ -205,20 +205,28 @@ Read `working-set.json`:
 - Store `ledger` as `{LEDGER}` — Phase 4.2 passes it to `flow-comment-card --ledger`.
 - `working_set` **empty** → report and stop:
   "{counts.done} handled (ledger), {counts.total} tracked on this PR/MR — nothing to act on."
-- Otherwise the **working set** is exactly `working_set[]` — every row in a non-terminal status:
-  fresh `open` findings, `skipped` ones the user deferred, `pending` ones whose reply was withheld,
-  and any settled row whose thread advanced (a reviewer objected, a reviewer acknowledged, or **the
-  human posted an instruction**).
+- Otherwise the **working set** is exactly `working_set[]` — every row whose status is non-terminal
+  **and** whose `resolved` is not `true`: fresh `open` findings, `skipped` ones the user deferred,
+  `pending` ones whose reply was withheld, and any settled row whose thread advanced (a reviewer
+  objected, a reviewer acknowledged, or **the human posted an instruction**).
 
 **Two statuses are terminal, and neither is the agent's doing.** `done` is settled by this workflow;
 `deleted` means the thread is gone from the platform, which `reconcile` detects because the collector
 reports every thread it can see and absence is therefore unambiguous. A `deleted` row returns to
 `open` by itself if the thread reappears.
 
-**Resolving a thread on the platform settles its row.** A thread the reviewer or the human marks
-resolved arrives flagged, and `reconcile` moves it to `done` without a reply — so a finding can leave
-the working set between rounds with the agent doing nothing. Un-resolving it re-opens the row the
-same way, which is the supported way for a human to pull a settled finding back into the loop.
+**Resolving a thread on the platform takes its row out of the working set** — a third way out,
+alongside the two terminal statuses, and the only one that does not change `status` at all. A thread
+the reviewer or the human marks resolved arrives flagged, and `reconcile` drops it from
+`working_set[]` without a reply, so a finding can leave the loop between rounds with the agent doing
+nothing. Its `status` may still read `open` in the ledger; that is not a contradiction — the
+platform's verdict and ours are tracked separately, and `stats` reports these rows as
+**Resolved upstream** rather than under `Open`.
+
+Resolution is deliberately **terminal**: further replies in a resolved thread do not bring it back.
+A reviewer who wants another look **un-resolves** the thread (which does return the row to the
+working set, whatever its status) or opens a new one. The alternative — re-opening on any reply —
+would re-triage a settled finding every time someone posts "thanks, looks good".
 
 **Refs are stable, not contiguous.** A `ref` is allocated once, the first time a finding enters the
 ledger, and is never reassigned — so "the C3 that was won't-fixed in round 1" still means C3 in

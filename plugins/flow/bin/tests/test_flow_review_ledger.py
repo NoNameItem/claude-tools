@@ -260,6 +260,35 @@ class TestDocumentIO:
         assert _ledger.load_ledger(path) == doc
 
 
+class TestIsWorking:
+    """One predicate answers "is there still work on this row" — three call sites used to answer
+    it independently (the reconcile loop, `counts_of`'s fallback, and `fold_stats`), which is how a
+    row could be absent from the working set and still be reported as `Open: 1`."""
+
+    @pytest.mark.parametrize(
+        ("status", "resolved", "expected"),
+        [
+            ("open", None, True),
+            ("open", False, True),
+            ("pending", None, True),
+            ("skipped", None, True),
+            ("done", False, False),
+            ("deleted", False, False),
+            ("open", True, False),
+            ("pending", True, False),
+            ("skipped", True, False),
+        ],
+    )
+    def test_terminal_status_or_platform_resolution_takes_a_row_out_of_the_working_set(
+        self, status, resolved, expected
+    ):
+        """`resolved is True` is the platform's own verdict that the thread is settled, and it is
+        deliberately terminal: a reviewer who wants another look un-resolves or opens a new thread.
+        Only an explicit True counts — None means "not determined this round" and must never be
+        read as "resolved", or one failed side-query would retire every open finding."""
+        assert _ledger.is_working({"status": status, "resolved": resolved}) is expected
+
+
 class TestRowPrimitives:
     def test_find_row_by_ref(self):
         doc = {"rows": {"1": {"ref": "U1"}, "2": {"ref": "C3"}}}
@@ -737,17 +766,47 @@ class TestReconcileResolution:
         assert out["working_set"] == []
         assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
 
-    def test_a_reply_arriving_after_the_resolve_still_reopens_on_an_unknown_round(self, harness):
-        """The counterweight to the test above: accounting for the replies present AT settle time
-        must not deafen the row to genuinely NEW ones. A reply posted after the resolve is exactly
-        the continuation `reopen_if_advanced` exists to catch, and an unknown resolution is no
-        reason to drop it."""
+    def test_a_reply_arriving_after_the_resolve_does_not_return_a_resolved_thread_to_work(self, harness):
+        """A DELIBERATE choice, and the inverse of what this test asserted when it was written: a
+        thread the platform still reports as resolved stays out of the working set no matter how
+        many replies land in it. A reviewer who wants another look un-resolves the thread or opens
+        a new one — both of which do bring it back (see the un-resolve test above). The alternative,
+        re-opening on any reply, means every "thanks, looks good" re-triages a settled finding.
+
+        The reply-id bookkeeping below is untouched: `reopen_if_advanced` still flips the status to
+        `open` here. What changed is that WORKING-SET membership now also consults `resolved`, so
+        the row is excluded regardless — which is what makes the behaviour independent of whether
+        this round's resolution side-query happened to succeed."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
         out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
+        assert out["working_set"] == []
+        assert out["counts"]["working"] == 0
+        assert harness.ledger(meta)["rows"]["comment:1"]["resolved"] is True
+
+    def test_reconciles_own_counts_do_not_report_a_resolved_row_as_open(self, harness):
+        """`counts` and `working_set` travel in ONE payload, so they must not contradict each other.
+        Migrating only `counts["working"]` moved the disagreement one field over: the same object
+        would claim `working: 0` and `open: 1` for the same row, and `stats` — folded correctly —
+        would then disagree with `reconcile` about the same ledger."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
+        assert out["counts"]["working"] == 0
+        assert out["counts"]["open"] == 0
+        assert out["counts"]["resolved_upstream"] == 1
+        assert out["counts"]["total"] == 1
+
+    def test_an_unresolved_thread_returns_to_work_even_though_its_status_was_never_open(self, harness):
+        """The escape hatch that makes the rule above safe: un-resolving is what a reviewer does to
+        ask for another look, and it must work even when no reply id advanced."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)], resolved=True)])
+        harness.reconcile(meta)
+        assert harness.reconcile(meta)["working_set"] == []
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50)], resolved=False)]))
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
 
 
 class TestGet:
@@ -1067,6 +1126,26 @@ class TestStats:
         assert "follow-up 1" in out
         assert "Pending: 1" in out
         assert "Follow-ups filed: 1 (ct-42)" in out
+
+    def test_a_resolved_row_is_reported_as_resolved_upstream_not_as_open(self, harness):
+        """`stats` is what review-loop prints in its convergence report, so it must answer "is
+        there work left" the same way `reconcile` does. Counting a resolved row under `Open` would
+        make that report contradict itself: nothing in the working set, yet `Open: 1`."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        # A reply lands on the resolved thread while this round's resolution is unknown: the row's
+        # status goes back to `open`, but the platform's last known verdict still settles it.
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
+        out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        assert "Open: 0" in out
+        assert "Resolved upstream: 1" in out
+
+    def test_resolved_upstream_is_omitted_when_there_is_none(self, harness):
+        """Same rule as `Deleted upstream`: a permanent zero would be noise on every clean run."""
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        assert "Resolved upstream" not in harness.run("stats", "--meta", harness.write_meta(meta)).stdout
 
     def test_last_round_filters_to_the_current_pass(self, harness):
         meta = meta_doc([inline_comment(1)])
