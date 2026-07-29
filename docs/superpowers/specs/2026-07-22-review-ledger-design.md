@@ -390,15 +390,26 @@ Ledger PR #96 (github.com/NoNameItem/claude-tools) — round 5
 **Phase 4 (Triage):**
 - TOC + one card at a time. `flow-comment-card --ledger pr-<n>.json --ref C1 --verdict …` (reads the
   ledger row instead of `--meta metadata.json`; snippet↔diff_hunk override unchanged).
-- Decisions accumulate into `$FLOW_RC_DIR/decisions.json` for `record`.
+- Decisions accumulate into `$FLOW_RC_DIR/decisions.json` for `record`'s closing sweep (5.7a); the
+  refs that produce an external side effect are recorded earlier, as they land (below).
 
 **Phase 5 (Execute + write-back):**
 - 5.1–5.3 (fix/apply/self-review) untouched.
-- 5.4 follow-up: `bd create` → record `followup_task_id` on the row.
-- 5.7 reply: target (`comment_id`/`discussion_id`) + `platform` read from the ledger row.
-- **After 5.7 — `flow-review-ledger record --meta … --decisions decisions.json --head <HEAD>`**:
-  per row set `status` (`done`/`pending`/`skipped`), `decision`, `reason`, `followup_task_id`, and
-  `thread_mark` (id of the reply the agent just posted, else the current last reply id).
+- 5.4 follow-up: read the row first — a non-empty `followup_task_id` means an earlier round already
+  filed the task, so **reuse it instead of calling `bd create`** — then `bd create` for the rest and
+  **checkpoint each created task immediately** (`status: pending`, `followup_task_id`), before the
+  next ref. `pending`, not `done`: the task exists but this round's reply is not posted yet.
+- 5.7 reply: target (`comment_id`/`discussion_id`) + `platform` read from the ledger row;
+  **checkpoint each ref the moment its reply is accepted**.
+- **Both loops are sequential and their side effects are irreversible**, so a single `record` after
+  the whole batch would lose everything already done when ref *k* fails — and the next round would
+  re-file the task / re-post the reply. Hence the per-ref checkpoints, with
+  **5.7a — `flow-review-ledger record --meta … --decisions decisions.json --head <HEAD>`** closing
+  the round for whatever the checkpoints did not cover: per row set `status`
+  (`done`/`pending`/`skipped`), `decision`, `reason`, `followup_task_id`, and `thread_mark` (id of
+  the reply the agent just posted, else the current last reply id). Re-recording an
+  already-checkpointed ref is a no-op, so the invariant is "no ref left unrecorded", not "each ref
+  written once".
 - Push skipped → those rows become `pending` (the existing "Reply deferred" line).
 - 5.8 report: existing per-run summary **unchanged** + a cumulative `stats` block appended.
 - `allowed-tools`: add `Bash(flow-review-ledger:*)` (review-comments already grants `Write`,
@@ -416,13 +427,16 @@ Ledger PR #96 (github.com/NoNameItem/claude-tools) — round 5
 
 ## `flow:done` SKILL.md changes (ledger purge)
 
-- Extend Step 1's `gh pr view --json state,url` → `--json state,url,number`; capture `PR_NUMBER` +
-  `PR_URL`. The number is available exactly when purge is relevant (feature branch with a PR; a
-  generic branch short-circuits Step 1 and has no PR).
+- Extend Step 1's `gh pr view --json state,url` → `--json state,url,number`; capture `PR_NUMBER`,
+  `PR_URL` + `PR_STATE`. The number is available exactly when purge is relevant (feature branch with
+  a PR; a generic branch short-circuits Step 1 and has no PR).
 - Fold ledger removal into **Step 8**'s existing single cleanup confirmation, listing the ledger
   among "associated resources". On yes → `flow-review-ledger purge --url "$PR_URL" --number
-  "$PR_NUMBER"` (idempotent, non-blocking, runs while still on the feature branch — before the
-  `git checkout` in 8.4). Keeping the branch keeps the ledger (it self-expires after merge; no GC).
+  "$PR_NUMBER"` (idempotent, non-blocking). **The purge is gated on `PR_STATE` being terminal
+  (`MERGED`/`CLOSED`), never on branch deletion** — a branch is routinely kept on purpose after a
+  merge (history, re-reading what happened in review), which must not keep a settled PR's ledger
+  alive, and a deleted branch says nothing about whether the PR is still taking review. An open
+  PR's ledger is retained whatever happened to the branches; an abandoned one self-expires (no GC).
 - `allowed-tools`: add `Bash(flow-review-ledger:*)`. No shell `rm`/`mkdir` — the helper unlinks in
   Python.
 - **Accepted edge:** a task with multiple `Git:` branches purges only the current branch's ledger;
