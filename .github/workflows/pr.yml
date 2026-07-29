@@ -7,10 +7,15 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
+# Deliberately NO workflow-level `statuses: write`. The pr-notify marker is written by exactly
+# two jobs (notify-start and pr-summary), and each grants itself that permission at job level.
+# Every OTHER job here runs PR-authored code: this workflow triggers on `pull_request`, so
+# actions/checkout takes the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci
+# execute scripts from it. A workflow-level grant would hand that code the ability to forge
+# commit statuses — including `review-gate` and `pr-notify`, which the master ruleset requires.
 permissions:
   contents: read
   checks: write
-  statuses: write   # the pr-notify marker on the head SHA
   pull-requests: write
 
 concurrency:
@@ -30,6 +35,12 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # A job-level block REPLACES the workflow-level set for this job, so everything this job
+    # needs is listed here — `contents: read` for the checkout below, and `statuses: write` for
+    # the pr-notify marker. Nothing PR-authored runs in this job.
+    permissions:
+      contents: read
+      statuses: write
     # Deliberately NOT in _reusable-pr-summary.yml's `pr-summary-<sha>` concurrency group, even
     # though this job writes the same `pr-notify` status. Sharing it would only narrow the
     # read-write window in the "Check for a recorded verdict" step below — that step is the actual
@@ -261,6 +272,15 @@ jobs:
     if: |
       always() && github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
+    # Must mirror _reusable-pr-summary.yml's own `permissions:` block: a called workflow's
+    # effective permissions are the INTERSECTION of what it declares and what the caller job
+    # holds, so anything missing here is silently withheld from it — and without `statuses:
+    # write` the summary could not record its verdict on the head SHA at all.
+    permissions:
+      contents: read
+      checks: read
+      statuses: write
+      pull-requests: read
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:
       pr-number: ${{ github.event.pull_request.number }}

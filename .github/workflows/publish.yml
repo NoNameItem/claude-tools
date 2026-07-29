@@ -241,16 +241,31 @@ jobs:
           PROJECT_NAME: ${{ needs.resolve.outputs.project-name }}
           VERSION: ${{ needs.resolve.outputs.version }}
           PYPI_RESULT: ${{ needs.publish-pypi.result }}
+          RESOLVE_RESULT: ${{ needs.resolve.result }}
           FOOTER: "${{ github.event.repository.name }} · ${{ github.event.release.tag_name }}"
           REPLY_TO: ${{ needs.notify-start.outputs.message-id }}
         run: |
           set -euo pipefail
 
-          case "$PYPI_RESULT" in
-            success) STATUS=released; VERDICT="Published to PyPI" ;;
-            skipped) STATUS=released; VERDICT="Released" ;;
-            *)       STATUS=failed;   VERDICT="Publish failed" ;;
-          esac
+          # `publish-pypi.result` alone cannot tell the two skips apart. That job's `if:` carries
+          # an implicit success() on its `needs`, so a FAILED or CANCELLED `resolve` skips it in
+          # exactly the same way as the legitimate "this project has no PyPI target" case — and
+          # reporting that as "Released" would send a green notification for a red workflow with
+          # nothing published. So branch on `resolve` first.
+          if [ "$RESOLVE_RESULT" = "success" ]; then
+            case "$PYPI_RESULT" in
+              success) STATUS=released; VERDICT="Published to PyPI" ;;
+              skipped) STATUS=released; VERDICT="Released" ;;
+              *)       STATUS=failed;   VERDICT="Publish failed" ;;
+            esac
+            TITLE="$PROJECT_NAME $VERSION"
+          else
+            STATUS=failed
+            VERDICT="Release resolution $RESOLVE_RESULT — nothing was published"
+            # project-name/version are resolve's own outputs, so both are empty when it did not
+            # succeed; the release tag is the only identifier left to title the message with.
+            TITLE="$TAG"
+          fi
 
           # Release notes come from GitHub, not from a diff: release-please already wrote them.
           gh api "repos/$REPO/releases/tags/$TAG" --jq '.body // ""' \
@@ -264,7 +279,7 @@ jobs:
 
           jq -n \
             --arg status "$STATUS" \
-            --arg title "$PROJECT_NAME $VERSION" \
+            --arg title "$TITLE" \
             --arg verdict "$VERDICT" \
             --slurpfile notes notes.json \
             --slurpfile sonar sonar.json \
