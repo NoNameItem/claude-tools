@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from ..pr_summary import CheckState, build_spec, collect_states, decide, parse_marker
@@ -10,11 +12,22 @@ HEAD = "abc123"
 
 REQUIRED = ["Validate PR", "Python CI Gate", "Claude Code Plugin CI Gate", "review-gate"]
 
+# Auto-assigned when a test doesn't care about `id` explicitly: monotonically increasing across
+# calls, so entries listed earlier in a test get a lower id than entries listed later — matching
+# how real check-run ids increase over time and letting existing tests (written before `id` was
+# part of `_latest`'s tie-break) keep expressing "which run is newest" via call order.
+_run_id_counter = itertools.count(1)
+
 
 def _run(
-    name: str, conclusion: str | None, status: str = "completed", started_at: str = "2026-07-27T10:00:00Z"
+    name: str,
+    conclusion: str | None,
+    status: str = "completed",
+    started_at: str = "2026-07-27T10:00:00Z",
+    run_id: int | None = None,
 ) -> dict:
     return {
+        "id": run_id if run_id is not None else next(_run_id_counter),
         "name": name,
         "status": status,
         "conclusion": conclusion,
@@ -87,6 +100,44 @@ class TestCollectStates:
             ],
         )
         assert states[0].state == "success"
+
+    def test_queued_entry_with_no_started_at_beats_older_completed_entry(self) -> None:
+        # A queued re-run attempt has no `started_at` at all. Ranking by `started_at` alone (the
+        # old implementation) sorts the missing value as "", which loses to any real timestamp —
+        # so the stale completed attempt would win instead of the in-flight one. This only matters
+        # if the caller ever passes `filter=all` (today's `filter=latest` default never surfaces
+        # both), but `_latest` must still be correct over that input shape.
+        queued = {
+            "id": 999,
+            "name": "Python CI Gate",
+            "status": "queued",
+            "conclusion": None,
+            "started_at": None,
+            "html_url": "https://github.com/o/r/runs/Python CI Gate",
+        }
+        states = collect_states(
+            ["Python CI Gate"],
+            [],
+            [
+                _run("Python CI Gate", "success", started_at="2026-07-27T09:00:00Z", run_id=1),
+                queued,
+            ],
+        )
+        assert states[0].state == "pending"
+
+    def test_newer_id_wins_among_completed_entries(self) -> None:
+        # started_at is deliberately the OPPOSITE of id order here: the old `started_at`-only key
+        # would pick the entry with the later timestamp (success), not the entry with the higher
+        # id (failure) — proving the tie-break is actually keyed on `id`, not on `started_at`.
+        states = collect_states(
+            ["Python CI Gate"],
+            [],
+            [
+                _run("Python CI Gate", "success", started_at="2026-07-27T11:00:00Z", run_id=5),
+                _run("Python CI Gate", "failure", started_at="2026-07-27T09:00:00Z", run_id=7),
+            ],
+        )
+        assert states[0].state == "failure"
 
     @pytest.mark.parametrize("conclusion", ["neutral", "skipped"])
     def test_soft_conclusions_pass(self, conclusion: str) -> None:

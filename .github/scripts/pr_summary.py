@@ -109,8 +109,24 @@ def _check_run_state(entry: dict) -> str:
 
 
 def _latest(entries: list[dict]) -> dict:
-    """Pick the most recently started entry (re-runs append rather than replace)."""
-    return max(entries, key=lambda e: e.get("started_at") or "")
+    """Pick the newest attempt for one check-run name.
+
+    The check-runs endpoint defaults to `filter=latest`, and `_reusable-pr-summary.yml` calls it
+    without a `filter` param — so on the call path this script actually has, each name already
+    arrives as exactly one entry, and this function never actually chooses between attempts. The
+    per-name grouping that feeds it (`by_run` in `collect_states` and `_failed_jobs`) is defensive,
+    not load-bearing: it exists so this stays correct if the call is ever changed to `filter=all`,
+    which surfaces every attempt of a re-run job. This function does not itself guarantee
+    de-duplication of anything upstream of it — it only picks the winner among whatever entries
+    it is given.
+
+    Ranks a non-terminal (still-running) entry above any completed one, so an in-flight re-run
+    supersedes a stale completed attempt rather than losing to it: a queued attempt has no
+    `started_at`, so sorting on it alone would rank a queued re-run *below* an older completed
+    run. Ties — including between two completed entries — are broken by `id`, which increases
+    monotonically, so the newest attempt wins.
+    """
+    return max(entries, key=lambda e: (e.get("status") != "completed", e.get("id") or 0))
 
 
 def collect_states(required: list[str], statuses: list[dict], check_runs: list[dict]) -> list[CheckState]:
@@ -146,9 +162,12 @@ def _failed_jobs(check_runs: list[dict]) -> list[str]:
     job that actually broke (`Python CI / SonarCloud (statuskit)`), not the gate that relayed it.
     Gate jobs are excluded because they are already named in the verdict line.
 
-    Re-runs append a new check-run entry rather than replacing the old one (same quirk
-    `collect_states` handles via `by_run`/`_latest`), so a name is only judged by its most
-    recent entry — a job that failed on attempt 1 and passed on re-run must not show up here.
+    The check-runs endpoint's `filter=latest` default (see `_latest`'s docstring) already
+    collapses each name to a single entry before this script ever sees it, so on the call path
+    this script actually has, a name is judged by its only entry. The `by_run`/`_latest` grouping
+    here is defensive for the same reason `_latest` itself is: it keeps a job judged by its
+    newest attempt if the caller is ever changed to pass `filter=all` — where a job that failed
+    on attempt 1 and passed on re-run must not show up here.
     """
     by_run: dict[str, list[dict]] = {}
     for entry in check_runs:

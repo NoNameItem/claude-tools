@@ -92,8 +92,14 @@ jobs:
             --jq '[.statuses[] | {context, state, target_url, description}]' \
             | jq -s 'add // []')
 
+          # No `filter` param here, so the endpoint defaults to `filter=latest`: each check-run
+          # name already arrives as exactly one entry, and pr_summary.py's `by_run`/`_latest`
+          # per-name grouping is defensive, not load-bearing, for exactly that reason (see its
+          # docstrings). Passing `filter=all` here would change what pr_summary.py has to handle
+          # — multiple entries per name — and must come with matching test coverage there.
+          # `id` is selected because `_latest`'s tie-break reads it.
           check_runs=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
-            --jq '[.check_runs[] | {name, status, conclusion, started_at, html_url,
+            --jq '[.check_runs[] | {id, name, status, conclusion, started_at, html_url,
                                     app_slug: .app.slug, details_url, output_title: .output.title}]' \
             | jq -s 'add // []')
 

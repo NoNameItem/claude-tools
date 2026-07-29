@@ -30,6 +30,14 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # Deliberately NOT in _reusable-pr-summary.yml's `pr-summary-<sha>` concurrency group, even
+    # though this job writes the same `pr-notify` status. Sharing it would only narrow the
+    # read-write window in the "Check for a recorded verdict" step below — that step is the actual
+    # fix — while costing far more: a queued job is cancelled outright as soon as a third claimant
+    # joins its group (`cancel-in-progress: false` protects only the job already running). That
+    # would take this whole job with it, including the Telegram send above, which needs no
+    # serialisation at all and has no retry. A lost start notification is a worse failure than the
+    # duplicate result message the residual window can cause.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -64,10 +72,49 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
+      # This is the ACTUAL fix for the race described above: read the marker that's there right
+      # now, and skip the write if it already carries a recorded verdict (`v:...`). Without this,
+      # a POST here always becomes the newest `pr-notify` status — including one that lands AFTER
+      # _reusable-pr-summary.yml recorded a verdict, which would erase it, make `pr_summary.decide()`
+      # see no previous verdict on the next run, and send a duplicate result notification. The
+      # most reachable trigger isn't a scheduler race: `pr.yml` also fires on `edited`, and editing
+      # the PR title/body after checks are green re-runs this job.
+      #
+      # A read-then-write is not atomic, so a verdict recorded in the gap between the read and the
+      # POST below is still lost. That residual is accepted deliberately: GitHub's commit-status API
+      # has no conditional/compare-and-swap write, and the only way to serialise this job against
+      # the summary — sharing its concurrency group — risks losing the whole job instead (see the
+      # note on the job above). The residual costs a duplicate message; the alternative costs a
+      # missing one.
+      - name: Check for a recorded verdict
+        id: check-verdict
+        if: steps.notify.outputs.message-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Mirrors _reusable-pr-summary.yml's "Collect head SHA state" read of the same endpoint,
+          # including the --paginate / jq -s 'add // []' re-join: this list pages at 30, and a
+          # truncated first page could drop the pr-notify status and make a recorded verdict look
+          # absent.
+          description=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
+              --jq '[.statuses[] | select(.context == "pr-notify") | .description]' \
+            | jq -s 'add // []' \
+            | jq -r 'first // ""')
+
+          if [[ "$description" == *" v:"* ]]; then
+            echo "A verdict is already recorded ($description) — skipping the pending write so it is not erased."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # The marker is how the result notification (sent from a different workflow run) finds the
       # message to reply to. `pending` until a verdict is recorded; the description is the state.
       - name: Create the pr-notify marker
-        if: steps.notify.outputs.message-id != ''
+        if: steps.notify.outputs.message-id != '' && steps.check-verdict.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
