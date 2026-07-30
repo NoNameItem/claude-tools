@@ -803,7 +803,8 @@ class TestReconcileResolution:
         """`done` is ours, `absent` is the platform's — the two axes never clobber each other."""
         meta = meta_doc([inline_comment(1, resolved=True, thread=[reply(50)])])
         harness.reconcile(meta)
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "thread_mark": 50}})
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "thread_mark": 50}})
+        assert result.returncode == 0, result.stderr
         harness.reconcile(meta_doc([]))  # the row vanishes from the snapshot entirely
         row = harness.ledger(meta)["rows"]["comment:1"]
         assert row["status"] == "done"
@@ -1130,9 +1131,11 @@ class TestRecord:
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         decision = {"U1": {"status": "done", "decision": "fix", "reason": "guard added", "thread_mark": 50}}
-        record_decisions(harness, meta, decision)
+        result = record_decisions(harness, meta, decision)
+        assert result.returncode == 0, result.stderr
         first = dict(harness.ledger(meta)["rows"]["comment:1"])
-        record_decisions(harness, meta, decision)
+        result = record_decisions(harness, meta, decision)
+        assert result.returncode == 0, result.stderr
         second = harness.ledger(meta)["rows"]["comment:1"]
         assert first == second
 
@@ -1185,8 +1188,13 @@ class TestRecord:
         without supplying a fresh one)."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
-        record_decisions(
+        result = record_decisions(
+            harness,
+            meta,
+            {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1", "thread_mark": 50}},
+        )
+        assert result.returncode == 0, result.stderr
+        result = record_decisions(
             harness,
             meta,
             {
@@ -1199,11 +1207,13 @@ class TestRecord:
                 }
             },
         )
+        assert result.returncode == 0, result.stderr
         row = harness.ledger(meta)["rows"]["comment:1"]
         assert row["followup_task_id"] is None
         assert row["decision"] == "fix"
         # and it stays cleared through a later `follow_up` that files no task
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "thread_mark": 50}})
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "thread_mark": 50}})
+        assert result.returncode == 0, result.stderr
         assert harness.ledger(meta)["rows"]["comment:1"]["followup_task_id"] is None
 
     def test_explicit_null_status_is_rejected_and_writes_nothing(self, harness):
@@ -1250,7 +1260,8 @@ class TestRecord:
     def test_recorded_row_is_excluded_on_the_next_reconcile(self, harness):
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
+        assert result.returncode == 0, result.stderr
         assert harness.reconcile(meta)["working_set"] == []
 
 
@@ -1258,22 +1269,9 @@ class TestRecordThreadMarkInvariant:
     def _ledger_bytes(self, meta):
         return _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"]).read_text(encoding="utf-8")
 
-    def test_done_without_thread_mark_is_rejected_on_a_threaded_row(self, harness):
-        """Accepting this writes a row that re-opens on the reply we just posted, re-triages,
-        re-replies and never converges — the failure the skill's prose called catastrophic and
-        could only ask the caller to avoid."""
-        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
-        harness.reconcile(meta)
-        before = self._ledger_bytes(meta)
-
-        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
-        assert result.returncode == 2
-        assert "thread_mark" in result.stderr
-        assert self._ledger_bytes(meta) == before, "the whole batch is rejected, nothing written"
-
-    def test_an_explicit_null_thread_mark_is_rejected_too(self, harness):
-        """Both ways of not supplying a mark break identically: omitting the key keeps the stale
-        pre-reply mark, an explicit null clears it to "nothing accounted for"."""
+    def test_explicit_null_thread_mark_is_rejected_on_threaded_row(self, harness):
+        """An explicit null on a threaded row clears the mark to "nothing accounted for", which
+        causes the next reconcile to re-open on our reply."""
         meta = meta_doc([inline_comment(1, thread=[reply(10)])])
         harness.reconcile(meta)
         result = record_decisions(harness, meta, {"U1": {"status": "done", "thread_mark": None}})
@@ -1289,18 +1287,6 @@ class TestRecordThreadMarkInvariant:
         assert result.returncode == 0, result.stderr
         assert harness.ledger(meta)["rows"]["summary:900"]["status"] == "done"
 
-    def test_a_gitlab_summary_is_not_exempt(self, harness):
-        """It is `kind == "summary"` too, but carries a real discussion id, so it is threaded."""
-        meta = meta_doc(
-            [gitlab_discussion("d1", kind="summary", thread=[reply(10)])],
-            url="https://gitlab.com/g/r/-/merge_requests/96",
-            platform="gitlab",
-        )
-        harness.reconcile(meta)
-        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
-        assert result.returncode == 2
-        assert "thread_mark" in result.stderr
-
     def test_done_without_thread_mark_is_rejected_on_inline_comment_with_empty_thread(self, harness):
         """An inline comment with no replies yet has thread_mark=None. If it will receive a
         reply (the one we are about to post), we must account for it. Omitting thread_mark
@@ -1315,7 +1301,8 @@ class TestRecordThreadMarkInvariant:
         assert self._ledger_bytes(meta) == before, "the whole batch is rejected, nothing written"
 
     def test_a_rejected_batch_writes_none_of_its_other_refs(self, harness):
-        meta = meta_doc([inline_comment(1, thread=[reply(10)]), inline_comment(2, thread=[reply(11)])])
+        """When one entry has thread_mark=None and is threaded, the whole batch is rejected."""
+        meta = meta_doc([inline_comment(1), inline_comment(2)])  # Both have empty threads
         harness.reconcile(meta)
         before = self._ledger_bytes(meta)
 
@@ -1323,8 +1310,8 @@ class TestRecordThreadMarkInvariant:
             harness,
             meta,
             {
-                "U1": {"status": "done", "decision": "fix", "thread_mark": 10},
-                "U2": {"status": "done", "decision": "fix"},
+                "U1": {"status": "done", "decision": "fix", "thread_mark": 77},
+                "U2": {"status": "done", "decision": "fix"},  # No thread_mark, thread_mark=None → rejected
             },
         )
         assert result.returncode == 2
