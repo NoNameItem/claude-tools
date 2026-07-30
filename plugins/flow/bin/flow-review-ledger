@@ -72,19 +72,12 @@ def refresh_snapshot(row: dict, item: dict) -> None:
     """Rebuild the current-snapshot fields from the fresh collector output. Durable and
     set-on-insert fields are untouched.
 
-    `resolved` is the one field whose domain is THREE-valued — True / False / None, where
-    None means "not determined this round" (GitHub's resolution side-query degrades instead
-    of aborting the collection). It therefore cannot be replaced blindly like the others:
-    `apply_resolution` compares the NEXT round's value against the stored one to spot an
-    un-resolve, so overwriting a known answer with "unknown" erases exactly what that
-    comparison needs. One failed side-query would then make a later genuine un-resolve
-    invisible and strand the finding as `done` forever. Keep the last KNOWN answer.
+    `resolved` is not one of these fields any more — the platform axis (`platform_state`,
+    written unconditionally in `cmd_reconcile`) is computed straight from `item`, so the row
+    never stores the platform's raw verdict at all.
     """
-    remembered_resolution = row.get("resolved")
     for field in _ledger.SNAPSHOT_FIELDS:
         row[field] = item.get(field)
-    if row["resolved"] is None:
-        row["resolved"] = remembered_resolution
 
 
 def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
@@ -98,9 +91,11 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
         "ref": alloc_ref(doc, bool(item.get("is_bot"))),
         "kind": kind,
         # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
-        # after a purge) — never the re-surface trigger; that is `thread_mark`. A thread the
-        # platform reports as RESOLVED seeds `done` too: it is settled by definition.
-        "status": "done" if item.get("already_replied") or item.get("resolved") else "open",
+        # after a purge) — never the re-surface trigger; that is `thread_mark`. Resolution does
+        # NOT seed `done`: a row first seen already-resolved gets `status: open` +
+        # `platform_state: resolved`, so if the thread is un-resolved it arrives for triage
+        # instead of staying closed by someone else's verdict forever.
+        "status": "done" if item.get("already_replied") else "open",
         "decision": None,
         "reason": None,
         "followup_task_id": None,
@@ -126,57 +121,14 @@ def reopen_if_advanced(row: dict, item: dict) -> None:
     id). A GitLab general discussion is ALSO `kind == "summary"` (see `gl_collect`) but is NOT
     threadless — it carries a real thread that can grow a new note — so it must re-open like
     any other threaded row. The prior `decision`/`reason` are kept as history.
+
+    This is the one status write `reconcile` still performs — the platform axis (see
+    `cmd_reconcile`) never touches `status`.
     """
     if row.get("status") != "done":
         return
     if _ledger.id_advanced(_ledger.last_reply_id(item), row.get("thread_mark")):
         row["status"] = "open"
-
-
-def apply_resolution(row: dict, item: dict, was_resolved: bool) -> None:
-    """Platform resolution drives status: resolved settles a row, un-resolving reopens it.
-
-    Call BEFORE `refresh_snapshot`, which overwrites `row["resolved"]` with this round's
-    value — `was_resolved` is the previous round's, and the transition is what matters.
-
-    `resolved is None` means "resolution state unknown this round", not "not resolved": on
-    GitHub it comes from a side-query that degrades to unknown rather than aborting the whole
-    collection. Treating unknown as False would mass-reopen every settled thread the moment
-    that query hiccupped, so an unknown leaves the status exactly as it was.
-    """
-    now = item.get("resolved")
-    if now is None:
-        return
-    if now:
-        row["status"] = "done"
-        # Settling the row also ACCOUNTS for every reply already in the thread — otherwise the
-        # reply that arrived alongside the resolve stays unaccounted for forever, since nothing
-        # but `record` advances the mark. The first later round whose side-query degrades to
-        # unknown would then let `reopen_if_advanced` fire on that stale mark, and
-        # `apply_resolution` — a no-op on None — could not put the row back: a settled finding
-        # silently re-enters the working set and collects a second reply. Replies posted AFTER
-        # this point still advance past the new mark, so a genuine continuation is not lost.
-        mark = _ledger.last_reply_id(item)
-        if mark is not None:
-            row["thread_mark"] = mark
-    elif was_resolved and row.get("status") == "done":
-        # Someone hit "Unresolve" — an explicit request to look again, which no reply id
-        # advanced, so `reopen_if_advanced` would never catch it.
-        row["status"] = "open"
-
-
-def mark_absent(doc: dict, seen: set[str]) -> None:
-    """A tracked row missing from this round's snapshot is gone from the platform → `deleted`.
-
-    Absence is unambiguous only because the collector drops nothing: a resolved thread now
-    arrives flagged instead of filtered, and the listing calls raise on any API error rather
-    than returning a short page, so "not in the snapshot" cannot mean "not fetched". Without
-    this, such a row would keep a working status forever — counted as outstanding, yet unable
-    to appear in a working set again, since only items present in the snapshot are iterated.
-    """
-    for key, row in doc.get("rows", {}).items():
-        if key not in seen and row.get("status") not in _ledger.TERMINAL_STATUSES:
-            row["status"] = "deleted"
 
 
 def working_entry(row: dict) -> dict:
@@ -185,6 +137,7 @@ def working_entry(row: dict) -> dict:
     return {
         "ref": row.get("ref"),
         "status": row.get("status"),
+        "platform_state": row.get("platform_state"),
         "kind": row.get("kind"),
         "is_bot": bool(row.get("is_bot")),
         "path": row.get("path"),
@@ -198,34 +151,26 @@ def working_entry(row: dict) -> dict:
 
 
 def counts_of(doc: dict, working: list | None = None) -> dict:
-    """Status tallies for the whole ledger, plus `working` — the size of the CURRENT set.
+    """Status tallies plus `working` — the size of the CURRENT set.
 
-    `working` must be the list `reconcile` actually emitted, not a tally over all rows:
-    SKILL.md's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two
-    populations differ (a row can be persisted but absent from this round's snapshot). The
-    row-derived fallback is for a caller with no snapshot in hand; it goes through
-    `_ledger.is_working` so it cannot drift from the loop that builds the real list.
+    `working` must be the list `reconcile` actually emitted, not a tally over all rows: the
+    skill's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two populations
+    differ (a row can be persisted but absent from this round's snapshot). The row-derived
+    fallback goes through `_ledger.is_working` so it cannot drift from the loop above.
     """
     rows = list(doc.get("rows", {}).values())
-    # `counts` and `working_set` ride in ONE payload, so the per-status breakdown has to answer the
-    # same question the same way: a terminal status counts every matching row, a non-terminal one
-    # only rows that are still work. Tallying raw statuses here would put `open: 1` next to
-    # `working: 0` in the same object — the disagreement `is_working` exists to end, moved one
-    # field over. Rows dropped that way are not lost: they land in `resolved_upstream`, so the
-    # buckets still reconcile against `total`.
     counts = {
-        status: sum(
-            1
-            for row in rows
-            if row.get("status") == status and (status in _ledger.TERMINAL_STATUSES or _ledger.is_working(row))
-        )
-        for status in _ledger.STATUSES
+        "done": sum(1 for row in rows if row.get("status") == "done"),
+        "open": sum(1 for row in rows if _ledger.is_working(row)),
+        "resolved_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
+        ),
+        "absent_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
+        ),
     }
-    counts["resolved_upstream"] = sum(
-        1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES and not _ledger.is_working(row)
-    )
     counts["total"] = len(rows)
-    counts["working"] = sum(1 for row in rows if _ledger.is_working(row)) if working is None else len(working)
+    counts["working"] = counts["open"] if working is None else len(working)
     return counts
 
 
@@ -256,21 +201,24 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             row = new_row(thread_id, item, doc, round_no)
             doc["rows"][key] = row
         else:
-            if row.get("status") == "deleted":
-                # Being in this round's snapshot is proof the thread exists, which is the
-                # exact opposite of what `deleted` asserts — so the earlier verdict was
-                # wrong and must not be permanent. Back to `open` rather than the pre-delete
-                # status, which the row does not remember; a re-triage is the safe direction.
-                row["status"] = "open"
-            # `was_resolved` must be read BEFORE refresh_snapshot overwrites it.
-            was_resolved = bool(row.get("resolved"))
             reopen_if_advanced(row, item)
-            apply_resolution(row, item, was_resolved)
             refresh_snapshot(row, item)
+        # The platform axis, for new and existing rows alike — one writer, one statement.
+        row["platform_state"] = _ledger.platform_state_of(item)
+        row["last_round"] = round_no
         if _ledger.is_working(row):
             working.append(working_entry(row))
 
-    mark_absent(doc, seen)
+    # Absence is the third platform state, not a status: a tracked row missing from this
+    # round's snapshot is gone from the platform, and `status` / `decision` / `reason` /
+    # `followup_task_id` are left exactly as they were. If the thread comes back, the loop
+    # above returns the row to `live` and it resumes with its decision intact.
+    #
+    # Absence is trustworthy because the collector aborts on any API failure rather than
+    # returning a short page, so "not in the snapshot" cannot mean "not fetched".
+    for key, row in doc["rows"].items():
+        if key not in seen:
+            row["platform_state"] = "absent"
 
     _ledger.save_ledger(path, doc)
     payload = {"round": round_no, "ledger": str(path), "counts": counts_of(doc, working), "working_set": working}
@@ -381,7 +329,6 @@ DECISION_LABELS = (
     ("wont_fix", "won't-fix"),
     ("follow_up", "follow-up"),
     ("outdated", "outdated"),
-    ("skip", "skip"),
 )
 
 
@@ -389,23 +336,24 @@ def fold_stats(doc: dict, last_round_only: bool) -> dict:
     rows = list(doc.get("rows", {}).values())
     if last_round_only:
         rows = [row for row in rows if row.get("last_round") == doc.get("round")]
-    # A terminal status is counted over every row; a NON-terminal one only over rows that are
-    # still work, so a thread the platform resolved is never reported as outstanding. Without
-    # this, `stats` — what review-loop prints in its convergence report — would contradict
-    # `reconcile`: an empty working set alongside `Open: 1`.
+    # These four buckets PARTITION every row, so the report can never contradict `reconcile`:
+    # `done` is settled by us; `open` is what `is_working` returns; the other two are rows we
+    # have not settled that the platform took off the table.
     status_counts = {
-        status: sum(
-            1
-            for row in rows
-            if row.get("status") == status and (status in _ledger.TERMINAL_STATUSES or _ledger.is_working(row))
-        )
-        for status in _ledger.STATUSES
+        "done": sum(1 for row in rows if row.get("status") == "done"),
+        "open": sum(1 for row in rows if _ledger.is_working(row)),
     }
     return {
         "tracked": len(rows),
         "status": status_counts,
+        # Derived, not stored: this is what the `pending` status used to say. A working row with
+        # a decision is one whose action did not land — the next round delivers it.
+        "open_undelivered": sum(1 for row in rows if _ledger.is_working(row) and row.get("decision")),
         "resolved_upstream": sum(
-            1 for row in rows if row.get("status") not in _ledger.TERMINAL_STATUSES and not _ledger.is_working(row)
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
+        ),
+        "absent_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
         ),
         "decisions": {
             key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
@@ -437,14 +385,14 @@ def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
     )
     done = f"  Done: {folded['status']['done']}"
     lines.append(f"{done}  ({breakdown})" if breakdown else done)
-    lines.append(
-        f"  Pending: {folded['status']['pending']}   "
-        f"Skipped: {folded['status']['skipped']}   Open: {folded['status']['open']}"
-    )
-    if folded["status"]["deleted"]:
-        # Only when non-zero: threads vanishing from a PR is the exception, and a permanent
-        # "Deleted: 0" would read as noise on every clean run.
-        lines.append(f"  Deleted upstream: {folded['status']['deleted']}")
+    open_line = f"  Open: {folded['status']['open']}"
+    if folded["open_undelivered"]:
+        # Only when non-zero: on a clean round every open row is simply untriaged, and a
+        # permanent "(decided but not delivered: 0)" would read as noise.
+        open_line += f"  (decided but not delivered: {folded['open_undelivered']})"
+    lines.append(open_line)
+    if folded["absent_upstream"]:
+        lines.append(f"  Deleted upstream: {folded['absent_upstream']}")
     if folded["resolved_upstream"]:
         # Same rule, and the counterpart to the line above: these rows are settled by the
         # platform rather than by us, so they are out of the working set but were never given a

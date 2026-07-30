@@ -261,32 +261,25 @@ class TestDocumentIO:
 
 
 class TestIsWorking:
-    """One predicate answers "is there still work on this row" — three call sites used to answer
-    it independently (the reconcile loop, `counts_of`'s fallback, and `fold_stats`), which is how a
-    row could be absent from the working set and still be reported as `Open: 1`."""
+    """One predicate answers "is there still work on this row" — `reconcile`, `counts_of` and
+    `fold_stats` all go through it, which is how a row could otherwise be absent from the
+    working set and still be reported as `Open: 1`."""
 
     @pytest.mark.parametrize(
-        ("status", "resolved", "expected"),
+        ("status", "platform_state", "expected"),
         [
-            ("open", None, True),
-            ("open", False, True),
-            ("pending", None, True),
-            ("skipped", None, True),
-            ("done", False, False),
-            ("deleted", False, False),
-            ("open", True, False),
-            ("pending", True, False),
-            ("skipped", True, False),
+            ("open", "live", True),
+            ("open", "resolved", False),
+            ("open", "absent", False),
+            ("done", "live", False),
+            ("done", "resolved", False),
+            ("done", "absent", False),
         ],
     )
-    def test_terminal_status_or_platform_resolution_takes_a_row_out_of_the_working_set(
-        self, status, resolved, expected
-    ):
-        """`resolved is True` is the platform's own verdict that the thread is settled, and it is
-        deliberately terminal: a reviewer who wants another look un-resolves or opens a new thread.
-        Only an explicit True counts — None means "not determined this round" and must never be
-        read as "resolved", or one failed side-query would retire every open finding."""
-        assert _ledger.is_working({"status": status, "resolved": resolved}) is expected
+    def test_only_open_status_and_live_platform_state_together_are_still_work(self, status, platform_state, expected):
+        """Two independent axes, one condition each: `status` is ours, `platform_state` is the
+        platform's, and BOTH must say "still live" for the row to count as outstanding work."""
+        assert _ledger.is_working({"status": status, "platform_state": platform_state}) is expected
 
 
 class TestRowPrimitives:
@@ -554,6 +547,31 @@ def settle(harness, meta, ref, *, thread_mark, status="done", decision="fix"):
     _ledger.save_ledger(path, doc)
 
 
+def force_row(harness, meta, ref, **fields):
+    """Force a row's stored fields directly to an exact combination, bypassing every writer.
+
+    A generalisation of `settle` for the transition table below: any field can be forced
+    (`status`, `platform_state`, `thread_mark`, ...), because the point of that table is the
+    transition OUT of a stored combination, not how the row got there.
+    """
+    path = _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"])
+    doc = _ledger.load_ledger(path)
+    row = _ledger.find_row_by_ref(doc, ref)
+    row.update(fields)
+    _ledger.save_ledger(path, doc)
+
+
+def record_decisions(harness, meta, decisions, head="abc1234"):
+    """Run `record` with a decisions file; returns the CompletedProcess.
+
+    The one way this file drives `record` — promoted from the old `TestRecord._record`, and
+    also used by `TestStats` call sites that used to keep their own private `_decide` copy.
+    """
+    path = harness.tmp_path / "decisions.json"
+    path.write_text(json.dumps(decisions), encoding="utf-8")
+    return harness.run("record", "--meta", harness.write_meta(meta), "--decisions", str(path), "--head", head)
+
+
 class TestReconcileLifecycle:
     def test_already_replied_seeds_the_row_as_done(self, harness):
         meta = meta_doc([inline_comment(1, already_replied=True, thread=[reply(50)])])
@@ -568,14 +586,6 @@ class TestReconcileLifecycle:
         harness.reconcile(meta)
         settle(harness, meta, "U1", thread_mark=None)
         assert harness.reconcile(meta)["working_set"] == []
-
-    def test_pending_and_skipped_rows_stay_in_the_working_set(self, harness):
-        meta = meta_doc([inline_comment(1), inline_comment(2)])
-        harness.reconcile(meta)
-        settle(harness, meta, "U1", thread_mark=None, status="pending")
-        settle(harness, meta, "U2", thread_mark=None, status="skipped", decision="skip")
-        statuses = {e["ref"]: e["status"] for e in harness.reconcile(meta)["working_set"]}
-        assert statuses == {"U1": "pending", "U2": "skipped"}
 
     def test_done_row_reopens_when_a_new_reply_appears(self, harness):
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
@@ -663,150 +673,290 @@ class TestReconcileLifecycle:
 
 
 class TestReconcileResolution:
-    """`resolved` is a snapshot field that drives status independently of a new reply: a
-    platform-side resolve/unresolve is not something `reopen_if_advanced`'s reply-id check can
-    ever see (see `apply_resolution`)."""
+    """`platform_state` is a snapshot field recomputed every round independently of a new reply:
+    a platform-side resolve/unresolve is not something `reopen_if_advanced`'s reply-id check can
+    ever see (see `platform_state_of`)."""
 
-    def test_resolved_true_seeds_a_new_row_as_done(self, harness):
+    def test_resolved_true_seeds_a_new_row_as_open_off_the_platform_axis(self, harness):
         meta = meta_doc([inline_comment(1, resolved=True)])
         out = harness.reconcile(meta)
         row = harness.ledger(meta)["rows"]["comment:1"]
-        assert row["status"] == "done"
+        assert row["status"] == "open"
+        assert row["platform_state"] == "resolved"
+        assert _ledger.is_working(row) is False
         assert out["working_set"] == []
 
     def test_a_previously_resolved_row_reopens_when_the_new_snapshot_says_unresolved(self, harness):
         """Someone hit "Unresolve" — an explicit request to look again that no reply id
-        advanced, so `reopen_if_advanced` would never catch it; only `apply_resolution` does."""
+        advanced, so `reopen_if_advanced` would never catch it; only the platform-axis
+        recomputation does, and it does so without touching `status` at all."""
         meta = meta_doc([inline_comment(1, resolved=True)])
         harness.reconcile(meta)
+        before = harness.ledger(meta)["rows"]["comment:1"]["status"]
         out = harness.reconcile(meta_doc([inline_comment(1, resolved=False)]))
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
+        row = harness.ledger(meta)["rows"]["comment:1"]
+        assert row["platform_state"] == "live"
+        assert _ledger.is_working(row) is True
+        assert row["status"] == before  # no status write happened
 
-    def test_resolved_none_leaves_a_done_rows_status_untouched(self, harness):
-        """`resolved is None` means "unknown this round" (e.g. a GitHub side-query hiccup), not
-        "not resolved" — treating it as False would mass-reopen every settled thread the moment
-        that query failed."""
-        meta = meta_doc([inline_comment(1, resolved=True)])
-        harness.reconcile(meta)
-        out = harness.reconcile(meta_doc([inline_comment(1)]))  # resolved absent -> None
-        assert out["working_set"] == []
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
-
-    def test_resolved_none_leaves_an_open_rows_status_untouched(self, harness):
-        meta = meta_doc([inline_comment(1)])
-        harness.reconcile(meta)
-        out = harness.reconcile(meta_doc([inline_comment(1)]))  # resolved absent -> None
-        assert [e["status"] for e in out["working_set"]] == ["open"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
-
-    def test_a_row_absent_from_the_next_rounds_snapshot_is_marked_deleted(self, harness):
-        """The thread no longer exists on the platform -> `deleted`, excluded from the working
-        set, and `counts["working"]` (which reconcile derives from the emitted `working_set`,
-        not a row tally) reflects the shrunk set."""
+    def test_a_row_absent_from_the_next_rounds_snapshot_is_marked_absent(self, harness):
+        """The thread no longer exists on the platform -> `platform_state: absent`, excluded from
+        the working set, and `counts["working"]` (which reconcile derives from the emitted
+        `working_set`, not a row tally) reflects the shrunk set. `status` is untouched — absence
+        is the platform's verdict, not ours."""
         meta = meta_doc([inline_comment(1), inline_comment(2)])
         harness.reconcile(meta)
         out = harness.reconcile(meta_doc([inline_comment(2)]))  # comment 1 vanished
         assert [e["ref"] for e in out["working_set"]] == ["U2"]
         assert out["counts"]["working"] == len(out["working_set"]) == 1
         rows = harness.ledger(meta)["rows"]
-        assert rows["comment:1"]["status"] == "deleted"
+        assert rows["comment:1"]["platform_state"] == "absent"
+        assert rows["comment:1"]["status"] == "open"
         assert rows["comment:2"]["status"] == "open"
 
-    def test_an_unknown_round_does_not_erase_the_remembered_resolution(self, harness):
-        """A failed side-query (`resolved: None`) must not cost the row its memory of having been
-        resolved: `apply_resolution` compares the next round's value against the stored one, so if
-        "unknown" overwrote it, the genuine un-resolve in round 3 would read as "was never
-        resolved" and the finding would stay `done` forever -- invisible, with no reply and no
-        working-set entry."""
-        meta = meta_doc([inline_comment(1, resolved=True)])
-        harness.reconcile(meta)
-        harness.reconcile(meta_doc([inline_comment(1)]))  # side-query failed → resolved is None
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
-        out = harness.reconcile(meta_doc([inline_comment(1, resolved=False)]))
-        assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
-
     def test_a_deleted_row_returns_to_work_when_the_thread_reappears(self, harness):
-        """`deleted` is a verdict about the CURRENT snapshot, not a tombstone. If the thread is
-        back, the verdict was wrong -- keeping it terminal would silently retire a live finding,
-        and nothing else can revive it (`reopen_if_advanced` and `apply_resolution` both key on
-        `done`)."""
-        meta = meta_doc([inline_comment(1)])
+        """`absent` is a verdict about the CURRENT snapshot, not a tombstone: the very next round
+        that sees the thread again recomputes `platform_state` back to `live`, no special-casing
+        needed. The row's decision survives the round-trip intact — the old `deleted` status
+        routed revival through a status write that lost exactly this history."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
         harness.reconcile(meta)
+        record_decisions(
+            harness,
+            meta,
+            {
+                "U1": {
+                    "status": "open",
+                    "decision": "follow_up",
+                    "reason": "later",
+                    "followup_task_id": "ct-1",
+                    "thread_mark": 10,
+                }
+            },
+        )
         harness.reconcile(meta_doc([]))
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "deleted"
+        row = harness.ledger(meta)["rows"]["comment:1"]
+        assert row["platform_state"] == "absent"
         out = harness.reconcile(meta)
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
+        row = harness.ledger(meta)["rows"]["comment:1"]
+        assert row["platform_state"] == "live"
+        assert row["decision"] == "follow_up"
+        assert row["reason"] == "later"
+        assert row["followup_task_id"] == "ct-1"
 
-    def test_an_already_done_row_absent_next_round_stays_done_not_deleted(self, harness):
-        """`deleted` is settled by the platform, `done` by us — `mark_absent` must not clobber a
-        terminal status that is already ours with a different terminal status."""
+    def test_an_already_done_row_absent_next_round_stays_done(self, harness):
+        """`done` is ours, `absent` is the platform's — the two axes never clobber each other."""
         meta = meta_doc([inline_comment(1, resolved=True)])
         harness.reconcile(meta)
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
         harness.reconcile(meta_doc([]))  # the row vanishes from the snapshot entirely
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
-
-    def test_settling_a_row_by_resolution_accounts_for_the_replies_already_in_the_thread(self, harness):
-        """Settling a row leaves NO unaccounted reply behind it. Without that, a resolve that
-        arrives together with a new reply settles the status but not `thread_mark`, so the reply
-        stays "unseen" forever: on any later round where the side-query degrades to unknown,
-        `reopen_if_advanced` fires on the stale mark and `apply_resolution` — a no-op on None —
-        cannot undo it. The settled thread silently returns to the working set and gets a second
-        reply."""
-        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
-        harness.reconcile(meta)
-        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
         row = harness.ledger(meta)["rows"]["comment:1"]
         assert row["status"] == "done"
-        assert row["thread_mark"] == 51
-
-        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)])]))
-        assert out["working_set"] == []
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "done"
-
-    def test_a_reply_arriving_after_the_resolve_does_not_return_a_resolved_thread_to_work(self, harness):
-        """A DELIBERATE choice, and the inverse of what this test asserted when it was written: a
-        thread the platform still reports as resolved stays out of the working set no matter how
-        many replies land in it. A reviewer who wants another look un-resolves the thread or opens
-        a new one — both of which do bring it back (see the un-resolve test above). The alternative,
-        re-opening on any reply, means every "thanks, looks good" re-triages a settled finding.
-
-        The reply-id bookkeeping below is untouched: `reopen_if_advanced` still flips the status to
-        `open` here. What changed is that WORKING-SET membership now also consults `resolved`, so
-        the row is excluded regardless — which is what makes the behaviour independent of whether
-        this round's resolution side-query happened to succeed."""
-        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
-        harness.reconcile(meta)
-        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
-        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
-        assert out["working_set"] == []
-        assert out["counts"]["working"] == 0
-        assert harness.ledger(meta)["rows"]["comment:1"]["resolved"] is True
-
-    def test_reconciles_own_counts_do_not_report_a_resolved_row_as_open(self, harness):
-        """`counts` and `working_set` travel in ONE payload, so they must not contradict each other.
-        Migrating only `counts["working"]` moved the disagreement one field over: the same object
-        would claim `working: 0` and `open: 1` for the same row, and `stats` — folded correctly —
-        would then disagree with `reconcile` about the same ledger."""
-        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
-        harness.reconcile(meta)
-        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
-        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
-        assert out["counts"]["working"] == 0
-        assert out["counts"]["open"] == 0
-        assert out["counts"]["resolved_upstream"] == 1
-        assert out["counts"]["total"] == 1
+        assert row["platform_state"] == "absent"
 
     def test_an_unresolved_thread_returns_to_work_even_though_its_status_was_never_open(self, harness):
-        """The escape hatch that makes the rule above safe: un-resolving is what a reviewer does to
-        ask for another look, and it must work even when no reply id advanced."""
+        """The escape hatch that makes the exclusion above safe: un-resolving is what a reviewer
+        does to ask for another look, and it must work even when no reply id advanced and no
+        status write ever happened."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)], resolved=True)])
         harness.reconcile(meta)
         assert harness.reconcile(meta)["working_set"] == []
         out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50)], resolved=False)]))
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
+
+    def test_a_reply_arriving_while_still_resolved_does_not_return_a_resolved_thread_to_work(self, harness):
+        """A DELIBERATE choice: a thread the platform still reports as resolved stays out of the
+        working set no matter how many replies land in it. A reviewer who wants another look
+        un-resolves the thread or opens a new one — both of which do bring it back (see the
+        un-resolve test above). The alternative, re-opening on any reply, means every "thanks,
+        looks good" re-triages a settled finding.
+
+        `reopen_if_advanced` never fires here because it only touches a `done` row, and nothing
+        in this redesign sets `status` from a resolve — the row was never `done` to begin with.
+        """
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)], resolved=True)]))
+        assert out["working_set"] == []
+        assert out["counts"]["working"] == 0
+        assert harness.ledger(meta)["rows"]["comment:1"]["platform_state"] == "resolved"
+
+    def test_reconciles_own_counts_do_not_report_a_resolved_row_as_open(self, harness):
+        """`counts` and `working_set` travel in ONE payload, so they must not contradict each
+        other: a resolved row is out of the working set AND out of `open`, landing instead in
+        `resolved_upstream`."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
+        out = harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)], resolved=True)]))
+        assert out["counts"]["working"] == 0
+        assert out["counts"]["open"] == 0
+        assert out["counts"]["resolved_upstream"] == 1
+        assert out["counts"]["total"] == 1
+
+
+# Observation → the collector's item this round, or None for "not in the snapshot at all".
+_OBSERVATIONS = {
+    "present_live": {"resolved": False},
+    "present_resolved": {"resolved": True},
+    "absent": None,
+}
+
+# (stored status, stored platform_state, observation) -> (status, platform_state, is_working)
+_TRANSITIONS = {
+    ("open", "live", "present_live"): ("open", "live", True),
+    ("open", "live", "present_resolved"): ("open", "resolved", False),
+    ("open", "live", "absent"): ("open", "absent", False),
+    ("open", "resolved", "present_live"): ("open", "live", True),
+    ("open", "resolved", "present_resolved"): ("open", "resolved", False),
+    ("open", "resolved", "absent"): ("open", "absent", False),
+    ("open", "absent", "present_live"): ("open", "live", True),
+    ("open", "absent", "present_resolved"): ("open", "resolved", False),
+    ("open", "absent", "absent"): ("open", "absent", False),
+    ("done", "live", "present_live"): ("done", "live", False),
+    ("done", "live", "present_resolved"): ("done", "resolved", False),
+    ("done", "live", "absent"): ("done", "absent", False),
+    ("done", "resolved", "present_live"): ("done", "live", False),
+    ("done", "resolved", "present_resolved"): ("done", "resolved", False),
+    ("done", "resolved", "absent"): ("done", "absent", False),
+    ("done", "absent", "present_live"): ("done", "live", False),
+    ("done", "absent", "present_resolved"): ("done", "resolved", False),
+    ("done", "absent", "absent"): ("done", "absent", False),
+}
+
+
+@pytest.mark.parametrize(
+    ("status", "platform_state", "observation", "expected"),
+    [(status, state, obs, expected) for (status, state, obs), expected in _TRANSITIONS.items()],
+)
+def test_the_whole_transition_table(harness, status, platform_state, observation, expected):
+    """Exhaustive by construction: 2 statuses x 3 platform states x 3 observations.
+
+    The audit that motivated this redesign found six uncovered transitions precisely because
+    tests were written one per noticed case. Adding a value to either axis must stop this table
+    from covering everything unless it is extended deliberately.
+
+    The thread never grows between the two rounds, so `reopen_if_advanced` cannot fire and this
+    table isolates the platform axis. Re-opening has its own test below.
+    """
+    meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+    harness.reconcile(meta)
+    # Round 1 seeds the row; it is then forced into the stored combination directly, because the
+    # point is the transition OUT of every state, not how each state was reached.
+    force_row(harness, meta, "U1", status=status, platform_state=platform_state, thread_mark=10)
+
+    item = _OBSERVATIONS[observation]
+    comments = [] if item is None else [inline_comment(1, thread=[reply(10)], **item)]
+    payload = harness.reconcile(meta_doc(comments))
+
+    row = harness.ledger(meta)["rows"]["comment:1"]
+    assert (row["status"], row["platform_state"]) == expected[:2]
+    assert _ledger.is_working(row) is expected[2]
+    assert (len(payload["working_set"]) == 1) is expected[2]
+
+
+def test_a_done_row_still_reopens_when_its_thread_advances(harness):
+    """The one status write reconcile still performs, isolated from the platform axis."""
+    meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+    harness.reconcile(meta)
+    force_row(harness, meta, "U1", status="done", platform_state="live", thread_mark=10)
+
+    harness.reconcile(meta_doc([inline_comment(1, resolved=False, thread=[reply(10), reply(11)])]))
+    row = harness.ledger(meta)["rows"]["comment:1"]
+    assert row["status"] == "open"
+    assert _ledger.is_working(row) is True
+
+
+def test_reconcile_never_writes_status_from_platform_state(harness):
+    """The disease this redesign cures: the platform used to overwrite OUR field.
+
+    A decided-but-undelivered row walks the whole platform axis — resolved, un-resolved, gone,
+    back — and every durable field we own must come out byte-identical.
+    """
+    meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+    harness.reconcile(meta)
+    record_decisions(
+        harness, meta, {"U1": {"status": "open", "decision": "fix", "reason": "push deferred", "thread_mark": 10}}
+    )
+    ours = ("status", "decision", "reason", "followup_task_id")
+
+    def mine():
+        return {k: harness.ledger(meta)["rows"]["comment:1"][k] for k in ours}
+
+    before = mine()
+
+    for resolved in (True, False, True):
+        harness.reconcile(meta_doc([inline_comment(1, resolved=resolved, thread=[reply(10)])]))
+        assert mine() == before
+    harness.reconcile(meta_doc([]))  # the thread vanishes
+    assert mine() == before
+    harness.reconcile(meta_doc([inline_comment(1, thread=[reply(10)])]))  # and comes back
+    assert mine() == before
+
+
+def test_a_decided_but_undelivered_row_is_not_settled_by_a_platform_resolve(harness):
+    """The concrete bug: `record` wrote "decided, reply withheld", a human clicked Resolve, and
+    the row was silently marked done — the promised reply never posted and never re-surfaced."""
+    meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+    harness.reconcile(meta)
+    record_decisions(
+        harness, meta, {"U1": {"status": "open", "decision": "fix", "reason": "push deferred", "thread_mark": 10}}
+    )
+
+    harness.reconcile(meta_doc([inline_comment(1, resolved=True, thread=[reply(10)])]))
+    row = harness.ledger(meta)["rows"]["comment:1"]
+    assert row["status"] == "open", "the platform must not settle a decision we never delivered"
+    assert row["decision"] == "fix"
+    assert row["platform_state"] == "resolved"
+    assert _ledger.is_working(row) is False, "excluded on the platform axis only"
+
+    harness.reconcile(meta_doc([inline_comment(1, resolved=False, thread=[reply(10)])]))
+    row = harness.ledger(meta)["rows"]["comment:1"]
+    assert _ledger.is_working(row) is True, "un-resolving returns it with its decision intact"
+    assert row["decision"] == "fix"
+
+
+def test_record_never_writes_platform_state(harness):
+    meta = meta_doc([inline_comment(1, resolved=True, thread=[reply(10)])])
+    harness.reconcile(meta)
+    assert harness.ledger(meta)["rows"]["comment:1"]["platform_state"] == "resolved"
+    record_decisions(
+        harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "reason": "why", "thread_mark": 10}}
+    )
+    assert harness.ledger(meta)["rows"]["comment:1"]["platform_state"] == "resolved"
+
+
+def test_the_stats_buckets_partition_every_row(harness):
+    """`done` + `Open` + `Resolved upstream` + `Deleted upstream` must account for every tracked
+    row, or `stats` — what review-loop prints in its convergence report — contradicts
+    `reconcile`: nothing in the working set, yet `Open: 1`.
+
+    Asserted through the rendered `stats` output because `flow-review-ledger` is a script without
+    a `.py` extension: this test file drives it as a SUBPROCESS and imports only `_ledger`. Do not
+    add an importlib shim to reach `fold_stats` directly.
+    """
+    meta = meta_doc([inline_comment(n, thread=[reply(10)]) for n in range(1, 7)])
+    harness.reconcile(meta)
+    combinations = [
+        ("open", "live"),
+        ("open", "resolved"),
+        ("open", "absent"),
+        ("done", "live"),
+        ("done", "resolved"),
+        ("done", "absent"),
+    ]
+    for n, (status, platform_state) in enumerate(combinations, start=1):
+        force_row(harness, meta, f"U{n}", status=status, platform_state=platform_state, thread_mark=10)
+
+    out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+    assert "Tracked: 6 findings" in out
+    assert "Done: 3" in out  # done x (live, resolved, absent)
+    assert "Open: 1" in out  # only (open, live) is work
+    assert "Resolved upstream: 1" in out
+    assert "Deleted upstream: 1" in out
 
 
 class TestGet:
@@ -855,15 +1005,10 @@ class TestGet:
 
 
 class TestRecord:
-    def _record(self, harness, meta, decisions, head="abc1234"):
-        path = harness.tmp_path / "decisions.json"
-        path.write_text(json.dumps(decisions), encoding="utf-8")
-        return harness.run("record", "--meta", harness.write_meta(meta), "--decisions", str(path), "--head", head)
-
     def test_applies_a_decision_by_ref(self, harness):
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        result = self._record(
+        result = record_decisions(
             harness,
             meta,
             {"U1": {"status": "done", "decision": "fix", "reason": "guard added", "thread_mark": 77}},
@@ -880,26 +1025,16 @@ class TestRecord:
     def test_records_a_followup_task_id(self, harness):
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"}})
-        assert harness.ledger(meta)["rows"]["comment:1"]["followup_task_id"] == "ct-42"
-
-    def test_pending_and_skipped_are_written_verbatim(self, harness):
-        meta = meta_doc([inline_comment(1), inline_comment(2)])
-        harness.reconcile(meta)
-        self._record(
-            harness,
-            meta,
-            {"U1": {"status": "pending", "decision": "fix"}, "U2": {"status": "skipped", "decision": "skip"}},
+        record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"}}
         )
-        rows = harness.ledger(meta)["rows"]
-        assert rows["comment:1"]["status"] == "pending"
-        assert rows["comment:2"]["status"] == "skipped"
+        assert harness.ledger(meta)["rows"]["comment:1"]["followup_task_id"] == "ct-42"
 
     def test_reason_with_shell_metacharacters_survives_verbatim(self, harness):
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
         hostile = "won't fix: `$(id)` and a FLOW_RC_EOF line\nsecond line"
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "reason": hostile}})
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "reason": hostile}})
         assert harness.ledger(meta)["rows"]["comment:1"]["reason"] == hostile
 
     def test_unknown_ref_warns_but_still_records_the_rest(self, harness):
@@ -908,7 +1043,7 @@ class TestRecord:
         inspect the JSON still learns the batch was not fully recorded."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        result = self._record(harness, meta, {"U1": {"status": "done"}, "C9": {"status": "done"}})
+        result = record_decisions(harness, meta, {"U1": {"status": "done"}, "C9": {"status": "done"}})
         assert result.returncode == 1
         assert "C9" in result.stderr
         assert json.loads(result.stdout) == {"recorded": 1, "unknown": ["C9"]}
@@ -917,7 +1052,7 @@ class TestRecord:
     def test_invalid_status_writes_nothing(self, harness):
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        result = self._record(harness, meta, {"U1": {"status": "finished"}})
+        result = record_decisions(harness, meta, {"U1": {"status": "finished"}})
         assert result.returncode == 2
         assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
 
@@ -925,7 +1060,7 @@ class TestRecord:
         """elf.53(a): mirrors test_invalid_status_writes_nothing for the `decision` field."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        result = self._record(harness, meta, {"U1": {"decision": "maybe"}})
+        result = record_decisions(harness, meta, {"U1": {"decision": "maybe"}})
         assert result.returncode == 2
         assert harness.ledger(meta)["rows"]["comment:1"]["decision"] is None
 
@@ -934,14 +1069,14 @@ class TestRecord:
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         decision = {"U1": {"status": "done", "decision": "fix", "reason": "guard added", "thread_mark": 50}}
-        self._record(harness, meta, decision)
+        record_decisions(harness, meta, decision)
         first = dict(harness.ledger(meta)["rows"]["comment:1"])
-        self._record(harness, meta, decision)
+        record_decisions(harness, meta, decision)
         second = harness.ledger(meta)["rows"]["comment:1"]
         assert first == second
 
     def _settle_all_fields(self, harness, meta):
-        self._record(
+        record_decisions(
             harness,
             meta,
             {
@@ -962,7 +1097,7 @@ class TestRecord:
         harness.reconcile(meta)
         self._settle_all_fields(harness, meta)
         before = dict(harness.ledger(meta)["rows"]["comment:1"])
-        result = self._record(harness, meta, {"U1": {}})
+        result = record_decisions(harness, meta, {"U1": {}})
         assert result.returncode == 0, result.stderr
         after = harness.ledger(meta)["rows"]["comment:1"]
         for field in ("status", "decision", "reason", "followup_task_id", "thread_mark"):
@@ -973,7 +1108,7 @@ class TestRecord:
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         self._settle_all_fields(harness, meta)
-        result = self._record(harness, meta, {"U1": {"decision": None, "reason": None, "followup_task_id": None}})
+        result = record_decisions(harness, meta, {"U1": {"decision": None, "reason": None, "followup_task_id": None}})
         assert result.returncode == 0, result.stderr
         row = harness.ledger(meta)["rows"]["comment:1"]
         assert row["decision"] is None
@@ -989,8 +1124,8 @@ class TestRecord:
         without supplying a fresh one)."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
-        self._record(
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
+        record_decisions(
             harness,
             meta,
             {
@@ -1007,7 +1142,7 @@ class TestRecord:
         assert row["followup_task_id"] is None
         assert row["decision"] == "fix"
         # and it stays cleared through a later `follow_up` that files no task
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "thread_mark": 50}})
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "thread_mark": 50}})
         assert harness.ledger(meta)["rows"]["comment:1"]["followup_task_id"] is None
 
     def test_explicit_null_status_is_rejected_and_writes_nothing(self, harness):
@@ -1015,7 +1150,7 @@ class TestRecord:
         there is malformed input, rejected like an unknown status — all-or-nothing."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        result = self._record(harness, meta, {"U1": {"status": None, "decision": "fix"}})
+        result = record_decisions(harness, meta, {"U1": {"status": None, "decision": "fix"}})
         assert result.returncode == 2
         assert "Traceback" not in result.stderr
         row = harness.ledger(meta)["rows"]["comment:1"]
@@ -1028,7 +1163,7 @@ class TestRecord:
         summary = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
         meta = meta_doc([summary])
         harness.reconcile(meta)
-        result = self._record(
+        result = record_decisions(
             harness,
             meta,
             {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-9", "thread_mark": None}},
@@ -1045,7 +1180,7 @@ class TestRecord:
         meta = meta_doc([inline_comment(1)])
         path = _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"])
         assert not path.exists()
-        result = self._record(harness, meta, {"U1": {"status": "done"}})
+        result = record_decisions(harness, meta, {"U1": {"status": "done"}})
         assert result.returncode != 0
         assert "flow-review-ledger:" in result.stderr
         assert "Traceback" not in result.stderr
@@ -1054,7 +1189,7 @@ class TestRecord:
     def test_recorded_row_is_excluded_on_the_next_reconcile(self, harness):
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
         assert harness.reconcile(meta)["working_set"] == []
 
     def test_done_without_thread_mark_reopens_on_our_own_reply(self, harness):
@@ -1066,7 +1201,7 @@ class TestRecord:
         """
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
         assert harness.ledger(meta)["rows"]["comment:1"]["thread_mark"] == 50  # unchanged, pre-reply
 
         posted = [reply(50), reply(5001, user="me", is_bot=False, body="Won't fix: …")]
@@ -1085,7 +1220,7 @@ class TestRecord:
         posted."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
-        self._record(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": None}})
+        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": None}})
         assert harness.ledger(meta)["rows"]["comment:1"]["thread_mark"] is None
         out = harness.reconcile(meta)
         assert [e["ref"] for e in out["working_set"]] == ["U1"]
@@ -1093,29 +1228,22 @@ class TestRecord:
 
 
 class TestStats:
-    def _decide(self, harness, meta, decisions, head="h"):
-        path = harness.tmp_path / "d.json"
-        path.write_text(json.dumps(decisions), encoding="utf-8")
-        assert (
-            harness.run(
-                "record", "--meta", harness.write_meta(meta), "--decisions", str(path), "--head", head
-            ).returncode
-            == 0
-        )
-
     def test_cumulative_block(self, harness):
         comments = [inline_comment(i) for i in range(1, 5)]
         meta = meta_doc(comments)
         harness.reconcile(meta)
-        self._decide(
-            harness,
-            meta,
-            {
-                "U1": {"status": "done", "decision": "fix"},
-                "U2": {"status": "done", "decision": "wont_fix"},
-                "U3": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"},
-                "U4": {"status": "pending", "decision": "fix"},
-            },
+        assert (
+            record_decisions(
+                harness,
+                meta,
+                {
+                    "U1": {"status": "done", "decision": "fix"},
+                    "U2": {"status": "done", "decision": "wont_fix"},
+                    "U3": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-42"},
+                    "U4": {"status": "open", "decision": "fix"},
+                },
+            ).returncode
+            == 0
         )
         out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
         assert "Ledger PR #96 (github.com/o/r) — round 1" in out
@@ -1124,7 +1252,8 @@ class TestStats:
         assert "fix 1" in out
         assert "won't-fix 1" in out
         assert "follow-up 1" in out
-        assert "Pending: 1" in out
+        assert "Open: 1" in out
+        assert "(decided but not delivered: 1)" in out
         assert "Follow-ups filed: 1 (ct-42)" in out
 
     def test_a_resolved_row_is_reported_as_resolved_upstream_not_as_open(self, harness):
@@ -1134,9 +1263,9 @@ class TestStats:
         meta = meta_doc([inline_comment(1, thread=[reply(50)])])
         harness.reconcile(meta)
         harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51)], resolved=True)]))
-        # A reply lands on the resolved thread while this round's resolution is unknown: the row's
-        # status goes back to `open`, but the platform's last known verdict still settles it.
-        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)])]))
+        # A reply lands on the thread while the platform still reports it resolved: `status` was
+        # never touched by the resolve to begin with, so there is nothing for the reply to re-open.
+        harness.reconcile(meta_doc([inline_comment(1, thread=[reply(50), reply(51), reply(52)], resolved=True)]))
         out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
         assert "Open: 0" in out
         assert "Resolved upstream: 1" in out
@@ -1145,15 +1274,22 @@ class TestStats:
         """Same rule as `Deleted upstream`: a permanent zero would be noise on every clean run."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        assert "Resolved upstream" not in harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
+        assert "Resolved upstream" not in out
+        assert "Deleted upstream" not in out
 
     def test_last_round_filters_to_the_current_pass(self, harness):
+        """`last_round` is now written unconditionally for every row present in a round's
+        snapshot (see `cmd_reconcile`), not just for rows created or recorded that round — so
+        `--last-round` narrows to what THIS pass actually saw, and a still-tracked row is seen
+        on every pass it survives."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        self._decide(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
-        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))  # round 2 inserts U2
+        assert record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}}).returncode == 0
+        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))  # round 2 sees both
         out = harness.run("stats", "--meta", harness.write_meta(meta), "--last-round").stdout
-        assert "Tracked: 1 findings" in out
+        assert "Tracked: 2 findings" in out
+        assert "Done: 1" in out
         assert "Open: 1" in out
 
     def test_gitlab_unit_is_labelled_mr(self, harness):
@@ -1174,12 +1310,17 @@ class TestStats:
         filed" count even though the stale `followup_task_id` is still sitting on the row."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
-        self._decide(harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}})
+        assert (
+            record_decisions(
+                harness, meta, {"U1": {"status": "done", "decision": "follow_up", "followup_task_id": "ct-1"}}
+            ).returncode
+            == 0
+        )
         out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
         assert "Follow-ups filed: 1 (ct-1)" in out
 
         # re-opened and re-decided as `fix` in a later round; followup_task_id is not cleared
-        self._decide(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        assert record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}}).returncode == 0
         assert harness.ledger(meta)["rows"]["comment:1"]["followup_task_id"] == "ct-1"  # stale id lingers
         out = harness.run("stats", "--meta", harness.write_meta(meta)).stdout
         assert "Follow-ups filed" not in out

@@ -18,22 +18,21 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 SCHEMA = 1
-BRIEF_CHARS = 120  # chars of `body` kept for the Phase-2 cap table
+BRIEF_CHARS = 120  # chars of `body` kept for the working-set projection
 
-STATUSES = ("open", "skipped", "pending", "done", "deleted")
-DECISIONS = ("fix", "wont_fix", "follow_up", "outdated", "skip")
+# Our own verdict on a finding, and nothing else. "Still work" and "settled by us" are the only
+# two answers this axis has: what we DECIDED lives in `decision`, and what the PLATFORM thinks
+# lives in `platform_state`. Statuses that mixed those in (`pending`, `skipped`, `deleted`) are
+# gone — they were derivable, and sharing a field with the platform is what let a resolve settle
+# a decision we never delivered.
+STATUSES = ("open", "done")
+DECISIONS = ("fix", "wont_fix", "follow_up", "outdated")
 KINDS = ("inline", "file", "summary")
 
 # The platform's own verdict on a thread, recomputed from every round's snapshot — never
 # remembered as a status. `absent` means the thread is not in the snapshot at all; because the
 # collector aborts rather than returning a short page, absence is trustworthy.
 PLATFORM_STATES = ("live", "resolved", "absent")
-
-# Statuses that take a row OUT of the working set. `done` is settled by us, `deleted` is
-# settled by the platform (the thread no longer exists). Every "is this row still work?"
-# test goes through this set — a literal `status != "done"` would silently pull `deleted`
-# rows back into the working set the moment a second terminal status existed.
-TERMINAL_STATUSES = frozenset({"done", "deleted"})
 
 # Current-snapshot fields: refreshed from the collector every round. Durable fields
 # (status/decision/reason/followup_task_id/thread_mark/first_seen_round/last_round/head) and the
@@ -46,7 +45,6 @@ SNAPSHOT_FIELDS = (
     "line",
     "outdated",
     "already_replied",
-    "resolved",
     "diff_hunk",
     "snippet",
     "side",
@@ -199,26 +197,18 @@ def empty_ledger(unit: dict | None = None) -> dict:
 def is_working(row: dict) -> bool:
     """True when the row is still outstanding work — the ONE answer to that question.
 
-    Two independent verdicts retire a row, and both are consulted here because three call sites
-    (the `reconcile` loop, `counts_of`'s fallback, `fold_stats`) used to answer this separately
-    and could disagree — a row absent from the working set while `stats` still reported it as
-    `Open: 1`:
+    Two independent axes, one condition each, and neither writes the other's field:
 
-    - our own terminal `status` — `done` settled by us, `deleted` settled by the platform;
-    - the platform's `resolved` flag, which is deliberately terminal too. A reviewer who wants
-      another look un-resolves the thread or opens a new one; un-resolving brings the row
-      straight back (`apply_resolution`). Re-opening on any reply instead would mean every
-      "thanks, looks good" re-triages a settled finding.
+    - `status`: `open` means we have not settled it, `done` means we have;
+    - `platform_state`: only a `live` thread is work. `resolved` is the platform's own verdict
+      (a reviewer wanting another look un-resolves, which returns the row by itself), and
+      `absent` means the thread is gone from the platform.
 
-    `resolved` is THREE-valued, so only an explicit True retires the row. None means "not
-    determined this round" — GitHub's resolution side-query degrades instead of aborting the
-    whole collection — and reading that as resolved would retire every outstanding finding the
-    moment that query hiccupped. Consulting the flag here rather than in the re-open path is
-    also what makes the outcome independent of whether the side-query succeeded: the row keeps
-    its last KNOWN answer (see `refresh_snapshot`), so a degraded round decides the same way a
-    clean one does.
+    Every "is this row still work?" test goes through here, so `reconcile`, `counts_of` and
+    `fold_stats` cannot drift apart — a row missing from the working set while `stats` reports
+    it as `Open: 1` was exactly that drift.
     """
-    return row.get("status") not in TERMINAL_STATUSES and row.get("resolved") is not True
+    return row.get("status") == "open" and row.get("platform_state") == "live"
 
 
 def _is_count(value: object) -> bool:
