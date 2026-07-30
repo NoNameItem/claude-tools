@@ -244,7 +244,14 @@ def cmd_get(args: argparse.Namespace) -> int:
 
 
 def validate_decisions(decisions: object) -> None:
-    """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing)."""
+    """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing).
+
+    The check for an insufficient thread mark on a done row cannot live here because it needs
+    to see the row's stored platform and kind; it runs in cmd_record's merge loop after fields
+    are merged into the in-memory row copy. Raising mid-loop preserves the all-or-nothing
+    guarantee: doc is loaded from disk and nothing has been written yet, so an exception leaves
+    the file untouched.
+    """
     if not isinstance(decisions, dict):
         msg = "decisions file must be a JSON object keyed by ref"
         raise ValueError(msg)
@@ -300,6 +307,27 @@ def cmd_record(args: argparse.Namespace) -> int:
         if row is None:
             unknown.append(ref)
             continue
+        # Check the thread mark invariant: a done row is only settled if we accounted for the
+        # reply that settled it. Both ways of not supplying a mark break the same way: OMIT the
+        # key and the row keeps its pre-reply mark, write an explicit `null` and it is cleared to
+        # "nothing accounted for". Either way `id_advanced` reads the reply we just posted as a
+        # thread advance, `reconcile` re-opens the finding next round, and it re-triages and
+        # re-replies forever. Reject only if: (1) the row has a real thread (thread_mark is not
+        # None now), (2) the decision supplies no mark (omitted key OR explicit null), and (3)
+        # the row is not exempt (not threadless). Rows with no thread can omit the mark; threadless
+        # rows (GitHub summaries) are the one exemption. Check before merging to preserve all-or-nothing.
+        if (
+            "status" in entry
+            and entry["status"] == "done"
+            and entry.get("thread_mark") is None
+            and row.get("thread_mark") is not None
+            and not _ledger.threadless(row)
+        ):
+            msg = (
+                f"decision for {ref} sets status 'done' with no thread_mark — supply the id of the "
+                f"reply just posted (only a GitHub review-body summary may omit it)"
+            )
+            raise ValueError(msg)
         for field in RECORD_FIELDS:
             if field in entry:
                 row[field] = entry[field]

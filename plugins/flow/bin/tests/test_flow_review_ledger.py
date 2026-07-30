@@ -355,6 +355,59 @@ def inline_comment(comment_id, *, is_bot=False, body="finding", thread=None, **o
     return item
 
 
+def summary_comment(summary_id, *, body="### Codex Review", **overrides):
+    """A GitHub review-body summary: no reply target, no resolvable thread."""
+    item = {
+        "user": "chatgpt-codex-connector",
+        "is_bot": False,
+        "kind": "summary",
+        "path": "(summary)",
+        "start_line": None,
+        "line": None,
+        "outdated": False,
+        "already_replied": False,
+        "comment_id": None,
+        "discussion_id": None,
+        "summary_id": summary_id,
+        "body": body,
+        "thread": [],
+        "diff_hunk": None,
+        "side": None,
+        "position": None,
+        "snippet": None,
+        "ref": "IGNORED",
+    }
+    item.update(overrides)
+    return item
+
+
+def gitlab_discussion(discussion_id, *, kind="inline", thread=None, resolved=False, **overrides):
+    """A GitLab discussion — general ones are `kind == "summary"` yet fully repliable."""
+    item = {
+        "user": "alice",
+        "is_bot": False,
+        "kind": kind,
+        "path": "(summary)" if kind == "summary" else "a.py",
+        "start_line": None,
+        "line": None if kind == "summary" else 42,
+        "outdated": False,
+        "already_replied": False,
+        "comment_id": None,
+        "discussion_id": discussion_id,
+        "summary_id": None,
+        "body": "finding",
+        "thread": thread or [],
+        "diff_hunk": None,
+        "side": None,
+        "position": None,
+        "snippet": None,
+        "resolved": resolved,
+        "ref": "IGNORED",
+    }
+    item.update(overrides)
+    return item
+
+
 class LedgerHarness:
     """Runs flow-review-ledger with the cache base pointed at a tmp dir."""
 
@@ -1194,39 +1247,69 @@ class TestRecord:
         record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 50}})
         assert harness.reconcile(meta)["working_set"] == []
 
-    def test_done_without_thread_mark_reopens_on_our_own_reply(self, harness):
-        """The negative twin: `record` keeps the pre-reply mark when the entry omits `thread_mark`.
 
-        `record` cannot know the id of a reply it did not post, so this is deliberate — the
-        SETTLING side (review-comments 5.7a) must always supply the id of the reply it just sent.
-        Pinned so the trap stays visible: omit it and the settled finding re-opens forever.
-        """
-        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+class TestRecordThreadMarkInvariant:
+    def _ledger_bytes(self, meta):
+        return _ledger.ledger_path(meta["unit"]["url"], meta["unit"]["number"]).read_text(encoding="utf-8")
+
+    def test_done_without_thread_mark_is_rejected_on_a_threaded_row(self, harness):
+        """Accepting this writes a row that re-opens on the reply we just posted, re-triages,
+        re-replies and never converges — the failure the skill's prose called catastrophic and
+        could only ask the caller to avoid."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
         harness.reconcile(meta)
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
-        assert harness.ledger(meta)["rows"]["comment:1"]["thread_mark"] == 50  # unchanged, pre-reply
+        before = self._ledger_bytes(meta)
 
-        posted = [reply(50), reply(5001, user="me", is_bot=False, body="Won't fix: …")]
-        out = harness.reconcile(meta_doc([inline_comment(1, thread=posted)]))
-        assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        row = harness.ledger(meta)["rows"]["comment:1"]
-        assert row["status"] == "open"
-        assert row["decision"] == "wont_fix"  # the settled verdict is kept, but it re-triages
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        assert result.returncode == 2
+        assert "thread_mark" in result.stderr
+        assert self._ledger_bytes(meta) == before, "the whole batch is rejected, nothing written"
 
-    def test_null_thread_mark_on_a_threaded_row_clears_it_and_re_opens(self, harness):
-        """The same trap by the other door: on a row that HAS a thread, an explicit null clears
-        the mark, so the next reply reads as an advance (`id_advanced(current, None)` is True) and
-        the settled row re-opens. `null` is only for a threadless row (a GitHub review-body
-        summary) — NOT for every `kind == "summary"` row, since a GitLab general-discussion
-        summary has a thread too; a threaded `done` entry must carry the id of the reply just
-        posted."""
-        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+    def test_an_explicit_null_thread_mark_is_rejected_too(self, harness):
+        """Both ways of not supplying a mark break identically: omitting the key keeps the stale
+        pre-reply mark, an explicit null clears it to "nothing accounted for"."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
         harness.reconcile(meta)
-        record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": None}})
-        assert harness.ledger(meta)["rows"]["comment:1"]["thread_mark"] is None
-        out = harness.reconcile(meta)
-        assert [e["ref"] for e in out["working_set"]] == ["U1"]
-        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "thread_mark": None}})
+        assert result.returncode == 2
+        assert "thread_mark" in result.stderr
+
+    def test_done_without_thread_mark_is_allowed_for_a_github_summary(self, harness):
+        """The one row shape with no reply target and no platform resolution: our `done` is its
+        only exit, and it has no thread to mark."""
+        meta = meta_doc([summary_comment(900)])
+        harness.reconcile(meta)
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "wont_fix"}})
+        assert result.returncode == 0, result.stderr
+        assert harness.ledger(meta)["rows"]["summary:900"]["status"] == "done"
+
+    def test_a_gitlab_summary_is_not_exempt(self, harness):
+        """It is `kind == "summary"` too, but carries a real discussion id, so it is threaded."""
+        meta = meta_doc(
+            [gitlab_discussion("d1", kind="summary", thread=[reply(10)])],
+            url="https://gitlab.com/g/r/-/merge_requests/96",
+            platform="gitlab",
+        )
+        harness.reconcile(meta)
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        assert result.returncode == 2
+        assert "thread_mark" in result.stderr
+
+    def test_a_rejected_batch_writes_none_of_its_other_refs(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(10)]), inline_comment(2, thread=[reply(11)])])
+        harness.reconcile(meta)
+        before = self._ledger_bytes(meta)
+
+        result = record_decisions(
+            harness,
+            meta,
+            {
+                "U1": {"status": "done", "decision": "fix", "thread_mark": 10},
+                "U2": {"status": "done", "decision": "fix"},
+            },
+        )
+        assert result.returncode == 2
+        assert self._ledger_bytes(meta) == before, "U1 must not land just because it was first"
 
 
 class TestStats:
