@@ -19,21 +19,34 @@ jobs:
   notify-start:
     name: Notify Start
     runs-on: ubuntu-latest
+    outputs:
+      message-id: ${{ steps.notify.outputs.message-id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: commit-info
         run: |
-          MSG=$(git log -1 --pretty=%s)
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          echo "message=${MSG:0:50}" >> "$GITHUB_OUTPUT"
-          echo "short-sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/telegram-notify
+          # The heredoc delimiter is randomised: a commit subject that happens to equal a fixed
+          # delimiter (e.g. exactly "COMMIT_MSG_EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="COMMIT_MSG_$(openssl rand -hex 8)"
+          {
+            echo "message<<$delimiter"
+            git log -1 --pretty=%s
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "short-sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+      - id: notify
+        uses: ./.github/actions/telegram-notify
         with:
           status: started
           event-type: push
-          title: "Push ${{ steps.commit-info.outputs.short-sha }}: ${{ steps.commit-info.outputs.message }}"
+          title: ${{ steps.commit-info.outputs.message }}
           event-url: ${{ github.event.head_commit.url }}
-          message: "Checks started"
+          message: "Pushed to master · ${{ steps.commit-info.outputs.short-sha }}"
+          footer: "${{ github.event.repository.name }} · master"
+          silent: 'true'
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
@@ -51,6 +64,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
+          persist-credentials: false
 
       - name: Validate commits
         env:
@@ -120,6 +134,9 @@ jobs:
       contents: write
       actions: read
     steps:
+      # persist-credentials intentionally left default (true) on both checkouts below: the
+      # "Commit and push" step runs `git commit` + `git push` in badges-data using the
+      # credential actions/checkout persisted there. Do not add persist-credentials: false here.
       - name: Checkout main
         uses: actions/checkout@v4
         with:
@@ -148,26 +165,119 @@ jobs:
 
   notify-finish:
     name: Notify Finish
-    needs: [validate-commits, python-ci, claude-code-plugin-ci]
+    needs: [notify-start, detect, validate-commits, python-ci, claude-code-plugin-ci]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - id: commit-info
         run: |
-          MSG=$(git log -1 --pretty=%s)
-          SHORT_SHA="${GITHUB_SHA:0:7}"
-          echo "message=${MSG:0:50}" >> "$GITHUB_OUTPUT"
-          echo "short-sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          # The heredoc delimiter is randomised: a commit subject that happens to equal a fixed
+          # delimiter (e.g. exactly "COMMIT_MSG_EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="COMMIT_MSG_$(openssl rand -hex 8)"
+          {
+            echo "message<<$delimiter"
+            git log -1 --pretty=%s
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          echo "short-sha=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build the notification spec
+        id: spec
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          TITLE: ${{ steps.commit-info.outputs.message }}
+          FOOTER: "${{ github.event.repository.name }} · master"
+          REPLY_TO: ${{ needs.notify-start.outputs.message-id }}
+          NEEDS_JSON: ${{ toJson(needs) }}
+          DETECT_RESULT: ${{ needs.detect.outputs.result }}
+        run: |
+          set -euo pipefail
+
+          # 1. Check table from the gating jobs' results. `skipped` is green: it means the job
+          #    had nothing to do (no Python changes, no plugin changes).
+          rows=$(printf '%s' "$NEEDS_JSON" | jq -c '
+            {"detect": "Detect changes",
+             "validate-commits": "Validate commits",
+             "python-ci": "Python CI",
+             "claude-code-plugin-ci": "Claude Code Plugin CI"} as $labels
+            | [to_entries[]
+               | select($labels[.key] != null)
+               | (if .value.result == "failure" then {icon: "❌", bold: true}
+                  elif .value.result == "cancelled" then {icon: "⛔", bold: true}
+                  else {icon: "✅", bold: false} end) as $s
+               | [{text: $labels[.key], bold: $s.bold},
+                  {text: $s.icon, align: "center"}]]')
+
+          failed_names=$(printf '%s' "$rows" | jq -c '[.[] | select(.[0].bold) | .[0].text]')
+
+          if [ "$(printf '%s' "$failed_names" | jq 'length')" -gt 0 ]; then
+            STATUS=failed
+            # Interleave ", " separators so the bold lands on the job names and nothing else.
+            verdict=$(printf '%s' "$failed_names" | jq -c '
+              [{text: "Checks failed: "}]
+              + ([to_entries[]
+                  | if .key > 0 then [{text: ", "}, {text: .value, bold: true}]
+                    else [{text: .value, bold: true}] end] | add)')
+          else
+            STATUS=ready
+            verdict='[{"text": "All checks passed"}]'
+          fi
+
+          # 2. Failed child jobs, straight from this run.
+          failed_jobs=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name]' | jq -s 'add // [] | .[:20]')
+
+          # 3. Sonar reports the OVERALL state of the branch here, not new code: the new-code
+          #    period on master only becomes meaningful once projectVersion has seeded a version
+          #    history, and accumulated problems are visible nowhere else.
+          keys=$(printf '%s' "$DETECT_RESULT" \
+            | jq -c '[.by_type.python.matrix.include[]?.project] | map("NoNameItem_" + .)')
+          python3 .github/scripts/sonar_pr_status.py \
+            --mode branch --branch master --project-keys "$keys" > sonar.json
+
+          # 4. Assemble.
+          jq -n \
+            --arg status "$STATUS" \
+            --arg title "$TITLE" \
+            --argjson verdict "$verdict" \
+            --argjson rows "$rows" \
+            --argjson failed_jobs "$failed_jobs" \
+            --slurpfile sonar sonar.json \
+            --arg footer "$FOOTER" \
+            --arg commit_url "$COMMIT_URL" \
+            --arg run_url "$RUN_URL" \
+            --arg reply_to "$REPLY_TO" \
+            '{status: $status, title: $title, verdict: $verdict,
+              blocks: ([if $status == "failed"
+                        then {type: "table", rows: $rows}
+                        else {type: "table", title: "All checks passed", rows: $rows} end]
+                       + (if ($failed_jobs | length) > 0
+                          then [{type: "list",
+                                 title: ("Failed jobs: " + ($failed_jobs | length | tostring)),
+                                 open: true,
+                                 items: [$failed_jobs[] | [{text: ., bold: true}]]}]
+                          else [] end)
+                       + $sonar[0]),
+              footer: $footer,
+              buttons: ([{text: "Commit", url: $commit_url}]
+                        + (if $status == "failed" then [{text: "Run", url: $run_url}] else [] end)),
+              silent: false,
+              reply_to: (if $reply_to == "" then null else ($reply_to | tonumber) end)}' > spec.json
+
+          jq -c '{status, blocks: [.blocks[].title]}' spec.json
+
       - uses: ./.github/actions/telegram-notify
         with:
-          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || (contains(needs.*.result, 'cancelled') && 'cancelled') || 'success' }}
-          event-type: push
-          title: "Push ${{ steps.commit-info.outputs.short-sha }}: ${{ steps.commit-info.outputs.message }}"
-          event-url: ${{ github.event.head_commit.url }}
-          message: ${{ contains(needs.*.result, 'failure') && 'Finished with errors:' || 'All checks passed' }}
-          collect-failed-jobs: ${{ contains(needs.*.result, 'failure') }}
+          spec-file: spec.json
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

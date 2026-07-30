@@ -7,11 +7,16 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
+# Deliberately NO workflow-level `statuses: write`. Exactly one job here writes a commit status —
+# notify-start, which records the `pr-notify-anchor` marker — and it grants itself that permission
+# at job level. Every OTHER job runs PR-authored code: this workflow triggers on `pull_request`, so
+# actions/checkout takes the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci
+# execute scripts from it. A workflow-level grant would hand that code the ability to forge commit
+# statuses — including `review-gate`, which the master ruleset requires.
 permissions:
   contents: read
   checks: write
   pull-requests: write
-  actions: read  # For fetching failed jobs in notifications
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.action }}
@@ -22,18 +27,92 @@ concurrency:
 jobs:
   notify-start:
     name: Notify Start
+    # Same fork guard as the pr-summary job below, for the same reason: this job reads
+    # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID directly, and GitHub withholds repository secrets from
+    # fork-origin runs — so without the guard every external contribution turns this job red
+    # instead of quietly skipping the notification.
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # A job-level block REPLACES the workflow-level set for this job, so everything this job
+    # needs is listed here — `contents: read` for the checkout below, and `statuses: write` for
+    # the anchor marker. Nothing PR-authored runs in this job.
+    permissions:
+      contents: read
+      statuses: write
+    # No shared concurrency group with _reusable-pr-summary.yml, and none is needed: this job is
+    # now the ONLY writer of any notification marker, so there is nothing to serialise against.
+    # (Earlier designs had the summary write to the same status, which needed first a
+    # read-before-write guard and then a second context; both are gone.) A shared group would also
+    # be actively harmful: a queued job is cancelled outright as soon as a third claimant joins its
+    # group (`cancel-in-progress: false` protects only the job already running), which would take
+    # the Telegram send below with it, and that send has no retry.
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/telegram-notify
+        with:
+          persist-credentials: false
+
+      - name: Compose the verdict line
+        id: verdict
+        env:
+          ACTION: ${{ github.event.action }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # `edited` changes the title or body, not the head — saying "New commit" would lie.
+          if [ "$ACTION" = "edited" ]; then
+            JSON='[{"text": "PR updated, checks running"}]'
+          else
+            JSON=$(jq -nc --arg sha "${HEAD_SHA:0:7}" \
+              '[{text: "New commit "}, {text: $sha, code: true}, {text: ", checks running"}]')
+          fi
+          echo "json=$JSON" >> "$GITHUB_OUTPUT"
+
+      - id: notify
+        uses: ./.github/actions/telegram-notify
         with:
           status: started
           event-type: pr
-          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          title: ${{ github.event.pull_request.title }}
           event-url: ${{ github.event.pull_request.html_url }}
-          message: "Checks started"
+          verdict-json: ${{ steps.verdict.outputs.json }}
+          footer: "${{ github.event.repository.name }} · PR ${{ github.event.pull_request.number }}"
+          silent: 'true'
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # The anchor is how the result notification — sent from a different workflow run — finds the
+      # message to reply to. It is written UNCONDITIONALLY, so it always names the newest "checks
+      # running" message for this head SHA.
+      #
+      # This job is the only writer of this — or any — notification marker, which is what makes an
+      # unconditional write safe. Earlier designs also recorded the reported verdict here, to
+      # suppress a repeated result message; that cost three review rounds (a verdict erased by this
+      # write, then a guard that fixed the erasure but froze the anchor, then a verdict recorded
+      # before its anchor) and was dropped. The remaining cost of dropping it is an occasional
+      # duplicate result message — cheaper than the failure it kept producing, which was a start
+      # message that no result ever replied to.
+      #
+      # The summary's silence therefore comes from ONE rule now: it speaks only when every required
+      # context is terminal (a not-yet-started producer reads as `missing`, which is silent too), so
+      # the call that sees the last one finish is the one that reports.
+      #
+      # `state=success`, not `pending`: this is a marker, not a gate, and a permanently pending
+      # status would read as an unfinished check. It must never be added to the master ruleset's
+      # required contexts — see docs/merge-gate-rollout.md.
+      - name: Record the start message as the reply anchor
+        if: steps.notify.outputs.message-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MSG_ID: ${{ steps.notify.outputs.message-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=success -f context=pr-notify-anchor \
+            -f description="msg:${MSG_ID}" -f target_url="$RUN_URL" >/dev/null
 
   detect:
     uses: ./.github/workflows/_reusable-detect.yml
@@ -43,10 +122,26 @@ jobs:
   validate-pr:
     name: Validate PR
     needs: [detect]
+    # `detect` carries no `if:` guard, so it always runs; without `always()` here, a failed or
+    # cancelled `detect` would make this job SKIPPED rather than failed — and `skipped` is a
+    # green required context, so the merge gate would wave the PR through with no validation.
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check detect result
+        env:
+          RESULT: ${{ needs.detect.result }}
+        run: |
+          echo "Detect result: $RESULT"
+          case "$RESULT" in
+            success) exit 0 ;;
+            *) exit 1 ;;
+          esac
+
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Validate PR
         env:
@@ -101,51 +196,71 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
 
-  # Summary jobs for branch protection required checks
+  # Gate jobs for the master ruleset's required status checks.
   # When reusable workflows run, they create sub-jobs like "Python CI / Lint (statuskit)"
-  # but not a parent "Python CI" job. These summary jobs provide that parent check.
+  # but not a parent "Python CI" check run — and the skipped call itself also publishes a
+  # check run named "Python CI", so that name matches two runs. These `if: always()` summary
+  # jobs publish an unambiguous, always-present context for the ruleset to require.
   python-ci-result:
-    name: Python CI
+    name: Python CI Gate
     needs: [python-ci]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
+        env:
+          RESULT: ${{ needs.python-ci.result }}
         run: |
-          RESULT="${{ needs.python-ci.result }}"
           echo "Python CI result: $RESULT"
-          [[ "$RESULT" == "failure" ]] && exit 1
-          exit 0
+          # Anything but success/skipped is red — including `cancelled`, so a cancelled run
+          # can never read as a passing gate (that would bypass the merge gate entirely).
+          case "$RESULT" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac
 
   claude-code-plugin-ci-result:
-    name: Claude Code Plugin CI
+    name: Claude Code Plugin CI Gate
     needs: [claude-code-plugin-ci]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
-        run: |
-          RESULT="${{ needs.claude-code-plugin-ci.result }}"
-          echo "Claude Code Plugin CI result: $RESULT"
-          [[ "$RESULT" == "failure" ]] && exit 1
-          exit 0
-
-  notify-finish:
-    name: Notify Finish
-    needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/telegram-notify
-        with:
-          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || (contains(needs.*.result, 'cancelled') && 'cancelled') || 'success' }}
-          event-type: pr
-          title: "PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
-          event-url: ${{ github.event.pull_request.html_url }}
-          message: ${{ contains(needs.*.result, 'failure') && 'Finished with errors:' || 'All checks passed' }}
-          collect-failed-jobs: ${{ contains(needs.*.result, 'failure') }}
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT: ${{ needs.claude-code-plugin-ci.result }}
+        run: |
+          echo "Claude Code Plugin CI result: $RESULT"
+          # Anything but success/skipped is red — including `cancelled`, so a cancelled run
+          # can never read as a passing gate (that would bypass the merge gate entirely).
+          case "$RESULT" in
+            success|skipped) exit 0 ;;
+            *) exit 1 ;;
+          esac
+
+  # The result notification. This is only ONE of the two producers of required checks — the
+  # other is review-gate.yml, which makes the same call. pr_summary.py silences whichever call
+  # arrives while the other producer is still running.
+  pr-summary:
+    name: PR Summary
+    needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result]
+    # Fork guard, matching review-gate.yml's pr-summary job: a fork-origin PR gets no repository
+    # secrets from `secrets: inherit`, so TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID would be empty and
+    # the send step would fail outright instead of just skipping the notification.
+    if: |
+      always() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Must mirror _reusable-pr-summary.yml's own `permissions:` block: a called workflow's
+    # effective permissions are the INTERSECTION of what it declares and what the caller job
+    # holds, so anything missing here is silently withheld from it — and the summary reads the
+    # head SHA's statuses to resolve the required contexts and the reply anchor. Read, not write:
+    # the summary no longer records a marker of its own.
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+    uses: ./.github/workflows/_reusable-pr-summary.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit

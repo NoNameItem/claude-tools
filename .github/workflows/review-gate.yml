@@ -3,10 +3,9 @@ name: Review Gate
 # Blocks merge until Codex has reviewed the latest commit of a PR.
 #
 # Division of responsibility:
-#   - Claude's review is gated separately by requiring its native `claude-review` check
-#     (it re-runs on every push, so it carries the "latest commit reviewed" guarantee).
-#   - Unresolved findings from either reviewer are gated by the repo's
-#     "Require conversation resolution before merging" setting.
+#   - Codex is the only AI reviewer; Claude's review workflow was removed in 2595a29.
+#   - Unresolved findings are gated by the `master` ruleset's
+#     "require review thread resolution" rule.
 #   - This workflow only asserts that *Codex* has reviewed the head commit.
 #
 # Codex signals its state via reactions/reviews (no check run, no commit status of its own):
@@ -47,6 +46,7 @@ on:
 
 permissions:
   contents: read
+  checks: read # the PR summary reads the head SHA's check runs
   pull-requests: read
   issues: read # reactions on a PR are read via the Issues API endpoint
   statuses: write # POST the required `review-gate` status to the PR head SHA
@@ -177,3 +177,16 @@ jobs:
             echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
             sleep "$INTERVAL"
           done
+
+  # The second call site of the result notification. `always()` so a failed or superseded gate
+  # still reports; a superseded poll is absorbed by pr_summary.py's stale-head check, which is
+  # exactly why the poll is allowed to run to completion after a new push.
+  pr-summary:
+    name: PR Summary
+    needs: [review-gate-poll]
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/_reusable-pr-summary.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit

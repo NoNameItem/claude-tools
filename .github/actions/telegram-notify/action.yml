@@ -1,27 +1,58 @@
 name: 'Telegram Notify'
-description: 'Send CI/CD status notifications to Telegram'
+description: 'Send a CI notification to Telegram as a rich message'
+
+# Thin wrapper over .github/scripts/telegram_notify.py. Two ways to call it:
+#   * `spec-file` — a full notify spec built by pr_summary.py / a workflow (tables, Sonar
+#     blocks, release notes). Everything else is ignored.
+#   * the flat inputs below — a block-less message (the "started" notifications).
+# The caller must have checked the repository out; the script is stdlib-only, so no setup step
+# is needed.
 
 inputs:
-  status:
-    description: 'started | success | failure | cancelled'
-    required: true
-  event-type:
-    description: 'pr | push | release'
-    required: true
-  title:
-    description: 'Message title (e.g., PR #42: Add feature)'
-    required: true
-  event-url:
-    description: 'URL to PR/commit/release'
-    required: true
-  message:
-    description: 'Additional message text'
+  spec-file:
+    description: 'Path to a JSON notify spec. Wins over every flat input below.'
     required: false
     default: ''
-  collect-failed-jobs:
-    description: 'Fetch failed jobs list via GitHub API'
+  status:
+    description: 'started | ready | comments | failed | cancelled | released | success | failure'
+    required: false
+    default: 'started'
+  event-type:
+    description: 'pr | push | release — only picks the default button label'
+    required: false
+    default: 'pr'
+  title:
+    description: 'Message heading (PR title, commit subject, release name)'
+    required: false
+    default: ''
+  message:
+    description: 'The verdict line under the heading (plain text)'
+    required: false
+    default: ''
+  verdict-json:
+    description: 'JSON segment array for the verdict line; wins over `message` (carries bold / code)'
+    required: false
+    default: ''
+  event-url:
+    description: 'URL for the default button'
+    required: false
+    default: ''
+  footer:
+    description: 'Footer line; defaults to the repository name'
+    required: false
+    default: ''
+  buttons:
+    description: 'JSON array of {text, url}; overrides the default button'
+    required: false
+    default: ''
+  silent:
+    description: 'true -> send without a notification sound'
     required: false
     default: 'false'
+  reply-to:
+    description: 'Telegram message_id to reply to'
+    required: false
+    default: ''
   token:
     description: 'Telegram bot token'
     required: true
@@ -29,86 +60,48 @@ inputs:
     description: 'Telegram chat ID'
     required: true
 
+outputs:
+  message-id:
+    description: 'Telegram message_id of the sent message (empty when sending failed)'
+    value: ${{ steps.notify.outputs.message-id }}
+
 runs:
   using: 'composite'
   steps:
     - name: Send Telegram notification
+      id: notify
       shell: bash
       env:
-        STATUS: ${{ inputs.status }}
-        EVENT_TYPE: ${{ inputs.event-type }}
-        TITLE: ${{ inputs.title }}
-        EVENT_URL: ${{ inputs.event-url }}
-        MESSAGE: ${{ inputs.message }}
-        COLLECT_FAILED_JOBS: ${{ inputs.collect-failed-jobs }}
+        NOTIFY_SPEC_FILE: ${{ inputs.spec-file }}
+        NOTIFY_STATUS: ${{ inputs.status }}
+        NOTIFY_TITLE: ${{ inputs.title }}
+        NOTIFY_VERDICT: ${{ inputs.message }}
+        NOTIFY_VERDICT_JSON: ${{ inputs.verdict-json }}
+        NOTIFY_FOOTER: ${{ inputs.footer }}
+        NOTIFY_BUTTONS: ${{ inputs.buttons }}
+        NOTIFY_SILENT: ${{ inputs.silent }}
+        NOTIFY_REPLY_TO: ${{ inputs.reply-to }}
         TELEGRAM_TOKEN: ${{ inputs.token }}
         TELEGRAM_CHAT_ID: ${{ inputs.chat-id }}
+        EVENT_TYPE: ${{ inputs.event-type }}
+        EVENT_URL: ${{ inputs.event-url }}
       run: |
         set -euo pipefail
 
-        # Escape Markdown special characters for Telegram
-        escape_markdown() {
-          local text="$1"
-          # Escape: _ * ` [ ]
-          text="${text//\\/\\\\}"  # Escape backslash first
-          text="${text//_/\\_}"
-          text="${text//\*/\\*}"
-          text="${text//\`/\\\`}"
-          text="${text//\[/\\[}"
-          text="${text//\]/\\]}"
-          echo "$text"
-        }
-
-        # 1. Icon by status
-        case "$STATUS" in
-          started)   ICON="🚀" ;;
-          success)   ICON="✅" ;;
-          failure)   ICON="❌" ;;
-          cancelled) ICON="⛔" ;;
-          *)         ICON="❓" ;;
-        esac
-
-        # 2. Header (escape title for Markdown)
-        ESCAPED_TITLE=$(escape_markdown "$TITLE")
-        HEADER="${ICON} ${GITHUB_REPOSITORY} | ${ESCAPED_TITLE}"
-
-        # 3. Links
-        RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-        case "$EVENT_TYPE" in
-          pr)      LINK_TEXT="View PR" ;;
-          push)    LINK_TEXT="View commit" ;;
-          release) LINK_TEXT="View release" ;;
-          *)       LINK_TEXT="View" ;;
-        esac
-        LINKS="[${LINK_TEXT}](${EVENT_URL}) | [View run](${RUN_URL})"
-
-        # 4. Failed jobs summary (if enabled)
-        FAILED_SUMMARY=""
-        if [ "$COLLECT_FAILED_JOBS" = "true" ]; then
-          FAILED_SUMMARY=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
-            | jq -r '.jobs[] | select(.conclusion == "failure") | "  • \(.name)"' \
-            | head -20) || true
+        # Defaults for the flat path only; a spec-file carries its own footer and buttons.
+        if [ -z "$NOTIFY_SPEC_FILE" ]; then
+          if [ -z "$NOTIFY_FOOTER" ]; then
+            NOTIFY_FOOTER="${GITHUB_REPOSITORY##*/}"
+          fi
+          if [ -z "$NOTIFY_BUTTONS" ] && [ -n "$EVENT_URL" ]; then
+            case "$EVENT_TYPE" in
+              push)    LABEL="Commit" ;;
+              release) LABEL="Release" ;;
+              *)       LABEL="Pull request" ;;
+            esac
+            NOTIFY_BUTTONS=$(jq -nc --arg text "$LABEL" --arg url "$EVENT_URL" '[{text: $text, url: $url}]')
+          fi
+          export NOTIFY_FOOTER NOTIFY_BUTTONS
         fi
 
-        # 5. Build message (escape user content, keep links as-is)
-        TEXT="${HEADER}"
-        if [ -n "$MESSAGE" ]; then
-          ESCAPED_MESSAGE=$(escape_markdown "$MESSAGE")
-          TEXT="${TEXT}
-        ${ESCAPED_MESSAGE}"
-        fi
-        if [ -n "$FAILED_SUMMARY" ]; then
-          ESCAPED_FAILED_SUMMARY=$(escape_markdown "$FAILED_SUMMARY")
-          TEXT="${TEXT}
-        ${ESCAPED_FAILED_SUMMARY}"
-        fi
-        TEXT="${TEXT}
-        ${LINKS}"
-
-        # 6. Send to Telegram
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-          -d chat_id="$TELEGRAM_CHAT_ID" \
-          -d text="$TEXT" \
-          -d parse_mode="Markdown" \
-          -d disable_web_page_preview="true"
+        python3 "${GITHUB_WORKSPACE}/.github/scripts/telegram_notify.py"

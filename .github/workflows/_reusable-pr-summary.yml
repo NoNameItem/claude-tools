@@ -1,0 +1,209 @@
+# .github/workflows/_reusable-pr-summary.yml
+name: PR Summary (Reusable)
+
+# Sends the "result" Telegram notification for a PR — the one that says whether the PR is
+# mergeable. Called from BOTH producers of required checks:
+#   * pr.yml            — after Validate PR + the two CI gates
+#   * review-gate.yml   — after the Codex gate posts its commit status
+# Neither can see the other's completion (a status posted with GITHUB_TOKEN starts no workflow
+# run, so `on: status` cannot observe our own gate). So both call this, and pr_summary.py makes
+# every call but the last one silent.
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: 'PR number'
+        required: true
+        type: number
+      head-sha:
+        description: 'PR head SHA — all state is keyed by it'
+        required: true
+        type: string
+    secrets:
+      TELEGRAM_BOT_TOKEN:
+        required: true
+      TELEGRAM_CHAT_ID:
+        required: true
+      SONAR_TOKEN:
+        required: false
+
+# `statuses: read`, not write: this workflow only READS the head SHA's statuses (the required
+# contexts and the reply anchor). It used to record a verdict marker of its own; that marker is
+# gone, and with it the only reason this job ever needed write access to commit statuses.
+permissions:
+  contents: read
+  checks: read
+  statuses: read
+  pull-requests: read
+
+jobs:
+  summary:
+    name: PR Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialises the two possible simultaneous calls for one head SHA. `cancel-in-progress:
+    # false` — a cancelled call would be a lost notification, not a saved minute.
+    concurrency:
+      group: pr-summary-${{ inputs.head-sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Collect head SHA state
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr-number }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+        run: |
+          set -euo pipefail
+
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          current_head=$(printf '%s' "$pr" | jq -r '.head.sha // ""')
+          is_fork=$(printf '%s' "$pr" | jq --arg repo "$REPO" '.head.repo.full_name != $repo')
+
+          # The ruleset drives both the merge gate and this notification: one edit changes both.
+          # A failed READ of the ruleset must not be confused with a ruleset that legitimately
+          # requires nothing: the former has to fail this step loudly (no notification this run
+          # is safer than a false "Ready to merge" built from an empty required-contexts list),
+          # the latter is a real `[]` that flows on unchanged. So the request and the extraction
+          # are two separate steps: capture the raw body and check the command's exit status
+          # first, then run the (unchanged) jq extraction over the captured body.
+          #
+          # `--paginate` for the same reason the read has to fail loudly: this endpoint pages at
+          # 30, and every ruleset on `master` contributes its own rule entries. A truncated first
+          # page that drops the `required_status_checks` rule yields an empty required list —
+          # which `pr_summary.decide()` reads as "nothing to require" and reports as
+          # "Ready to merge". `--jq` runs per page, so `jq -s 'add // []'` re-joins the pages.
+          if ! rules_json=$(gh api --paginate "repos/$REPO/rules/branches/master" --jq '.' \
+                              | jq -s 'add // []'); then
+            echo "::error::Failed to read repos/$REPO/rules/branches/master (required-status-checks ruleset) — cannot compute a merge verdict without it" >&2
+            exit 1
+          fi
+          required=$(printf '%s' "$rules_json" \
+            | jq -c '[.[] | select(.type == "required_status_checks")
+                          | .parameters.required_status_checks[].context]')
+
+          # Paged at 30 like every list endpoint here. A truncated page makes a required context
+          # look like it was never reported, which parks the PR at `waiting` forever — and it
+          # would also drop the reply anchor read below, so the result would be sent standalone
+          # instead of threaded under the "checks running" message.
+          statuses=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/status" \
+            --jq '[.statuses[] | {context, state, target_url, description}]' \
+            | jq -s 'add // []')
+
+          # No `filter` param here, so the endpoint defaults to `filter=latest`: each check-run
+          # name already arrives as exactly one entry, and pr_summary.py's `by_run`/`_latest`
+          # per-name grouping is defensive, not load-bearing, for exactly that reason (see its
+          # docstrings). Passing `filter=all` here would change what pr_summary.py has to handle
+          # — multiple entries per name — and must come with matching test coverage there.
+          # `id` is selected because `_latest`'s tie-break reads it.
+          check_runs=$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs" \
+            --jq '[.check_runs[] | {id, name, status, conclusion, started_at, html_url,
+                                    app_slug: .app.slug, details_url, output_title: .output.title}]' \
+            | jq -s 'add // []')
+
+          # REST does not expose isResolved on review threads — GraphQL is the only source.
+          # Cursor-paginated: a bare `first: 100` silently caps the count, and every thread past
+          # the cap is an unresolved comment the verdict would not know about — i.e. a PR reported
+          # as "Ready to merge" while findings are still open. `gh --paginate` drives the loop
+          # itself, given an `$endCursor` variable and a `pageInfo` selection; `--jq` runs per
+          # page, so the per-page counts are summed with `jq -s 'add // 0'`.
+          unresolved=$(gh api graphql --paginate \
+            -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$PR" \
+            -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  reviewThreads(first: 100, after: $endCursor) {
+                    nodes { isResolved }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                }
+              }
+            }' \
+            --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)] | length' \
+            | jq -s 'add // 0')
+
+          # One marker, one writer, one role: `pr-notify-anchor` (`msg:<id>`) is written only by
+          # pr.yml's notify-start and names the newest "checks running" message, so the result can
+          # reply into that thread. Absent (notify-start has not run, or its send failed) → the
+          # result is sent standalone.
+          anchor=$(printf '%s' "$statuses" \
+            | jq -r 'map(select(.context == "pr-notify-anchor")) | first | .description // ""')
+
+          printf '%s' "$check_runs" > check-runs.json
+          jq -n \
+            --arg head_sha "$HEAD_SHA" \
+            --arg current_head "$current_head" \
+            --argjson is_fork "$is_fork" \
+            --argjson required "$required" \
+            --argjson statuses "$statuses" \
+            --argjson check_runs "$check_runs" \
+            --argjson unresolved "$unresolved" \
+            --arg anchor "$anchor" \
+            '{head_sha: $head_sha, current_head_sha: $current_head, is_fork: $is_fork,
+              required_contexts: $required, statuses: $statuses, check_runs: $check_runs,
+              unresolved_threads: $unresolved, anchor_description: $anchor}' > payload.json
+
+          # PR title and URL go through GITHUB_OUTPUT, never through inline GitHub Actions
+          # interpolation in a `run:` block: this workflow is also called from
+          # pull_request_target, where the title is attacker controlled. The next step reads
+          # them as env vars.
+          #
+          # The heredoc delimiter is randomised (GitHub's own guidance for untrusted values):
+          # a title containing a line that happens to equal a fixed delimiter would terminate
+          # the heredoc early and corrupt $GITHUB_OUTPUT.
+          delimiter="PR_TITLE_$(openssl rand -hex 8)"
+          {
+            echo "title<<$delimiter"
+            printf '%s' "$pr" | jq -r '.title'
+            echo "$delimiter"
+            echo "url=$(printf '%s' "$pr" | jq -r '.html_url')"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Decide the verdict
+        id: decide
+        env:
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr-number }}
+          TITLE: ${{ steps.collect.outputs.title }}
+          URL: ${{ steps.collect.outputs.url }}
+          SERVER: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          # `--opt=value`, not `--opt value`: PR_TITLE is attacker-controlled under
+          # pull_request_target and can legally start with `-` (e.g. `-- WIP`), which argparse
+          # would otherwise parse as an option and exit 2, silently losing the notification.
+          python3 .github/scripts/pr_summary.py \
+            --title="$TITLE" \
+            --url="$URL" \
+            --footer="${REPO##*/} · PR ${PR}" \
+            --checks-url="${SERVER}/${REPO}/pull/${PR}/checks" \
+            < payload.json > summary.json
+
+          jq -r '"send=\(.send)", "verdict=\(.verdict)", "message-id=\(.message_id // "")", "reason=\(.reason)"' \
+            summary.json >> "$GITHUB_OUTPUT"
+          echo "Decision: $(jq -c '{send, reason, verdict}' summary.json)"
+
+      - name: Build Sonar blocks and the final spec
+        if: steps.decide.outputs.send == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PR: ${{ inputs.pr-number }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/sonar_pr_status.py \
+            --mode pr --pr "$PR" --check-runs-file check-runs.json > sonar.json
+          jq --slurpfile sonar sonar.json '.spec | .blocks += $sonar[0]' summary.json > spec.json
+
+      - name: Send the notification
+        if: steps.decide.outputs.send == 'true'
+        uses: ./.github/actions/telegram-notify
+        with:
+          spec-file: spec.json
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
