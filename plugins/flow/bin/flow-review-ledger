@@ -205,7 +205,6 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
             refresh_snapshot(row, item)
         # The platform axis, for new and existing rows alike — one writer, one statement.
         row["platform_state"] = _ledger.platform_state_of(item)
-        row["last_round"] = round_no
         if _ledger.is_working(row):
             working.append(working_entry(row))
 

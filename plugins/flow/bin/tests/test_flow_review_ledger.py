@@ -1279,18 +1279,21 @@ class TestStats:
         assert "Deleted upstream" not in out
 
     def test_last_round_filters_to_the_current_pass(self, harness):
-        """`last_round` is now written unconditionally for every row present in a round's
-        snapshot (see `cmd_reconcile`), not just for rows created or recorded that round — so
-        `--last-round` narrows to what THIS pass actually saw, and a still-tracked row is seen
-        on every pass it survives."""
+        """`last_round` is written only by `new_row` (on insert) and `cmd_record` (on a
+        decision) — `cmd_reconcile` must NOT bump it just because a row is present in a round's
+        snapshot, or `--last-round` (and the "last pass" block `flow:review-loop` prints at
+        convergence) would balloon to the whole ledger the moment every row simply survives into
+        the next round."""
         meta = meta_doc([inline_comment(1)])
         harness.reconcile(meta)
         assert record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}}).returncode == 0
-        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))  # round 2 sees both
+        harness.reconcile(meta_doc([inline_comment(1), inline_comment(2)]))  # round 2: U1 merely re-seen, U2 created
         out = harness.run("stats", "--meta", harness.write_meta(meta), "--last-round").stdout
-        assert "Tracked: 2 findings" in out
-        assert "Done: 1" in out
+        assert "Tracked: 1 findings" in out
         assert "Open: 1" in out
+        # The regression this guards against: U1 was decided in round 1 and only RE-SEEN (not
+        # re-decided) in round 2, so it must not sneak into round 2's "last pass" view.
+        assert "Done: 0" in out
 
     def test_gitlab_unit_is_labelled_mr(self, harness):
         meta = meta_doc(
