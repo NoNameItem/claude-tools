@@ -878,9 +878,10 @@ def test_reconcile_never_writes_status_from_platform_state(harness):
     """
     meta = meta_doc([inline_comment(1, thread=[reply(10)])])
     harness.reconcile(meta)
-    record_decisions(
+    result = record_decisions(
         harness, meta, {"U1": {"status": "open", "decision": "fix", "reason": "push deferred", "thread_mark": 10}}
     )
+    assert result.returncode == 0, result.stderr
     ours = ("status", "decision", "reason", "followup_task_id")
 
     def mine():
@@ -923,9 +924,10 @@ def test_record_never_writes_platform_state(harness):
     meta = meta_doc([inline_comment(1, resolved=True, thread=[reply(10)])])
     harness.reconcile(meta)
     assert harness.ledger(meta)["rows"]["comment:1"]["platform_state"] == "resolved"
-    record_decisions(
+    result = record_decisions(
         harness, meta, {"U1": {"status": "done", "decision": "wont_fix", "reason": "why", "thread_mark": 10}}
     )
+    assert result.returncode == 0, result.stderr
     assert harness.ledger(meta)["rows"]["comment:1"]["platform_state"] == "resolved"
 
 

@@ -137,7 +137,6 @@ def working_entry(row: dict) -> dict:
     return {
         "ref": row.get("ref"),
         "status": row.get("status"),
-        "platform_state": row.get("platform_state"),
         "kind": row.get("kind"),
         "is_bot": bool(row.get("is_bot")),
         "path": row.get("path"),
