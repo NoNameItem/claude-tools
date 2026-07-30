@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from ..pr_summary import CheckState, build_spec, collect_states, decide, parse_marker
+from ..pr_summary import CheckState, build_spec, collect_states, decide, parse_anchor
 
 HEAD = "abc123"
 
@@ -50,27 +50,27 @@ def _payload(**overrides) -> dict:
         ],
         "unresolved_threads": 0,
         "anchor_description": "msg:4711",
-        "verdict_description": "",
     }
     payload.update(overrides)
     return payload
 
 
-class TestParseMarker:
+class TestParseAnchor:
     @pytest.mark.parametrize(
         ("description", "expected"),
         [
-            ("msg:4711", (4711, None)),
-            ("msg:4711 v:ready", (4711, "ready")),
-            # The verdict marker written while no anchor existed: `v:` with no `msg:` at all.
-            ("v:ready", (None, "ready")),
-            ("", (None, None)),
-            ("garbage", (None, None)),
-            ("msg:notanint v:ready", (None, "ready")),
+            ("msg:4711", 4711),
+            ("", None),
+            ("garbage", None),
+            # A corrupt id degrades to "send without a reply" rather than raising.
+            ("msg:notanint", None),
+            # Tolerated for compatibility: an anchor written before the verdict field was dropped
+            # still parses to its id, so a PR open across that change keeps its reply thread.
+            ("msg:4711 v:ready", 4711),
         ],
     )
-    def test_parse(self, description: str, expected: tuple) -> None:
-        assert parse_marker(description) == expected
+    def test_parse(self, description: str, expected: int | None) -> None:
+        assert parse_anchor(description) == expected
 
 
 class TestCollectStates:
@@ -193,51 +193,23 @@ class TestDecide:
         assert decision.verdict == "ready"
         assert all(state.context != "review-gate" for state in decision.states)
 
-    def test_same_verdict_for_the_same_anchor_is_silent(self) -> None:
-        decision = decide(_payload(verdict_description="msg:4711 v:ready"))
-        assert decision.send is False
-        assert decision.reason == "duplicate"
+    def test_terminal_state_is_the_only_condition_for_speaking(self) -> None:
+        # There is no "already reported this verdict" record any more: every call that finds all
+        # required contexts terminal sends. The cost is an occasional duplicate message; the record
+        # that avoided it produced, three rounds running, a start message with no reply at all.
+        assert decide(_payload()).send is True
+        assert decide(_payload()).reason == "send"
 
-    def test_changed_verdict_re_notifies(self) -> None:
-        decision = decide(_payload(verdict_description="msg:4711 v:failed"))
-        assert decision.send is True
-        assert decision.verdict == "ready"
-
-    def test_same_verdict_for_a_new_anchor_re_notifies(self) -> None:
-        # The `edited` / `reopened` case: same head SHA, so the verdict is unchanged, but
-        # notify-start sent a fresh "checks running" message and moved the anchor. Dedup keyed on
-        # the verdict alone would swallow this and leave that new message hanging forever.
-        decision = decide(_payload(anchor_description="msg:4712", verdict_description="msg:4711 v:ready"))
-        assert decision.send is True
-        assert decision.verdict == "ready"
+    def test_reply_targets_the_anchor(self) -> None:
+        decision = decide(_payload(anchor_description="msg:4712"))
         assert decision.message_id == 4712
 
-    def test_reply_targets_the_current_anchor_not_the_recorded_one(self) -> None:
-        decision = decide(_payload(anchor_description="msg:4712", verdict_description="msg:4711 v:failed"))
-        assert decision.message_id == 4712
-
-    def test_without_an_anchor_dedup_falls_back_to_the_verdict_alone(self) -> None:
-        # No anchor exists (notify-start had not written one when this call ran), so there is no
-        # per-update signal. Re-sending on every call would be worse than staying silent.
-        decision = decide(_payload(anchor_description="", verdict_description="msg:4711 v:ready"))
-        assert decision.send is False
-        assert decision.reason == "duplicate"
+    def test_without_an_anchor_the_result_is_sent_standalone(self) -> None:
+        # notify-start has not run, or its Telegram send failed. The result still goes out; it just
+        # has no thread to reply into.
+        decision = decide(_payload(anchor_description=""))
+        assert decision.send is True
         assert decision.message_id is None
-
-    def test_anchor_appearing_after_an_anchorless_verdict_is_not_a_change(self) -> None:
-        # The aggregator recorded `v:ready` with no `msg:` because no anchor existed yet. When the
-        # real anchor shows up, that must NOT read as an anchor change: the verdict is unchanged,
-        # so nothing new is reported. (Before the marker was split, this path recorded the id of
-        # the message it had just sent as a surrogate anchor, and this call re-sent a duplicate.)
-        decision = decide(_payload(anchor_description="msg:4712", verdict_description="v:ready"))
-        assert decision.send is False
-        assert decision.reason == "duplicate"
-
-    def test_anchorless_verdict_still_re_notifies_when_the_verdict_changes(self) -> None:
-        decision = decide(_payload(anchor_description="msg:4712", verdict_description="v:failed"))
-        assert decision.send is True
-        assert decision.verdict == "ready"
-        assert decision.message_id == 4712
 
     def test_failed_jobs_include_non_required_runs(self) -> None:
         decision = decide(
@@ -283,7 +255,7 @@ class TestDecide:
         assert decision.verdict == "failed"
         assert decision.failed_jobs == ["Python CI / SonarCloud (statuskit)"]
 
-    def test_message_id_from_marker(self) -> None:
+    def test_message_id_from_the_anchor_marker(self) -> None:
         assert decide(_payload()).message_id == 4711
 
 

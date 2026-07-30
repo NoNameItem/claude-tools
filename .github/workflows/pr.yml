@@ -7,13 +7,12 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
-# Deliberately NO workflow-level `statuses: write`. The notification markers are written by
-# exactly two jobs (notify-start writes `pr-notify-anchor`, pr-summary writes
-# `pr-notify-verdict`), and each grants itself that permission at job level. Every OTHER job
-# here runs PR-authored code: this workflow triggers on `pull_request`, so actions/checkout takes
-# the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci execute scripts from it.
-# A workflow-level grant would hand that code the ability to forge commit statuses — including
-# `review-gate`, which the master ruleset requires.
+# Deliberately NO workflow-level `statuses: write`. Exactly one job here writes a commit status —
+# notify-start, which records the `pr-notify-anchor` marker — and it grants itself that permission
+# at job level. Every OTHER job runs PR-authored code: this workflow triggers on `pull_request`, so
+# actions/checkout takes the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci
+# execute scripts from it. A workflow-level grant would hand that code the ability to forge commit
+# statuses — including `review-gate`, which the master ruleset requires.
 permissions:
   contents: read
   checks: write
@@ -42,14 +41,13 @@ jobs:
     permissions:
       contents: read
       statuses: write
-    # No shared concurrency group with _reusable-pr-summary.yml, and none is needed: this job and
-    # the summary write DIFFERENT commit-status contexts (`pr-notify-anchor` here,
-    # `pr-notify-verdict` there), so they cannot clobber each other's write. That is the whole
-    # point of splitting the marker in two — an earlier single-context design needed a
-    # read-before-write guard here, which in turn froze the anchor across `edited` re-runs. A
-    # shared group would also be actively harmful: a queued job is cancelled outright as soon as a
-    # third claimant joins its group (`cancel-in-progress: false` protects only the job already
-    # running), which would take the Telegram send below with it, and that send has no retry.
+    # No shared concurrency group with _reusable-pr-summary.yml, and none is needed: this job is
+    # now the ONLY writer of any notification marker, so there is nothing to serialise against.
+    # (Earlier designs had the summary write to the same status, which needed first a
+    # read-before-write guard and then a second context; both are gone.) A shared group would also
+    # be actively harmful: a queued job is cancelled outright as soon as a third claimant joins its
+    # group (`cancel-in-progress: false` protects only the job already running), which would take
+    # the Telegram send below with it, and that send has no retry.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,13 +86,17 @@ jobs:
       # message to reply to. It is written UNCONDITIONALLY, so it always names the newest "checks
       # running" message for this head SHA.
       #
-      # This is the half of the marker that only this job writes. The verdict lives in a separate
-      # context (`pr-notify-verdict`, written only by _reusable-pr-summary.yml), and keeping the
-      # two apart is what makes an unconditional write safe here: the two jobs never target the
-      # same (SHA, context) pair, so neither can erase the other. Merging them into one status was
-      # the earlier design, and it cost two review rounds — first a lost verdict, then a
-      # read-before-write guard that fixed the loss but froze the anchor, so an `edited` re-run
-      # sent a fresh "checks running" message that no result ever replied to.
+      # This job is the only writer of this — or any — notification marker, which is what makes an
+      # unconditional write safe. Earlier designs also recorded the reported verdict here, to
+      # suppress a repeated result message; that cost three review rounds (a verdict erased by this
+      # write, then a guard that fixed the erasure but froze the anchor, then a verdict recorded
+      # before its anchor) and was dropped. The remaining cost of dropping it is an occasional
+      # duplicate result message — cheaper than the failure it kept producing, which was a start
+      # message that no result ever replied to.
+      #
+      # The summary's silence therefore comes from ONE rule now: it speaks only when every required
+      # context is terminal (a not-yet-started producer reads as `missing`, which is silent too), so
+      # the call that sees the last one finish is the one that reports.
       #
       # `state=success`, not `pending`: this is a marker, not a gate, and a permanently pending
       # status would read as an unfinished check. It must never be added to the master ruleset's
@@ -249,12 +251,13 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     # Must mirror _reusable-pr-summary.yml's own `permissions:` block: a called workflow's
     # effective permissions are the INTERSECTION of what it declares and what the caller job
-    # holds, so anything missing here is silently withheld from it — and without `statuses:
-    # write` the summary could not record its verdict on the head SHA at all.
+    # holds, so anything missing here is silently withheld from it — and the summary reads the
+    # head SHA's statuses to resolve the required contexts and the reply anchor. Read, not write:
+    # the summary no longer records a marker of its own.
     permissions:
       contents: read
       checks: read
-      statuses: write
+      statuses: read
       pull-requests: read
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:

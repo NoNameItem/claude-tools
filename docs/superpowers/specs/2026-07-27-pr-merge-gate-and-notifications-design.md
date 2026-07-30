@@ -127,32 +127,34 @@ the other exits silently. The algorithm, identical in both call sites:
    - otherwise → `ready`.
 5. Send, subject to the marker below.
 
-**Concurrency and dedup.** The job declares
-`concurrency: group: pr-summary-<head-sha>, cancel-in-progress: false`, which serialises the two
-possible simultaneous calls. State lives in **two** commit statuses on the head SHA — one per
-writer, so neither can erase the other:
+**When the aggregator speaks.** Exactly one condition: every required context resolves to a
+terminal state. A context whose producer has not started yet resolves to `missing`, which is as
+silent as `pending` — so "the other flow is still running" and "the other flow has not begun" are
+the same case, and no cross-workflow dependency is needed to tell them apart. Whichever of the two
+calls sees the last context finish is the one that reports; the other has already returned
+`waiting`. The job also declares
+`concurrency: group: pr-summary-<head-sha>, cancel-in-progress: false`, which serialises two
+simultaneous calls.
 
-- `pr-notify-anchor` — `state: success`, `description: msg:<message_id>`. Written **only** by
-  `notify-start`, **unconditionally**, on every PR update. It names the newest *checks running*
-  message, which is what `reply_parameters` targets.
-- `pr-notify-verdict` — `state: success`, `description: msg:<anchor_id> v:<verdict>`. Written
-  **only** by the aggregator, after a send. It records what was reported *and which anchor it was
-  reported against*.
+**State on the head SHA — one commit status, one writer.** `pr-notify-anchor` (`state: success`,
+`description: msg:<message_id>`) is written **only** by `notify-start`, **unconditionally**, on
+every PR update. It names the newest *checks running* message, which is what `reply_parameters`
+targets. If it is absent — `notify-start` has not run, or its send failed — the result goes out
+standalone.
 
-A notification is sent unless the recorded verdict matches the computed one **for the current
-anchor**. Keying dedup on the anchor as well as the verdict is what makes an update to an
-unchanged head SHA behave correctly: `pr.yml` also fires on `edited` and `reopened`, each of which
-sends a fresh *checks running* message and moves the anchor, so the same verdict is reported again
-against the new message instead of being swallowed as a duplicate and leaving that message
-claiming forever that checks are running. When no anchor exists at all, dedup falls back to the
-verdict alone.
+**There is deliberately no record of the verdict already reported.** Three successive designs kept
+one, and each produced a defect in review: a single combined marker let the anchor write erase the
+verdict; a read-before-write guard fixed the erasure but froze the anchor across `edited` re-runs;
+splitting it into a second `pr-notify-verdict` context fixed that but mis-handled a verdict
+recorded before its anchor existed. Every one of those bugs had the same shape — a *checks running*
+message that no result ever replied to. What the record bought was suppressing a repeated identical
+message; that was judged the cheaper thing to lose.
 
-A single combined marker was the original design and did not survive review: one writer erased the
-other's field, and the read-before-write guard that fixed the erasure froze the anchor instead.
-
-This is also what makes re-runs behave correctly: re-running a failed CI job, or re-running the gate
-after its timeout (which `review-gate.yml:174` explicitly instructs the user to do), produces a
-fresh, accurate notification, while repeated calls with an unchanged verdict stay quiet.
+What remains possible, and is accepted: two identical result messages when both producers observe
+the last context finish (runner queueing can invert their order), and one extra message when an
+already-green job is re-run manually. A re-run that *changes* the outcome still produces an
+accurate new message, which is the case that matters — including re-running the gate after its
+timeout, which `review-gate.yml:174` explicitly instructs the user to do.
 
 The marker is deliberately visible in the PR checks list: it doubles as a human-readable verdict.
 It is not a required check. Being posted with `GITHUB_TOKEN`, it starts no new workflow runs.

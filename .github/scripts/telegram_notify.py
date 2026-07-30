@@ -66,7 +66,7 @@ def _bound_title(title: object) -> str:
 
     Coerces like `esc()` does rather than assuming a string. This sits on the only send path,
     and a spec whose `title` is `null` (or any non-string) must degrade to a rendered
-    notification, not a `TypeError` — the same posture `parse_marker` and `_post` already take
+    notification, not a `TypeError` — the same posture `parse_anchor` and `_post` already take
     towards malformed input.
     """
     text = str(title)

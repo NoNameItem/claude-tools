@@ -211,7 +211,7 @@ class TestRenderRich:
 
     def test_non_string_title_renders_instead_of_raising(self) -> None:
         """`_bound_title` sits on the only send path, so a spec whose `title` is `null` (or any
-        non-string) must still render — the same posture `parse_marker` and `_post` take towards
+        non-string) must still render — the same posture `parse_anchor` and `_post` take towards
         malformed input. It coerces exactly as `esc()` always did, so the output is unchanged
         from before the bound was introduced.
         """

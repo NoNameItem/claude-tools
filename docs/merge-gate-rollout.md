@@ -93,11 +93,10 @@ Decisions encoded above, so a future reader does not "fix" them:
 - **`SonarCloud Code Analysis` is deliberately not required** — it only exists on PRs with Python
   changes, and a conditionally-present required check blocks a PR forever. The Quality Gate
   blocks through `Python CI Gate` instead (`sonar.qualitygate.wait=true`).
-- **`pr-notify-anchor` and `pr-notify-verdict` are deliberately not required, and must never be
-  added.** They are the notification's cross-run bookkeeping, not verdicts: the anchor records
-  which Telegram message to reply to, the verdict records what was already reported and for which
-  anchor, and a run that decides to stay silent writes neither. Both are posted as `success`
-  precisely so they never read as an unfinished check — but making either required would let
+- **`pr-notify-anchor` is deliberately not required, and must never be added.** It is the
+  notification's cross-run bookkeeping, not a verdict: it records which Telegram message the result
+  should reply to, and a run whose Telegram send failed writes nothing at all. It is posted as
+  `success` precisely so it never reads as an unfinished check — but making it required would let
   bookkeeping block a merge.
 - **`bypass_actors` stays empty.**
 
@@ -148,13 +147,16 @@ the released ones anyway.
 Open a scratch PR against `master` and confirm, in order:
 
 1. **Green path** — one silent opener, then exactly one reply saying *Ready to merge* once both
-   producers have finished. `pr-notify-anchor` shows `msg:<id>`; `pr-notify-verdict` shows
-   `msg:<same id> v:ready`.
+   producers have finished. `pr-notify-anchor` shows `msg:<id>` and the reply is threaded under
+   that message.
 2. **Red path** — push a commit that fails lint. The reply says *Checks failed:* with the gate in
    bold, the check table bare (not collapsed), and the failing child job listed.
 3. **Re-run** — re-run the failed job so it passes. A **new** reply arrives with the flipped
-   verdict, because the marker's recorded verdict differed.
-4. **Duplicate suppression** — re-run a passing job. No new message.
+   verdict.
+4. **Repeat calls are not suppressed** — re-running an already-green job produces another identical
+   reply. That is expected, not a defect: the aggregator keeps no record of what it already
+   reported (see the design doc for why that record was removed), so a duplicate here is the
+   accepted cost. What must NOT happen is a *checks running* message left with no reply at all.
 5. **Comments path** — leave an unresolved review comment and re-run. The verdict becomes
    *All checks passed, unresolved comments: 1*.
 6. **Superseded gate** — push twice in quick succession. The surviving poll for the old SHA sends
