@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 import urllib.parse
 
 DEFAULT_TIMEOUT = 30
@@ -27,6 +28,68 @@ def run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, check: bool = True) 
     """
     proc = subprocess.run(argv, capture_output=True, text=True, check=check, timeout=timeout)
     return proc.stdout.strip()
+
+
+#: Read-path retry pauses, in seconds. Three attempts add at most ~5 s to an interactive wait.
+_RETRY_PAUSES = (1, 4)
+#: A rate limit does not clear in a second, so its pauses are an order of magnitude longer.
+_RATE_LIMIT_PAUSES = (10, 30)
+
+#: stderr signatures of failures that will not succeed on a retry. Matched case-insensitively
+#: as substrings, because the CLIs expose no HTTP status — their stderr text is the only signal.
+_PERMANENT_SIGNATURES = (
+    "auth login",
+    "401",
+    "bad credentials",
+    "404",
+    "not found",
+    "could not resolve to a",
+    "doesn't exist",
+)
+_RATE_LIMIT_SIGNATURES = ("rate limit", "429")
+
+
+class ApiUnavailable(RuntimeError):  # noqa: N818 - "Unavailable" (not "...Error") reads better at call sites like `except ApiUnavailable`
+    """A platform API call could not be completed. `permanent` distinguishes "try again later"
+    from "this will never work here" (bad auth, or a GraphQL schema without the field we ask
+    for), so callers can say which one happened instead of printing one vague message."""
+
+    def __init__(self, message: str, *, permanent: bool) -> None:
+        super().__init__(message)
+        self.permanent = permanent
+
+
+def _stderr_of(exc: BaseException) -> str:
+    raw = getattr(exc, "stderr", None) or ""
+    return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+
+
+def api_run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, sleep=time.sleep) -> str:
+    """Run a platform API READ with retries; raise `ApiUnavailable` when it cannot be completed.
+
+    **Reads only.** Every caller here is idempotent (listings, `user`, `repo view`, `pr view`,
+    the resolution GraphQL query), which is the entire reason a retry is safe. Do NOT route a
+    write through this: re-running a reply POST double-posts a comment on the platform, and the
+    duplicate is not recoverable. Phase 5 replies deliberately go through a direct `gh api`
+    from the skill, not through this module.
+
+    `sleep` is injected so tests do not wait.
+    """
+    attempts = len(_RETRY_PAUSES) + 1
+    for attempt in range(attempts):
+        try:
+            return run(argv, timeout=timeout)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            stderr = _stderr_of(exc).lower()
+            detail = f"{' '.join(argv)}: {_stderr_of(exc).strip() or exc}"
+            if any(sig in stderr for sig in _PERMANENT_SIGNATURES):
+                raise ApiUnavailable(detail, permanent=True) from exc
+            if attempt == attempts - 1:
+                raise ApiUnavailable(detail, permanent=False) from exc
+            pauses = _RATE_LIMIT_PAUSES if any(sig in stderr for sig in _RATE_LIMIT_SIGNATURES) else _RETRY_PAUSES
+            sleep(pauses[attempt])
+    msg = "unreachable"  # pragma: no cover - the loop either returns or raises
+    raise AssertionError(msg)
 
 
 def host_from_remote(url: str) -> str | None:
@@ -122,7 +185,7 @@ def gh_api(path: str, *, paginate: bool = False, jq: str | None = None, slurp: b
     argv.append(path)
     if jq:
         argv += ["-q", jq]
-    return run(argv)
+    return api_run(argv)
 
 
 def glab_api(path: str, *, paginate: bool = False) -> str:
@@ -136,4 +199,4 @@ def glab_api(path: str, *, paginate: bool = False) -> str:
     if paginate:
         argv.append("--paginate")
     argv.append(path)
-    return run(argv)
+    return api_run(argv)
