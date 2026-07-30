@@ -1,4 +1,13 @@
-"""Git module for statuskit."""
+"""Git module for statuskit.
+
+Renders the repository segment of the statusline: the current branch, its state against the
+upstream remote, and — when the branch has one — its pull/merge request.
+
+The PR lookup is the expensive part, so it is cached on disk rather than repeated on every
+statusline render: `git_pr.json` holds the resolved provider per host, one entry per
+(repo slug, branch), and the timestamps of failed provider detections. Negative results are
+cached too — a branch with no PR must not re-run `gh`/`glab` on every prompt.
+"""
 
 from __future__ import annotations
 
