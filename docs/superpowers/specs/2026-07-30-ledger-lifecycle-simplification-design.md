@@ -232,8 +232,19 @@ which is why it is the sole exception in the `thread_mark` invariant and the sol
 ## Skill changes
 
 `plugins/flow/AGENTS.md` mentions neither statuses nor the ledger and is unaffected.
-`plugins/flow/skills/done/SKILL.md` is unaffected — its purge gate keys on the PR's state and has
-nothing to do with a row's lifecycle.
+
+### `done/SKILL.md` — the purge gate distinguishes `MERGED` from `CLOSED`
+
+The purge gate keys on the PR's state rather than on branch deletion (amended earlier in this PR),
+but `MERGED` and `CLOSED` must not be lumped together as "terminal": **closing a PR is reversible.**
+A reopened PR re-imports every settled finding without its decisions or follow-up ids, and that
+re-import is indistinguishable from a first run — so purging a closed PR's ledger is an
+irreversible choice made on the user's behalf.
+
+- `MERGED` → purge unattended. The review is over and cannot resume.
+- `CLOSED` → **ask** in plain text and wait; `no` keeps the ledger (idempotent to purge later,
+  self-expiring if abandoned).
+- `OPEN` → skip.
 
 ### `review-comments/SKILL.md`
 
@@ -308,9 +319,22 @@ Deleted upstream: N         # only when non-zero
 `Pending` and `Skipped` disappear as counters; "decided but not delivered" is derived from
 `decision is not None` on an `open` row — the same information without the stored statuses.
 
-### `review-loop/SKILL.md`
+### `review-loop/SKILL.md` — convergence requires an empty working set
 
-Prints `stats` at convergence: labels change, logic does not.
+Convergence is currently decided purely by head advancement: `HEAD_after == HEAD_before` means
+"nothing left to do". That is not sound, and removing the cap does not fully fix it.
+
+The cap *was* the loudest source of the problem — a round that triaged only a subset and produced
+no push declared convergence while the unselected rows stayed open — and with the cap gone that
+particular case disappears. But a round can still end with a non-empty working set and an unchanged
+head: a row whose action did not land (apply failed, push skipped) stays `open` carrying its
+`decision`. Declaring that "converged" stops the loop with work outstanding.
+
+**Convergence therefore requires both:** the head did not advance **and** `reconcile` reports an
+empty working set. In the new model a non-empty working set at a round's end means precisely
+"something did not get delivered", which is the one thing convergence must not swallow.
+
+`stats` labels change with the status enum; that part is mechanical.
 
 ## Testing
 
