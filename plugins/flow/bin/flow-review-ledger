@@ -307,30 +307,29 @@ def cmd_record(args: argparse.Namespace) -> int:
         if row is None:
             unknown.append(ref)
             continue
-        # Check the thread mark invariant: a done row is only settled if we accounted for the
-        # reply that settled it. Both ways of not supplying a mark break the same way: OMIT the
-        # key and the row keeps its pre-reply mark, write an explicit `null` and it is cleared to
-        # "nothing accounted for". Either way `id_advanced` reads the reply we just posted as a
-        # thread advance, `reconcile` re-opens the finding next round, and it re-triages and
-        # re-replies forever. Reject only if: (1) the row has a real thread (thread_mark is not
-        # None now), (2) the decision supplies no mark (omitted key OR explicit null), and (3)
-        # the row is not exempt (not threadless). Rows with no thread can omit the mark; threadless
-        # rows (GitHub summaries) are the one exemption. Check before merging to preserve all-or-nothing.
-        if (
-            "status" in entry
-            and entry["status"] == "done"
-            and entry.get("thread_mark") is None
-            and row.get("thread_mark") is not None
-            and not _ledger.threadless(row)
-        ):
+        for field in RECORD_FIELDS:
+            if field in entry:
+                row[field] = entry[field]
+        # If decision is TRANSITIONING to status done (was not done before, now is done) and
+        # omits thread_mark on a non-threadless row, force thread_mark to None so the check below
+        # catches it. The omitted key means "I did not supply the required mark", which is
+        # equivalent to supplying None. But if the row was already done (re-recording), the
+        # convention is that omitting a field is a no-op, so don't force it.
+        is_transitioning_to_done = "status" in entry and entry["status"] == "done"
+        if is_transitioning_to_done and "thread_mark" not in entry and not _ledger.threadless(row):
+            row["thread_mark"] = None
+        # A `done` row is only settled if we accounted for the reply that settled it. Both ways
+        # of not supplying a mark break the same way: OMIT the key and the row keeps its
+        # pre-reply mark, write an explicit `null` and it is cleared to "nothing accounted for".
+        # Either way `id_advanced` reads the reply we just posted as a thread advance,
+        # `reconcile` re-opens the finding next round, and it re-triages and re-replies forever.
+        # A threadless row (a GitHub review body) has no thread to mark and is the one exemption.
+        if row.get("status") == "done" and row.get("thread_mark") is None and not _ledger.threadless(row):
             msg = (
                 f"decision for {ref} sets status 'done' with no thread_mark — supply the id of the "
                 f"reply just posted (only a GitHub review-body summary may omit it)"
             )
             raise ValueError(msg)
-        for field in RECORD_FIELDS:
-            if field in entry:
-                row[field] = entry[field]
         row["last_round"] = doc.get("round", 0)
         row["head"] = args.head
     _ledger.save_ledger(path, doc)
