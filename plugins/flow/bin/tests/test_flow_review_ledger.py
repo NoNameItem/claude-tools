@@ -1266,3 +1266,52 @@ class TestPurge:
         result = harness.run("purge", "--url", meta["unit"]["url"], "--number", "96")
         assert result.returncode == 0, result.stderr
         assert not path.exists()
+
+
+class TestPlatformStateOf:
+    def test_a_resolved_item_maps_to_resolved(self) -> None:
+        assert _ledger.platform_state_of({"resolved": True}) == "resolved"
+
+    def test_an_unresolved_item_maps_to_live(self) -> None:
+        assert _ledger.platform_state_of({"resolved": False}) == "live"
+
+    def test_a_missing_resolved_key_maps_to_live(self) -> None:
+        # `None` is legal for exactly one input — a GitHub review-body summary, which has no
+        # thread and never consults the resolution side-query. "Not applicable" for such a row
+        # means "live until we settle it". It no longer means "could not determine": the
+        # collector aborts instead (see the collector task), so that second meaning is gone.
+        assert _ledger.platform_state_of({}) == "live"
+        assert _ledger.platform_state_of({"resolved": None}) == "live"
+
+
+class TestThreadless:
+    def test_a_github_summary_is_threadless(self) -> None:
+        assert _ledger.threadless({"platform": "github", "kind": "summary"}) is True
+
+    def test_a_github_inline_row_is_not(self) -> None:
+        assert _ledger.threadless({"platform": "github", "kind": "inline"}) is False
+
+    def test_a_gitlab_summary_is_not_threadless(self) -> None:
+        # A GitLab general discussion is `kind == "summary"` too, but it carries a real
+        # discussion id and can be replied to, so it is a normal threaded row. Conflating the
+        # two would let a `done` row skip its thread mark and re-open on our own reply forever.
+        assert _ledger.threadless({"platform": "gitlab", "kind": "summary"}) is False
+
+
+class TestResurfaced:
+    def test_a_row_whose_thread_grew_past_its_mark_is_resurfaced(self) -> None:
+        row = {"thread": [{"id": 10}, {"id": 20}], "thread_mark": 10}
+        assert _ledger.resurfaced(row) is True
+
+    def test_a_row_whose_mark_is_current_is_not(self) -> None:
+        row = {"thread": [{"id": 10}, {"id": 20}], "thread_mark": 20}
+        assert _ledger.resurfaced(row) is False
+
+    def test_a_threadless_row_is_never_resurfaced(self) -> None:
+        assert _ledger.resurfaced({"thread": [], "thread_mark": None}) is False
+
+    def test_it_reuses_id_advanced(self) -> None:
+        # One rule for "did the thread advance?", not two: the flag and `reopen_if_advanced`
+        # must never disagree about the same row.
+        row = {"thread": [{"id": 7}], "thread_mark": None}
+        assert _ledger.resurfaced(row) is _ledger.id_advanced(7, None)

@@ -24,6 +24,11 @@ STATUSES = ("open", "skipped", "pending", "done", "deleted")
 DECISIONS = ("fix", "wont_fix", "follow_up", "outdated", "skip")
 KINDS = ("inline", "file", "summary")
 
+# The platform's own verdict on a thread, recomputed from every round's snapshot — never
+# remembered as a status. `absent` means the thread is not in the snapshot at all; because the
+# collector aborts rather than returning a short page, absence is trustworthy.
+PLATFORM_STATES = ("live", "resolved", "absent")
+
 # Statuses that take a row OUT of the working set. `done` is settled by us, `deleted` is
 # settled by the platform (the thread no longer exists). Every "is this row still work?"
 # test goes through this set — a literal `status != "done"` would silently pull `deleted`
@@ -341,3 +346,41 @@ def id_advanced(current: object, mark: object) -> bool:
         return int(current) > int(mark)
     except (TypeError, ValueError):
         return str(current) != str(mark)
+
+
+def platform_state_of(item: dict) -> str:
+    """The platform axis for an item PRESENT in this round's snapshot.
+
+    Absence is not decided here — `reconcile` sets `absent` in its own pass over the rows the
+    snapshot did not contain.
+
+    `resolved` is a bool for everything with a resolvable thread. `None` is legal for exactly
+    one input, a GitHub review-body summary, which has no thread and never consults the
+    resolution side-query; it maps to `live`, because "not applicable" for such a row means
+    "live until we settle it". `None` no longer also means "could not determine" — the
+    collector aborts on that instead, which is what allowed this function to be two lines.
+    """
+    return "resolved" if item.get("resolved") else "live"
+
+
+def threadless(row: dict) -> bool:
+    """True for the ONE row shape with no reply target and no platform resolution.
+
+    A GitHub review body is not a thread: there is no endpoint to reply into and nothing to
+    resolve, so our own `done` is its only exit. A GitLab general discussion is also
+    `kind == "summary"` but carries a real discussion id, so it is a normal threaded row —
+    conflating the two would let a `done` row skip its thread mark and then re-open on our own
+    reply, forever.
+    """
+    return row.get("platform") == "github" and row.get("kind") == "summary"
+
+
+def resurfaced(row: dict) -> bool:
+    """True when the row's thread holds a reply we have not accounted for.
+
+    Deliberately the same `id_advanced` call `reopen_if_advanced` makes: "did the thread
+    advance?" gets ONE implementation, or the flag a Phase-3 subagent reads and the re-open the
+    reconcile performs will eventually disagree about the same row. It stays true from the
+    re-open until `record` writes a fresh mark, because only `record` advances the mark.
+    """
+    return id_advanced(last_reply_id(row), row.get("thread_mark"))
