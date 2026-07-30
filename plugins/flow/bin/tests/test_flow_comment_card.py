@@ -513,3 +513,47 @@ class TestMergeMode:
         rows = {"77": {"ref": "C1", "user": "a", "body": "b", "thread": []}}
         r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"}, ref="C9")
         assert r.returncode == 1
+
+    def test_the_card_marks_a_resurfaced_row(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [
+                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
+                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
+                ],
+                "thread_mark": 10,
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" in r.stdout
+
+    def test_the_card_stays_quiet_for_a_row_that_did_not_resurface(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [
+                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
+                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
+                ],
+                "thread_mark": 11,
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" not in r.stdout

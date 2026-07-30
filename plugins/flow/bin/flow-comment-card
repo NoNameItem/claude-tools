@@ -132,12 +132,22 @@ def render_code(card: dict) -> str:
 
 
 def render_take(card: dict) -> str:
-    """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields)."""
+    """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields), plus a
+    '**Resurfaced:**' line when the row's thread advanced past the reply we last accounted for.
+
+    `resurfaced` is computed here rather than read off a stored field — see `_ledger.resurfaced`
+    — so a normal card (thread unchanged, or no `--ledger` row behind it at all) gains no noise.
+    """
     lines = []
     if card.get("thought"):
         lines.append(f"**Thought:** {card['thought']}")
     if card.get("suggested"):
         lines.append(f"**Suggested:** {card['suggested']}")
+    if _ledger.resurfaced(card):
+        lines.append(
+            "**Resurfaced:** the thread advanced past the reply we last accounted for — "
+            "read the newest replies as what changed."
+        )
     return "\n".join(lines)
 
 

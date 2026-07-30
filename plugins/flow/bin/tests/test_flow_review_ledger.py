@@ -1057,7 +1057,35 @@ class TestGet:
         meta = meta_doc([inline_comment(1), inline_comment(2, is_bot=True)])
         harness.reconcile(meta)
         emitted = json.loads(harness.run("get", "--ref", "C1", "--meta", harness.write_meta(meta)).stdout)
-        assert emitted == _ledger.find_row_by_ref(harness.ledger(meta), "C1")
+        row = _ledger.find_row_by_ref(harness.ledger(meta), "C1")
+        assert emitted == {**row, "resurfaced": _ledger.resurfaced(row)}
+
+    def test_get_reports_whether_the_row_resurfaced(self, harness):
+        """The Phase-3 subagent must not compute this itself: a prose rule and a code rule for
+        the same question drift, which is the class of bug this whole change is cleaning up."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+        harness.reconcile(meta)
+        force_row(harness, meta, "U1", thread_mark=10, thread=[reply(10), reply(11)])
+        result = harness.run("get", "--meta", harness.write_meta(meta), "--ref", "U1")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["resurfaced"] is True
+
+    def test_get_reports_not_resurfaced_for_an_undelivered_decision(self, harness):
+        """`open` + a decision + an unadvanced thread means "decided, never delivered" — the
+        round's job is to deliver it, not to re-litigate it."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10), reply(11)])])
+        harness.reconcile(meta)
+        force_row(harness, meta, "U1", thread_mark=11, decision="fix", reason="push deferred")
+        result = harness.run("get", "--meta", harness.write_meta(meta), "--ref", "U1")
+        assert json.loads(result.stdout)["resurfaced"] is False
+
+    def test_the_computed_field_is_not_persisted(self, harness):
+        """Derived per read; a stored copy would be a second source of truth to keep in sync."""
+        meta = meta_doc([inline_comment(1, thread=[reply(10)])])
+        harness.reconcile(meta)
+        force_row(harness, meta, "U1", thread_mark=10, thread=[reply(10), reply(11)])
+        harness.run("get", "--meta", harness.write_meta(meta), "--ref", "U1")
+        assert "resurfaced" not in harness.ledger(meta)["rows"]["comment:1"]
 
 
 class TestRecord:

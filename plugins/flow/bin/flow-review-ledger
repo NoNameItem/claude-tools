@@ -229,14 +229,18 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
 def cmd_get(args: argparse.Namespace) -> int:
     """Print ONE row as JSON. The read primitive that keeps every consumer — the Phase-3
-    subagent, the Phase-4 card, the Phase-5 reply target — off the whole growing document."""
+    subagent, the Phase-4 card, the Phase-5 reply target — off the whole growing document.
+
+    `resurfaced` is COMPUTED here rather than stored: a stored copy would be a second source of
+    truth to keep in sync with the thread on every round.
+    """
     url, number = resolve_unit(args)
     doc = _ledger.load_ledger(_ledger.ledger_path(url, number))
     row = _ledger.find_row_by_ref(doc, args.ref)
     if row is None:
         print(f"flow-review-ledger: no row with ref {args.ref!r}", file=sys.stderr)
         return 1
-    print(json.dumps(row, ensure_ascii=False))
+    print(json.dumps({**row, "resurfaced": _ledger.resurfaced(row)}, ensure_ascii=False))
     return 0
 
 
