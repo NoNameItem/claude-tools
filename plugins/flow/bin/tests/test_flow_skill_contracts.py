@@ -416,8 +416,16 @@ def test_done_purges_the_ledger_only_once_the_pr_is_terminal() -> None:
     tasks. Step 1 therefore has to capture `.state`, and Step 8 has to gate on it."""
     text = (FLOW_ROOT / "skills" / "done" / "SKILL.md").read_text()
     assert "PR_STATE" in text, "Step 1 must capture the PR state the purge gate reads"
-    assert "MERGED` or `CLOSED`" in text, "Step 8 must name the terminal states that permit the purge"
     assert "skip the purge" in text, "the purge must be skipped while the PR is still open"
+    # A CLOSED PR is REOPENABLE, so purging it is an irreversible choice made on the user's behalf:
+    # a reopened PR re-imports every settled finding without its decisions or follow-up ids. Only
+    # `MERGED` may purge unattended; `CLOSED` must ask. A gate that lumps the two together (the
+    # first shape of this fix) silently destroys the ledger of a PR whose review can still resume.
+    step_8 = text.split("8. **Purge the PR's review ledger**", 1)[1].split("**Error handling:**", 1)[0]
+    assert "**`MERGED`** → purge" in step_8, "a merged PR purges unattended"
+    assert re.search(r"\*\*`CLOSED`\*\*\s*→\s*\*\*ask\*\*", step_8), "a closed PR must ask before purging"
+    assert "(yes/no)" in step_8, "the CLOSED prompt must be plain text"
+    assert "reopen" in step_8, "the prompt must say why: a closed PR can be reopened"
     assert "never on branch deletion" in text or "never branch deletion" in text, (
         "the gate must be stated as PR state, not branch deletion"
     )

@@ -290,8 +290,18 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 5. **Pull merged changes:** `git pull`
 6. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
 7. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
-8. **Purge the PR's review ledger** — **last, and only when the PR is TERMINAL** (`PR_STATE` from
-   Step 1 is `MERGED` or `CLOSED`, and Step 1 captured a PR number):
+8. **Purge the PR's review ledger** — **last, and gated on `PR_STATE` from Step 1** (and only when
+   Step 1 captured a PR number):
+   - **`MERGED`** → purge. The review is over and cannot resume.
+   - **`CLOSED`** → **ask** in plain text, then wait: a closed PR can be **reopened**, and a
+     reopened one re-imports every settled finding without its decisions or follow-up ids, so
+     purging is the irreversible choice made on the user's behalf. Never decide this silently.
+     ```
+     PR #{n} is CLOSED, not merged — it can still be reopened, and its review ledger
+     holds {N} settled findings. Delete the ledger? (yes/no)
+     ```
+     `no` → keep it; it is idempotent to purge later and self-expires if abandoned.
+   - **`OPEN`** → skip the purge entirely.
    ```bash
    flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
    ```
@@ -303,8 +313,10 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
    The ledger is that PR's only durable review memory: it lives under the OS cache dir, never in the
    repo, and `purge` unlinks it outright with no backup. Purging an open PR's ledger costs nothing
    less than every decision recorded on it, and the next `flow:review-comments` re-imports findings
-   already settled, re-posting replies and re-filing follow-ups. A retained ledger costs nothing by
-   comparison: it is idempotent to purge later, a missing one is a no-op, and an abandoned one
+   already settled, re-posting replies and re-filing follow-ups. **A `CLOSED` PR carries the same
+   cost with a delay** — closing is reversible, and a reopened PR's re-import is indistinguishable
+   from a fresh one — which is why `CLOSED` asks instead of deciding. A retained ledger costs nothing
+   by comparison: it is idempotent to purge later, a missing one is a no-op, and an abandoned one
    self-expires (there is no GC). A task with several `Git:` branches purges only the current
    branch's PR ledger — the others self-expire (multi-branch handling is tracked as
    claude-tools-elf.51; GitLab support as claude-tools-elf.50).
