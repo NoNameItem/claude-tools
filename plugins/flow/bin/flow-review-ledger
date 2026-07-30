@@ -310,11 +310,12 @@ def cmd_record(args: argparse.Namespace) -> int:
         for field in RECORD_FIELDS:
             if field in entry:
                 row[field] = entry[field]
-        # A `done` row is only settled if we accounted for the reply that settled it. Both ways
-        # of not supplying a mark break the same way: OMIT the key and the row keeps its
-        # pre-reply mark, write an explicit `null` and it is cleared to "nothing accounted for".
-        # Either way `id_advanced` reads the reply we just posted as a thread advance,
-        # `reconcile` re-opens the finding next round, and it re-triages and re-replies forever.
+        # A `done` row is only settled if we accounted for the reply that settled it. This guard
+        # catches the case where the mark is absent entirely (never set or explicitly cleared to null),
+        # which would cause `id_advanced` to read our reply as an advance and re-open forever next round.
+        # Note: supplying a stale mark instead of the id of the reply just posted cannot be detected
+        # mechanically here — the row's thread from the last reconcile cannot contain our just-posted reply —
+        # so that remains the caller's responsibility, which the skill's prose already mandates.
         # A threadless row (a GitHub review body) has no thread to mark and is the one exemption.
         if row.get("status") == "done" and row.get("thread_mark") is None and not _ledger.threadless(row):
             msg = (

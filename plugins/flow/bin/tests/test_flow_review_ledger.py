@@ -1287,6 +1287,19 @@ class TestRecordThreadMarkInvariant:
         assert result.returncode == 0, result.stderr
         assert harness.ledger(meta)["rows"]["summary:900"]["status"] == "done"
 
+    def test_a_gitlab_summary_is_not_exempt(self, harness):
+        """It is `kind == "summary"` too, but carries a real discussion id, so it is threaded —
+        only a GitHub review body is exempt."""
+        meta = meta_doc(
+            [gitlab_discussion("d1", kind="summary")],
+            url="https://gitlab.com/g/r/-/merge_requests/96",
+            platform="gitlab",
+        )
+        harness.reconcile(meta)
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix"}})
+        assert result.returncode == 2
+        assert "thread_mark" in result.stderr
+
     def test_done_without_thread_mark_is_rejected_on_inline_comment_with_empty_thread(self, harness):
         """An inline comment with no replies yet has thread_mark=None. If it will receive a
         reply (the one we are about to post), we must account for it. Omitting thread_mark
