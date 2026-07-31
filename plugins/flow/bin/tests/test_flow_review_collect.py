@@ -1171,8 +1171,27 @@ def test_counts_mix_of_resolved_already_replied_and_plain(fake_gh_api):
 # user / comments / reviews / graphql) but as a plain callable, and it forwards any non
 # `gh`/`glab` argv (the `git` calls `_repo_root`/`detect_platform` make) to the real
 # `_git.run` so those keep working unmocked.
+#
+# `_patch_gh` is the single install point for every test below: besides `run`/`api_run`, it
+# stubs `_git._auth_hosts` to `[]`. `detect_platform(override, remote_host, _auth_hosts("gh"),
+# _auth_hosts("glab"))` evaluates BOTH `_auth_hosts` calls eagerly as call arguments even when
+# `override` (`--platform`) wins and their result is discarded — and `_auth_hosts` calls
+# `subprocess.run(["gh"/"glab", "auth", "status"], ...)` directly, bypassing `_git.run`/
+# `_git.api_run` entirely, so neither stub above can intercept it. Left unpatched, every
+# `main()`-level test here would spawn a real `gh auth status` / `glab auth status` process.
 
 _REAL_GIT_RUN = flow_review_collect_mod._git.run
+
+
+def _patch_gh(monkeypatch, _git, *, run=None, api_run=None):
+    """Install `run`/`api_run` stand-ins on `_git` and stub `_auth_hosts` to `[]` so
+    `detect_platform` never spawns a real `gh`/`glab auth status` subprocess (see block
+    comment above)."""
+    if run is not None:
+        monkeypatch.setattr(_git, "run", run)
+    if api_run is not None:
+        monkeypatch.setattr(_git, "api_run", api_run)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
 
 
 def _gh_endpoint(argv):
@@ -1217,10 +1236,15 @@ def _graphql_page(resolved_root_ids):
     )
 
 
-def github_api_stub(*, resolved_root_ids=None, comments=None, reviews=None):
+def github_api_stub(*, resolved_root_ids=None, comments=None, reviews=None, fail_at=None, fail_with=None):
     """In-process stand-in for `_git.run`/`_git.api_run` that drives a full `gh_collect`:
     canned `pr view` / `repo view` / `user`, one inline comment by default, and a resolution
-    GraphQL page reporting `resolved_root_ids` as resolved."""
+    GraphQL page reporting `resolved_root_ids` as resolved.
+
+    `fail_at` names one endpoint key (`"pr_view"`, `"repo_view"`, `"user"`, `"comments"`,
+    `"reviews"`, or `"graphql"`) to raise `fail_with` for instead of answering — every other
+    endpoint still answers normally, so a test can pin down exactly which call fails.
+    """
     resolved_root_ids = resolved_root_ids or set()
     if comments is None:
         comments = [{"id": 1, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"}]
@@ -1242,16 +1266,9 @@ def github_api_stub(*, resolved_root_ids=None, comments=None, reviews=None):
             return _REAL_GIT_RUN(argv, **kwargs)
         ep = _gh_endpoint(argv)
         key = next((k for k in ("comments", "reviews") if ep.endswith(f"/{k}")), ep)
+        if fail_at is not None and key == fail_at:
+            raise fail_with
         return responses.get(key, "{}")
-
-    return _fake
-
-
-def raising_api(exc):
-    """Stand-in for `_git.api_run` that always raises `exc`, regardless of argv."""
-
-    def _fake(argv, **kwargs):
-        raise exc
 
     return _fake
 
@@ -1279,21 +1296,27 @@ def paginating_api_with_null_cursor():
     return _fake
 
 
-def test_it_exits_4_when_resolution_cannot_be_determined(monkeypatch, capsys):
+def test_it_exits_4_when_the_resolution_query_cannot_be_answered(monkeypatch, capsys):
     """Degrading used to mean "resolution unknown", which forced a three-valued flag through the
     whole ledger and let one GraphQL hiccup reopen every settled thread. Aborting keeps the model
-    two-valued; the round simply did not happen, so no row changed."""
+    two-valued; the round simply did not happen, so no row changed.
+
+    `pr view` / `repo view` / `user` / `comments` / `reviews` all answer normally — only the
+    resolution GraphQL call fails — so this pins the failure to the resolution query
+    specifically, not to "some API call, any API call"."""
     _git = flow_review_collect_mod._git
-    monkeypatch.setattr(_git, "run", github_api_stub())
-    monkeypatch.setattr(_git, "api_run", raising_api(_git.ApiUnavailableError("boom", permanent=False)))
+    stub = github_api_stub(fail_at="graphql", fail_with=_git.ApiUnavailableError("boom", permanent=False))
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
     assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
     assert "try again" in capsys.readouterr().err.lower()
 
 
-def test_it_exits_4_and_names_the_cause_when_the_failure_is_permanent(monkeypatch, capsys):
+def test_it_exits_4_and_names_the_cause_when_the_resolution_query_failure_is_permanent(monkeypatch, capsys):
+    """Same shape as above, but the resolution query fails permanently (bad auth / unsupported
+    schema field) — `main` must name the cause instead of suggesting a retry."""
     _git = flow_review_collect_mod._git
-    monkeypatch.setattr(_git, "run", github_api_stub())
-    monkeypatch.setattr(_git, "api_run", raising_api(_git.ApiUnavailableError("401 Bad credentials", permanent=True)))
+    stub = github_api_stub(fail_at="graphql", fail_with=_git.ApiUnavailableError("401 Bad credentials", permanent=True))
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
     assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
     err = capsys.readouterr().err
     assert "401" in err
@@ -1305,7 +1328,7 @@ def test_a_partial_resolution_page_aborts_instead_of_reporting_unknown(monkeypat
     a PARTIAL answer, and a partial answer is indistinguishable from "those threads are not
     resolved" — which would reopen settled rows."""
     _git = flow_review_collect_mod._git
-    monkeypatch.setattr(_git, "api_run", paginating_api_with_null_cursor())
+    _patch_gh(monkeypatch, _git, api_run=paginating_api_with_null_cursor())
     with pytest.raises(_git.ApiUnavailableError):
         flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 118)
 
@@ -1313,8 +1336,7 @@ def test_a_partial_resolution_page_aborts_instead_of_reporting_unknown(monkeypat
 def test_resolved_is_always_a_bool_for_a_threaded_item(monkeypatch):
     _git = flow_review_collect_mod._git
     stub = github_api_stub(resolved_root_ids={"1"})
-    monkeypatch.setattr(_git, "run", stub)
-    monkeypatch.setattr(_git, "api_run", stub)
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
     payload = flow_review_collect_mod.gh_collect("118")
     inline = [c for c in payload["comments"] if c["comment_id"] is not None]
     assert inline, "the stub must produce at least one inline comment"
