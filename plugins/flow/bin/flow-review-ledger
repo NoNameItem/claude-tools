@@ -132,7 +132,7 @@ def reopen_if_advanced(row: dict, item: dict) -> None:
 
 
 def working_entry(row: dict) -> dict:
-    """The display projection Phase 2 needs for its cap table — no bodies, no threads."""
+    """The display projection that feeds Phase 3's working set — no bodies, no threads."""
     brief = " ".join((row.get("body") or "").split())[: _ledger.BRIEF_CHARS]
     return {
         "ref": row.get("ref"),

@@ -4,6 +4,7 @@
 
 import importlib.util
 import json
+import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -1341,3 +1342,73 @@ def test_resolved_is_always_a_bool_for_a_threaded_item(monkeypatch):
     inline = [c for c in payload["comments"] if c["comment_id"] is not None]
     assert inline, "the stub must produce at least one inline comment"
     assert all(isinstance(c["resolved"], bool) for c in inline)
+
+
+# --- unit-resolution reads go through the retry wrapper, not bare `_git.run` (whole-branch
+# review, Important 2) -----------------------------------------------------------------------
+#
+# `gh pr view` / `glab mr view` / `gh repo view` / `glab repo view` are the FIRST network calls
+# of every round. Before this fix they called `_git.run` directly: a real CLI failure raised a
+# bare `subprocess.CalledProcessError`/`TimeoutExpired`, which is neither retried (no
+# `_git.api_run` in the chain) nor caught by `main`'s `except _git.ApiUnavailableError` — so a
+# transient 502 crashed with a raw traceback and exit 1 instead of the documented exit-4
+# message. These tests patch only `_git.run` (leaving the real `_git.api_run` in place) so the
+# retry/convert logic actually runs, and assert each of the four call sites now raises
+# `_git.ApiUnavailableError` instead of the raw subprocess exception.
+
+
+def _permanent_failure(argv, **kwargs):
+    """Stand-in for `_git.run` that always fails with a permanent-signature stderr (401), so
+    `_git.api_run` (left real) raises immediately with no retry sleep — keeps the test fast."""
+    raise subprocess.CalledProcessError(1, argv, stderr="401 Bad credentials")
+
+
+def test_gh_resolve_unit_routes_pr_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gh_resolve_unit("118")
+
+
+def test_gl_resolve_unit_routes_mr_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gl_resolve_unit("4")
+
+
+def test_resolve_repo_routes_gh_repo_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod._resolve_repo()
+
+
+def test_resolve_project_routes_glab_repo_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod._resolve_project()
+
+
+def test_pr_view_failure_exits_4_end_to_end_instead_of_crashing(monkeypatch, capsys):
+    """End-to-end through `main`: before this fix, a real `gh pr view` failure was an unhandled
+    `subprocess.CalledProcessError` — this pins the documented exit-4 behavior for the FIRST
+    network call of a round, not just the resolution GraphQL query the pre-existing tests
+    above cover."""
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err
+    assert "authenticated" in err.lower() or "unsupported" in err.lower()
+
+
+def test_mr_view_failure_exits_4_end_to_end_instead_of_crashing(monkeypatch, capsys):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
+    assert flow_review_collect_mod.main(["4", "--platform", "gitlab"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err

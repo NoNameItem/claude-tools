@@ -882,6 +882,21 @@ _TRANSITIONS = {
 }
 
 
+def test_transitions_table_is_exhaustive_by_construction():
+    """The docstring below claims "exhaustive by construction: 2 statuses x 3 platform states x
+    3 observations" — but `_TRANSITIONS` is 18 hand-written keys with nothing tying them to
+    `_ledger.STATUSES` / `_ledger.PLATFORM_STATES` / `_OBSERVATIONS`. A new platform state (or a
+    typo dropping one of the 18 rows) would silently go uncovered while the claim stayed
+    unchallenged. This pins the table to the actual enums so the claim is enforced, not just
+    asserted in prose."""
+    assert set(_TRANSITIONS) == {
+        (status, platform_state, observation)
+        for status in _ledger.STATUSES
+        for platform_state in _ledger.PLATFORM_STATES
+        for observation in _OBSERVATIONS
+    }
+
+
 @pytest.mark.parametrize(
     ("status", "platform_state", "observation", "expected"),
     [(status, state, obs, expected) for (status, state, obs), expected in _TRANSITIONS.items()],

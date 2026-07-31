@@ -502,7 +502,7 @@ def test_review_comments_5_7a_reacts_to_a_failed_record() -> None:
     assert re.search(r"non-zero|exit\s+code", record_section, re.IGNORECASE), "5.7a must check `record`'s exit code"
 
 
-def test_review_comments_knows_the_deleted_status_and_platform_resolution() -> None:
+def test_review_comments_has_no_deleted_status_and_explains_platform_resolution() -> None:
     # (Task 7 correction) `reconcile` does NOT emit a `deleted` status — `_ledger.STATUSES` is only
     # `("open", "done")`. "Gone from the platform" is the `platform_state` axis (`absent`), tallied
     # in `counts` as `absent_upstream`, never a third status. Prose that calls the working set
@@ -598,3 +598,30 @@ def test_review_loop_working_set_check_reads_post_round_ledger_state() -> None:
         "must state the working-set query happens after Phase 5's record checkpoints"
     )
     assert "flow-review-ledger stats" in text
+
+
+# --- Whole-branch review Important 1: review-loop must not route control flow through the
+#     Phase 3 "process all?" gate Task 7 deleted from review-comments -------------------------
+
+
+def test_review_loop_does_not_reference_a_deleted_phase_3_confirmation() -> None:
+    """Task 7 removed review-comments' Phase 3 "process all N? yes/select/no" gate outright —
+    review-comments' own Phase 3 now states there is no such gate. review-loop's control-points
+    prose and its terminator list must not still point at it: a user following this skill's
+    documented exit would wait forever for a prompt that no longer appears, and the stated
+    safety property ("never processes without your go-ahead") would be false, since the first
+    real confirmation is now the per-card triage in Phase 4 -- after analysis has already run."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    assert not re.search(r'no["“]\s+at\s+`?flow:review-comments`?\s+phase\s*3', text, re.IGNORECASE), (
+        "must not describe a round-level 'no' answer at review-comments Phase 3 as an exit"
+    )
+    assert not re.search(r'phase\s*3\s*\(["“]process all', text, re.IGNORECASE), (
+        "must not name Phase 3 ('process all N?') as a review-loop control point"
+    )
+    # The real control points: per-card triage in Phase 4, and the 5.6 push confirmation.
+    assert re.search(r"phase\s*4.{0,80}per-card triage", text, re.IGNORECASE | re.DOTALL), (
+        "must name Phase 4 per-card triage as a control point"
+    )
+    assert re.search(r"5\.6.{0,40}push confirmation|push confirmation.{0,40}5\.6", text, re.IGNORECASE), (
+        "must still name the 5.6 push confirmation as a control point"
+    )

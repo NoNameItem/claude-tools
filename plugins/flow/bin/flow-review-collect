@@ -19,6 +19,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import _git
@@ -170,6 +171,28 @@ def _order(items: list[dict]) -> list[dict]:
     return [it for it in items if not it["is_bot"]] + [it for it in items if it["is_bot"]]
 
 
+# ---- retried repo/project resolution -----------------------------------------
+
+
+def _resolve_repo() -> str:
+    """GitHub 'owner/repo' for the current repo, retried like every other platform read here.
+
+    Duplicates `_git.resolve_repo`'s command instead of calling it: that shared helper is also
+    used by `flow-wait-ci`, which catches its raw `subprocess.CalledProcessError` /
+    `TimeoutExpired` around it to drive its own retry loop, so routing it through `_git.api_run`
+    (which raises `ApiUnavailableError` instead) would break that caller.
+    """
+    return _git.api_run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+
+
+def _resolve_project() -> str:
+    """GitLab URL-encoded 'group%2Frepo', retried — see `_resolve_repo` for why this duplicates
+    `_git.resolve_project` instead of calling it."""
+    view = _git.api_run(["glab", "repo", "view", "--output", "json"])
+    path = json.loads(view)["path_with_namespace"]
+    return urllib.parse.quote(path, safe="")
+
+
 # ---- shared unit-state guard -------------------------------------------------
 
 _OPEN_STATES = {"OPEN", "OPENED"}  # GitHub OPEN/CLOSED/MERGED; GitLab opened/closed/merged/locked
@@ -201,7 +224,7 @@ def _require_open(state: object, kind: str, ref: object) -> None:
 def gh_resolve_unit(number: str | None) -> dict:
     fields = "number,title,headRefName,url,state"
     cmd = ["gh", "pr", "view", *([number] if number else []), "--json", fields]
-    data = json.loads(_git.run(cmd))
+    data = json.loads(_git.api_run(cmd))
     _require_open(data.get("state"), "PR", data.get("number"))
     return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
 
@@ -264,7 +287,7 @@ def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
 
 def gh_collect(number: str | None) -> dict:
     unit = gh_resolve_unit(number)
-    repo = _git.resolve_repo()
+    repo = _resolve_repo()
     repo_root = _repo_root()
     me = _git.gh_api("user", jq=".login")
     # `--paginate` alone emits each page as its own top-level JSON array ("[...][...]"),
@@ -360,9 +383,14 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
                 "already_replied": False,
                 # A GitHub review body is not a thread and never consults the resolve
                 # side-query, so it has no resolution state at all — this is the one legal
-                # use of `resolved: None` left; everywhere else it's a real bool. None is
-                # inert in `reconcile` (unknown → leave the status alone), which preserves
-                # the elf.31 never-re-open guarantee.
+                # use of `resolved: None` left; everywhere else it's a real bool.
+                # `platform_state_of` maps this `None` to a definite `"live"` (not an inert
+                # "leave the status alone" — there is no third `apply_resolution`-style path
+                # left, see the ledger design doc's "What is removed"). The never-re-open
+                # guarantee for this row comes from a different mechanism: it is threadless, so
+                # `_ledger.last_reply_id` returns `None` for it, and `reopen_if_advanced`'s
+                # `id_advanced(current=None, mark=...)` is unconditionally False — our own
+                # `done` verdict is the row's only exit, exactly once.
                 "resolved": None,
                 "comment_id": None,
                 "discussion_id": None,
@@ -382,7 +410,7 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
 
 def gl_resolve_unit(number: str | None) -> dict:
     cmd = ["glab", "mr", "view", *([number] if number else []), "--output", "json"]
-    data = json.loads(_git.run(cmd))
+    data = json.loads(_git.api_run(cmd))
     _require_open(data.get("state"), "MR", data.get("iid"))
     return {"number": data["iid"], "branch": data["source_branch"], "url": data["web_url"]}
 
@@ -436,7 +464,7 @@ def gl_kind(position: dict | None, start_line: object, line: object) -> str:
 
 def gl_collect(number: str | None) -> dict:
     unit = gl_resolve_unit(number)
-    project = _git.resolve_project()
+    project = _resolve_project()
     repo_root = _repo_root()
     me = json.loads(_git.glab_api("user"))["username"]  # glab api has no -q flag; parse in Python
     discussions = json.loads(
@@ -533,8 +561,9 @@ def main(argv: list[str]) -> int:
         if exc.permanent:
             print(
                 f"flow-review-collect: the platform API rejected a request and a retry will not help: {exc}\n"
-                f"Check that the CLI is authenticated for this host, and that its API supports the "
-                f"resolution query (an older GitHub Enterprise GraphQL schema may not).",
+                f"Check that the CLI is authenticated for this host, and that its API supports every "
+                f"call this collector makes (an older GitHub Enterprise GraphQL schema may not support "
+                f"the resolution query).",
                 file=sys.stderr,
             )
         else:

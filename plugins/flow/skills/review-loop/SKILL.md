@@ -17,10 +17,14 @@ that by hand means re-running `flow:review-comments` every round; this skill run
 cycle for you with one invocation.
 
 It **reuses `flow:review-comments` verbatim** each round (no flags, no non-interactive
-mode). That skill's own confirmations are the control points: its Phase 3 ("Process all
-N?") and its push confirmation — both **plain-text prompts that wait for your typed
-answer** (it bans structured dialogs for AFK-safety; this skill does the same). The loop
-never pushes silently and never processes without your go-ahead.
+mode). That skill's own confirmations are the control points: its Phase 4 per-card triage
+(fix / won't-fix / follow-up, one comment at a time) and its Phase 5.6 push confirmation —
+both **plain-text prompts that wait for your typed answer** (it bans structured dialogs for
+AFK-safety; this skill does the same). Phase 3 analyzes the whole working set with
+subagents **before** either gate runs — there is no round-level "process all?" confirmation
+ahead of that analysis, so the first point where you can steer or stop what happens to a
+finding is the per-card triage in Phase 4. The loop never pushes silently and never applies
+a fix without your go-ahead.
 
 Convergence requires the head to hold **and** the ledger's working set to be empty — never a
 thread count, so it stays platform-agnostic by construction.
@@ -177,9 +181,11 @@ hand-off, and it colors the final report at (g).
 
 - Invoke `flow:review-comments <number>` through the active harness's skill mechanism and
   preserve all of its confirmation, push, and reply gates. It is interactive and may
-  push a new head. Answering "no" at its Phase 3 exits the loop. If you skip its push (Phase
-  5.6), any replies are posted but its fixes stay **local** — the head is unchanged; step
-  (g)'s unpushed-commit check surfaces this.
+  push a new head. There is no round-level "no" gate: declining a card in Phase 4
+  (`won't-fix` / `follow-up` instead of `fix`) settles that one comment and moves to the
+  next — it does not exit the round. Interrupting mid-round (Esc) is the actual exit; see
+  Terminators. If you skip its push (Phase 5.6), any replies are posted but its fixes stay
+  **local** — the head is unchanged; step (g)'s unpushed-commit check surfaces this.
 
 **f. Capture `HEAD_after`** — the platform's head-SHA command again.
 
@@ -257,7 +263,9 @@ No open PR/MR at resolve (0) · clean convergence (1g) · partial hand-off (1g) 
 hand-off (1g) · unconverged hand-off — head held but the working set is not empty (1g) · no CI
 (`exit 4`, 1c) · internal usage error from `flow-wait-ci` (`exit 1`, 1c) · PR/MR merged/closed
 (1b) · user "stop" at the timeout prompt (1c) · user "stop" at the red-pipeline gate (1d) ·
-user "no" at `flow:review-comments` Phase 3 · user Esc.
+user interrupts `flow:review-comments` mid-round (Esc) — there is no round-level "no" gate to
+answer instead; per-card `won't-fix`/`follow-up` decisions in Phase 4 settle a comment without
+exiting.
 
 ## Round indicator (replaces a hard cap)
 
