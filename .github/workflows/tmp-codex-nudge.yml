@@ -1,0 +1,34 @@
+# TEMPORARY — experiment for claude-tools-5vg.19 / claude-tools-5vg.1.
+# Posts "@codex review" on demand so we can find out whether the Codex connector reacts to a
+# comment left by github-actions[bot] (GITHUB_TOKEN) or only to one left by a human account.
+# Triggered by labels so the moment of each nudge is controlled by hand:
+#   codex-nudge      -> comment via GITHUB_TOKEN  (github-actions[bot])
+#   codex-nudge-pat  -> comment via RELEASE_PLEASE_TOKEN (the repository owner's account)
+# Delete this file together with the experiment branch.
+
+name: Codex Nudge Experiment
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  nudge:
+    if: github.event.label.name == 'codex-nudge' || github.event.label.name == 'codex-nudge-pat'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post the nudge comment
+        env:
+          GH_TOKEN: ${{ github.event.label.name == 'codex-nudge-pat' && secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          LABEL: ${{ github.event.label.name }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$REPO/issues/$PR/comments" -f body="@codex review" \
+            --jq '{id, user: .user.login, created_at}'
+          echo "nudge posted for label: $LABEL"
