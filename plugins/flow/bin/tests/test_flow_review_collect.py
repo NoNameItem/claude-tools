@@ -9,6 +9,7 @@ import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+import pytest
 from conftest import run_helper
 
 BIN = Path(__file__).parent.parent
@@ -62,7 +63,7 @@ def test_github_single_inline_comment(fake_gh_api, monkeypatch):
     assert doc["platform"] == "github"
     assert doc["unit"] == {"number": 7, "branch": "feat/x", "url": "https://gh/pr/7"}
     assert doc["me"] == "me"
-    assert doc["counts"] == {"total": 1, "already_replied": 0, "actionable": 1}
+    assert doc["counts"] == {"total": 1, "already_replied": 0, "resolved": 0, "actionable": 1}
     c = doc["comments"][0]
     assert c["ref"] == "U1"
     assert c["user"] == "alice"
@@ -74,6 +75,9 @@ def test_github_single_inline_comment(fake_gh_api, monkeypatch):
     assert c["diff_hunk"].startswith("@@ -40,3")
     assert c["outdated"] is False
     assert c["already_replied"] is False
+    # Resolve side-query succeeded (default fake router returns an empty-but-known set) and
+    # this comment id is not in it → a real False, not the "unknown" None.
+    assert c["resolved"] is False
 
 
 def test_github_outdated_uses_original_line(fake_gh_api):
@@ -105,7 +109,11 @@ def test_github_outdated_uses_original_line(fake_gh_api):
     assert c["start_line"] == 80  # historical anchor, never bare null
 
 
-def test_github_resolved_thread_dropped(fake_gh_api):
+def test_github_resolved_thread_present_with_flag(fake_gh_api):
+    """A resolved GitHub thread is now REPORTED (not dropped), carrying resolved: true, and
+    excluded from `counts["actionable"]` — dropping it made "absent" ambiguous between
+    "filtered" and "deleted", which prevented reconcile from telling a settled thread from a
+    gone one."""
     fake_gh_api.set("repo", "o/r")
     fake_gh_api.set("user", "me")
     fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
@@ -135,8 +143,13 @@ def test_github_resolved_thread_dropped(fake_gh_api):
         ),
     )
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
-    assert doc["comments"] == []
-    assert doc["counts"]["total"] == 0
+    assert len(doc["comments"]) == 1
+    c = doc["comments"][0]
+    assert c["comment_id"] == 9
+    assert c["resolved"] is True
+    assert doc["counts"]["total"] == 1
+    assert doc["counts"]["resolved"] == 1
+    assert doc["counts"]["actionable"] == 0
 
 
 def test_github_already_replied_and_bot_ref(fake_gh_api):
@@ -180,60 +193,6 @@ def test_is_bot_word_boundary():
     assert is_bot("abbot") is False
     assert is_bot("talbot") is False
     assert is_bot("alice") is False
-
-
-def test_gh_resolved_ids_degrades_on_gh_failure(monkeypatch):
-    """A non-zero `gh api graphql` (CalledProcessError) must yield set(), not a traceback."""
-
-    def boom(*_args, **_kwargs):
-        raise subprocess.CalledProcessError(1, "gh")
-
-    monkeypatch.setattr(flow_review_collect_mod._git, "run", boom)
-    assert flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 1) == set()
-
-
-def test_github_resolved_pagination_null_cursor_terminates(fake_gh_api):
-    """hasNextPage=true with a null endCursor must NOT loop forever; the thread still drops."""
-    fake_gh_api.set("repo", "o/r")
-    fake_gh_api.set("user", "me")
-    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
-    fake_gh_api.set(
-        "comments",
-        json.dumps(
-            [
-                {"id": 9, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"},
-            ]
-        ),
-    )
-    fake_gh_api.set(
-        "review_threads",
-        json.dumps(
-            {
-                "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "reviewThreads": {
-                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
-                                "pageInfo": {"hasNextPage": True, "endCursor": None},
-                            }
-                        }
-                    }
-                }
-            }
-        ),
-    )
-    # Run with a hard timeout so a pagination regression fails loudly instead of hanging the suite.
-    r = subprocess.run(
-        [sys.executable, str(BIN / "flow-review-collect"), "1", "--platform", "github"],
-        env=fake_gh_api.env(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    doc = _out(r)
-    assert doc["comments"] == []
-    assert doc["counts"]["total"] == 0
 
 
 def test_github_multipage_comments_both_pages_included(fake_gh_api):
@@ -333,7 +292,10 @@ def test_gitlab_inline_and_general(fake_glab_api):
     assert all(c["body"] != "changed the description" for c in doc["comments"])  # system dropped
 
 
-def test_gitlab_resolved_thread_dropped(fake_glab_api):
+def test_gitlab_resolved_thread_present_with_flag(fake_glab_api):
+    """A resolved GitLab discussion is now REPORTED (not dropped), carrying resolved: true, and
+    excluded from `counts["actionable"]` — same rationale as the GitHub side, but GitLab ships
+    resolution inline with the discussion so the flag is always a real bool, never None."""
     fake_glab_api.set("project", "g/p")
     fake_glab_api.set("user", json.dumps({"username": "me"}))
     fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
@@ -358,7 +320,13 @@ def test_gitlab_resolved_thread_dropped(fake_glab_api):
         ),
     )
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
-    assert doc["comments"] == []
+    assert len(doc["comments"]) == 1
+    c = doc["comments"][0]
+    assert c["discussion_id"] == "d1"
+    assert c["resolved"] is True
+    assert doc["counts"]["total"] == 1
+    assert doc["counts"]["resolved"] == 1
+    assert doc["counts"]["actionable"] == 0
 
 
 def test_gitlab_outdated_note_anchors_to_old_line(fake_glab_api):
@@ -421,6 +389,86 @@ def test_github_bot_summary_from_review_body(fake_gh_api):
     assert c["diff_hunk"] is None
     assert c["snippet"] is None
     assert "retry" in c["body"]
+
+
+def test_github_unresolved_inline_comment_resolved_false(fake_gh_api):
+    """An unresolved GitHub inline comment carries `resolved: False` — a real bool, not None —
+    when the resolve side-query succeeds. Comment id 9 is deliberately absent from the
+    resolved-threads response (which resolves a DIFFERENT id, 999) so the False here is a
+    genuine "known and not resolved", not a default/degraded value."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {"id": 9, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"},
+            ]
+        ),
+    )
+    fake_gh_api.set(
+        "review_threads",
+        json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "999"}]}}],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["resolved"] is False
+    assert doc["counts"]["resolved"] == 0
+    assert doc["counts"]["actionable"] == 1
+
+
+def test_github_review_body_summary_resolved_is_none(fake_gh_api):
+    """A review-body summary item is not a thread, so it has no resolution state at all — it
+    must carry `resolved: None` even though the resolve side-query itself succeeded (and even
+    resolved an unrelated thread), unlike inline comments which get a real bool in that case."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps(
+            [
+                {"id": 55, "user": {"login": "coderabbitai[bot]"}, "body": "Consider adding retry logic."},
+            ]
+        ),
+    )
+    fake_gh_api.set(
+        "review_threads",
+        json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "1"}]}}],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["resolved"] is None
+    assert doc["counts"]["resolved"] == 0
+    assert doc["counts"]["actionable"] == 1  # unresolvable → not settled, stays actionable
 
 
 def test_github_human_changes_requested_summary_included(fake_gh_api):
@@ -845,3 +893,522 @@ def test_gitlab_me_parsed_from_json(fake_glab_api):
     fake_glab_api.set("discussions", "[]")
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
     assert doc["me"] == "alice"
+
+
+def test_github_thread_replies_carry_id_created_at_and_is_bot(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 10,
+                    "in_reply_to_id": None,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 3,
+                    "start_line": None,
+                    "original_line": 3,
+                    "original_start_line": None,
+                    "body": "root",
+                    "diff_hunk": "@@ -1,4 +1,4 @@\n a\n b\n c\n d",
+                },
+                {
+                    "id": 11,
+                    "in_reply_to_id": 10,
+                    "user": {"login": "coderabbitai[bot]"},
+                    "body": "reply",
+                    "created_at": "2026-07-20T10:00:00Z",
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    reply = doc["comments"][0]["thread"][0]
+    assert reply["user"] == "coderabbitai[bot]"
+    assert reply["body"] == "reply"
+    assert reply["id"] == 11
+    assert reply["created_at"] == "2026-07-20T10:00:00Z"
+    assert reply["is_bot"] is True
+
+
+def test_github_kind_inline_file_and_summary(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 3,
+                    "start_line": None,
+                    "original_line": 3,
+                    "original_start_line": None,
+                    "body": "inline",
+                    "diff_hunk": "@@ -1,4 +1,4 @@\n a\n b\n c\n d",
+                },
+                {
+                    "id": 2,
+                    "user": {"login": "alice"},
+                    "path": "b.py",
+                    "subject_type": "file",
+                    "line": None,
+                    "start_line": None,
+                    "original_line": None,
+                    "original_start_line": None,
+                    "body": "file-level",
+                    "diff_hunk": None,
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", json.dumps([{"id": 900, "user": {"login": "coderabbitai"}, "body": "walkthrough"}]))
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    kinds = {c["body"]: c["kind"] for c in doc["comments"]}
+    assert kinds == {"inline": "inline", "file-level": "file", "walkthrough": "summary"}
+
+
+def test_gitlab_kind_and_thread_reply_fields(fake_glab_api):
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 7, "source_branch": "b", "web_url": "u", "state": "opened"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "id": 1,
+                            "author": {"username": "alice"},
+                            "body": "root",
+                            "position": {"new_path": "a.py", "new_line": 5},
+                        },
+                        {
+                            "id": 2,
+                            "author": {"username": "project_1_bot"},
+                            "body": "reply",
+                            "created_at": "2026-07-20T10:00:00Z",
+                        },
+                    ],
+                },
+                {"id": "d2", "notes": [{"id": 3, "author": {"username": "bob"}, "body": "general"}]},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "7", "--platform", "gitlab", env=fake_glab_api.env()))
+    by_body = {c["body"]: c for c in doc["comments"]}
+    assert by_body["root"]["kind"] == "inline"
+    assert by_body["general"]["kind"] == "summary"
+    reply = by_body["root"]["thread"][0]
+    assert reply["id"] == 2
+    assert reply["created_at"] == "2026-07-20T10:00:00Z"
+    assert reply["is_bot"] is True
+
+
+def test_gitlab_kind_file_via_position_type(fake_glab_api):
+    """`gl_kind` mirrors `gh_kind`'s file-level detection: a GitLab discussion whose position
+    has `position_type: "file"` (and no line endpoints) is `kind: "file"`, not `inline` — this
+    is the bug the new helper fixes (previously a bare `"inline" if position else "summary"`
+    mislabelled it, sending Phase 3 down the branch that derives a ±20-line window from null
+    coordinates). A positioned discussion WITH a real line stays `inline`, and no position at
+    all stays `summary` — driven end-to-end through `gl_collect` in the file's existing style."""
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "file-comment",
+                            "position": {
+                                "new_path": "a.py",
+                                "position_type": "file",
+                                "new_line": None,
+                                "old_line": None,
+                            },
+                        }
+                    ],
+                },
+                {
+                    "id": "d2",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "inline-comment",
+                            "position": {"new_path": "a.py", "new_line": 5, "old_line": None},
+                        }
+                    ],
+                },
+                {
+                    "id": "d3",
+                    "notes": [{"system": False, "author": {"username": "carol"}, "body": "summary-comment"}],
+                },
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
+    kinds = {c["body"]: c["kind"] for c in doc["comments"]}
+    assert kinds == {"file-comment": "file", "inline-comment": "inline", "summary-comment": "summary"}
+
+
+def test_gitlab_kind_file_via_null_line_endpoints_backup(fake_glab_api):
+    """Backup condition in `gl_kind`: a positioned discussion with no `position_type` key at
+    all, but both line endpoints (`start_line`, `line`) None, also yields `kind: "file"` — the
+    explicit `position_type` check is not the only way a file-level comment can show up."""
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 1, "source_branch": "b", "web_url": "u"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d1",
+                    "notes": [
+                        {
+                            "system": False,
+                            "author": {"username": "carol"},
+                            "body": "no-endpoints",
+                            "position": {"new_path": "a.py", "new_line": None, "old_line": None},
+                        }
+                    ],
+                },
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "gitlab", env=fake_glab_api.env()))
+    c = doc["comments"][0]
+    assert c["kind"] == "file"
+
+
+def test_counts_mix_of_resolved_already_replied_and_plain(fake_gh_api):
+    """`counts` fixture mixing a resolved item, an already-replied item, and a plain item:
+    `total` counts all three, `already_replied`/`resolved` each count exactly their own item,
+    and `actionable` is neither — i.e. only the plain one, not `total - already_replied` as it
+    used to be (that old formula would have wrongly counted the resolved item as actionable)."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "user": {"login": "alice"},
+                    "path": "a.py",
+                    "line": 1,
+                    "body": "resolved-one",
+                    "diff_hunk": "@@",
+                },
+                {
+                    "id": 2,
+                    "user": {"login": "bob"},
+                    "path": "a.py",
+                    "line": 2,
+                    "body": "already-replied-one",
+                    "diff_hunk": "@@",
+                },
+                {"id": 3, "in_reply_to_id": 2, "user": {"login": "me"}, "body": "done"},
+                {
+                    "id": 4,
+                    "user": {"login": "carol"},
+                    "path": "a.py",
+                    "line": 3,
+                    "body": "plain-one",
+                    "diff_hunk": "@@",
+                },
+            ]
+        ),
+    )
+    fake_gh_api.set(
+        "review_threads",
+        json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "1"}]}}],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert doc["counts"] == {"total": 3, "already_replied": 1, "resolved": 1, "actionable": 1}
+    by_body = {c["body"]: c for c in doc["comments"]}
+    assert by_body["resolved-one"]["resolved"] is True
+    assert by_body["already-replied-one"]["already_replied"] is True
+    assert by_body["plain-one"]["resolved"] is False
+    assert by_body["plain-one"]["already_replied"] is False
+
+
+# --- collector aborts instead of degrading (elf.39 task 6) -----------------------------
+#
+# These monkeypatch `_git.run`/`_git.api_run` directly rather than going through
+# `fake_gh_api` (a real subprocess `gh` on PATH): `main()`/`gh_collect()` need to raise a
+# Python `_git.ApiUnavailableError`, and a subprocess boundary can't carry that. The router
+# below mirrors `_GH_ROUTER` in conftest.py (same endpoint dispatch: pr view / repo view /
+# user / comments / reviews / graphql) but as a plain callable, and it forwards any non
+# `gh`/`glab` argv (the `git` calls `_repo_root`/`detect_platform` make) to the real
+# `_git.run` so those keep working unmocked.
+#
+# `_patch_gh` is the single install point for every test below: besides `run`/`api_run`, it
+# stubs `_git._auth_hosts` to `[]`. `detect_platform(override, remote_host, _auth_hosts("gh"),
+# _auth_hosts("glab"))` evaluates BOTH `_auth_hosts` calls eagerly as call arguments even when
+# `override` (`--platform`) wins and their result is discarded — and `_auth_hosts` calls
+# `subprocess.run(["gh"/"glab", "auth", "status"], ...)` directly, bypassing `_git.run`/
+# `_git.api_run` entirely, so neither stub above can intercept it. Left unpatched, every
+# `main()`-level test here would spawn a real `gh auth status` / `glab auth status` process.
+
+_REAL_GIT_RUN = flow_review_collect_mod._git.run
+
+
+def _patch_gh(monkeypatch, _git, *, run=None, api_run=None):
+    """Install `run`/`api_run` stand-ins on `_git` and stub `_auth_hosts` to `[]` so
+    `detect_platform` never spawns a real `gh`/`glab auth status` subprocess (see block
+    comment above)."""
+    if run is not None:
+        monkeypatch.setattr(_git, "run", run)
+    if api_run is not None:
+        monkeypatch.setattr(_git, "api_run", api_run)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
+
+
+def _gh_endpoint(argv):
+    """Classify a `gh`/`glab` argv the way `_GH_ROUTER` does, but on the argv `_git.run`/
+    `_git.api_run` actually receive (program name included, unlike a subprocess's own
+    `sys.argv[1:]`)."""
+    rest = argv[1:]
+    if rest[:2] == ["pr", "view"]:
+        return "pr_view"
+    if rest[:2] == ["repo", "view"]:
+        return "repo_view"
+    if rest[:1] == ["api"]:
+        tail = rest[1:]
+        if "user" in tail:
+            return "user"
+        i = 0
+        while i < len(tail):
+            tok = tail[i]
+            if tok in ("--paginate", "--slurp"):
+                i += 1
+                continue
+            if tok in ("-q", "-f", "-F"):
+                i += 2
+                continue
+            return tok
+        return ""
+    return ""
+
+
+def _graphql_page(resolved_root_ids):
+    nodes = [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": rid}]}} for rid in resolved_root_ids]
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+                    }
+                }
+            }
+        }
+    )
+
+
+def github_api_stub(*, resolved_root_ids=None, comments=None, reviews=None, fail_at=None, fail_with=None):
+    """In-process stand-in for `_git.run`/`_git.api_run` that drives a full `gh_collect`:
+    canned `pr view` / `repo view` / `user`, one inline comment by default, and a resolution
+    GraphQL page reporting `resolved_root_ids` as resolved.
+
+    `fail_at` names one endpoint key (`"pr_view"`, `"repo_view"`, `"user"`, `"comments"`,
+    `"reviews"`, or `"graphql"`) to raise `fail_with` for instead of answering — every other
+    endpoint still answers normally, so a test can pin down exactly which call fails.
+    """
+    resolved_root_ids = resolved_root_ids or set()
+    if comments is None:
+        comments = [{"id": 1, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"}]
+    if reviews is None:
+        reviews = []
+    # `gh_collect` always passes `slurp=True`, which wraps every page into one outer array
+    # (`--slurp`'s contract) — a single-page fixture is `[comments]`, not `comments`.
+    responses = {
+        "pr_view": json.dumps({"number": 118, "headRefName": "b", "url": "u", "state": "OPEN"}),
+        "repo_view": "o/r",
+        "user": "me",
+        "comments": json.dumps([comments]),
+        "reviews": json.dumps([reviews]),
+        "graphql": _graphql_page(resolved_root_ids),
+    }
+
+    def _fake(argv, **kwargs):
+        if not argv or argv[0] not in ("gh", "glab"):
+            return _REAL_GIT_RUN(argv, **kwargs)
+        ep = _gh_endpoint(argv)
+        key = next((k for k in ("comments", "reviews") if ep.endswith(f"/{k}")), ep)
+        if fail_at is not None and key == fail_at:
+            raise fail_with
+        return responses.get(key, "{}")
+
+    return _fake
+
+
+def paginating_api_with_null_cursor():
+    """Stand-in for `_git.api_run` that answers the resolution GraphQL query with a page
+    carrying `hasNextPage: true` and a null `endCursor` — a page the caller cannot follow."""
+
+    def _fake(argv, **kwargs):
+        return json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": True, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+    return _fake
+
+
+def test_it_exits_4_when_the_resolution_query_cannot_be_answered(monkeypatch, capsys):
+    """Degrading used to mean "resolution unknown", which forced a three-valued flag through the
+    whole ledger and let one GraphQL hiccup reopen every settled thread. Aborting keeps the model
+    two-valued; the round simply did not happen, so no row changed.
+
+    `pr view` / `repo view` / `user` / `comments` / `reviews` all answer normally — only the
+    resolution GraphQL call fails — so this pins the failure to the resolution query
+    specifically, not to "some API call, any API call"."""
+    _git = flow_review_collect_mod._git
+    stub = github_api_stub(fail_at="graphql", fail_with=_git.ApiUnavailableError("boom", permanent=False))
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    assert "try again" in capsys.readouterr().err.lower()
+
+
+def test_it_exits_4_and_names_the_cause_when_the_resolution_query_failure_is_permanent(monkeypatch, capsys):
+    """Same shape as above, but the resolution query fails permanently (bad auth / unsupported
+    schema field) — `main` must name the cause instead of suggesting a retry."""
+    _git = flow_review_collect_mod._git
+    stub = github_api_stub(fail_at="graphql", fail_with=_git.ApiUnavailableError("401 Bad credentials", permanent=True))
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err
+    assert "authenticated" in err.lower() or "unsupported" in err.lower()
+
+
+def test_a_partial_resolution_page_aborts_instead_of_reporting_unknown(monkeypatch):
+    """`hasNextPage: true` with a null `endCursor` cannot be followed. The pages already read are
+    a PARTIAL answer, and a partial answer is indistinguishable from "those threads are not
+    resolved" — which would reopen settled rows."""
+    _git = flow_review_collect_mod._git
+    _patch_gh(monkeypatch, _git, api_run=paginating_api_with_null_cursor())
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 118)
+
+
+def test_resolved_is_always_a_bool_for_a_threaded_item(monkeypatch):
+    _git = flow_review_collect_mod._git
+    stub = github_api_stub(resolved_root_ids={"1"})
+    _patch_gh(monkeypatch, _git, run=stub, api_run=stub)
+    payload = flow_review_collect_mod.gh_collect("118")
+    inline = [c for c in payload["comments"] if c["comment_id"] is not None]
+    assert inline, "the stub must produce at least one inline comment"
+    assert all(isinstance(c["resolved"], bool) for c in inline)
+
+
+# --- unit-resolution reads go through the retry wrapper, not bare `_git.run` (whole-branch
+# review, Important 2) -----------------------------------------------------------------------
+#
+# `gh pr view` / `glab mr view` / `gh repo view` / `glab repo view` are the FIRST network calls
+# of every round. Before this fix they called `_git.run` directly: a real CLI failure raised a
+# bare `subprocess.CalledProcessError`/`TimeoutExpired`, which is neither retried (no
+# `_git.api_run` in the chain) nor caught by `main`'s `except _git.ApiUnavailableError` — so a
+# transient 502 crashed with a raw traceback and exit 1 instead of the documented exit-4
+# message. These tests patch only `_git.run` (leaving the real `_git.api_run` in place) so the
+# retry/convert logic actually runs, and assert each of the four call sites now raises
+# `_git.ApiUnavailableError` instead of the raw subprocess exception.
+
+
+def _permanent_failure(argv, **kwargs):
+    """Stand-in for `_git.run` that always fails with a permanent-signature stderr (401), so
+    `_git.api_run` (left real) raises immediately with no retry sleep — keeps the test fast."""
+    raise subprocess.CalledProcessError(1, argv, stderr="401 Bad credentials")
+
+
+def test_gh_resolve_unit_routes_pr_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gh_resolve_unit("118")
+
+
+def test_gl_resolve_unit_routes_mr_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gl_resolve_unit("4")
+
+
+def test_resolve_repo_routes_gh_repo_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod._resolve_repo()
+
+
+def test_resolve_project_routes_glab_repo_view_through_the_retry_wrapper(monkeypatch):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod._resolve_project()
+
+
+def test_pr_view_failure_exits_4_end_to_end_instead_of_crashing(monkeypatch, capsys):
+    """End-to-end through `main`: before this fix, a real `gh pr view` failure was an unhandled
+    `subprocess.CalledProcessError` — this pins the documented exit-4 behavior for the FIRST
+    network call of a round, not just the resolution GraphQL query the pre-existing tests
+    above cover."""
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err
+    assert "authenticated" in err.lower() or "unsupported" in err.lower()
+
+
+def test_mr_view_failure_exits_4_end_to_end_instead_of_crashing(monkeypatch, capsys):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", _permanent_failure)
+    monkeypatch.setattr(_git, "_auth_hosts", lambda cli: [])
+    assert flow_review_collect_mod.main(["4", "--platform", "gitlab"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err

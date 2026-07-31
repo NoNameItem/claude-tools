@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+"""Persistent per-PR review ledger for flow:review-comments.
+
+    flow-review-ledger reconcile --meta metadata.json
+    flow-review-ledger get       --ref C1 [--meta metadata.json | --url URL --number N]
+    flow-review-ledger record    --decisions decisions.json --head SHA [--meta … | --url … --number …]
+    flow-review-ledger stats     [--meta … | --url … --number …] [--last-round]
+    flow-review-ledger purge     [--meta … | --url … --number …]
+
+Durable working memory keyed by thread id: what was found, what was decided about it, and
+whether the thread has advanced since. Pure stdlib. Every untrusted value (bodies, thread
+replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
+reaches a command line.
+
+`record`'s decisions file merges into a row the way JSON merge does: an ABSENT key leaves the
+stored value alone, an explicit `null` CLEARS it. Clearable fields: `decision`, `reason`,
+`followup_task_id`, `thread_mark`. `status` is not clearable — a null there is rejected.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import _ledger
+
+
+def read_json(path: str) -> object:
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def resolve_unit(args: argparse.Namespace) -> tuple[str, object]:
+    """(url, number) from --meta's `unit`, or from explicit --url/--number.
+
+    When only --url is given, the number is derived from its route segment (GitHub
+    `.../pull/<n>`, GitLab `.../-/merge_requests/<n>`) so hand-use of e.g. `purge --url …`
+    doesn't require repeating the number the URL already carries. A URL with no derivable
+    number leaves `number` as None, and `ledger_path` raises its existing clear error.
+    """
+    if getattr(args, "meta", None):
+        meta = read_json(args.meta)
+        unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
+        return unit.get("url", ""), unit.get("number")
+    url = getattr(args, "url", "") or ""
+    number = getattr(args, "number", None)
+    if number is None:
+        number = _ledger.derive_number(url)
+    return url, number
+
+
+# ---- reconcile ---------------------------------------------------------------
+
+
+def alloc_ref(doc: dict, is_bot: bool) -> str:
+    """Draw the next stable ref for a NEW row: `C` for bots, `U` for humans.
+
+    Allocate-once: an existing row keeps its ref forever and a number is never reused, so a
+    ref identifies the same finding across every round (the working set is therefore the
+    sparse, gappy `status != done` subset — gaps are settled findings).
+    """
+    prefix = "C" if is_bot else "U"
+    counters = doc["next_ref"]
+    number = int(counters.get(prefix, 1))
+    counters[prefix] = number + 1
+    return f"{prefix}{number}"
+
+
+def refresh_snapshot(row: dict, item: dict) -> None:
+    """Rebuild the current-snapshot fields from the fresh collector output. Durable and
+    set-on-insert fields are untouched.
+
+    `resolved` is not one of these fields any more — the platform axis (`platform_state`,
+    written unconditionally in `cmd_reconcile`) is computed straight from `item`, so the row
+    never stores the platform's raw verdict at all.
+    """
+    for field in _ledger.SNAPSHOT_FIELDS:
+        row[field] = item.get(field)
+
+
+def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
+    kind = item.get("kind") or "inline"
+    row = {
+        # The BARE platform id — the reply target. The ledger's own key is namespaced
+        # (`_ledger.row_key_of`); the two must not be conflated, or a prefixed value would
+        # reach `.../comments/{id}/replies` and 404 every reply.
+        "thread_id": thread_id,
+        "platform": (doc.get("unit") or {}).get("platform"),
+        "ref": alloc_ref(doc, bool(item.get("is_bot"))),
+        "kind": kind,
+        # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
+        # after a purge) — never the re-surface trigger; that is `thread_mark`. Resolution does
+        # NOT seed `done`: a row first seen already-resolved gets `status: open` +
+        # `platform_state: resolved`, so if the thread is un-resolved it arrives for triage
+        # instead of staying closed by someone else's verdict forever.
+        "status": "done" if item.get("already_replied") else "open",
+        "decision": None,
+        "reason": None,
+        "followup_task_id": None,
+        "thread_mark": _ledger.last_reply_id(item),
+        "first_seen_round": round_no,
+        "last_round": round_no,
+        "head": None,
+    }
+    refresh_snapshot(row, item)
+    return row
+
+
+def reopen_if_advanced(row: dict, item: dict) -> None:
+    """A done row re-opens iff its thread carries a reply we have not accounted for.
+
+    One rule covers all three real continuations — reviewer objects, reviewer acknowledges,
+    human posts an instruction — because it keys on the reply ID, not authorship (the agent's
+    replies and the human's manual comments come from the SAME account). This is NOT gated on
+    `kind`: a GitHub review-body summary (`kind == "summary"`) happens to be threadless, so
+    `_ledger.last_reply_id` returns None for it and `_ledger.id_advanced` is unconditionally
+    False whenever `current` is None — that is what makes it never re-open, and it is the
+    deterministic elf.31 guarantee (a re-imported review carries the same, immutable summary
+    id). A GitLab general discussion is ALSO `kind == "summary"` (see `gl_collect`) but is NOT
+    threadless — it carries a real thread that can grow a new note — so it must re-open like
+    any other threaded row. The prior `decision`/`reason` are kept as history.
+
+    This is the one status write `reconcile` still performs — the platform axis (see
+    `cmd_reconcile`) never touches `status`.
+    """
+    if row.get("status") != "done":
+        return
+    if _ledger.id_advanced(_ledger.last_reply_id(item), row.get("thread_mark")):
+        row["status"] = "open"
+
+
+def working_entry(row: dict) -> dict:
+    """The display projection that feeds Phase 3's working set — no bodies, no threads."""
+    brief = " ".join((row.get("body") or "").split())[: _ledger.BRIEF_CHARS]
+    return {
+        "ref": row.get("ref"),
+        "status": row.get("status"),
+        "kind": row.get("kind"),
+        "is_bot": bool(row.get("is_bot")),
+        "path": row.get("path"),
+        "start_line": row.get("start_line"),
+        "line": row.get("line"),
+        "outdated": bool(row.get("outdated")),
+        "decision": row.get("decision"),
+        "first_seen_round": row.get("first_seen_round"),
+        "brief": brief,
+    }
+
+
+def counts_of(doc: dict, working: list | None = None) -> dict:
+    """Status tallies plus `working` — the size of the CURRENT set.
+
+    `working` must be the list `reconcile` actually emitted, not a tally over all rows: the
+    skill's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two populations
+    differ (a row can be persisted but absent from this round's snapshot). The row-derived
+    fallback goes through `_ledger.is_working` so it cannot drift from the loop above.
+    """
+    rows = list(doc.get("rows", {}).values())
+    counts = {
+        "done": sum(1 for row in rows if row.get("status") == "done"),
+        "open": sum(1 for row in rows if _ledger.is_working(row)),
+        "resolved_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
+        ),
+        "absent_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
+        ),
+    }
+    counts["total"] = len(rows)
+    counts["working"] = counts["open"] if working is None else len(working)
+    return counts
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    meta = read_json(args.meta)
+    unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
+    path = _ledger.ledger_path(unit.get("url", ""), unit.get("number"))
+    doc = _ledger.load_ledger(path)
+    doc["unit"] = {"platform": meta.get("platform"), "number": unit.get("number"), "url": unit.get("url")}
+    doc["round"] = int(doc.get("round", 0)) + 1
+    round_no = doc["round"]
+
+    comments = meta.get("comments") if isinstance(meta, dict) else None
+    if comments is not None and not isinstance(comments, list):
+        msg = f"meta.comments must be a list, got {type(comments).__name__}"
+        raise ValueError(msg)
+
+    working = []
+    seen: set[str] = set()
+    for item in comments or []:
+        thread_id = _ledger.thread_id_of(item)
+        key = _ledger.row_key_of(item)
+        if thread_id is None or key is None:
+            continue  # no platform id → not trackable
+        seen.add(key)
+        row = doc["rows"].get(key)
+        if row is None:
+            row = new_row(thread_id, item, doc, round_no)
+            doc["rows"][key] = row
+        else:
+            reopen_if_advanced(row, item)
+            refresh_snapshot(row, item)
+        # The platform axis, for new and existing rows alike — one writer, one statement.
+        row["platform_state"] = _ledger.platform_state_of(item)
+        if _ledger.is_working(row):
+            working.append(working_entry(row))
+
+    # Absence is the third platform state, not a status: a tracked row missing from this
+    # round's snapshot is gone from the platform, and `status` / `decision` / `reason` /
+    # `followup_task_id` are left exactly as they were. If the thread comes back, the loop
+    # above returns the row to `live` and it resumes with its decision intact.
+    #
+    # Absence is trustworthy because the collector aborts on any API failure rather than
+    # returning a short page, so "not in the snapshot" cannot mean "not fetched".
+    for key, row in doc["rows"].items():
+        if key not in seen:
+            row["platform_state"] = "absent"
+
+    _ledger.save_ledger(path, doc)
+    payload = {"round": round_no, "ledger": str(path), "counts": counts_of(doc, working), "working_set": working}
+    print(json.dumps(payload))
+    return 0
+
+
+# ---- get ---------------------------------------------------------------------
+
+
+def cmd_get(args: argparse.Namespace) -> int:
+    """Print ONE row as JSON. The read primitive that keeps every consumer — the Phase-3
+    subagent, the Phase-4 card, the Phase-5 reply target — off the whole growing document.
+
+    `resurfaced` is COMPUTED here rather than stored: a stored copy would be a second source of
+    truth to keep in sync with the thread on every round.
+    """
+    url, number = resolve_unit(args)
+    doc = _ledger.load_ledger(_ledger.ledger_path(url, number))
+    row = _ledger.find_row_by_ref(doc, args.ref)
+    if row is None:
+        print(f"flow-review-ledger: no row with ref {args.ref!r}", file=sys.stderr)
+        return 1
+    print(json.dumps({**row, "resurfaced": _ledger.resurfaced(row)}, ensure_ascii=False))
+    return 0
+
+
+# ---- record ------------------------------------------------------------------
+
+
+def validate_decisions(decisions: object) -> None:
+    """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing).
+
+    The check for an insufficient thread mark on a done row cannot live here because it needs
+    to see the row's stored platform and kind; it runs in cmd_record's merge loop after fields
+    are merged into the in-memory row copy. Raising mid-loop preserves the all-or-nothing
+    guarantee: doc is loaded from disk and nothing has been written yet, so an exception leaves
+    the file untouched.
+    """
+    if not isinstance(decisions, dict):
+        msg = "decisions file must be a JSON object keyed by ref"
+        raise ValueError(msg)
+    for ref, entry in decisions.items():
+        if not isinstance(entry, dict):
+            msg = f"decision for {ref} must be an object"
+            raise ValueError(msg)
+        if "status" in entry:
+            status = entry["status"]
+            if status is None:
+                # Every other durable field is nullable and a null CLEARS it; `status` is an enum
+                # with no empty member, so a null there can only be a mistake.
+                msg = f"decision for {ref} has a null status — omit the key to leave it unchanged"
+                raise ValueError(msg)
+            if status not in _ledger.STATUSES:
+                msg = f"decision for {ref} has unknown status {status!r}"
+                raise ValueError(msg)
+        decision = entry.get("decision")
+        if decision is not None and decision not in _ledger.DECISIONS:
+            msg = f"decision for {ref} has unknown decision {decision!r}"
+            raise ValueError(msg)
+
+
+#: Every field `record` can update on a row, with ordinary JSON-merge semantics:
+#: an ABSENT key is a no-op ("this round supplied no new information"), an explicit JSON
+#: `null` CLEARS the stored value. review-comments 5.7a's canonical decisions.json relies on
+#: the clear — a ref re-decided `fix` writes `"followup_task_id": null` to drop the task id an
+#: earlier `follow_up` round filed, and a GitHub `kind == "summary"` row writes
+#: `"thread_mark": null` because it has no thread.
+#: `status` is the one exception: it is a non-nullable enum (a row is always in exactly one of
+#: `_ledger.STATUSES`), so `validate_decisions` rejects an explicit null rather than writing a
+#: row that belongs to no status bucket.
+NULLABLE_FIELDS = ("decision", "reason", "followup_task_id", "thread_mark")
+RECORD_FIELDS = ("status", *NULLABLE_FIELDS)
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    if not path.is_file():
+        # Phase 5.7a always runs `record` immediately after `reconcile` in the same run, which
+        # unconditionally saves the ledger — so a missing file here means something upstream
+        # went wrong. Materialising an empty round-0 document would silently hide that.
+        msg = f"no ledger at {path} — run reconcile before record"
+        raise ValueError(msg)
+    decisions = read_json(args.decisions)
+    validate_decisions(decisions)
+
+    doc = _ledger.load_ledger(path)
+    unknown = []
+    for ref, entry in decisions.items():
+        row = _ledger.find_row_by_ref(doc, ref)
+        if row is None:
+            unknown.append(ref)
+            continue
+        for field in RECORD_FIELDS:
+            if field in entry:
+                row[field] = entry[field]
+        # A `done` row is only settled if we accounted for the reply that settled it. This guard
+        # catches the case where the mark is absent entirely (never set or explicitly cleared to null),
+        # which would cause `id_advanced` to read our reply as an advance and re-open forever next round.
+        # Note: supplying a stale mark instead of the id of the reply just posted cannot be detected
+        # mechanically here — the row's thread from the last reconcile cannot contain our just-posted reply —
+        # so that remains the caller's responsibility, which the skill's prose already mandates.
+        # A threadless row (a GitHub review body) has no thread to mark and is the one exemption.
+        if row.get("status") == "done" and row.get("thread_mark") is None and not _ledger.threadless(row):
+            msg = (
+                f"decision for {ref} sets status 'done' with no thread_mark — supply the id of the "
+                f"reply just posted (only a GitHub review-body summary may omit it)"
+            )
+            raise ValueError(msg)
+        row["last_round"] = doc.get("round", 0)
+        row["head"] = args.head
+    _ledger.save_ledger(path, doc)
+
+    print(json.dumps({"recorded": len(decisions) - len(unknown), "unknown": sorted(unknown)}))
+    if unknown:
+        # Non-zero per the plugin's exit-code convention (AGENTS.md: "no silent failures").
+        # The transitions that DID apply are already saved above — the caller's decisions are
+        # never lost — but the caller must not treat the batch as durable: an unrecorded
+        # finding keeps a working status, re-surfaces next round, and gets re-triaged after a
+        # reply was already posted for it. Nothing inspects the JSON, so the exit code is the
+        # only signal that reaches Phase 5.7a.
+        print(f"flow-review-ledger: no row for ref(s) {', '.join(sorted(unknown))}", file=sys.stderr)
+        return 1
+    return 0
+
+
+# ---- stats -------------------------------------------------------------------
+
+DECISION_LABELS = (
+    ("fix", "fix"),
+    ("wont_fix", "won't-fix"),
+    ("follow_up", "follow-up"),
+    ("outdated", "outdated"),
+)
+
+
+def fold_stats(doc: dict, last_round_only: bool) -> dict:
+    rows = list(doc.get("rows", {}).values())
+    if last_round_only:
+        rows = [row for row in rows if row.get("last_round") == doc.get("round")]
+    # These four buckets PARTITION every row, so the report can never contradict `reconcile`:
+    # `done` is settled by us; `open` is what `is_working` returns; the other two are rows we
+    # have not settled that the platform took off the table.
+    status_counts = {
+        "done": sum(1 for row in rows if row.get("status") == "done"),
+        "open": sum(1 for row in rows if _ledger.is_working(row)),
+    }
+    return {
+        "tracked": len(rows),
+        "status": status_counts,
+        # Derived, not stored: this is what the `pending` status used to say. A working row with
+        # a decision is one whose action did not land — the next round delivers it.
+        "open_undelivered": sum(1 for row in rows if _ledger.is_working(row) and row.get("decision")),
+        "resolved_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
+        ),
+        "absent_upstream": sum(
+            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
+        ),
+        "decisions": {
+            key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
+            for key, _ in DECISION_LABELS
+        },
+        "followups": [
+            row["followup_task_id"]
+            for row in rows
+            if row.get("decision") == "follow_up" and row.get("followup_task_id")
+        ],
+    }
+
+
+def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
+    unit = doc.get("unit") or {}
+    noun, marker = ("MR", "!") if unit.get("platform") == "gitlab" else ("PR", "#")
+    try:
+        host, segments = _ledger.split_project(unit.get("url", ""))
+        location = "/".join([host, *segments])
+    except _ledger.LedgerPathError:
+        location = unit.get("url") or "?"
+    suffix = " (last pass)" if last_round_only else ""
+    lines = [
+        f"Ledger {noun} {marker}{unit.get('number')} ({location}) — round {doc.get('round', 0)}{suffix}",
+        f"  Tracked: {folded['tracked']} findings",
+    ]
+    breakdown = " · ".join(
+        f"{label} {folded['decisions'][key]}" for key, label in DECISION_LABELS if folded["decisions"][key]
+    )
+    done = f"  Done: {folded['status']['done']}"
+    lines.append(f"{done}  ({breakdown})" if breakdown else done)
+    open_line = f"  Open: {folded['status']['open']}"
+    if folded["open_undelivered"]:
+        # Only when non-zero: on a clean round every open row is simply untriaged, and a
+        # permanent "(decided but not delivered: 0)" would read as noise.
+        open_line += f"  (decided but not delivered: {folded['open_undelivered']})"
+    lines.append(open_line)
+    if folded["absent_upstream"]:
+        lines.append(f"  Deleted upstream: {folded['absent_upstream']}")
+    if folded["resolved_upstream"]:
+        # Same rule, and the counterpart to the line above: these rows are settled by the
+        # platform rather than by us, so they are out of the working set but were never given a
+        # decision — reporting them under `Open` would be wrong, hiding them entirely worse.
+        lines.append(f"  Resolved upstream: {folded['resolved_upstream']}")
+    if folded["followups"]:
+        lines.append(f"  Follow-ups filed: {len(folded['followups'])} ({', '.join(folded['followups'])})")
+    return "\n".join(lines)
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    if not path.is_file():
+        print(f"No ledger for {url} (nothing tracked yet).")
+        return 0
+    doc = _ledger.load_ledger(path)
+    print(render_stats(doc, fold_stats(doc, args.last_round), args.last_round))
+    return 0
+
+
+# ---- purge -------------------------------------------------------------------
+
+
+def cmd_purge(args: argparse.Namespace) -> int:
+    """Remove one PR's ledger. Path + unlink only; no untrusted data, idempotent."""
+    url, number = resolve_unit(args)
+    path = _ledger.ledger_path(url, number)
+    existed = path.is_file()
+    path.unlink(missing_ok=True)
+    print(f"Removed ledger {path}" if existed else f"No ledger at {path}")
+    return 0
+
+
+# ---- entry point -------------------------------------------------------------
+
+
+def add_unit_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--meta")
+    parser.add_argument("--url")
+    parser.add_argument("--number")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="flow-review-ledger")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    reconcile = sub.add_parser("reconcile")
+    reconcile.add_argument("--meta", required=True)
+    reconcile.set_defaults(func=cmd_reconcile)
+
+    get = sub.add_parser("get")
+    get.add_argument("--ref", required=True)
+    add_unit_args(get)
+    get.set_defaults(func=cmd_get)
+
+    record = sub.add_parser(
+        "record",
+        description=(
+            "Merge a decisions file into the ledger. Per entry, an ABSENT key is a no-op and an "
+            "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id, "
+            "thread_mark (null = 'no thread' — true only for a threadless row, e.g. a GitHub "
+            "review-body summary; on any row that HAS a thread, including a GitLab "
+            "general-discussion summary, a cleared mark makes the finding re-open). status is "
+            "not clearable: null is rejected."
+        ),
+    )
+    record.add_argument("--decisions", required=True)
+    record.add_argument("--head", required=True)
+    add_unit_args(record)
+    record.set_defaults(func=cmd_record)
+
+    stats = sub.add_parser("stats")
+    stats.add_argument("--last-round", action="store_true")
+    add_unit_args(stats)
+    stats.set_defaults(func=cmd_stats)
+
+    purge = sub.add_parser("purge")
+    add_unit_args(purge)
+    purge.set_defaults(func=cmd_purge)
+
+    return parser
+
+
+def main(argv: list[str]) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except (OSError, ValueError) as exc:  # LedgerPathError is a ValueError
+        print(f"flow-review-ledger: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

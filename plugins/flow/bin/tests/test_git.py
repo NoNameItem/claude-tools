@@ -168,6 +168,87 @@ class TestAuthHosts:
         assert _git._auth_hosts("gh") == []
 
 
+class TestApiRun:
+    def test_it_returns_stdout_on_the_first_attempt(self, monkeypatch) -> None:
+        monkeypatch.setattr(_git, "run", lambda argv, **kw: "ok")
+        assert _git.api_run(["gh", "api", "user"]) == "ok"
+
+    def test_it_retries_a_transient_failure_and_succeeds(self, monkeypatch) -> None:
+        calls, pauses = [], []
+
+        def flaky(argv, **kw):
+            calls.append(argv)
+            if len(calls) < 2:
+                raise subprocess.CalledProcessError(1, argv, stderr="503 Service Unavailable")
+            return "ok"
+
+        monkeypatch.setattr(_git, "run", flaky)
+        assert _git.api_run(["gh", "api", "user"], sleep=pauses.append) == "ok"
+        assert len(calls) == 2
+        assert pauses == [1]
+
+    def test_it_gives_up_after_three_attempts(self, monkeypatch) -> None:
+        calls, pauses = [], []
+
+        def always_fails(argv, **kw):
+            calls.append(argv)
+            raise subprocess.CalledProcessError(1, argv, stderr="503 Service Unavailable")
+
+        monkeypatch.setattr(_git, "run", always_fails)
+        with pytest.raises(_git.ApiUnavailableError) as excinfo:
+            _git.api_run(["gh", "api", "user"], sleep=pauses.append)
+        assert len(calls) == 3
+        assert pauses == [1, 4]
+        assert excinfo.value.permanent is False
+        assert "503" in str(excinfo.value)
+
+    def test_a_timeout_is_transient(self, monkeypatch) -> None:
+        def times_out(argv, **kw):
+            raise subprocess.TimeoutExpired(argv, 30)
+
+        monkeypatch.setattr(_git, "run", times_out)
+        with pytest.raises(_git.ApiUnavailableError):
+            _git.api_run(["gh", "api", "user"], sleep=lambda _s: None)
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "gh auth login required",
+            "HTTP 401: Bad credentials",
+            "HTTP 404: Not Found",
+            "Could not resolve to a PullRequest with the number 999",
+            "Field 'fullDatabaseId' doesn't exist on type 'IssueComment'",
+        ],
+    )
+    def test_a_permanent_failure_is_not_retried(self, monkeypatch, stderr) -> None:
+        """Retrying an auth or schema error only delays the same failure. The bias elsewhere is
+        deliberately the opposite — mistaking a transient failure for permanent aborts the run,
+        while mistaking a permanent one for transient costs five seconds."""
+        calls, pauses = [], []
+
+        def fails(argv, **kw):
+            calls.append(argv)
+            raise subprocess.CalledProcessError(1, argv, stderr=stderr)
+
+        monkeypatch.setattr(_git, "run", fails)
+        with pytest.raises(_git.ApiUnavailableError) as excinfo:
+            _git.api_run(["gh", "api", "user"], sleep=pauses.append)
+        assert len(calls) == 1, "no retry"
+        assert pauses == []
+        assert excinfo.value.permanent is True
+
+    def test_rate_limiting_waits_longer(self, monkeypatch) -> None:
+        pauses = []
+
+        def limited(argv, **kw):
+            raise subprocess.CalledProcessError(1, argv, stderr="API rate limit exceeded for user")
+
+        monkeypatch.setattr(_git, "run", limited)
+        with pytest.raises(_git.ApiUnavailableError):
+            _git.api_run(["gh", "api", "user"], sleep=pauses.append)
+        assert pauses == [10, 30], "a one-second pause is known to be useless against a rate limit"
+
+
 class TestDetectPlatform:
     def test_detects_gitlab_via_remote_heuristic(self, tmp_path, monkeypatch):
         # Fake `git remote get-url origin` → a self-hosted host whose name contains

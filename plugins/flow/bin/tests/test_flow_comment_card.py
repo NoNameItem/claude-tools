@@ -11,6 +11,10 @@ from pathlib import Path
 
 import pytest
 
+BIN = Path(__file__).parent.parent
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
+
 # Import the extension-less executable as a module (mirrors test_flow_task_card.py)
 _HELPER = Path(__file__).parent.parent / "flow-comment-card"
 _spec = importlib.util.spec_from_file_location(
@@ -143,6 +147,26 @@ class TestRenderComment:
     def test_multiline_body_each_line_quoted(self):
         card = {"author": "alice", "body": "line one\nline two"}
         assert render_comment(card) == "> **@alice:** line one\n> line two"
+
+    def test_a_thread_that_is_not_a_list_renders_the_body_instead_of_crashing(self):
+        """`thread` is copied verbatim from the collector into the ledger row with no type check,
+        and `--ledger` has no try/except around this call — so a wrong-typed value reaches the
+        user as a raw traceback. A truthy string is the nastiest shape: it iterates into single
+        characters, and `reply.get` then fails on `str`. Degrade to the body, which is the part
+        worth showing."""
+        card = {"author": "alice", "body": "Prefer a constant here.", "thread": "already handled?"}
+        assert render_comment(card) == "> **@alice:** Prefer a constant here."
+
+    def test_thread_entries_that_are_not_mappings_are_skipped(self):
+        """A list of the wrong thing fails one level down from the guard above, on `reply.get`.
+        `load_ledger` cannot catch it either — it validates that a row IS a dict, never what its
+        fields hold — so the usable replies render and the rest are dropped."""
+        card = {
+            "author": "bob",
+            "body": "See below.",
+            "thread": ["oops", {"user": "you", "body": "why?"}, None],
+        }
+        assert render_comment(card) == "> **@bob:** See below.\n> ↳ **@you:** why?"
 
 
 class TestRenderCode:
@@ -374,15 +398,16 @@ class TestGoldenCards:
 
 
 class TestMergeMode:
-    def _files(self, tmp_path, meta, verdict, ref="C1"):
-        (tmp_path / "meta.json").write_text(json.dumps(meta))
+    def _files(self, tmp_path, rows, verdict, ref="C1"):
+        ledger = {"schema": 1, "unit": {}, "round": 1, "next_ref": {"U": 1, "C": 2}, "rows": rows}
+        (tmp_path / "pr-96.json").write_text(json.dumps(ledger))
         (tmp_path / "verdict.json").write_text(json.dumps(verdict))
         return subprocess.run(
             [
                 sys.executable,
                 str(_HELPER),
-                "--meta",
-                str(tmp_path / "meta.json"),
+                "--ledger",
+                str(tmp_path / "pr-96.json"),
                 "--ref",
                 ref,
                 "--verdict",
@@ -393,71 +418,142 @@ class TestMergeMode:
             check=False,
         )
 
-    def test_merges_meta_and_verdict(self, tmp_path):
-        meta = {
-            "comments": [
-                {
-                    "ref": "C1",
-                    "user": "coderabbitai",
-                    "path": "a.py",
-                    "line": 42,
-                    "body": "crashes",
-                    "thread": [],
-                    "diff_hunk": "@@ -40 +40 @@\n x",
-                    "snippet": None,
-                }
-            ]
+    def test_merges_row_and_verdict(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "coderabbitai",
+                "path": "a.py",
+                "line": 42,
+                "body": "crashes",
+                "thread": [],
+                "diff_hunk": "@@ -40 +40 @@\n x",
+                "snippet": None,
+            }
         }
         verdict = {"category": "correctness", "thought": "Real crash.", "suggested": "fix"}
-        r = self._files(tmp_path, meta, verdict)
+        r = self._files(tmp_path, rows, verdict)
         assert r.returncode == 0, r.stderr
         assert r.stdout.startswith("### 🔴 C1 · correctness · a.py:42")
         assert "> **@coderabbitai:** crashes" in r.stdout
         assert "**Suggested:** fix" in r.stdout
 
     def test_snippet_overrides_diff_hunk(self, tmp_path):
-        # collector attached a snippet (thin hunk) → it must WIN and diff_hunk must be dropped
-        meta = {
-            "comments": [
-                {
-                    "ref": "C1",
-                    "user": "a",
-                    "path": "a.py",
-                    "line": 5,
-                    "body": "b",
-                    "thread": [],
-                    "diff_hunk": "@@ -5 +5 @@\n l5",
-                    "snippet": {"lang": "python", "text": "l1\nl2\nl5"},
-                }
-            ]
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [],
+                "diff_hunk": "@@ -5 +5 @@\n l5",
+                "snippet": {"lang": "python", "text": "l1\nl2\nl5"},
+            }
         }
-        verdict = {"category": "style", "thought": "t", "suggested": "won't-fix"}
-        r = self._files(tmp_path, meta, verdict)
+        r = self._files(tmp_path, rows, {"category": "style", "thought": "t", "suggested": "won't-fix"})
         assert "```python" in r.stdout
         assert "l1\nl2\nl5" in r.stdout
-        assert "```diff" not in r.stdout  # diff_hunk dropped in favor of the snippet
+        assert "```diff" not in r.stdout
 
     def test_no_snippet_keeps_diff_hunk(self, tmp_path):
-        meta = {
-            "comments": [
-                {
-                    "ref": "C1",
-                    "user": "a",
-                    "path": "a.py",
-                    "line": 5,
-                    "body": "b",
-                    "thread": [],
-                    "diff_hunk": "@@ -5,3 +5,3 @@\n a\n b\n c",
-                    "snippet": None,
-                }
-            ]
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [],
+                "diff_hunk": "@@ -5,3 +5,3 @@\n a\n b\n c",
+                "snippet": None,
+            }
         }
-        verdict = {"category": "logic", "thought": "t", "suggested": "fix"}
-        r = self._files(tmp_path, meta, verdict)
+        r = self._files(tmp_path, rows, {"category": "logic", "thought": "t", "suggested": "fix"})
         assert "```diff" in r.stdout
 
+    def test_summary_kind_renders_the_summary_location(self, tmp_path):
+        rows = {
+            "900": {
+                "ref": "C1",
+                "kind": "summary",
+                "user": "coderabbitai",
+                "path": "(summary)",
+                "line": None,
+                "body": "walkthrough",
+                "thread": [],
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "follow-up"})
+        assert "### 🔵 C1 · doc · (summary)" in r.stdout
+
+    def test_thread_replies_still_render(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "alice",
+                "path": "a.py",
+                "line": 5,
+                "body": "root",
+                "thread": [{"user": "bob", "body": "reply", "id": 78, "created_at": None, "is_bot": False}],
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        assert "> ↳ **@bob:** reply" in r.stdout
+
     def test_missing_ref_errors(self, tmp_path):
-        meta = {"comments": [{"ref": "C1", "user": "a", "body": "b"}]}
-        verdict = {"category": "doc", "thought": "t", "suggested": "fix"}
-        r = self._files(tmp_path, meta, verdict, ref="C9")
+        rows = {"77": {"ref": "C1", "user": "a", "body": "b", "thread": []}}
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"}, ref="C9")
         assert r.returncode == 1
+
+    def test_the_card_marks_a_resurfaced_row(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [
+                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
+                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
+                ],
+                "thread_mark": 10,
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" in r.stdout
+
+    def test_the_card_stays_quiet_for_a_row_that_did_not_resurface(self, tmp_path):
+        rows = {
+            "77": {
+                "ref": "C1",
+                "kind": "inline",
+                "user": "a",
+                "path": "a.py",
+                "line": 5,
+                "body": "b",
+                "thread": [
+                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
+                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
+                ],
+                "thread_mark": 11,
+                "diff_hunk": None,
+                "snippet": None,
+            }
+        }
+        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" not in r.stdout

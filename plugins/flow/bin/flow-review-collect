@@ -19,6 +19,7 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import _git
@@ -137,6 +138,24 @@ def is_bot(login: str) -> bool:
     return "[bot]" in low or "coderabbit" in low or low.endswith(("-bot", "_bot"))
 
 
+def thread_reply(user: str, body: str, reply_id: object, created_at: object) -> dict:
+    """One thread reply. `id` lets reconcile compute `thread_mark`; the rest is display context."""
+    return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": is_bot(user)}
+
+
+def gh_kind(comment: dict) -> str:
+    """`file` for a GitHub file-level comment (subject_type: file), else `inline`.
+
+    Some API responses omit `subject_type`; a comment with neither a current nor an original
+    line is file-level by construction, so treat that as `file` too.
+    """
+    if comment.get("subject_type") == "file":
+        return "file"
+    if comment.get("line") is None and comment.get("original_line") is None:
+        return "file"
+    return "inline"
+
+
 def assign_refs(items: list[dict]) -> None:
     """Assign U-refs to humans then C-refs to bots, in list order. Mutates each item."""
     humans = [it for it in items if not it["is_bot"]]
@@ -150,6 +169,28 @@ def assign_refs(items: list[dict]) -> None:
 def _order(items: list[dict]) -> list[dict]:
     """humans (in order) then bots (in order) — the canonical comments[] order."""
     return [it for it in items if not it["is_bot"]] + [it for it in items if it["is_bot"]]
+
+
+# ---- retried repo/project resolution -----------------------------------------
+
+
+def _resolve_repo() -> str:
+    """GitHub 'owner/repo' for the current repo, retried like every other platform read here.
+
+    Duplicates `_git.resolve_repo`'s command instead of calling it: that shared helper is also
+    used by `flow-wait-ci`, which catches its raw `subprocess.CalledProcessError` /
+    `TimeoutExpired` around it to drive its own retry loop, so routing it through `_git.api_run`
+    (which raises `ApiUnavailableError` instead) would break that caller.
+    """
+    return _git.api_run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+
+
+def _resolve_project() -> str:
+    """GitLab URL-encoded 'group%2Frepo', retried — see `_resolve_repo` for why this duplicates
+    `_git.resolve_project` instead of calling it."""
+    view = _git.api_run(["glab", "repo", "view", "--output", "json"])
+    path = json.loads(view)["path_with_namespace"]
+    return urllib.parse.quote(path, safe="")
 
 
 # ---- shared unit-state guard -------------------------------------------------
@@ -183,13 +224,19 @@ def _require_open(state: object, kind: str, ref: object) -> None:
 def gh_resolve_unit(number: str | None) -> dict:
     fields = "number,title,headRefName,url,state"
     cmd = ["gh", "pr", "view", *([number] if number else []), "--json", fields]
-    data = json.loads(_git.run(cmd))
+    data = json.loads(_git.api_run(cmd))
     _require_open(data.get("state"), "PR", data.get("number"))
     return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
 
 
 def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
-    """String root-comment ids of RESOLVED review threads (GraphQL; [] on any error)."""
+    """String root-comment ids of RESOLVED review threads.
+
+    Never returns "unknown". Reporting an error as "false everywhere" would reopen every settled
+    thread on one GraphQL hiccup, and reporting it as a third value forced a three-valued flag
+    through the entire ledger — so the call either answers or aborts the run, and `_git.api_run`
+    has already retried it.
+    """
     query = (
         "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){"
         "repository(owner:$owner,name:$repo){pullRequest(number:$num){"
@@ -200,49 +247,47 @@ def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
     owner, _, name = repo.partition("/")
     resolved: set[str] = set()
     cursor: str | None = None
-    try:
-        while True:
-            cmd = [
-                "gh",
-                "api",
-                "graphql",
-                "-f",
-                f"query={query}",
-                "-f",
-                f"owner={owner}",
-                "-f",
-                f"repo={name}",
-                "-F",
-                f"num={number}",
-            ]
-            if cursor is not None:
-                cmd += ["-f", f"cursor={cursor}"]
-            page = json.loads(_git.run(cmd))
-            rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
-            for node in rt.get("nodes") or []:
-                if node.get("isResolved"):
-                    inner = (node.get("comments") or {}).get("nodes") or []
-                    if inner and inner[0].get("fullDatabaseId") is not None:
-                        resolved.add(str(inner[0]["fullDatabaseId"]))
-            info = rt.get("pageInfo") or {}
-            # Only advance when BOTH flags are truthy: a `hasNextPage: true` with a null
-            # endCursor would re-fetch page 1 identically forever, so treat it as the end.
-            if info.get("hasNextPage") and info.get("endCursor"):
-                cursor = info["endCursor"]
-                continue
-            break
-    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        # NEVER abort collection over the resolve side-query. `_git.run` (check=True) raises
-        # CalledProcessError when `gh api graphql` exits non-zero — which gh does whenever the
-        # GraphQL response carries an `errors` key — and TimeoutExpired on a hang; both are
-        # subclasses of SubprocessError.
-        return set()
+    while True:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"num={number}",
+        ]
+        if cursor is not None:
+            cmd += ["-f", f"cursor={cursor}"]
+        page = json.loads(_git.api_run(cmd))
+        rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+        for node in rt.get("nodes") or []:
+            if node.get("isResolved"):
+                inner = (node.get("comments") or {}).get("nodes") or []
+                if inner and inner[0].get("fullDatabaseId") is not None:
+                    resolved.add(str(inner[0]["fullDatabaseId"]))
+        info = rt.get("pageInfo") or {}
+        if info.get("hasNextPage") and info.get("endCursor"):
+            cursor = info["endCursor"]
+            continue
+        if info.get("hasNextPage"):
+            # `hasNextPage: true` with a null `endCursor` cannot be followed — advancing
+            # would re-fetch page 1 forever. The pages already read are a PARTIAL answer,
+            # and a partial answer is indistinguishable from "those threads are not
+            # resolved", which would reopen settled rows.
+            msg = f"resolution query for {repo}#{number} returned an unfollowable page"
+            raise _git.ApiUnavailableError(msg, permanent=False)
+        break
     return resolved
 
 
 def gh_collect(number: str | None) -> dict:
     unit = gh_resolve_unit(number)
-    repo = _git.resolve_repo()
+    repo = _resolve_repo()
     repo_root = _repo_root()
     me = _git.gh_api("user", jq=".login")
     # `--paginate` alone emits each page as its own top-level JSON array ("[...][...]"),
@@ -258,10 +303,20 @@ def gh_collect(number: str | None) -> dict:
     items: list[dict] = []
     for c in roots:
         cid = c.get("id")
-        if str(cid) in resolved_ids:
-            continue  # resolved thread → drop entirely
+        # A resolved thread is REPORTED, not dropped. Dropping it made "absent from the
+        # snapshot" ambiguous — filtered or gone? — so `reconcile` could not tell a settled
+        # thread from a deleted one, and rows for hand-resolved threads stayed open forever.
+        resolved = str(cid) in resolved_ids
         replies = [r for r in comments if r.get("in_reply_to_id") == cid]
-        thread = [{"user": (r.get("user") or {}).get("login", "?"), "body": r.get("body", "")} for r in replies]
+        thread = [
+            thread_reply(
+                (r.get("user") or {}).get("login", "?"),
+                r.get("body", ""),
+                r.get("id"),
+                r.get("created_at"),
+            )
+            for r in replies
+        ]
         outdated = c.get("line") is None and c.get("original_line") is not None
         line = c.get("original_line") if outdated else c.get("line")
         start_line = c.get("original_start_line") if outdated else c.get("start_line")
@@ -271,11 +326,13 @@ def gh_collect(number: str | None) -> dict:
             {
                 "user": login,
                 "is_bot": is_bot(login),
+                "kind": gh_kind(c),
                 "path": c.get("path"),
                 "start_line": start_line,
                 "line": line,
                 "outdated": outdated,
                 "already_replied": latest == me,
+                "resolved": resolved,
                 "comment_id": cid,
                 "discussion_id": None,
                 "summary_id": None,
@@ -318,11 +375,23 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
             {
                 "user": login,
                 "is_bot": bot,
+                "kind": "summary",
                 "path": "(summary)",
                 "start_line": None,
                 "line": None,
                 "outdated": False,
                 "already_replied": False,
+                # A GitHub review body is not a thread and never consults the resolve
+                # side-query, so it has no resolution state at all — this is the one legal
+                # use of `resolved: None` left; everywhere else it's a real bool.
+                # `platform_state_of` maps this `None` to a definite `"live"` (not an inert
+                # "leave the status alone" — there is no third `apply_resolution`-style path
+                # left, see the ledger design doc's "What is removed"). The never-re-open
+                # guarantee for this row comes from a different mechanism: it is threadless, so
+                # `_ledger.last_reply_id` returns `None` for it, and `reopen_if_advanced`'s
+                # `id_advanced(current=None, mark=...)` is unconditionally False — our own
+                # `done` verdict is the row's only exit, exactly once.
+                "resolved": None,
                 "comment_id": None,
                 "discussion_id": None,
                 "summary_id": rv.get("id"),
@@ -341,7 +410,7 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
 
 def gl_resolve_unit(number: str | None) -> dict:
     cmd = ["glab", "mr", "view", *([number] if number else []), "--output", "json"]
-    data = json.loads(_git.run(cmd))
+    data = json.loads(_git.api_run(cmd))
     _require_open(data.get("state"), "MR", data.get("iid"))
     return {"number": data["iid"], "branch": data["source_branch"], "url": data["web_url"]}
 
@@ -378,9 +447,24 @@ def _gl_lines(position: dict) -> tuple[int | None, int | None, bool]:
     return None, None, outdated
 
 
+def gl_kind(position: dict | None, start_line: object, line: object) -> str:
+    """`inline` / `file` / `summary` for a GitLab discussion — the mirror of `gh_kind`.
+
+    GitLab encodes a file-level comment as a position with `position_type: "file"` and no
+    line endpoints, so a plain `"inline" if position else "summary"` labelled it inline and
+    sent Phase 3 down the branch that derives a ±20-line window from null coordinates. The
+    endpoint check backs up the explicit type for any other positioned-but-lineless shape.
+    """
+    if not position:
+        return "summary"
+    if position.get("position_type") == "file" or (start_line is None and line is None):
+        return "file"
+    return "inline"
+
+
 def gl_collect(number: str | None) -> dict:
     unit = gl_resolve_unit(number)
-    project = _git.resolve_project()
+    project = _resolve_project()
     repo_root = _repo_root()
     me = json.loads(_git.glab_api("user"))["username"]  # glab api has no -q flag; parse in Python
     discussions = json.loads(
@@ -391,11 +475,21 @@ def gl_collect(number: str | None) -> dict:
         notes = [n for n in (disc.get("notes") or []) if not n.get("system")]
         if not notes:
             continue
+        # Reported, not dropped — same reason as the GitHub path: absence from the snapshot
+        # must mean "gone from the platform", nothing else. GitLab ships resolution inline
+        # with the discussion, so unlike GitHub it is never unknown.
         resolvable = [n for n in notes if n.get("resolvable")]
-        if resolvable and all(n.get("resolved") for n in resolvable):
-            continue  # every resolvable note in the discussion is resolved → drop entirely
+        resolved = bool(resolvable) and all(n.get("resolved") for n in resolvable)
         root, replies = notes[0], notes[1:]
-        thread = [{"user": (n.get("author") or {}).get("username", "?"), "body": n.get("body", "")} for n in replies]
+        thread = [
+            thread_reply(
+                (n.get("author") or {}).get("username", "?"),
+                n.get("body", ""),
+                n.get("id"),
+                n.get("created_at"),
+            )
+            for n in replies
+        ]
         latest = thread[-1]["user"] if thread else None
         username = (root.get("author") or {}).get("username", "?")
         position = root.get("position")
@@ -410,11 +504,13 @@ def gl_collect(number: str | None) -> dict:
             {
                 "user": username,
                 "is_bot": is_bot(username),
+                "kind": gl_kind(position, start_line, line),
                 "path": path,
                 "start_line": start_line,
                 "line": line,
                 "outdated": outdated,
                 "already_replied": latest == me,
+                "resolved": resolved,
                 "comment_id": None,
                 "discussion_id": disc.get("id"),
                 "summary_id": None,
@@ -437,11 +533,16 @@ def gl_collect(number: str | None) -> dict:
 def _document(platform: str, unit: dict, me: str, comments: list[dict]) -> dict:
     total = len(comments)
     already = sum(1 for c in comments if c["already_replied"])
+    # Resolved threads now travel in `comments` instead of being filtered out, so `actionable`
+    # has to exclude them explicitly — otherwise the count would silently start including
+    # settled work and stop meaning "needs a decision".
+    resolved = sum(1 for c in comments if c.get("resolved"))
+    actionable = sum(1 for c in comments if not c["already_replied"] and not c.get("resolved"))
     return {
         "platform": platform,
         "unit": unit,
         "me": me,
-        "counts": {"total": total, "already_replied": already, "actionable": total - already},
+        "counts": {"total": total, "already_replied": already, "resolved": resolved, "actionable": actionable},
         "comments": comments,
     }
 
@@ -454,10 +555,24 @@ def main(argv: list[str]) -> int:
 
     number = args.number.lstrip("!") if args.number else None
     platform = _git.detect_platform(args.platform)
-    if platform == "github":
-        doc = gh_collect(number)
-    else:
-        doc = gl_collect(number)
+    try:
+        doc = gh_collect(number) if platform == "github" else gl_collect(number)
+    except _git.ApiUnavailableError as exc:
+        if exc.permanent:
+            print(
+                f"flow-review-collect: the platform API rejected a request and a retry will not help: {exc}\n"
+                f"Check that the CLI is authenticated for this host, and that its API supports every "
+                f"call this collector makes (an older GitHub Enterprise GraphQL schema may not support "
+                f"the resolution query).",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"flow-review-collect: could not fetch the review data: {exc}\n"
+                f"Nothing was written — the round did not start. Try again later.",
+                file=sys.stderr,
+            )
+        return 4
     print(json.dumps(doc))
     return 0
 

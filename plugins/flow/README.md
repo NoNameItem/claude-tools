@@ -381,6 +381,7 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-worktree-dir <branch>` | Map a branch to its `.worktrees/` directory |
 | `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
 | `flow-wait-ci <n> <sha> --platform <github\|gitlab>` | Block until the PR/MR CI pipeline for an exact head SHA is terminal (exit 0/2/3/4); gate-name-agnostic |
+| `flow-review-ledger <reconcile\|get\|record\|stats\|purge>` | Persistent per-PR review ledger: durable memory of every review finding and what was decided about it |
 
 Run the tests: `uv run pytest plugins/flow/bin/tests/`. CI runs them too — the
 plugin-CI `test` job executes any plugin's `bin/tests/` on every PR.

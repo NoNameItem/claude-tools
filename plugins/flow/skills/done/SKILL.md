@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
 # Flow: Done
@@ -53,8 +53,12 @@ Continue to step 2.
 Check if PR exists for current branch:
 
 ```bash
-gh pr view --json state,url 2>/dev/null || echo "NO_PR"
+gh pr view --json state,url,number 2>/dev/null || echo "NO_PR"
 ```
+
+Capture `PR_URL` (`.url`), `PR_NUMBER` (`.number`) and `PR_STATE` (`.state`) — Step 8 needs the first
+two to address this PR's review ledger and the third to decide whether purging it is safe at all. A
+generic branch short-circuits this step and has no PR, which is exactly when the purge is irrelevant.
 
 **If NO PR exists:**
 
@@ -252,6 +256,7 @@ Gather cleanup targets:
 
 - **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 - **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"` — does remote branch exist?
+- **Review ledger:** present when Step 1 captured `PR_NUMBER` (the PR's `flow:review-comments` memory, stored under the OS cache dir — never in the repo).
 - Local branch is always present (we're on it).
 
 #### 8.3. Show branch name and ask once
@@ -265,6 +270,7 @@ Delete branch and associated resources?
   - Worktree: .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
   - Local branch: feature/claude-tools-elf.6-delete-branches-worktrees
   - Remote branch: origin/feature/claude-tools-elf.6-delete-branches-worktrees
+  - Review ledger for PR #<PR_NUMBER>
 
 (yes/no)
 ```
@@ -284,11 +290,41 @@ Show only items that exist. If no worktree, omit the worktree line. If no remote
 5. **Pull merged changes:** `git pull`
 6. **Delete local branch:** `git branch -d <branch>` (safe delete; use `-D` only if PR confirmed merged)
 7. **Delete remote branch:** `git push origin --delete <branch>` (if remote exists)
+8. **Purge the PR's review ledger** — **last, and gated on `PR_STATE` from Step 1** (and only when
+   Step 1 captured a PR number):
+   - **`MERGED`** → purge. The review is over and cannot resume.
+   - **`CLOSED`** → **ask** in plain text, then wait: a closed PR can be **reopened**, and a
+     reopened one re-imports every settled finding without its decisions or follow-up ids, so
+     purging is the irreversible choice made on the user's behalf. Never decide this silently.
+     ```
+     PR #{n} is CLOSED, not merged — it can still be reopened, and its review ledger
+     holds {N} settled findings. Delete the ledger? (yes/no)
+     ```
+     `no` → keep it; it is idempotent to purge later and self-expires if abandoned.
+   - **`OPEN`** → skip the purge entirely.
+   ```bash
+   flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"
+   ```
+   **The gate is the PR's state, never branch deletion.** Whether the local or remote branch
+   survived is irrelevant in both directions: a branch is routinely kept on purpose after a merge —
+   for history, or to re-read what happened in review — and that must not keep a settled PR's ledger
+   alive forever; conversely a `git branch -d` that succeeded says nothing about whether the PR is
+   still taking review. **If the PR is still open, skip the purge** even when every branch is gone.
+   The ledger is that PR's only durable review memory: it lives under the OS cache dir, never in the
+   repo, and `purge` unlinks it outright with no backup. Purging an open PR's ledger costs nothing
+   less than every decision recorded on it, and the next `flow:review-comments` re-imports findings
+   already settled, re-posting replies and re-filing follow-ups. **A `CLOSED` PR carries the same
+   cost with a delay** — closing is reversible, and a reopened PR's re-import is indistinguishable
+   from a fresh one — which is why `CLOSED` asks instead of deciding. A retained ledger costs nothing
+   by comparison: it is idempotent to purge later, a missing one is a no-op, and an abandoned one
+   self-expires (there is no GC). A task with several `Git:` branches purges only the current
+   branch's PR ledger — the others self-expire (multi-branch handling is tracked as
+   claude-tools-elf.51; GitLab support as claude-tools-elf.50).
 
 **Error handling:**
-- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block.
+- Worktree remove fails (uncommitted changes): Show error, suggest `git worktree remove --force` or manual cleanup. Don't block — and leave step 8 alone: the purge is gated on `PR_STATE`, not on this step.
 - Remote branch already deleted (GitHub auto-delete): Catch the error and continue.
-- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED.
+- Branch delete fails (unmerged changes): `git branch -d` will refuse. Show warning. Offer `git branch -D` only if PR state is MERGED. A surviving branch does **not** hold back step 8 — a merged PR's ledger is settled either way — and a deleted one does not license it while the PR is open.
 
 #### 8.5. If no — skip, done
 
@@ -307,6 +343,7 @@ No cleanup performed. User can clean up manually later.
 ✅ Ask before closing each parent
 ✅ Run flow-sync push at end
 ✅ Offer to clean up branch and worktree (Step 8)
+✅ Purge the PR's persistent review ledger during cleanup (Step 8)
 ✅ Delete local branch, remote branch, worktree (after confirmation)
 ✅ Switch to default branch and pull after cleanup
 
@@ -586,6 +623,7 @@ Agent: [Checks branch: feature/claude-tools-elf.6-delete-branches-worktrees]
          - Worktree: .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
          - Local branch: feature/claude-tools-elf.6-delete-branches-worktrees
          - Remote branch: origin/feature/claude-tools-elf.6-delete-branches-worktrees
+         - Review ledger for PR #123
 
        (yes/no)
 
@@ -596,11 +634,13 @@ Agent: [cd to main repo root]
        [git pull]
        [git branch -d feature/claude-tools-elf.6-...]
        [git push origin --delete feature/claude-tools-elf.6-...]
+       [PR state is MERGED → flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
 
        ✓ Worktree removed
        ✓ Switched to master
        ✓ Local branch deleted
        ✓ Remote branch deleted
+       ✓ Review ledger purged
 
        Done.
 ```
@@ -609,7 +649,7 @@ Agent: [cd to main repo root]
 - Checked branch matches task ID
 - Listed all cleanup targets
 - Asked before deleting
-- Executed in correct order (worktree → checkout → delete)
+- Executed in correct order (worktree → checkout → delete → purge ledger, and the purge fired because the PR is MERGED — not because the branch happened to be gone)
 
 ### ❌ BAD: Auto-cleanup without asking
 

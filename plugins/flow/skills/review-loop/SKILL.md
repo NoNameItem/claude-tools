@@ -1,7 +1,7 @@
 ---
 name: review-loop
 description: "Use after pushing to a GitHub Pull Request or GitLab Merge Request when you want the automated bot/CI review cycle ridden round after round to convergence, instead of re-invoking flow:review-comments by hand each round. Cross-platform (gh/glab), gate-name-agnostic. Reply-only: it never resolves threads or merges. Not for human-reviewer feedback."
-allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Read
+allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Read
 ---
 
 # Review Loop
@@ -17,13 +17,17 @@ that by hand means re-running `flow:review-comments` every round; this skill run
 cycle for you with one invocation.
 
 It **reuses `flow:review-comments` verbatim** each round (no flags, no non-interactive
-mode). That skill's own confirmations are the control points: its Phase 3 ("Process all
-N?") and its push confirmation — both **plain-text prompts that wait for your typed
-answer** (it bans structured dialogs for AFK-safety; this skill does the same). The loop
-never pushes silently and never processes without your go-ahead.
+mode). That skill's own confirmations are the control points: its Phase 4 per-card triage
+(fix / won't-fix / follow-up, one comment at a time) and its Phase 5.6 push confirmation —
+both **plain-text prompts that wait for your typed answer** (it bans structured dialogs for
+AFK-safety; this skill does the same). Phase 3 analyzes the whole working set with
+subagents **before** either gate runs — there is no round-level "process all?" confirmation
+ahead of that analysis, so the first point where you can steer or stop what happens to a
+finding is the per-card triage in Phase 4. The loop never pushes silently and never applies
+a fix without your go-ahead.
 
-Convergence is decided **purely by push** (did the head SHA advance this round), never by
-counting threads — so it is platform-agnostic by construction.
+Convergence requires the head to hold **and** the ledger's working set to be empty — never a
+thread count, so it stays platform-agnostic by construction.
 
 ## When to use
 
@@ -62,7 +66,8 @@ Per-platform primitives used below:
 ### 0. Resolve
 
 Resolve `PLATFORM` + the PR/MR (above). No open PR/MR → stop. Found → show number/iid,
-title, URL; set `ROUND = 0` and continue.
+title, URL; store the unit's `url` and `number`/`iid` as `UNIT_URL` / `UNIT_NUMBER` (the
+convergence report at 1g needs them); set `ROUND = 0` and continue.
 
 ### 1. Each iteration
 
@@ -168,26 +173,42 @@ hand-off, and it colors the final report at (g).
   ── Раунд <ROUND> · head <HEAD_before:0:7> ──
   ```
 
-  For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. For any
-  comment ref review-comments printed in an earlier round (its Phase 2 table / Phase 5.7
-  summary, visible in-context because review-comments runs through the active harness's
-  skill mechanism in this same agent), add a `⚠️ <ref> — повторно (<N>-й раунд)` line.
-  Repeat-tracking is in-session memory (a set of refs seen across iterations); no API
-  queries, no persistence.
+  For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. Do **not**
+  track repeats yourself: `flow:review-comments` keeps a durable per-PR ledger, so a finding that
+  was terminally handled is **excluded** before it ever reaches this round's output, and one that
+  re-surfaces does so only because its thread actually advanced (a reviewer objected, a reviewer
+  acknowledged, or the human posted an instruction) — with its prior verdict attached.
 
 - Invoke `flow:review-comments <number>` through the active harness's skill mechanism and
   preserve all of its confirmation, push, and reply gates. It is interactive and may
-  push a new head. Answering "no" at its Phase 3 exits the loop. If you skip its push (Phase
-  5.6), any replies are posted but its fixes stay **local** — the head is unchanged; step
-  (g)'s unpushed-commit check surfaces this.
+  push a new head. There is no round-level "no" gate: declining a card in Phase 4
+  (`won't-fix` / `follow-up` instead of `fix`) settles that one comment and moves to the
+  next — it does not exit the round. Interrupting mid-round (Esc) is the actual exit; see
+  Terminators. If you skip its push (Phase 5.6), any replies are posted but its fixes stay
+  **local** — the head is unchanged; step (g)'s unpushed-commit check surfaces this.
 
 **f. Capture `HEAD_after`** — the platform's head-SHA command again.
 
-**g. Decide convergence — purely by push** (`HEAD_after` vs `HEAD_before`):
+**g. Decide convergence — head AND working set** (`HEAD_after` vs `HEAD_before`, then the
+ledger's working set):
+
+**Convergence requires BOTH conditions**, checked in this order:
+
+1. the head did not advance this round (`HEAD_after == HEAD_before`), **and**
+2. the ledger's working set is **empty** (`counts.working == 0`), queried **after** this round's
+   processing — not the working set `reconcile` reported at the *start* of the round in
+   `flow:review-comments` Phase 2, which is Phase 5's input, not its outcome.
+
+Head advancement alone is not enough. A round can end without a push and still leave work: a row
+whose action did not land — apply failed, or the push was skipped — stays `open` carrying its
+`decision`, and it is exactly the case a loop must not swallow. If the head held still but the
+working set is not empty, report what is left (`flow-review-ledger stats`) and stop as
+**unconverged**, naming the outstanding refs — do not run another identical round that would
+fail the same way.
 
 - `HEAD_after != HEAD_before` (review-comments pushed) → **loop** back to (a) to wait for the
   gates on the new head. A push always means another review round.
-- `HEAD_after == HEAD_before` (no push this round) → this round converges. Before reporting,
+- `HEAD_after == HEAD_before` (no push this round) → check condition 2 before reporting. First,
   **check for unpushed local commits** (review-comments may have committed a fix locally but
   skipped its push):
 
@@ -202,32 +223,58 @@ hand-off, and it colors the final report at (g).
      review-comments ответил «Fixed», но фиксы остались локально. Запушь их и перезапусти /flow:review-loop.
   ```
 
-  Then STOP with the reason that fits:
-  - round **PARTIAL** (step c timed out, you chose "process now") → **partial hand-off:**
-    "обработал что было, но пайплайн для `<HEAD_before:0:7>` не добежал (wait timed out) —
-    перезапусти `/flow:review-loop`, когда проверки завершатся." Not a clean finish.
-  - round **not** PARTIAL, `failed` **empty** → **clean convergence.** Report a short summary
-    and remind the user that **resolving the threads and merging are theirs to do** (the loop
-    is reply-only).
-  - round **not** PARTIAL, `failed` **non-empty** (gate (d) option 1, or a threadless red
-    check) → **red-check hand-off:** "остановился, проверка `<name>` красная — чини руками."
-    Not a clean finish.
+  Then query the ledger's **current** state — after Phase 5's `record` calls, so it reflects
+  what this round actually delivered, not what it started with:
+
+  ```bash
+  flow-review-ledger stats --url "$UNIT_URL" --number "$UNIT_NUMBER"
+  ```
+
+  (`--url`/`--number` are explicit here — this runs outside `flow:review-comments`, so there is no
+  `metadata.json`; a PR that was never processed prints one "No ledger" line and exits 0, which
+  counts as an empty working set.) Read its `Open: N` line — `N` is `counts.working`.
+
+  - **`Open` is non-zero** → **unconverged**, regardless of `PARTIAL`/`failed`. A row's action did
+    not land this round — apply failed, its push was skipped (the unpushed-commits warning above
+    is one instance of this, not the only one), or its follow-up task was never filed — and it
+    stayed `open` carrying its `decision`. The stats output you just printed already shows the
+    count (and, when non-zero, "decided but not delivered"); name the outstanding refs too — every
+    ref `flow:review-comments`'s own 5.8 summary from the round you just ran reported as staying
+    `open` with a decision, across whichever of its buckets are non-empty (do not hardcode which
+    ones; the round can leave rows behind for more than one reason). STOP: "не сошёлся — в рабочем
+    множестве остались необработанные находки (`<ref>`, …), перезапусти `/flow:review-loop`, когда
+    они будут доставлены." Do **not** run another identical round; it would hit the same
+    undelivered rows again.
+  - **`Open` is zero** → this round converges. STOP with the reason that fits:
+    - round **PARTIAL** (step c timed out, you chose "process now") → **partial hand-off:**
+      "обработал что было, но пайплайн для `<HEAD_before:0:7>` не добежал (wait timed out) —
+      перезапусти `/flow:review-loop`, когда проверки завершатся." Not a clean finish.
+    - round **not** PARTIAL, `failed` **empty** → **clean convergence.** The stats output you just
+      printed is the PR/MR's cumulative ledger summary — report a short summary from it and remind
+      the user that **resolving the threads and merging are theirs to do** (the loop is
+      reply-only).
+    - round **not** PARTIAL, `failed` **non-empty** (gate (d) option 1, or a threadless red
+      check) → **red-check hand-off:** "остановился, проверка `<name>` красная — чини руками."
+      Not a clean finish.
 
 ### Terminators
 
 No open PR/MR at resolve (0) · clean convergence (1g) · partial hand-off (1g) · red-check
-hand-off (1g) · no CI (`exit 4`, 1c) · internal usage error from `flow-wait-ci` (`exit 1`,
-1c) · PR/MR merged/closed (1b) · user "stop" at the timeout prompt (1c) · user "stop" at the
-red-pipeline gate (1d) · user "no" at `flow:review-comments` Phase 3 · user Esc.
+hand-off (1g) · unconverged hand-off — head held but the working set is not empty (1g) · no CI
+(`exit 4`, 1c) · internal usage error from `flow-wait-ci` (`exit 1`, 1c) · PR/MR merged/closed
+(1b) · user "stop" at the timeout prompt (1c) · user "stop" at the red-pipeline gate (1d) ·
+user interrupts `flow:review-comments` mid-round (Esc) — there is no round-level "no" gate to
+answer instead; per-card `won't-fix`/`follow-up` decisions in Phase 4 settle a comment without
+exiting.
 
 ## Round indicator (replaces a hard cap)
 
 There is **no** `max_rounds` auto-stop and no wall-clock cap. Safety comes from the loop
 being interactive — `flow:review-comments` confirms every round (process + push) — plus the
-visible round indicator. A bot ↔ "Won't fix" ping-pong shows up as a comment ref that
-`flow:review-comments` prints again in a later round (its per-round output is visible
-in-context, since it runs through the active harness's skill mechanism in this same agent), flagged `повторно` with
-the round count. The user presses Esc the moment the indicator shows an unproductive dispute.
+visible round indicator. An unproductive bot ↔ "Won't fix" dispute shows up as the same ledger `ref` re-appearing in
+`flow:review-comments` output round after round — a settled finding is excluded, so a ref you keep
+seeing is one whose thread genuinely keeps advancing. The user presses Esc the moment that reads as
+a dispute rather than progress.
 A machine round cap would just as often cut off a productive cycle mid-flight; the human
 decision is better.
 
@@ -241,7 +288,7 @@ decision is better.
 | Wait | `flow-wait-ci <n> <HEAD> --platform <p>` | whole pipeline; 2=timeout(PARTIAL), 3=head moved(restart), 4=no CI(stop) |
 | Red gate | `failed` non-empty → plain-text run-anyway / stop | before review-comments (d) |
 | Process | Skill `flow:review-comments <n>` | verbatim, interactive |
-| Converge | `HEAD_after` vs `HEAD_before`; `git rev-parse HEAD` for unpushed | push→loop; no push→stop + warn if local ahead (g) |
+| Converge | `HEAD_after` vs `HEAD_before`, then `counts.working` | push→loop; no push + working set empty→stop; no push + working set non-empty→unconverged, name refs (g) |
 
 ## Red flags — STOP
 
@@ -252,9 +299,12 @@ decision is better.
 - "I'll run `flow:review-comments` non-interactively / with a flag." → It's reused verbatim,
   interactive. No flags, no bypass of its push confirmation.
 - "I'll count actionable threads myself to decide convergence." → **No.** review-comments owns
-  "actionable"; the loop converges purely on the **push** comparison.
-- "No push this round, so we're cleanly done — I'll just stop." → First compare
-  `git rev-parse HEAD` with `HEAD_after`. If local is ahead, warn (step 1g).
+  "actionable"; the loop converges on **head advancement AND an empty working set**, never a
+  thread count of its own.
+- "No push this round, so we're cleanly done — I'll just stop." → **No.** No-push is only
+  condition 1 of 2. First compare `git rev-parse HEAD` with `HEAD_after` (warn if local is
+  ahead), then check `counts.working` — a non-empty working set means a row's action didn't
+  land, and the round is **unconverged** even though nothing pushed (step 1g).
 - "I'll run `flow:review-comments` before the pipeline finishes." → Wait for the whole
   pipeline first (step c), or lint inline comments land after you've processed the round.
 - "The wait returned 0, so the head I captured is still current." → Not guaranteed — the
@@ -274,10 +324,14 @@ decision is better.
 - **Converging clean over an unpushed fix.** review-comments applied a fix, committed
   locally, but its push was skipped → the remote head is unchanged so a naive check reads "no
   push → converged". Compare `git rev-parse HEAD` with `HEAD_after` and warn (step 1g).
+- **Converging on head advancement alone.** No push is only half the condition — a row whose
+  apply failed, or whose action was decided but never delivered, stays `open` in the ledger
+  with an unchanged head. Check `counts.working` before calling the round converged (step 1g).
 - **Running review-comments before CI lint posts its comments.** The step-(c) wait exists
   precisely to prevent this.
 - **Re-introducing a thread count.** review-comments is the single source of truth for
-  "actionable"; the loop decides by push.
+  "actionable"; the loop decides by head advancement plus an empty working set, not a count of
+  its own.
 - **Pushing mid-review.** Never push while `flow-wait-ci` hasn't returned for the current
   head — a push mid-poll wastes the in-flight review cycle. Structurally prevented by only
   entering step (e) after step (c) returns.
