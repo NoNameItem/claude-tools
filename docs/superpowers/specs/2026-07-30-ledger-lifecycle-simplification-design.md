@@ -170,6 +170,22 @@ explain.
 This also disarms the `id_advanced(current, mark=None) → True` footgun: the only way to reach
 `done` with an empty mark on a threaded row was through `record`, which now refuses.
 
+**What the guard does NOT catch, and why it cannot.** The check reads the row's value *after* the
+merge, so it fires only when the row ends up with **no mark at all** — never set, or explicitly
+cleared to `null`. A **stale** mark passes: if the row already carries the id from an earlier round
+and this round's entry omits the key (a no-op under JSON-merge semantics) or supplies an older id,
+the guard sees a non-null value and lets it through, and the reply just posted still reads as a
+thread advance next round.
+
+That half is not detectable here by construction: `row["thread"]` is the snapshot the last
+`reconcile` wrote, and the reply we post afterwards cannot be in it, so there is nothing to compare
+a mark against at record time. Supplying the id of the reply just posted therefore remains caller
+discipline, which the skill's Phase 5.7a prose mandates — the guard mechanises the half that can be
+mechanised and the prose must not claim more. (Found while implementing this spec: the first draft
+of both the guard's comment and the skill's prose described the trigger in terms of the decisions
+*entry* rather than the resulting *row*, which promised loud failure in exactly the case that
+passes silently.)
+
 ## Collector failure semantics
 
 **One rule: every API call either returns data or aborts the run.** No partial answers, no
