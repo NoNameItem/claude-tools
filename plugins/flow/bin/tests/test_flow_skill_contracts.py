@@ -568,3 +568,17 @@ def test_review_comments_handles_a_collector_abort() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "exit 4" in text or "exits non-zero" in text
     assert "ledger was not touched" in text
+
+
+# --- Task 8: review-loop converges on an empty working set, not head advancement alone -------
+
+
+def test_review_loop_requires_an_empty_working_set_to_converge() -> None:
+    """Head advancement alone is not soundness. Removing the cap deleted the loudest case (a
+    subset round that pushed nothing while unselected rows stayed open), but a round can still
+    end with an unchanged head and outstanding work: a row whose action did not land stays
+    `open` carrying its decision. Calling that "converged" stops the loop with work left."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    assert re.search(r"working set", text, re.IGNORECASE)
+    assert re.search(r"(empty working set|working set is empty)", text, re.IGNORECASE)
+    assert re.search(r"head.{0,60}and.{0,60}working set", text, re.IGNORECASE | re.DOTALL)
