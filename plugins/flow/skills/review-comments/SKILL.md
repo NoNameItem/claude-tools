@@ -14,7 +14,7 @@ This skill makes every unresolved review comment reviewable and triageable **ins
 
 **Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
-**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. A large-PR **cap** then selects the working set before analysis, so a big review never floods the context. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. There is no pre-analysis gate — the ledger already excludes what is settled, so the working set a round carries is exactly what needs a look. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -29,7 +29,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 |------|--------|-----------|
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
-| 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings; refs are stable across rounds (and therefore gappy) |
+| 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings, so the whole working set is analyzed — no subset gate; refs are stable across rounds (and therefore gappy) |
 | 3. Analyze the **working set** | Parallel `balanced`-tier reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply → record | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task; **checkpoint each filed task / posted reply into the ledger as it lands** |
@@ -198,35 +198,39 @@ would advance the head SHA and break `flow:review-loop`'s convergence check). `r
 every collected comment into it by thread id, refreshes the current-snapshot fields, preserves the
 durable ones, and prints:
 
-`{round, ledger, counts:{total,open,skipped,pending,done,deleted,working}, working_set:[{ref, status,
-kind, is_bot, path, start_line, line, outdated, decision, first_seen_round, brief}]}`
+`{round, ledger, counts:{done,open,resolved_upstream,absent_upstream,total,working}, working_set:[{ref,
+status, kind, is_bot, path, start_line, line, outdated, decision, first_seen_round, brief}]}`
+
+`counts.working` is `len(working_set)` — the size of this round's working set.
 
 Read `working-set.json`:
 - Store `ledger` as `{LEDGER}` — Phase 4.2 passes it to `flow-comment-card --ledger`.
 - `working_set` **empty** → report and stop:
   "{counts.done} handled (ledger), {counts.total} tracked on this PR/MR — nothing to act on."
-- Otherwise the **working set** is exactly `working_set[]` — every row whose status is non-terminal
-  **and** whose `resolved` is not `true`: fresh `open` findings, `skipped` ones the user deferred,
-  `pending` ones whose reply was withheld, and any settled row whose thread advanced (a reviewer
-  objected, a reviewer acknowledged, or **the human posted an instruction**).
+- Otherwise, the **working set** is what `reconcile` returned: every row with `status == "open"` and `platform_state == "live"`. There is no subset gate — the ledger already excludes what is settled, so a round carries only findings that are new, re-opened, or whose action did not land last round. Analyze all of them.
 
-**Two statuses are terminal, and neither is the agent's doing.** `done` is settled by this workflow;
-`deleted` means the thread is gone from the platform, which `reconcile` detects because the collector
-reports every thread it can see and absence is therefore unambiguous. A `deleted` row returns to
-`open` by itself if the thread reappears.
+**`done` is the only terminal status, and reaching it is always this workflow's own doing** —
+through Phase 5's checkpoints (5.4, 5.7, 5.7a), never assigned by `reconcile`. Every other row is
+`open`, whether it has never been triaged or was decided last round and its action did not land.
 
-**Resolving a thread on the platform takes its row out of the working set** — a third way out,
-alongside the two terminal statuses, and the only one that does not change `status` at all. A thread
-the reviewer or the human marks resolved arrives flagged, and `reconcile` drops it from
-`working_set[]` without a reply, so a finding can leave the loop between rounds with the agent doing
-nothing. Its `status` may still read `open` in the ledger; that is not a contradiction — the
-platform's verdict and ours are tracked separately, and `stats` reports these rows as
-**Resolved upstream** rather than under `Open`.
+**Two `platform_state` values take a row out of the working set without touching `status` at
+all** — membership requires `status == "open"` **and** `platform_state == "live"`, so either one
+removes a row from the loop with the agent doing nothing:
 
-Resolution is deliberately **terminal**: further replies in a resolved thread do not bring it back.
-A reviewer who wants another look **un-resolves** the thread (which does return the row to the
-working set, whatever its status) or opens a new one. The alternative — re-opening on any reply —
-would re-triage a settled finding every time someone posts "thanks, looks good".
+- **`resolved`** — a reviewer or the human marked the thread resolved on the platform. Resolution
+  is deliberately **terminal**: further replies in a resolved thread do not bring it back. A
+  reviewer who wants another look **un-resolves** the thread (which does return the row to the
+  working set, whatever its status) or opens a new one. The alternative — re-opening on any reply
+  — would re-triage a settled finding every time someone posts "thanks, looks good".
+- **`absent`** — the thread is missing from this round's snapshot, i.e. gone from the platform.
+  Trustworthy because the collector aborts rather than degrading to a partial answer on any API
+  failure (see "Collector Could Not Reach the Platform" in Edge Cases), so "not in the snapshot"
+  can only mean "not there any more". An absent row returns to `live` by itself if the thread
+  reappears.
+
+Either way, the row's `status` may still read `open` in the ledger; that is not a contradiction —
+the platform's verdict and ours are tracked separately, and `stats` reports these rows as
+**Resolved upstream** / **Deleted upstream** rather than under `Open`.
 
 **Refs are stable, not contiguous.** A `ref` is allocated once, the first time a finding enters the
 ledger, and is never reassigned — so "the C3 that was won't-fixed in round 1" still means C3 in
@@ -234,43 +238,16 @@ round 5. The consequence: a round's table may show gaps (`C2, C5, C7`) because t
 are settled findings. That is informative, not a bug. Display **order** is unchanged (humans first,
 then bots, as `working_set` is ordered).
 
-**Large-PR cap (the only pre-analysis gate).** If `counts.working` > ~20, print a **category-free
-selection table** built straight from `working-set.json` — every column below exists **before** any
-analysis — and ask, in **plain text** (a structured dialog auto-submits on the AFK timeout —
-claude-tools-6q4):
-
-```
-| ref | source | path:lines   | ⚠️ | brief                          |
-|-----|--------|--------------|----|--------------------------------|
-| U1  | human  | config.py:15 |    | Missing type annotation        |
-| C1  | bot    | git.py:42    |    | Crashes on detached HEAD       |
-| C3  | bot    | utils.py:10  | ⚠️ | Unused import                  |
-```
-
-`source` = `is_bot` (human / bot); `path:lines` from `path` + `start_line`-`line` (or `(summary)`
-when `kind == summary`); `⚠️` = `outdated`; `brief` = the row's `brief`. Do **not** add a `category` column here — that
-field is a Phase 3 verdict and does not exist yet; the categorized agenda is the Phase 4.1 TOC,
-printed **after** analysis.
-
-```
-{counts.working} comments — analyze all, or select a subset? (all / <comma-separated refs>)
-```
-
-- `all` → working set = every row in `working_set[]`.
-- refs (e.g. "U1, U3, C2") → working set = only those.
-
-`counts.working` is the count `reconcile` prints (`len(working_set)`) — the only pre-analysis size
-signal that exists. At ≤ ~20 there is no prompt — the working set is all of `working_set[]`. Carry the working set as its
-list of `ref`s; every later phase looks each ref up **in the ledger**
-(`flow-review-ledger get`, `flow-comment-card --ledger`), never in `metadata.json`.
+Every later phase looks each ref up **in the ledger** (`flow-review-ledger get`,
+`flow-comment-card --ledger`), never in `metadata.json`.
 
 ### Phase 3: Analyze the Working Set (Parallel Balanced-Tier Reviewers)
 
-Analyze **every** comment in the working set selected in Phase 2 — the large-PR cap already
-selected that set, so there is **no** further "process all? yes/select/no" gate here. The
-per-comment card (Phase 4) is the decision surface, and its take must be a real, code-backed
-assessment; a take written without reading the code is exactly the shallow dismissal this skill
-fights. (Below the ~20 cap the working set is simply every row in `working_set[]`.)
+Analyze **every** comment in the working set Phase 2 returned — there is **no** "process all?
+yes/select/no" gate here; the ledger already excludes what is settled, so the working set is
+exactly what needs a look. The per-comment card (Phase 4) is the decision surface, and its take
+must be a real, code-backed assessment; a take written without reading the code is exactly the
+shallow dismissal this skill fights.
 
 For each comment to analyze (or group of comments in the same file with overlapping line
 ranges), dispatch a **`balanced`-tier reviewer subagent**. Analysis is where a shallow read
@@ -288,7 +265,7 @@ flow-review-ledger get --ref C1 --meta "$FLOW_RC_DIR/metadata.json" > "$FLOW_RC_
 (one file per ref; for a grouped call, one per listed ref). The extract is the raw row: the current
 `body`, `thread`, `diff_hunk`, `snippet`, `path`, `line`/`start_line`, `kind` — **plus** the durable
 `status`, `decision`, `reason` and `first_seen_round` of a finding that was already triaged in an
-earlier round.
+earlier round, and the **computed** `resurfaced` flag `get` emits on every call.
 
 **Dispatch contract:** Phase 3: Dispatch one background read-only reviewer at the `balanced`
 capability tier for each independent comment. The message must contain the
@@ -305,11 +282,16 @@ Read comment `{ref}` from its row extract at `{FLOW_RC_DIR}/row-{ref}.json` — 
 every listed row file.) The collector already reconstructed `snippet` wherever the reviewer
 `diff_hunk` was thin or absent, so you neither build nor fence one.
 
-If the row carries a non-null `decision`, this finding was triaged in an earlier round and has
-**re-surfaced** because its thread advanced: read `decision` + `reason` as your own prior verdict,
-read the newest `thread` replies as what changed (a reviewer objection, a reviewer acknowledgement,
-or a human instruction addressed to you), and decide from BOTH. An acknowledgement with nothing left
-to do is a legitimate `outdated_fixed`; a human instruction in the thread is an order to carry out.
+**Read the row's shape before analyzing — three cases, three different jobs:**
+
+| Row shape | What it means | What to do |
+|---|---|---|
+| `decision` is null | a new finding | analyze from scratch |
+| `decision` set, `resurfaced` **true** | the thread advanced past the reply we accounted for | take `decision` + `reason` as your own prior verdict, and read the newest `thread` replies as what changed (a reviewer objection, a reviewer acknowledgement, or a human instruction addressed to you) — decide from BOTH; an acknowledgement with nothing left to do is a legitimate `outdated_fixed`, a human instruction in the thread is an order to carry out |
+| `decision` set, `resurfaced` **false** | we decided last round and the action did not land (apply failed, push skipped) | **do not re-litigate it** — the verdict stands; the round's job is to deliver it |
+
+`resurfaced` is computed by `flow-review-ledger get`; never derive it yourself from
+`thread_mark`. One rule, one implementation — a second copy in prose drifts.
 
 Comment ref: {ref} (by {user})
 File: {path}
@@ -486,9 +468,9 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
 - Empty / Enter → take the default (`suggested`).
 - **agree_unclear:** the take is genuinely ambiguous — present the 2-3 fix options inline here
   (read them from the verdict JSON's `thought`, or its `options` array when present) and let the
-  user pick which fix (or skip) **before** moving to the next card. If the user picks a fix option,
-  record it with the `fix` decision; if the user picks "skip", record the decision as `skip`
-  (invariant 3), not `fix`.
+  user pick which fix **before** moving to the next card, then record it with the `fix` decision.
+  If none of the offered options is right, the user answers `won't-fix` or `follow-up` instead —
+  the three-way triage has no separate skip path.
 - **disagree → fix (accept-anyway):** a `disagree` verdict carries only CLAIM / EVIDENCE / THOUGHT —
   it explains why NOT to apply, so it has **no fix action**. If the user overrides it to `fix`, Phase
   5.1 would otherwise call the apply flow with an empty patch plan. Before recording the `fix`
@@ -500,26 +482,37 @@ Record `{ref → decision}` (and the chosen option for `agree_unclear`, or the a
 for an overridden `disagree`), then show the next card.
 
 **Decision invariants (verdict ≠ decision ≠ reply source).** The verdict is the analysis; the
-decision is the user's choice (`fix` / `won't-fix` / `follow-up` / `skip`); the reply text has its
+decision is the user's choice (`fix` / `won't-fix` / `follow-up`); the reply text has its
 own source. Record per decision:
 
 1. `fix` ⇒ a concrete **action** exists: `agree_obvious` → the verdict one-liner; `agree_unclear` →
    the option the user picked; `disagree` → the accept-anyway action collected above. Never enter
    apply without one.
-2. `won't-fix` ⇒ a **rejection reason** exists. Reuse the card's `thought` as that reason ONLY when
-   the verdict was `disagree` (there the thought is already anti-fix). For any other verdict
-   overridden to `won't-fix`, ask — plain text — for an explicit reason and record THAT.
-3. `skip` ⇒ its own outcome: no apply, no reply, recorded skipped. An `agree_unclear` where the user
-   picks "skip" is recorded as `skip`, not `fix`.
-4. `follow-up` ⇒ a **task-id must exist** before 5.7 posts "Filed as follow-up: {task-id}". If 5.4 is
-   answered `edit`/`no` and a ref gets no task, record that ref as skipped and post no follow-up reply.
+2. `won't-fix` ⇒ a **rejection reason** exists **iff the row has a reply target**. A reason
+   exists in order to be published; where there is nowhere to publish it, do not ask for one.
+   Reuse the card's `thought` as that reason ONLY when the verdict was `disagree` (there the
+   thought is already anti-fix); for any other verdict overridden to `won't-fix`, ask — plain
+   text — for an explicit reason and record THAT.
+
+   **The one row with no reply target is a GitHub review-body summary** (`kind == "summary"` on
+   `platform == "github"`): no reply endpoint, and the platform cannot resolve it either, so our
+   own `done` is its only exit. Show it once — a summary body can carry real content — then
+   default it to `won't-fix` → `done` with no reason and no reply, settled in one keystroke. A
+   GitLab general discussion is also `kind == "summary"` but carries a real `discussion_id`, so
+   it is a normal threaded row and its reason is required.
+
+   A comment that **can** be replied to never gets a bare skip: not wanting to act on it is
+   `won't-fix`, with a rationale.
+3. `follow-up` ⇒ a **task-id must exist** before 5.7 posts "Filed as follow-up: {task-id}". If 5.4
+   is answered `edit`/`no` and a ref gets no task, it stays `open` with the `follow_up` decision
+   recorded and no `followup_task_id` — no follow-up reply goes out for it (5.7a's aborted-action
+   table).
 
 | verdict → decision (override) | extra data to record at triage |
 |---|---|
 | `disagree` → `fix` | accept-anyway action |
 | `agree_*` → `won't-fix` | explicit rejection reason (thought is pro-fix) |
-| `agree_unclear` → `skip` | none — record outcome = skip |
-| any → `follow-up`, task not created | record outcome = skip; no reply |
+| any → `follow-up`, task not created | stays `open`, decision `follow_up`, no `followup_task_id`, no reply |
 
 Do **not** apply, reply, or commit during the loop.
 
@@ -624,16 +617,18 @@ hard-code a formatter here.
 After the apply subagents return, prune `APPLIED_FILES` to the files they actually reported as changed
 (drop any whose apply failed), so a failed apply leaves no phantom path for 5.5 to stage.
 
-**A failed apply also demotes its decision.** A ref keeps its `fix` decision (→ a `Fixed: …` reply
-in 5.7) **only if the apply subagent reported `OK` for every file that ref's fix touches** — a
-generalized fix spans several files/sites, and 5.2 applies per file, so one ref can be part-applied.
-If **any** of a ref's files failed, change that ref's Phase 4 decision from `fix` to `skip` (a
-*failed apply*): Phase 5.7 posts `Fixed: …` for **every** pushed `fix` ref, so a ref left as `fix` after a
-failed/partial apply would be reported fixed with nothing (or only part) behind it. A demoted ref
-gets **no** `Fixed:` reply and appears on the 5.8 `Failed:` line. The files that *did* apply cleanly
-stay in `APPLIED_FILES` and are still committed — they are real improvements and the commit records
-exactly them — but the comment is not reported fixed, and the human finishes it next round from the
-`Failed:` line. Never claim a fix that was not fully applied.
+**A failed apply withholds the `Fixed:` reply, but keeps the decision.** A ref's `fix` gets a
+`Fixed: …` reply in 5.7 **only if the apply subagent reported `OK` for every file that ref's fix
+touches** — a generalized fix spans several files/sites, and 5.2 applies per file, so one ref can
+be part-applied. If **any** of a ref's files failed, the ref is recorded `status: open`, `decision:
+fix`, with `reason` naming what failed (5.7a's aborted-action table) — never `skip`, since there is
+no such outcome any more, and demoting a real `fix` decision to a bare skip would throw away the
+verdict for no reason. Phase 5.7 posts `Fixed: …` for **every** pushed `fix` ref, so a ref left
+`fix`-but-unreported would be claimed fixed with nothing (or only part) behind it — this ref
+appears on the 5.8 `Failed:` line instead, and stays in next round's working set to be delivered or
+re-triaged. The files that *did* apply cleanly stay in `APPLIED_FILES` and are still committed —
+they are real improvements and the commit records exactly them — but the comment is not reported
+fixed. Never claim a fix that was not fully applied.
 
 #### 5.3. Pre-Push Adversarial Self-Review
 
@@ -705,15 +700,15 @@ flow-require-bd
 ```
 
 If it exits non-zero, **STOP the follow-up batch**: print its stderr message, create **no** tasks,
-and **record every `follow-up` ref as `skip` (invariant 4)** so Phase 5.7 does not post a
-"Filed as follow-up" reply for a ref that has no `{task-id}` (flow requires `bd >= 1.0.0` — see
-`plugins/flow/README.md`, "bd requirements and migration"). Keep it in its own block so a failed
-guard cannot fall through to `bd create`. The fix / won't-fix paths need no bd; only the follow-up
-path is blocked.
+and **record every `follow-up` ref as `open` with the `follow_up` decision and no task id** (the
+5.7a aborted-action table) so Phase 5.7 does not post a "Filed as follow-up" reply for a ref that
+has no `{task-id}` (flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, "bd requirements
+and migration"). Keep it in its own block so a failed guard cannot fall through to `bd create`.
+The fix / won't-fix paths need no bd; only the follow-up path is blocked.
 
 **Then — drop the refs that already have a task.** A ref can reach this batch with a
 `followup_task_id` already on its row: a previous round filed the task and then died before its
-reply landed (see the checkpoint below), so the row came back as `pending` and was triaged
+reply landed (see the checkpoint below), so the row came back `open` and was triaged
 `follow-up` again. Creating a second task for it is exactly the duplicate the checkpoint exists to
 prevent, and nothing downstream catches it — `bd create` has no idempotency key. Read each
 follow-up ref's row before creating anything:
@@ -755,8 +750,9 @@ Proceed? (yes / edit / no)
 Omit the "Reusing" block when there is none.
 
 - **edit** → adjust the batch (drop/retarget refs) per the user, then re-confirm. Any ref removed
-  from the batch is recorded as `skip` (invariant 3/4) — it gets no task and no follow-up reply.
-- **no** → create nothing; record every ref in the batch as `skip`.
+  from the batch stays `open` with the `follow_up` decision recorded and no task id — it gets no
+  task and no follow-up reply.
+- **no** → create nothing; every ref in the batch stays `open` the same way.
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
 `bd create`). **Both the title and the description derive from the reviewer's comment** (the title
@@ -791,7 +787,7 @@ and files the SAME task again. Write a one-entry decisions file (`$FLOW_RC_DIR/c
 with the harness's native non-shell file mechanism and record it immediately:
 
 ```json
-{ "C3": { "status": "pending", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" } }
+{ "C3": { "status": "open", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" } }
 ```
 
 ```bash
@@ -799,13 +795,13 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
   --decisions "$FLOW_RC_DIR/checkpoint-C3.json" --head "$(git rev-parse HEAD)"
 ```
 
-The status is **`pending`, not `done`** — the task exists but this round's reply is not posted yet,
-so the row is not settled. That is exactly the state the checkpoint must capture: 5.7's own
-checkpoint flips it to `done` with the reply's `thread_mark`, and an absent key is a no-op under the
-merge rules (5.7a), so neither write clobbers the other's fields. A run that dies between the two
-leaves a `pending` row carrying its `followup_task_id` — the next round re-surfaces it and the
-"drop the refs that already have a task" step above reuses that id instead of filing a duplicate.
-The checkpoint and that step are one mechanism: the write is pointless without the read.
+The status stays **`open`** — the task exists but this round's reply is not posted yet, so nothing
+has been delivered. That is exactly the state the checkpoint must capture: 5.7's own checkpoint
+flips it to `done` with the reply's `thread_mark`, and an absent key is a no-op under the merge
+rules (5.7a), so neither write clobbers the other's fields. A run that dies between the two leaves
+an `open` row carrying its `followup_task_id` — the next round re-surfaces it and the "drop the
+refs that already have a task" step above reuses that id instead of filing a duplicate. The
+checkpoint and that step are one mechanism: the write is pointless without the read.
 
 After creating all follow-ups, **persist to the shared beads store**:
 
@@ -818,7 +814,7 @@ Record `{ref → task-id}` for the 5.7 reply and the 5.8 summary line.
 #### 5.5. Commit
 
 **First, gate on whether the apply phase changed anything.** If `APPLIED_FILES` (Phase 5.1) is
-**empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up / skip
+**empty** — the fix bucket was empty or held only `outdated_fixed` / won't-fix / follow-up
 decisions — there is nothing to commit. Skip **both** this step and the push (5.6) and go straight to
 the reply step (5.7): `Won't fix:` and `Filed as follow-up:` assert **no** change landed this run, so
 they do not depend on a push. `Fixed in subsequent commits` is **not** unconditional here — it still
@@ -894,7 +890,7 @@ Options:
 
 #### 5.7. Reply on the platform
 
-Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision — comments recorded as `skip` get no reply (invariant 3); omit them from this loop — post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref} --meta "$FLOW_RC_DIR/metadata.json"` — the
+Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref} --meta "$FLOW_RC_DIR/metadata.json"` — the
 locator is required, exactly as in Phase 3; without it the command exits 2 before reading the row —
 and take three fields from it: `platform`, `kind`, and **`thread_id`** — the row's only reply target. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
 
@@ -973,16 +969,26 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
 ```
 
 A ref whose reply is **withheld** (5.6 skipped/failed, or the branch is ahead of the remote) posts
-nothing, so it has nothing to checkpoint here — it is carried to 5.7a as `pending`.
+nothing, so it has nothing to checkpoint here — it is carried to 5.7a still `open`.
 
 #### 5.7a. Record the round's remaining decisions
 
 The replies are posted and every ref that produced an external side effect is already checkpointed.
 This step closes the round: it records **everything the checkpoints did not** — refs settled with no
-reply sent, `pending` refs whose reply was withheld, and `skipped` refs — and it is the single place
-the full outcome table below is stated. Re-recording an already-checkpointed ref here is harmless
-(an identical `record` is a no-op), so when in doubt include it: the invariant this step defends is
-that **no ref that reached Phase 5 is left unrecorded**, never that each ref is written exactly once.
+reply sent, and `open` refs whose reply was withheld — and it is the single place the full outcome
+table below is stated. Re-recording an already-checkpointed ref here is harmless (an identical
+`record` is a no-op), so when in doubt include it: the invariant this step defends is that **no ref
+that reached Phase 5 is left unrecorded**, never that each ref is written exactly once.
+
+An aborted action keeps its decision and stays `open` — the decision costs nothing to store and
+gives the next round its context, while `open` records that nothing was delivered:
+
+| Situation | Recorded as |
+|---|---|
+| apply failed (the 5.2 demotion) | `status: open`, `decision: fix`, `reason`: what failed |
+| follow-up batch cancelled (`no`) | `status: open`, `decision: follow_up`, no `followup_task_id` |
+| push skipped, so `Fixed:` is withheld | `status: open`, `decision: fix`, `reason`: push deferred |
+| task filed, reply not yet posted (5.4 checkpoint) | `status: open`, `decision: follow_up`, `followup_task_id` set |
 
 Write **one** decisions file with the active harness's native non-shell file mechanism — `reason` is
 reviewer-derived free text, so it goes by file, never through a shell:
@@ -998,14 +1004,13 @@ reviewer-derived free text, so it goes by file, never through a shell:
           "thread_mark": "3518155062" },
   "C5": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-13",
           "thread_mark": null },
-  "C4": { "status": "pending", "decision": "fix", "reason": "push skipped" },
-  "U2": { "status": "skipped", "decision": "skip" } }
+  "C4": { "status": "open", "decision": "fix", "reason": "push skipped" } }
 ```
 
 `C1`/`U1`/`C3` each carry the id of the reply just posted. `C5` is a GitHub `kind == "summary"` row:
 no thread, no reply, so its mark is `null`. `C1`'s `"followup_task_id": null` drops the task id an
-earlier round filed when it decided `follow_up` — this round it is a `fix`. `C4`/`U2` are not `done`,
-so they stay in the working set on their own.
+earlier round filed when it decided `follow_up` — this round it is a `fix`. `C4` is not `done` — its
+push was skipped, so it stays `open` and re-enters next round's working set on its own.
 
 **How an entry merges into the row** — ordinary JSON-merge semantics, per field:
 
@@ -1043,8 +1048,7 @@ Rules for filling it in — one entry per ref that reached Phase 5:
 | follow-up task filed and replied | `done` | `follow_up` | id of the reply just posted |
 | settled with no reply sent (acknowledgement with nothing to do) | `done` | the decision it earned | id of the current last reply in the row's `thread` |
 | GitHub `kind == "summary"` (task filed, no reply target) | `done` | `follow_up` | `null` — threadless |
-| decided, but the reply was **withheld** (push skipped/failed, or branch ahead of remote) | `pending` | the decision it will get | omit |
-| `skip` (user skipped, failed apply, follow-up not created) | `skipped` | `skip` | omit |
+| decided, but the reply was **withheld** (push skipped/failed, branch ahead of remote, or any of the aborted actions above) | `open` | the decision it earned | omit |
 
 **`thread_mark` is a REQUIRED field on every `done` entry** — the id of the reply just posted, or
 `null` for a row that is threadless. It is what stops the re-open loop, and both
@@ -1055,6 +1059,13 @@ finding next round, and it re-triages and re-replies forever. `null` is for thre
 a GitHub review-body summary (`kind == "summary"`), never a GitLab general discussion: that is also
 `kind == "summary"` but carries a real thread, so it gets a real mark like any other row.
 
+**`flow-review-ledger record` now rejects the whole batch** if a `done` entry omits the mark on a
+threaded row, so a mistake here fails loudly instead of looping. That guard catches only the
+**absent**-mark case: if you instead supply a *stale* mark — anything other than the id of the
+reply just posted — `record` cannot detect it, because the row's stored thread predates this
+round's reply and there is nothing to check the id against. Supplying the right id stays this
+step's responsibility; the guard is a backstop for the omission, not a proof of correctness.
+
 #### 5.8. Summary Report
 
 ```
@@ -1064,8 +1075,8 @@ Processed: {total} comments
   Won't fix: {count} ({list of refs with brief reason})
   Already fixed: {count} ({list of refs})
   Follow-ups created: {count} ({ref → task-id})
-  Skipped: {count} ({list of refs skipped})
-  Failed: {count} ({list of refs whose apply failed — demoted from fix in 5.2, not reported fixed})
+  Follow-up not filed: {count} ({refs whose task was never created — bd unavailable or the batch was declined; stays `open`, re-triaged next round})
+  Failed: {count} ({list of refs whose apply failed — stays `open` with the `fix` decision kept, not reported fixed})
   Reply deferred (push skipped): {count} ({fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed, plus `outdated_fixed` refs whose `Fixed in subsequent commits` was withheld because the branch is ahead of the remote})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
@@ -1081,9 +1092,9 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces threads that advanced — then apply the large-PR cap to select the working set
+- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces threads that advanced
 - **Record every decision back into the ledger** after replying, and report the PR's cumulative triage stats
-- Analyze the capped **working set** (all non-replied comments, or the selected subset on a large PR) with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
+- Analyze the whole **working set** `reconcile` returned with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
 - Let the user triage each comment **fix / won't-fix / follow-up**, one card at a time
@@ -1116,7 +1127,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll wrap the card in a ``` fence so it's clearly a card" → NO. The card already contains ```-fences; wrap it and the highlighting, diff colors, and blockquotes stop rendering. Emit it UNWRAPPED.
 - "The comment text is enough, skip the code block" → The card MUST carry the anchored code (`diff_hunk` or reconstructed `snippet`); showing the code in the terminal is the whole point.
 - "I'll truncate the long comment on the card" → Show the FULL body. Only the TOC brief is truncated.
-- "I'll just analyze the comments that look important" → Analyze ALL non-replied comments (below the large-PR cap). The take must be code-backed.
+- "I'll just analyze the comments that look important" → Analyze the ENTIRE working set. The take must be code-backed.
 - "I'll apply all fixes without showing the card"
 - "This nitpick is valid, just apply it"
 - "Skip the subagent, I'll read the file inline"
@@ -1151,7 +1162,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Wrap the card in a fence for clarity" | The card contains its own ```-fences; wrapping kills the highlighting and blockquotes. Emit it UNWRAPPED (opposite of `flow-task-card`). |
 | "Show the comment text, skip the code" | Every card carries the anchored code (`diff_hunk`/`snippet`). Seeing the code in the terminal is the point. |
 | "Truncate the long comment" | Show the FULL body on the card; only the TOC brief is truncated. |
-| "Analyze only the interesting comments" | Analyze ALL non-replied comments (below the large-PR cap) so every take is code-backed. |
+| "Analyze only the interesting comments" | Analyze the ENTIRE working set so every take is code-backed. |
 | "One commit is cleaner" | Single-package-commit hook enforces scope. Respect it. |
 | "Push is implied" | Push requires explicit confirmation per CLAUDE.md. Always ask. |
 | "Already replied = skip entirely" | Skip replying, but still analyze it (analysis covers all non-replied comments). |
@@ -1166,7 +1177,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Fix the one line the comment names" | One instance of a class re-flags next round. Enumerate siblings, fix the class. |
 | "Fixes applied, push now" | On a code/logic/security round, run the skeptic first — it catches the shifted bug before the reviewer does. |
 | "Ledger refs should be contiguous" | Stable > contiguous. A gap is a finding that is already done. |
-| "Skip `record`, nothing changed" | Every ref that reached Phase 5 gets a row transition — including `skipped` and `pending`. |
+| "Skip `record`, nothing changed" | Every ref that reached Phase 5 gets a row transition — including an aborted action left `open` with its decision. |
 
 ## Examples
 
@@ -1193,7 +1204,7 @@ Agent: Obvious fixes: U1, C1.  Disagree: U2.  Outdated: U3.
 User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
        [flow-review-collect → metadata.json → flow-review-ledger reconcile → working set;
-        3 open, below the ~20 cap → working set = all 3]
+        3 open, no subset gate → working set = all 3]
        [Analyzes ALL 3 in parallel at the balanced tier, each subagent reading its row extract
         from flow-review-ledger get]
 
@@ -1261,7 +1272,7 @@ Agent: [Pushes]
 
 **Correct because:**
 - Collected the code (`diff_hunk`) and full body, so each card is self-contained
-- Analyzed ALL non-replied comments up front (below the large-PR cap) → code-backed takes
+- Analyzed the ENTIRE working set up front → code-backed takes
 - Showed a TOC, then one card at a time, each emitted UNWRAPPED so it renders
 - Collected a per-comment fix / won't-fix / **follow-up** decision; executed once in Phase 5
 - Generalized the accepted fix and ran the pre-push self-review on the code round
@@ -1478,22 +1489,16 @@ read yields nothing usable (moved/renamed file, `new_line` out of range), it emi
 and the card **renders without a code block** (the take notes the `position`) — **degrade, don't
 fail**. The card still shows source + full text + take.
 
-### Very Large Number of Comments (large-PR cap)
+### Collector Could Not Reach the Platform
 
-The pre-analysis gate exists **only** for large PRs (see Phase 2). The collector always returns the
-full `metadata.json`, but the cap decides how much of it enters analysis, so a big review never
-floods the main context. If `counts.working` (= `len(working_set)`) is **more than ~20**:
+`flow-review-collect` exits **4** when a platform API call fails after its retries, and prints
+whether a retry could help. It does **not** degrade to a partial answer — the resolution state
+of a thread is either known or the round does not happen.
 
-1. Print the **category-free** selection table (refs, source, path:lines, ⚠️ outdated, brief — no
-   `category` and no full bodies yet; `category` is a Phase 3 verdict that does not exist pre-analysis).
-2. Ask, in plain text: "{N} comments — analyze all, or select a subset? (all / <refs>)".
-3. Analyze/triage **only** the selected subset (look each ref up **in the ledger**, via
-   `flow-review-ledger get` — never in `metadata.json`; a large PR is exactly where the ledger's
-   prior-round `decision`/`reason`/`thread` context matters most). The categorized Phase 4.1 TOC
-   (with `category`) is printed here, after analysis.
-
-Below the threshold, the working set is every row in `working_set[]` — go straight to card-by-card
-triage; no prompt.
+Report the message and stop. **The ledger was not touched**: `reconcile` never ran, so no row
+changed and nothing needs undoing. Re-run when the platform is reachable; if the message says a
+retry will not help, fix the cause it names (authentication, or a host whose API cannot answer
+the resolution query) first.
 
 ## The Bottom Line
 

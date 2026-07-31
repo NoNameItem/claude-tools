@@ -80,6 +80,11 @@ def allowed_tools(text: str) -> set[str]:
     return set() if match is None else set(match.group(1).split())
 
 
+def section(text: str, start: str, end: str) -> str:
+    """The slice of `text` between the first `start` marker and the following `end` marker."""
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
 def test_helper_parsing_is_not_vacuous() -> None:
     # Guards against a mis-transcribed FENCE/INLINE/HELPER regex silently
     # matching nothing, which would make the forbidden-term and grant tests
@@ -260,15 +265,13 @@ def test_review_comments_branches_on_kind_not_the_summary_sentinel() -> None:
     assert not re.search(r'`path\s*==\s*"\(summary\)"`\s+or\s+`path`\s+is\s+null', text)
 
 
-def test_review_comments_edge_case_points_at_the_ledger_not_metadata() -> None:
-    # Phase 2 states the rule: every later phase looks refs up in the ledger, never in
-    # metadata.json. The "Very Large Number of Comments" edge case must follow the same rule
-    # for the subset it selects, instead of contradicting it.
+def test_review_comments_never_directs_ref_lookups_at_metadata_json() -> None:
+    # Every phase after Phase 2 looks a ref up in the ledger (`flow-review-ledger get`,
+    # `flow-comment-card --ledger`), never in the transient `metadata.json` the collector wrote.
+    # This guard used to be scoped to the large-PR cap's selected subset specifically; the cap
+    # (and its edge case) is gone (Task 7), but the underlying rule is general and must not regress.
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert not re.search(r"look\s+each\s+ref\s+up\s+in\s+`metadata\.json`", text)
-    edge_case = text.split("Very Large Number of Comments", 1)[1].split("###", 1)[0]
-    assert "the ledger" in edge_case
-    assert "flow-review-ledger get" in edge_case
 
 
 def test_review_comments_good_example_teaches_the_reconcile_flow() -> None:
@@ -318,12 +321,13 @@ def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
     deferring every `record` to 5.7a means a mid-batch failure loses the record of the refs that
     already succeeded — and the next round re-files the same follow-up or re-posts the same reply
     against a row that never learned what happened. Both loops must therefore record each ref as it
-    lands, and 5.4's checkpoint must be `pending` (the task exists, the reply does not yet), or a
+    lands, and 5.4's checkpoint must stay `open` (the task exists, the reply does not yet — and
+    `open`/`done` is the whole status enum now, so there is no third "task filed" state), or a
     `done` row would settle a finding that was never answered on the platform."""
     text = REVIEW_COMMENTS_SKILL.read_text()
     follow_up = text.split("#### 5.4.", 1)[1].split("#### 5.5.", 1)[0]
     assert "checkpoint-" in follow_up, "5.4 must record each created task before the next `bd create`"
-    assert '"status": "pending"' in follow_up, "the 5.4 checkpoint is `pending` — the reply is not posted yet"
+    assert '"status": "open"' in follow_up, "the 5.4 checkpoint stays `open` — the reply is not posted yet"
     assert "followup_task_id" in follow_up, "the checkpoint must carry the task id that prevents a duplicate"
     # The checkpoint only prevents a duplicate if something READS it back: `bd create` has no
     # idempotency key, so a `pending` row re-triaged as `follow-up` files a second task unless 5.4
@@ -435,12 +439,15 @@ def test_done_purges_the_ledger_only_once_the_pr_is_terminal() -> None:
 def test_review_comments_states_the_real_working_set_rule() -> None:
     """Phase 2's prose is what the agent reasons from when the tool's output surprises it, so a
     stale rule there can reintroduce the very bug the code just closed. Membership is no longer
-    "non-terminal status" alone — a thread the platform reports as resolved leaves the working set
-    while its `status` may stay `open`, and the old claim that resolution "moves it to `done`" is
-    now wrong in exactly the case that matters (a degraded resolution side-query)."""
+    "non-terminal status" alone, and (Task 7) it is no longer the raw `resolved` boolean either —
+    `reconcile` now recomputes a `platform_state` axis (`live`/`resolved`/`absent`) every round, and
+    membership is `status == "open"` AND `platform_state == "live"`. A thread the platform reports
+    as resolved leaves the working set while its `status` may stay `open`, and the old claim that
+    resolution "moves it to `done`" is wrong in exactly the case that matters (a degraded resolution
+    side-query)."""
     text = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
     assert "every row in a non-terminal status:" not in text, "the working-set rule must also name `resolved`"
-    assert "`resolved` is not `true`" in text
+    assert '`platform_state == "live"`' in text
     assert "moves it to `done` without a reply" not in text, "resolution no longer changes the status"
 
 
@@ -496,12 +503,68 @@ def test_review_comments_5_7a_reacts_to_a_failed_record() -> None:
 
 
 def test_review_comments_knows_the_deleted_status_and_platform_resolution() -> None:
-    # `reconcile` now emits two terminal statuses: `done` (settled by us) and `deleted` (the thread
-    # is gone from the platform). Prose that calls the working set "every non-`done` row" contradicts
-    # that, and a `counts` schema without `deleted` sends the agent looking for a key that exists.
-    # Resolving a thread by hand also settles its row now, which is why a finding can leave the
-    # working set without the agent doing anything.
+    # (Task 7 correction) `reconcile` does NOT emit a `deleted` status — `_ledger.STATUSES` is only
+    # `("open", "done")`. "Gone from the platform" is the `platform_state` axis (`absent`), tallied
+    # in `counts` as `absent_upstream`, never a third status. Prose that calls the working set
+    # "every non-`done` row" is still wrong (status alone no longer decides membership — see
+    # `platform_state`), and a `counts` schema missing `absent_upstream` sends the agent looking for
+    # a key that does not exist. Resolving a thread by hand also settles its row without the agent
+    # doing anything, via `platform_state == "resolved"`, not a status change.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert re.search(r"counts:\{[^}]*deleted", text), "the reconcile counts schema must list `deleted`"
-    assert not re.search(r"every\s+non-`?done`?\s+row", text), "two statuses are terminal now, not just `done`"
+    assert re.search(r"counts:\{[^}]*absent_upstream", text), "the reconcile counts schema must list `absent_upstream`"
+    assert not re.search(r"every\s+non-`?done`?\s+row", text), "status alone does not decide membership"
     assert re.search(r"resolve", text, re.IGNORECASE), "prose must explain that resolving a thread settles its row"
+
+
+# --- Task 7: SKILL.md follows the model (open/done status, platform_state, resurfaced, the
+#             `record` thread_mark guard, the collector's exit 4) --------------------------
+
+
+def test_review_comments_has_no_large_pr_cap() -> None:
+    """The ledger removed the cap's reason to exist: a round no longer re-imports settled
+    findings, so it carries only what is new or re-opened. Leaving the cap in would keep the
+    review-loop convergence hole (unselected rows left open) that the loop gate now closes."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "analyze all, or select a subset" not in text
+    assert "Very Large Number of Comments" not in text
+    assert "large-PR cap" not in text
+
+
+def test_review_comments_states_the_two_axis_working_set_rule() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert '`status == "open"` and `platform_state == "live"`' in text
+
+
+def test_review_comments_phase_3_separates_undelivered_from_resurfaced() -> None:
+    """A non-null decision used to be declared "re-surfaced because its thread advanced", which
+    is false for a row whose action never landed — that row needs delivering, not re-litigating."""
+    phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
+    assert "resurfaced" in phase_3
+    assert re.search(r"do not re-?litigate", phase_3, re.IGNORECASE)
+
+
+def test_review_comments_triage_has_no_skip_outcome() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "fix / won't-fix / follow-up?" in text
+    assert "invariant 3" not in text.lower()
+
+
+def test_review_comments_requires_a_reason_only_where_it_can_be_published() -> None:
+    """A reason exists in order to be posted. Requiring one for a GitHub review-body summary
+    charges the user for prose nobody will ever read."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert re.search(r"reason.{0,80}(iff|only (when|where)).{0,80}reply target", text, re.IGNORECASE | re.DOTALL)
+
+
+def test_review_comments_records_an_aborted_action_as_open_with_its_decision() -> None:
+    """Keeping the decision costs nothing and gives the next round context; the status stays
+    `open` because nothing was delivered."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "pending" not in text.replace("Reply deferred", "")
+    assert "`status: open`, `decision: fix`" in text
+
+
+def test_review_comments_handles_a_collector_abort() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "exit 4" in text or "exits non-zero" in text
+    assert "ledger was not touched" in text
