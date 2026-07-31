@@ -56,7 +56,8 @@ writer spans both axes.
 | **Our axis** | `status` ∈ {`open`, `done`}; `decision` ∈ {`fix`, `wont_fix`, `follow_up`, `outdated`} \| null; `reason`; `followup_task_id`; `thread_mark` | `cmd_record` (seeded by `new_row`; `reopen_if_advanced` writes `status` only) |
 | **Platform axis** | `platform_state` ∈ {`live`, `resolved`, `absent`} | `reconcile` |
 | Snapshot (rebuilt every round, never durable) | `user`, `is_bot`, `path`, `start_line`, `line`, `outdated`, `already_replied`, `diff_hunk`, `snippet`, `side`, `position`, `body`, `thread` | `refresh_snapshot` |
-| Bookkeeping | `first_seen_round`, `last_round`, `head` | `reconcile` / `cmd_record` |
+| Bookkeeping | `first_seen_round`, `head` | `new_row` (`head` seeded `null`, then set by `cmd_record`) |
+| Bookkeeping | `last_round` | `cmd_record` (seeded by `new_row` at insert) — **not** bumped by `reconcile` on mere re-observation, see below |
 
 Working-set membership collapses to one predicate over two independent facts:
 
@@ -122,7 +123,6 @@ row missing  → new_row(...)                    # seed
 otherwise    → reopen_if_advanced(row, item)   # status: done → open
                refresh_snapshot(row, item)     # snapshot fields
 row["platform_state"] = platform_state_of(item)
-row["last_round"] = round_no
 ```
 
 Then one pass over rows absent from `seen`:
@@ -131,14 +131,25 @@ Then one pass over rows absent from `seen`:
 row["platform_state"] = "absent"    # status untouched; decision/reason/followup_task_id survive
 ```
 
+**`last_round` is deliberately NOT bumped here.** An earlier version of this pseudocode assigned
+`row["last_round"] = round_no` unconditionally, on the theory that "last round" should mean "last
+round this row was seen." That is wrong for `--last-round`'s actual job — filtering `stats` (and
+the "last pass" block `flow:review-loop` prints at convergence) down to what a round *did*. A row
+that was decided in round 1 and simply survives, untouched, into round 2's snapshot is not part of
+round 2's work; if `reconcile` bumped `last_round` on every re-observation, `--last-round` would
+degenerate to "the whole ledger" the moment every row merely survives a round, which is the common
+case. `last_round` is therefore seeded once by `new_row` at insert and moved forward only by
+`cmd_record`, when a decision is actually recorded — see the write-sites table below and
+`test_last_round_filters_to_the_current_pass`.
+
 **Write sites — four, none sharing a field:**
 
 | Site | Writes | When |
 |---|---|---|
-| `new_row` | identity; `status` = `done` if `already_replied` else `open`; `thread_mark` = last reply id; `decision`/`reason`/`followup_task_id` = null | first sight of the row |
+| `new_row` | identity; `status` = `done` if `already_replied` else `open`; `thread_mark` = last reply id; `decision`/`reason`/`followup_task_id` = null; `last_round` = this round; `head` = null | first sight of the row |
 | `refresh_snapshot` | snapshot fields only | every round, existing row |
 | `reopen_if_advanced` | `status` only, `done → open` only | the thread advanced past `thread_mark` |
-| `cmd_record` | `status`, `decision`, `reason`, `followup_task_id`, `thread_mark` | our explicit decision |
+| `cmd_record` | `status`, `decision`, `reason`, `followup_task_id`, `thread_mark`, `last_round`, `head` | our explicit decision |
 | (absence pass in `reconcile`) | `platform_state` = `absent` | the row is not in the snapshot |
 
 `platform_state` has exactly one writer by construction: `new_row` does **not** set it, because the
@@ -210,11 +221,16 @@ happened.
 
 ### Retries
 
-A retry wrapper around `run`, used by `gh_api` / `glab_api` — the **read path only**. Every
-collector call is idempotent (listings, `user`, `repo view`, `pr view`, the GraphQL query), so a
-retry is safe. Reply posting in Phase 5 goes through a direct `gh api` from the skill, not through
-`_git.py`, and must never be retried — a second attempt double-posts a comment. The wrapper's
-docstring must say so, or it will eventually be reused for a write.
+A retry wrapper around `run` (`_git.api_run`) — the **read path only**. `gh_api` / `glab_api` route
+through it for every `gh api` / `glab api` call, and the collector's unit/repo resolution
+(`gh_resolve_unit`, `gl_resolve_unit`, and the collector's own retrying `_resolve_repo` /
+`_resolve_project` — duplicated from `_git.resolve_repo` / `_git.resolve_project` rather than
+calling them, since those two are shared with `flow-wait-ci`'s own `CalledProcessError`-based retry
+loop and must keep raising the raw subprocess exception) call it directly. Every collector call is
+idempotent (listings, `user`, `repo view`, `pr view`, `mr view`, the GraphQL query), so a retry is
+safe. Reply posting in Phase 5 goes through a direct `gh api` from the skill, not through `_git.py`,
+and must never be retried — a second attempt double-posts a comment. The wrapper's docstring must
+say so, or it will eventually be reused for a write.
 
 - 3 attempts, sleeping 1 s then 4 s: ~5 s added to an interactive wait in the worst case.
 - Retry `TimeoutExpired` and any non-zero exit, **except** a short deny-list of clearly permanent
