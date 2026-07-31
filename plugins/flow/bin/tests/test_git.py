@@ -195,7 +195,7 @@ class TestApiRun:
             raise subprocess.CalledProcessError(1, argv, stderr="503 Service Unavailable")
 
         monkeypatch.setattr(_git, "run", always_fails)
-        with pytest.raises(_git.ApiUnavailable) as excinfo:
+        with pytest.raises(_git.ApiUnavailableError) as excinfo:
             _git.api_run(["gh", "api", "user"], sleep=pauses.append)
         assert len(calls) == 3
         assert pauses == [1, 4]
@@ -207,7 +207,7 @@ class TestApiRun:
             raise subprocess.TimeoutExpired(argv, 30)
 
         monkeypatch.setattr(_git, "run", times_out)
-        with pytest.raises(_git.ApiUnavailable):
+        with pytest.raises(_git.ApiUnavailableError):
             _git.api_run(["gh", "api", "user"], sleep=lambda _s: None)
 
     @pytest.mark.parametrize(
@@ -231,7 +231,7 @@ class TestApiRun:
             raise subprocess.CalledProcessError(1, argv, stderr=stderr)
 
         monkeypatch.setattr(_git, "run", fails)
-        with pytest.raises(_git.ApiUnavailable) as excinfo:
+        with pytest.raises(_git.ApiUnavailableError) as excinfo:
             _git.api_run(["gh", "api", "user"], sleep=pauses.append)
         assert len(calls) == 1, "no retry"
         assert pauses == []
@@ -244,7 +244,7 @@ class TestApiRun:
             raise subprocess.CalledProcessError(1, argv, stderr="API rate limit exceeded for user")
 
         monkeypatch.setattr(_git, "run", limited)
-        with pytest.raises(_git.ApiUnavailable):
+        with pytest.raises(_git.ApiUnavailableError):
             _git.api_run(["gh", "api", "user"], sleep=pauses.append)
         assert pauses == [10, 30], "a one-second pause is known to be useless against a rate limit"
 

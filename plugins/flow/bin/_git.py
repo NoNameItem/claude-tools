@@ -49,7 +49,7 @@ _PERMANENT_SIGNATURES = (
 _RATE_LIMIT_SIGNATURES = ("rate limit", "429")
 
 
-class ApiUnavailable(RuntimeError):  # noqa: N818 - "Unavailable" (not "...Error") reads better at call sites like `except ApiUnavailable`
+class ApiUnavailableError(RuntimeError):
     """A platform API call could not be completed. `permanent` distinguishes "try again later"
     from "this will never work here" (bad auth, or a GraphQL schema without the field we ask
     for), so callers can say which one happened instead of printing one vague message."""
@@ -65,7 +65,7 @@ def _stderr_of(exc: BaseException) -> str:
 
 
 def api_run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, sleep=time.sleep) -> str:
-    """Run a platform API READ with retries; raise `ApiUnavailable` when it cannot be completed.
+    """Run a platform API READ with retries; raise `ApiUnavailableError` when it cannot be completed.
 
     **Reads only.** Every caller here is idempotent (listings, `user`, `repo view`, `pr view`,
     the resolution GraphQL query), which is the entire reason a retry is safe. Do NOT route a
@@ -83,9 +83,9 @@ def api_run(argv: list[str], *, timeout: int = DEFAULT_TIMEOUT, sleep=time.sleep
             stderr = _stderr_of(exc).lower()
             detail = f"{' '.join(argv)}: {_stderr_of(exc).strip() or exc}"
             if any(sig in stderr for sig in _PERMANENT_SIGNATURES):
-                raise ApiUnavailable(detail, permanent=True) from exc
+                raise ApiUnavailableError(detail, permanent=True) from exc
             if attempt == attempts - 1:
-                raise ApiUnavailable(detail, permanent=False) from exc
+                raise ApiUnavailableError(detail, permanent=False) from exc
             pauses = _RATE_LIMIT_PAUSES if any(sig in stderr for sig in _RATE_LIMIT_SIGNATURES) else _RETRY_PAUSES
             sleep(pauses[attempt])
     msg = "unreachable"  # pragma: no cover - the loop either returns or raises
