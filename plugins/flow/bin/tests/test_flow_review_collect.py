@@ -4,11 +4,11 @@
 
 import importlib.util
 import json
-import subprocess
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+import pytest
 from conftest import run_helper
 
 BIN = Path(__file__).parent.parent
@@ -192,72 +192,6 @@ def test_is_bot_word_boundary():
     assert is_bot("abbot") is False
     assert is_bot("talbot") is False
     assert is_bot("alice") is False
-
-
-def test_gh_resolved_ids_degrades_on_gh_failure(monkeypatch):
-    """A non-zero `gh api graphql` (CalledProcessError) must yield None, not a traceback.
-
-    None means "unknown this round" — NOT "nothing resolved". Reporting failure as an empty
-    set would look identical to a successful query that resolved nothing, and downstream
-    would then bake in `resolved: False` for every thread instead of leaving it unknown.
-    """
-
-    def boom(*_args, **_kwargs):
-        raise subprocess.CalledProcessError(1, "gh")
-
-    monkeypatch.setattr(flow_review_collect_mod._git, "run", boom)
-    assert flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 1) is None
-
-
-def test_github_resolved_pagination_null_cursor_terminates(fake_gh_api):
-    """hasNextPage=true with a null endCursor must NOT loop forever, AND must degrade to
-    `resolved: None` (unknown) rather than treating the partial first page as the full answer.
-    A partial answer here is indistinguishable from "not resolved", which would reopen
-    already-settled rows downstream — so the whole result collapses to "unknown"."""
-    fake_gh_api.set("repo", "o/r")
-    fake_gh_api.set("user", "me")
-    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
-    fake_gh_api.set(
-        "comments",
-        json.dumps(
-            [
-                {"id": 9, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"},
-            ]
-        ),
-    )
-    fake_gh_api.set(
-        "review_threads",
-        json.dumps(
-            {
-                "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "reviewThreads": {
-                                "nodes": [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
-                                "pageInfo": {"hasNextPage": True, "endCursor": None},
-                            }
-                        }
-                    }
-                }
-            }
-        ),
-    )
-    # Run with a hard timeout so a pagination regression fails loudly instead of hanging the suite.
-    r = subprocess.run(
-        [sys.executable, str(BIN / "flow-review-collect"), "1", "--platform", "github"],
-        env=fake_gh_api.env(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=15,
-    )
-    doc = _out(r)
-    assert len(doc["comments"]) == 1
-    c = doc["comments"][0]
-    assert c["resolved"] is None
-    assert doc["counts"]["total"] == 1
-    assert doc["counts"]["resolved"] == 0  # None isn't truthy → not counted resolved
-    assert doc["counts"]["actionable"] == 1  # unknown resolution stays actionable, not settled
 
 
 def test_github_multipage_comments_both_pages_included(fake_gh_api):
@@ -1226,3 +1160,162 @@ def test_counts_mix_of_resolved_already_replied_and_plain(fake_gh_api):
     assert by_body["already-replied-one"]["already_replied"] is True
     assert by_body["plain-one"]["resolved"] is False
     assert by_body["plain-one"]["already_replied"] is False
+
+
+# --- collector aborts instead of degrading (elf.39 task 6) -----------------------------
+#
+# These monkeypatch `_git.run`/`_git.api_run` directly rather than going through
+# `fake_gh_api` (a real subprocess `gh` on PATH): `main()`/`gh_collect()` need to raise a
+# Python `_git.ApiUnavailableError`, and a subprocess boundary can't carry that. The router
+# below mirrors `_GH_ROUTER` in conftest.py (same endpoint dispatch: pr view / repo view /
+# user / comments / reviews / graphql) but as a plain callable, and it forwards any non
+# `gh`/`glab` argv (the `git` calls `_repo_root`/`detect_platform` make) to the real
+# `_git.run` so those keep working unmocked.
+
+_REAL_GIT_RUN = flow_review_collect_mod._git.run
+
+
+def _gh_endpoint(argv):
+    """Classify a `gh`/`glab` argv the way `_GH_ROUTER` does, but on the argv `_git.run`/
+    `_git.api_run` actually receive (program name included, unlike a subprocess's own
+    `sys.argv[1:]`)."""
+    rest = argv[1:]
+    if rest[:2] == ["pr", "view"]:
+        return "pr_view"
+    if rest[:2] == ["repo", "view"]:
+        return "repo_view"
+    if rest[:1] == ["api"]:
+        tail = rest[1:]
+        if "user" in tail:
+            return "user"
+        i = 0
+        while i < len(tail):
+            tok = tail[i]
+            if tok in ("--paginate", "--slurp"):
+                i += 1
+                continue
+            if tok in ("-q", "-f", "-F"):
+                i += 2
+                continue
+            return tok
+        return ""
+    return ""
+
+
+def _graphql_page(resolved_root_ids):
+    nodes = [{"isResolved": True, "comments": {"nodes": [{"fullDatabaseId": rid}]}} for rid in resolved_root_ids]
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+                    }
+                }
+            }
+        }
+    )
+
+
+def github_api_stub(*, resolved_root_ids=None, comments=None, reviews=None):
+    """In-process stand-in for `_git.run`/`_git.api_run` that drives a full `gh_collect`:
+    canned `pr view` / `repo view` / `user`, one inline comment by default, and a resolution
+    GraphQL page reporting `resolved_root_ids` as resolved."""
+    resolved_root_ids = resolved_root_ids or set()
+    if comments is None:
+        comments = [{"id": 1, "user": {"login": "bob"}, "path": "a.py", "line": 3, "body": "y", "diff_hunk": "@@"}]
+    if reviews is None:
+        reviews = []
+    # `gh_collect` always passes `slurp=True`, which wraps every page into one outer array
+    # (`--slurp`'s contract) — a single-page fixture is `[comments]`, not `comments`.
+    responses = {
+        "pr_view": json.dumps({"number": 118, "headRefName": "b", "url": "u", "state": "OPEN"}),
+        "repo_view": "o/r",
+        "user": "me",
+        "comments": json.dumps([comments]),
+        "reviews": json.dumps([reviews]),
+        "graphql": _graphql_page(resolved_root_ids),
+    }
+
+    def _fake(argv, **kwargs):
+        if not argv or argv[0] not in ("gh", "glab"):
+            return _REAL_GIT_RUN(argv, **kwargs)
+        ep = _gh_endpoint(argv)
+        key = next((k for k in ("comments", "reviews") if ep.endswith(f"/{k}")), ep)
+        return responses.get(key, "{}")
+
+    return _fake
+
+
+def raising_api(exc):
+    """Stand-in for `_git.api_run` that always raises `exc`, regardless of argv."""
+
+    def _fake(argv, **kwargs):
+        raise exc
+
+    return _fake
+
+
+def paginating_api_with_null_cursor():
+    """Stand-in for `_git.api_run` that answers the resolution GraphQL query with a page
+    carrying `hasNextPage: true` and a null `endCursor` — a page the caller cannot follow."""
+
+    def _fake(argv, **kwargs):
+        return json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {
+                                "nodes": [],
+                                "pageInfo": {"hasNextPage": True, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            }
+        )
+
+    return _fake
+
+
+def test_it_exits_4_when_resolution_cannot_be_determined(monkeypatch, capsys):
+    """Degrading used to mean "resolution unknown", which forced a three-valued flag through the
+    whole ledger and let one GraphQL hiccup reopen every settled thread. Aborting keeps the model
+    two-valued; the round simply did not happen, so no row changed."""
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", github_api_stub())
+    monkeypatch.setattr(_git, "api_run", raising_api(_git.ApiUnavailableError("boom", permanent=False)))
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    assert "try again" in capsys.readouterr().err.lower()
+
+
+def test_it_exits_4_and_names_the_cause_when_the_failure_is_permanent(monkeypatch, capsys):
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "run", github_api_stub())
+    monkeypatch.setattr(_git, "api_run", raising_api(_git.ApiUnavailableError("401 Bad credentials", permanent=True)))
+    assert flow_review_collect_mod.main(["118", "--platform", "github"]) == 4
+    err = capsys.readouterr().err
+    assert "401" in err
+    assert "authenticated" in err.lower() or "unsupported" in err.lower()
+
+
+def test_a_partial_resolution_page_aborts_instead_of_reporting_unknown(monkeypatch):
+    """`hasNextPage: true` with a null `endCursor` cannot be followed. The pages already read are
+    a PARTIAL answer, and a partial answer is indistinguishable from "those threads are not
+    resolved" — which would reopen settled rows."""
+    _git = flow_review_collect_mod._git
+    monkeypatch.setattr(_git, "api_run", paginating_api_with_null_cursor())
+    with pytest.raises(_git.ApiUnavailableError):
+        flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 118)
+
+
+def test_resolved_is_always_a_bool_for_a_threaded_item(monkeypatch):
+    _git = flow_review_collect_mod._git
+    stub = github_api_stub(resolved_root_ids={"1"})
+    monkeypatch.setattr(_git, "run", stub)
+    monkeypatch.setattr(_git, "api_run", stub)
+    payload = flow_review_collect_mod.gh_collect("118")
+    inline = [c for c in payload["comments"] if c["comment_id"] is not None]
+    assert inline, "the stub must produce at least one inline comment"
+    assert all(isinstance(c["resolved"], bool) for c in inline)

@@ -206,13 +206,13 @@ def gh_resolve_unit(number: str | None) -> dict:
     return {"number": data["number"], "branch": data["headRefName"], "url": data["url"]}
 
 
-def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str] | None:
-    """String root-comment ids of RESOLVED review threads, or None when unknown.
+def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str]:
+    """String root-comment ids of RESOLVED review threads.
 
-    None means "this round could not determine resolution", NOT "nothing is resolved" — the
-    two must stay distinguishable downstream. `reconcile` settles a row on `resolved: true`
-    and reopens it when a previously resolved thread turns false, so reporting an error as
-    "false everywhere" would reopen every settled thread on a single GraphQL hiccup.
+    Never returns "unknown". Reporting an error as "false everywhere" would reopen every settled
+    thread on one GraphQL hiccup, and reporting it as a third value forced a three-valued flag
+    through the entire ledger — so the call either answers or aborts the run, and `_git.api_run`
+    has already retried it.
     """
     query = (
         "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){"
@@ -224,47 +224,41 @@ def gh_review_thread_resolved_ids(repo: str, number: int) -> set[str] | None:
     owner, _, name = repo.partition("/")
     resolved: set[str] = set()
     cursor: str | None = None
-    try:
-        while True:
-            cmd = [
-                "gh",
-                "api",
-                "graphql",
-                "-f",
-                f"query={query}",
-                "-f",
-                f"owner={owner}",
-                "-f",
-                f"repo={name}",
-                "-F",
-                f"num={number}",
-            ]
-            if cursor is not None:
-                cmd += ["-f", f"cursor={cursor}"]
-            page = json.loads(_git.run(cmd))
-            rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
-            for node in rt.get("nodes") or []:
-                if node.get("isResolved"):
-                    inner = (node.get("comments") or {}).get("nodes") or []
-                    if inner and inner[0].get("fullDatabaseId") is not None:
-                        resolved.add(str(inner[0]["fullDatabaseId"]))
-            info = rt.get("pageInfo") or {}
-            if info.get("hasNextPage") and info.get("endCursor"):
-                cursor = info["endCursor"]
-                continue
-            if info.get("hasNextPage"):
-                # `hasNextPage: true` with a null endCursor cannot be followed — advancing
-                # would re-fetch page 1 forever. The pages already read are a PARTIAL answer,
-                # and a partial answer here is indistinguishable from "those threads are not
-                # resolved", which would reopen settled rows. Report it as unknown instead.
-                return None
-            break
-    except (KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError):
-        # NEVER abort collection over the resolve side-query. `_git.run` (check=True) raises
-        # CalledProcessError when `gh api graphql` exits non-zero — which gh does whenever the
-        # GraphQL response carries an `errors` key — and TimeoutExpired on a hang; both are
-        # subclasses of SubprocessError.
-        return None
+    while True:
+        cmd = [
+            "gh",
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-f",
+            f"owner={owner}",
+            "-f",
+            f"repo={name}",
+            "-F",
+            f"num={number}",
+        ]
+        if cursor is not None:
+            cmd += ["-f", f"cursor={cursor}"]
+        page = json.loads(_git.api_run(cmd))
+        rt = page["data"]["repository"]["pullRequest"]["reviewThreads"]
+        for node in rt.get("nodes") or []:
+            if node.get("isResolved"):
+                inner = (node.get("comments") or {}).get("nodes") or []
+                if inner and inner[0].get("fullDatabaseId") is not None:
+                    resolved.add(str(inner[0]["fullDatabaseId"]))
+        info = rt.get("pageInfo") or {}
+        if info.get("hasNextPage") and info.get("endCursor"):
+            cursor = info["endCursor"]
+            continue
+        if info.get("hasNextPage"):
+            # `hasNextPage: true` with a null `endCursor` cannot be followed — advancing
+            # would re-fetch page 1 forever. The pages already read are a PARTIAL answer,
+            # and a partial answer is indistinguishable from "those threads are not
+            # resolved", which would reopen settled rows.
+            msg = f"resolution query for {repo}#{number} returned an unfollowable page"
+            raise _git.ApiUnavailableError(msg, permanent=False)
+        break
     return resolved
 
 
@@ -289,7 +283,7 @@ def gh_collect(number: str | None) -> dict:
         # A resolved thread is REPORTED, not dropped. Dropping it made "absent from the
         # snapshot" ambiguous — filtered or gone? — so `reconcile` could not tell a settled
         # thread from a deleted one, and rows for hand-resolved threads stayed open forever.
-        resolved = None if resolved_ids is None else (str(cid) in resolved_ids)
+        resolved = str(cid) in resolved_ids
         replies = [r for r in comments if r.get("in_reply_to_id") == cid]
         thread = [
             thread_reply(
@@ -364,9 +358,11 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
                 "line": None,
                 "outdated": False,
                 "already_replied": False,
-                # A GitHub review body is not a thread, so it has no resolution state at all.
-                # None is the honest value and is also inert in `reconcile` (unknown → leave
-                # the status alone), which preserves the elf.31 never-re-open guarantee.
+                # A GitHub review body is not a thread and never consults the resolve
+                # side-query, so it has no resolution state at all — this is the one legal
+                # use of `resolved: None` left; everywhere else it's a real bool. None is
+                # inert in `reconcile` (unknown → leave the status alone), which preserves
+                # the elf.31 never-re-open guarantee.
                 "resolved": None,
                 "comment_id": None,
                 "discussion_id": None,
@@ -531,10 +527,23 @@ def main(argv: list[str]) -> int:
 
     number = args.number.lstrip("!") if args.number else None
     platform = _git.detect_platform(args.platform)
-    if platform == "github":
-        doc = gh_collect(number)
-    else:
-        doc = gl_collect(number)
+    try:
+        doc = gh_collect(number) if platform == "github" else gl_collect(number)
+    except _git.ApiUnavailableError as exc:
+        if exc.permanent:
+            print(
+                f"flow-review-collect: the platform API rejected a request and a retry will not help: {exc}\n"
+                f"Check that the CLI is authenticated for this host, and that its API supports the "
+                f"resolution query (an older GitHub Enterprise GraphQL schema may not).",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"flow-review-collect: could not fetch the review data: {exc}\n"
+                f"Nothing was written — the round did not start. Try again later.",
+                file=sys.stderr,
+            )
+        return 4
     print(json.dumps(doc))
     return 0
 
