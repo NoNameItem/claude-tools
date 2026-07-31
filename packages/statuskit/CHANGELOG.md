@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.5.0...statuskit-0.5.1) (2026-07-31)
+
+
+### Documentation
+
+* **statuskit:** describe what the git module renders and caches ([#120](https://github.com/NoNameItem/claude-tools/issues/120)) ([53704e5](https://github.com/NoNameItem/claude-tools/commit/53704e5abd6ce69689bc4c1ce99460c29e16dfdd))
+
 ## [0.5.0](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.4.0...statuskit-0.5.0) (2026-07-21)
 
 
