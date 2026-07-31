@@ -210,7 +210,7 @@ Read `working-set.json`:
 - Otherwise, the **working set** is what `reconcile` returned: every row with `status == "open"` and `platform_state == "live"`. There is no subset gate — the ledger already excludes what is settled, so a round carries only findings that are new, re-opened, or whose action did not land last round. Analyze all of them.
 
 **`done` is the only terminal status, and reaching it is always this workflow's own doing** —
-through Phase 5's checkpoints (5.4, 5.7, 5.7a), never assigned by `reconcile`. Every other row is
+through Phase 5's checkpoints (5.7, 5.7a), never assigned by `reconcile`. Every other row is
 `open`, whether it has never been triaged or was decided last round and its action did not land.
 
 **Two `platform_state` values take a row out of the working set without touching `status` at
@@ -985,7 +985,7 @@ gives the next round its context, while `open` records that nothing was delivere
 
 | Situation | Recorded as |
 |---|---|
-| apply failed (the 5.2 demotion) | `status: open`, `decision: fix`, `reason`: what failed |
+| apply failed (5.2) | `status: open`, `decision: fix`, `reason`: what failed |
 | follow-up batch cancelled (`no`) | `status: open`, `decision: follow_up`, no `followup_task_id` |
 | push skipped, so `Fixed:` is withheld | `status: open`, `decision: fix`, `reason`: push deferred |
 | task filed, reply not yet posted (5.4 checkpoint) | `status: open`, `decision: follow_up`, `followup_task_id` set |
@@ -1059,12 +1059,17 @@ finding next round, and it re-triages and re-replies forever. `null` is for thre
 a GitHub review-body summary (`kind == "summary"`), never a GitLab general discussion: that is also
 `kind == "summary"` but carries a real thread, so it gets a real mark like any other row.
 
-**`flow-review-ledger record` now rejects the whole batch** if a `done` entry omits the mark on a
-threaded row, so a mistake here fails loudly instead of looping. That guard catches only the
-**absent**-mark case: if you instead supply a *stale* mark — anything other than the id of the
-reply just posted — `record` cannot detect it, because the row's stored thread predates this
-round's reply and there is nothing to check the id against. Supplying the right id stays this
-step's responsibility; the guard is a backstop for the omission, not a proof of correctness.
+**`flow-review-ledger record` now rejects the whole batch** when a threaded row ends up `done`
+with **no** `thread_mark` at all — never set, or explicitly cleared to `null` — so a mistake here
+fails loudly instead of looping. The guard reads the row's value **after** the merge, not whether
+the entry supplied the key: omitting the key on a row that already carries a mark from an earlier
+round still passes — the row keeps that old mark, which is exactly the "omit" failure mode above —
+and only a row with no mark to fall back on trips it. A *stale* mark therefore cannot be detected
+either way it reaches the row — supplied outright, or left in place by omitting the key on a row
+that already had one — because the row's stored thread predates this round's reply, so there is
+nothing to check the id against. Supplying the id of the reply just posted stays this step's
+responsibility; the guard only catches a row with no mark at all, never a row whose mark is merely
+outdated.
 
 #### 5.8. Summary Report
 

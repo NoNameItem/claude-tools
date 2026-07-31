@@ -346,12 +346,12 @@ def test_review_comments_5_7a_states_the_null_merge_rule() -> None:
     # must state that rule -- not the stale "record writes the field only when the entry supplies
     # a non-null id", which would make the example inert and leave a stale task id on the row.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
+    merge_rule_section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
     # Markdown emphasis markers sit inside the sentence (`**only** when ...`), so a plain
     # substring guard never matches the prose it means to forbid -- match around them.
-    assert not re.search(r"only\W{0,4}when the entry supplies a non-null id", section)
-    assert re.search(r"\bclears\b", section), "5.7a must say that an explicit null clears the field"
-    assert re.search(r"\bomit", section), "5.7a must say that an omitted key leaves the value unchanged"
+    assert not re.search(r"only\W{0,4}when the entry supplies a non-null id", merge_rule_section)
+    assert re.search(r"\bclears\b", merge_rule_section), "5.7a must say that an explicit null clears the field"
+    assert re.search(r"\bomit", merge_rule_section), "5.7a must say that an omitted key leaves the value unchanged"
 
 
 def test_review_comments_replies_to_the_ledger_thread_id() -> None:
@@ -498,8 +498,8 @@ def test_review_comments_5_7a_reacts_to_a_failed_record() -> None:
     # was already posted. Nothing reads the JSON payload, so the exit code is the only signal, and
     # the prose must tell the agent to act on it instead of assuming the round was recorded.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
-    assert re.search(r"non-zero|exit\s+code", section, re.IGNORECASE), "5.7a must check `record`'s exit code"
+    record_section = text.split("#### 5.7a", 1)[1].split("#### 5.8", 1)[0]
+    assert re.search(r"non-zero|exit\s+code", record_section, re.IGNORECASE), "5.7a must check `record`'s exit code"
 
 
 def test_review_comments_knows_the_deleted_status_and_platform_resolution() -> None:
@@ -560,7 +560,7 @@ def test_review_comments_records_an_aborted_action_as_open_with_its_decision() -
     """Keeping the decision costs nothing and gives the next round context; the status stays
     `open` because nothing was delivered."""
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert "pending" not in text.replace("Reply deferred", "")
+    assert "pending" not in text
     assert "`status: open`, `decision: fix`" in text
 
 
