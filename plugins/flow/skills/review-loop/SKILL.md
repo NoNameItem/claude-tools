@@ -229,14 +229,16 @@ fail the same way.
   counts as an empty working set.) Read its `Open: N` line — `N` is `counts.working`.
 
   - **`Open` is non-zero** → **unconverged**, regardless of `PARTIAL`/`failed`. A row's action did
-    not land this round — apply failed, or its push was skipped (the unpushed-commits warning
-    above is one instance of this, not the only one) — and it stayed `open` carrying its
-    `decision`. The stats output you just printed already shows the count (and, when non-zero,
-    "decided but not delivered"); name the outstanding refs too, from `flow:review-comments`'s own
-    5.8 summary (`Failed:` / `Reply deferred (push skipped)` lines) from the round you just ran.
-    STOP: "не сошёлся — в рабочем множестве остались необработанные находки (`<ref>`, …),
-    перезапусти `/flow:review-loop`, когда они будут доставлены." Do **not** run another identical
-    round; it would hit the same undelivered rows again.
+    not land this round — apply failed, its push was skipped (the unpushed-commits warning above
+    is one instance of this, not the only one), or its follow-up task was never filed — and it
+    stayed `open` carrying its `decision`. The stats output you just printed already shows the
+    count (and, when non-zero, "decided but not delivered"); name the outstanding refs too — every
+    ref `flow:review-comments`'s own 5.8 summary from the round you just ran reported as staying
+    `open` with a decision, across whichever of its buckets are non-empty (do not hardcode which
+    ones; the round can leave rows behind for more than one reason). STOP: "не сошёлся — в рабочем
+    множестве остались необработанные находки (`<ref>`, …), перезапусти `/flow:review-loop`, когда
+    они будут доставлены." Do **not** run another identical round; it would hit the same
+    undelivered rows again.
   - **`Open` is zero** → this round converges. STOP with the reason that fits:
     - round **PARTIAL** (step c timed out, you chose "process now") → **partial hand-off:**
       "обработал что было, но пайплайн для `<HEAD_before:0:7>` не добежал (wait timed out) —

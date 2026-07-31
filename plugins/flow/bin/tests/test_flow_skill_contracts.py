@@ -582,3 +582,19 @@ def test_review_loop_requires_an_empty_working_set_to_converge() -> None:
     assert re.search(r"working set", text, re.IGNORECASE)
     assert re.search(r"(empty working set|working set is empty)", text, re.IGNORECASE)
     assert re.search(r"head.{0,60}and.{0,60}working set", text, re.IGNORECASE | re.DOTALL)
+
+
+def test_review_loop_working_set_check_reads_post_round_ledger_state() -> None:
+    """The `counts.working == 0` gate must read the ledger AFTER Phase 5's `record` checkpoints
+    of the round just run, not the working set `reconcile` reported at the START of that round in
+    Phase 2 -- `reconcile`'s payload is Phase 5's INPUT, not its outcome, so checking it would
+    silently reintroduce the exact bug this task's own self-review caught: declaring convergence
+    (or non-convergence) from a round's opening backlog instead of what it actually delivered."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    assert re.search(r"Phase\s*5.{0,20}input,\s*not\s+its\s+outcome", text, re.IGNORECASE | re.DOTALL), (
+        "must explicitly reject Phase 2's reconcile payload as the emptiness source"
+    )
+    assert re.search(r"after\s+Phase\s*5.{0,20}`record`", text, re.IGNORECASE | re.DOTALL), (
+        "must state the working-set query happens after Phase 5's record checkpoints"
+    )
+    assert "flow-review-ledger stats" in text
