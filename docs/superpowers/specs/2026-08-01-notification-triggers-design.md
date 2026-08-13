@@ -56,6 +56,7 @@ and `review_gate.py` unchanged.
  ─────────────────────────────────────────────────────────────────────────────
               REL  = startsWith(head.ref, 'release-please--')
               TOOL = detect.tooling_changed   (always false on a release PR)
+              EDIT = github.event.action == 'edited'
  ─────────────────────────────────────────────────────────────────────────────
 
   detect ─────────────────────────────────────────────────┐
@@ -78,7 +79,9 @@ and `review_gate.py` unchanged.
                      ┌───────────────┴───────────────┐
                      ▼                               ▼
              pr-summary                      release-pr-summary
-             if: always() && !REL            if: always() && REL
+             if: always()                    if: always()
+                 && !REL && !EDIT                && REL && !EDIT
+                                                 && action != 'reopened'
 
   notify-start ── in parallel, if: !REL
 
@@ -87,7 +90,7 @@ and `review_gate.py` unchanged.
 
   Separately:  review-thread.yml
                on: pull_request_review_thread [resolved, unresolved]
-               → _reusable-pr-summary
+               → 60 s debounce → _reusable-pr-summary
 ```
 
 What this buys:
@@ -99,13 +102,17 @@ What this buys:
   point every required context is terminal by construction.
 - **The gate stops being a hand-rolled commit status.** Under `pull_request` a job's check run is
   attributed to the head SHA automatically, so `post_status`, the `trap` that posts `error` on an
-  unexpected exit, the re-check of `current_head` before publishing success, and the separate
-  "Superseded" status all disappear. They existed only because under `pull_request_target` the
-  job's own check run lands on the base commit.
-- **The anchor stops carrying the reply address.** Start and result are now in the same run, so the
-  message id travels through `needs.notify-start.outputs.message-id`, exactly as `push.yml` already
-  does. What remains of the marker is described in Part 3, and it no longer decides whether to
-  speak.
+  unexpected exit, and the separate "Superseded" status all disappear. They existed only because
+  under `pull_request_target` the job's own check run lands on the base commit. The `current_head`
+  comparison itself survives — it stops being a guard against greening a superseded SHA and becomes
+  the poll's exit condition; see "Concurrency" below.
+- **The anchor stops deciding whether to speak.** It keeps carrying the reply address, and that
+  stays its only job — see Part 3. Routing the message id through
+  `needs.notify-start.outputs.message-id` instead was considered and rejected: the same reusable
+  summary is also called from `review-thread.yml`, where no `notify-start` exists in the run and
+  the marker is the only possible source. One reader, one source, for both call sites; the race
+  "marker not written yet" is impossible by construction, because `pr-summary` sits on
+  `needs: notify-start`.
 
 ### Gate wrapper jobs publish the contexts
 
@@ -148,6 +155,32 @@ same contract the three existing gates already honour.
 `Validate PR` is *not* conditioned on `REL`: checking the title of `chore(statuskit): release 0.5.1`
 is meaningful, and the job is cheap.
 
+### Concurrency: a 25-minute poll now lives inside `pr.yml`
+
+`review-gate.yml` deliberately had no `concurrency` at all, because `cancel-in-progress: true`
+would let an unrelated event cancel a live poll. Moving the poll into `pr.yml` puts it under that
+workflow's existing group — `${{ github.workflow }}-${{ github.ref }}-${{ github.event.action }}`,
+`cancel-in-progress: true` — and the `github.event.action` component is load-bearing: it keeps a
+burst of `edited` events (which release-please produces on every force-push) from killing a CI run
+started by `synchronize`.
+
+**The key is left exactly as it is.** Its one consequence is that a run started by `opened` is not
+cancelled by a later `synchronize`, so two polls can be alive at once, each for its own SHA. That
+is bounded inside the gate instead: the `current_head != HEAD_SHA` check, which today runs once
+before publishing success, moves into the loop body. A poll whose SHA has been superseded exits
+within one interval (≤30 s) rather than sitting out the full 25 minutes.
+
+Two consequences follow, and both are load-bearing:
+
+- **`pr_summary.py` keeps its `stale-head` branch.** A superseded run can still reach `pr-summary`
+  — the gate exits quickly, but it exits *successfully*, and the summary job then runs. `stale-head`
+  is what keeps it silent, and the abandoned thread is closed by the *Superseded* message from the
+  new push's `notify-start`, not by this run.
+- **A cancelled run never leaves a thread unanswered.** When `cancel-in-progress` does fire (two
+  `synchronize` events in a row), the cancelled run's `notify-start` has either not sent anything
+  yet — nothing to answer — or has sent and recorded `msg:<id>`, in which case the next push reads
+  that marker on `before` and replies *Superseded*.
+
 ### Accepted trade-off
 
 Under `pull_request`, GitHub reads the workflow file from the PR branch. A PR can therefore edit
@@ -171,6 +204,23 @@ have.
 Note also that `pr.yml` was *already* forgeable in the same way — a PR can gut its own CI jobs into
 `exit 0`. The gate was the one remaining thing it could not forge; that asymmetry is what this
 change gives up.
+
+**What the gate job now holds while running PR-authored code.** Under `pull_request`,
+`actions/checkout` takes the merge ref, so every script the gate runs comes from the PR. In that
+same job live `CODEX_NUDGE_TOKEN` (the owner's PAT), `statuses: write` for the `codex-nudge`
+marker, and — in `notify-start` and the summary — the Telegram credentials. Today `pr.yml` carries
+a ten-line comment explaining why it withholds workflow-level `statuses: write` precisely to keep
+PR-authored code away from commit statuses; that reasoning is retired here rather than worked
+around.
+
+Two alternatives were weighed and rejected. Checking the gate out from `base.sha` narrows the
+surface to the workflow file, but the nudge logic lives in that very file, so a deliberate theft
+stays equally possible — it buys protection against an accidental edit only. Moving the nudge into
+a separate `pull_request_target` workflow does close it by construction, at the cost of a second
+workflow plus a new race (the gate would start polling before the marker carrying its cutoff
+exists). Neither is worth it under this repository's threat model: same-repo PRs come only from the
+owner and any trusted collaborator who might be added later, and fork PRs never reach these jobs —
+the gate is skipped for them and the wrapper fails them.
 
 ## Part 2 — Codex review is triggered by us
 
@@ -207,13 +257,36 @@ Order inside the gate job:
    and the wrapper reports success. Codex is not asked. The comment at `review-gate.yml:113-114`
    claiming "release-please PRs … that Codex never reviews" is corrected: it was false (PR #115 is
    the counter-example), and it becomes true only now, for a different reason.
-2. **`codex-nudge` marker on the head SHA.** Present → a review was already requested for this
-   commit; go straight to waiting. Absent → delete stale nudges (comments authored by the token's
-   account whose body, stripped, is exactly `@codex review`), post a fresh one, and record
-   `codex-nudge` = `comment:<id>`.
-3. **Wait** — the existing loop: `review_gate.py`, cutoff at `pushed_at`, 30 s interval, 25 min cap.
+2. **`codex-nudge` marker on the head SHA**, description `comment:<id>@<cutoff>`. Present → a
+   review was already requested for this commit; take the cutoff from the marker and go straight to
+   waiting. Absent → delete stale nudges (comments authored by the token's account whose body,
+   stripped, is exactly `@codex review`), post a fresh one, and record both the comment id and the
+   cutoff.
+3. **Wait** — the existing loop: `review_gate.py`, the cutoff from the marker, 30 s interval, 25 min
+   cap, plus the in-loop `current_head` check described in Part 1.
 4. **Success** → delete our own nudge by `comment:<id>`, leaving the thread clean. **Timeout** →
    keep it deliberately: it distinguishes "we never asked" from "we asked and Codex did not answer".
+
+### Why the cutoff moves into the marker
+
+Today the freshness cutoff is `pull_request.updated_at`, which for `opened`/`synchronize` is exactly
+the push time. Under `pull_request` the gate no longer runs only on those two events: `edited`,
+`reopened` and a manual re-run all re-execute it for a head SHA that has not changed — and every one
+of them advances `updated_at`. A cutoff read from the event would therefore declare the review that
+already arrived for this very commit "too old", and the gate would poll for a review nobody is
+going to write, for 25 minutes, ending red.
+
+Skipping the gate on those events is not an escape: a job skipped by `if:` still publishes a check
+run, the ruleset reads `skipped` as passing, and the required context would go green with no review
+at all.
+
+So the cutoff is written once, by the first run that requests a review for this SHA, and read by
+every later run for the same SHA. It belongs to the commit, not to the last time somebody touched
+the PR. The marker already had to exist for the nudge to be idempotent; it gains one field.
+
+One consequence worth naming: the stale-nudge cleanup deletes comments authored by the token's
+account whose body is exactly `@codex review` — including one the owner typed by hand to request a
+re-review. That is acceptable (the gate posts its own immediately afterwards) but not obvious.
 
 The marker is what makes a manual re-run after a timeout safe — the documented recovery in
 `claude-tools-5vg.1`. The gate sees the marker, does not re-ask Codex, finds the review that has
@@ -235,7 +308,14 @@ into waiting. Otherwise an expired PAT looks exactly like "Codex is not respondi
 `pr-notify-anchor` stays on the head SHA, with description `msg:<id>`, rewritten to
 `msg:<id> replied` once the thread has been answered. It answers three questions — has a start
 message already been sent for *this* commit, has its thread been answered, and how far have we
-reported commits — and it no longer participates in the decision to speak.
+reported commits.
+
+What it no longer does is decide whether the **result** speaks: that decision is now structural
+(one producer, ordered by `needs`), which is what the removed verdict record used to arbitrate.
+The marker still governs two narrower choices, both on the start side: whether to repeat a start
+message for a commit that already has one, and whether an abandoned thread needs a *Superseded*
+reply. It has two writers — `notify-start` creates it, `pr-summary` appends `replied` — and they
+never run concurrently for one SHA, because the second sits on `needs` of the first.
 
 **`notify-start`** (`if: !REL`):
 
@@ -257,14 +337,33 @@ reported commits — and it no longer participates in the decision to speak.
    elements, against Telegram's 32768/500) and stops on an element boundary.
 5. Write `msg:<id>` on the head SHA.
 
-**`pr-summary`** (`needs` all gates, `if: always() && !REL`): computes the verdict exactly as today
-(`failed` / `comments` / `ready`), replies into the thread, then rewrites the marker to
+**`pr-summary`** (`needs` all gates, `if: always() && !REL && !EDIT`): computes the verdict exactly
+as today (`failed` / `comments` / `ready`), replies into the thread, then rewrites the marker to
 `msg:<id> replied`.
+
+The `!EDIT` guard is what keeps the removal of the verdict record honest. `edited` re-runs the whole
+workflow, and with no memory of what was already reported, the summary would answer a second time —
+the duplicate that `claude-tools-5vg.15` set out to remove, re-entering through a different door.
+The rest of `pr.yml` still runs on `edited`, so every required context is re-published by a job that
+actually executed; only the notification is suppressed. The alternative — skipping the heavy jobs
+and letting their wrappers report — would turn `skipped` into a green `Review Gate` with no review
+behind it.
 
 `pr_summary.py` keeps its shape: it goes on reading head-SHA state through the API rather than from
 `needs`, so one implementation serves both entry points (the `pr.yml` job and the review-thread
-workflow). Its `waiting` branch remains as a safety net but is unreachable from `pr.yml`. The only
-addition is writing `replied` into the marker after a successful send.
+workflow). Two branches stay load-bearing rather than vestigial:
+
+- **`stale-head`** — a poll for a superseded SHA exits within one interval, but it exits into
+  `pr-summary`, and this is what keeps that run silent. Do not remove it on the grounds that
+  "there is only one speaker now": the speaker can be speaking for a commit that no longer exists.
+- **`waiting`** — unreachable from `pr.yml`, where `needs` guarantees every gate is terminal; kept
+  as a safety net for the review-thread entry point, where nothing orders the run against CI.
+
+Two additions: writing `replied` into the marker after a successful send, and the crossing mode
+described below. The first one restores `statuses: write` to `_reusable-pr-summary.yml` — a
+permission deliberately taken away from it when the verdict marker was removed, and now needed
+again for one narrow write. It runs PR-authored scripts while holding it; see the trade-off in
+Part 1.
 
 The start message gets its own module, `.github/scripts/pr_start.py`: given the head SHA, the
 force-push flag and the commit list from `compare`, it emits the notify spec — verdict line plus the
@@ -279,11 +378,14 @@ the count threshold, the budget and the rewritten-history wording are testable w
 | Two pushes in quick succession | first thread never answered | *Superseded by `<sha>`* into the first thread |
 | Re-run failed jobs | a new reply, sometimes duplicated | exactly one new reply in the same thread |
 | Re-run all jobs | a second *checks running* | start suppressed; only the reply |
-| `edited` | its own *PR updated* message | no message; a changed verdict lands in the current thread |
-| Last thread resolved | nothing | *Ready to merge* in the current thread |
+| `edited` | its own *PR updated* message | no message at all — checks re-run, the notification is skipped |
+| `reopened` | a second *checks running* | start suppressed by the marker; the verdict lands in the existing thread |
+| Last thread resolved | nothing | one *Ready to merge* in the current thread, 60 s after the last Resolve |
 
 The `edited` row is the one deliberate behaviour change beyond the fixes: editing a title or body is
-not an event worth its own message.
+not an event worth its own message — and, with no record of what was already reported, not an event
+that may re-answer either. A title edited after the verdict was sent leaves the Telegram message
+showing the old title; that is the accepted cost of not speaking twice.
 
 ### Re-notification on thread resolution (`claude-tools-5vg.17`)
 
@@ -293,8 +395,29 @@ run — and it carries the same fork guard as the other secret-bearing jobs.
 
 No memory of the previous verdict is needed, because the transition is derivable from the counter:
 `resolved` with zero unresolved threads means "findings are gone", `unresolved` with exactly one
-means the opposite crossing. Resolving five threads one by one therefore produces one message, not
-five.
+means the opposite crossing. This is a **crossing mode** for `pr_summary.py`, not its default
+behaviour, and it has to be built: today `decide()` returns `send=True` for any terminal state with
+unresolved threads, so a walk through five findings would report "unresolved comments: 3", then
+"…: 2", then "…: 1" on the way to silence. In crossing mode the script speaks only at the two
+boundaries and stays silent in between. The mode is passed by the caller — `pr.yml` never uses it.
+
+**Debounce, not a verdict record.** The crossing rule alone does not survive a real review pass:
+five clicks on Resolve within ten seconds produce five events, and `_reusable-pr-summary.yml`
+serialises them behind `pr-summary-<sha>` with `cancel-in-progress: false`. By the time the queue
+reaches the first of them, the count is already zero — so every one of the five sees the crossing
+and speaks. `review-thread.yml` therefore carries its own group,
+`concurrency: review-thread-<pr-number>` with `cancel-in-progress: true`, and sleeps 60 s as its
+first step. A new Resolve cancels the sleeping run; only the last one wakes, counts and speaks, and
+it counts the final state rather than a state in motion.
+
+The window is what makes cancellation safe: a cancelled run has sent nothing, because it was
+asleep. Cancelling without the window would risk killing a run mid-send, and the Telegram send has
+no retry.
+
+Recording "which verdict was already reported" would also close the race, and it is deliberately
+not used. That record is what broke three times in PR #119 — always by turning into silence where a
+reply was owed. Sixty seconds of sleep buy the same property without reintroducing state that can
+strand a thread.
 
 ## Part 4 — release-please PRs
 
@@ -336,10 +459,17 @@ Established from the live repository on 2026-07-31, not assumed:
 
 ### The release PR notification
 
-A separate job `release-pr-summary` in `pr.yml` (`if: always() && REL`), calling a new
-`_reusable-release-pr-summary.yml`. It is a separate job rather than a separate workflow because a
-separate workflow could not use `needs` and would have to poll. There is no start message: it would
-say nothing, and there is no thread to maintain.
+A separate job `release-pr-summary` in `pr.yml`, calling a new `_reusable-release-pr-summary.yml`.
+It is a separate job rather than a separate workflow because a separate workflow could not use
+`needs` and would have to poll. There is no start message: it would say nothing, and there is no
+thread to maintain.
+
+Its condition is `always() && REL` restricted to `opened` and `synchronize`. `edited` and
+`reopened` are excluded for a concrete reason: release-please rewrites the PR body on every
+force-push, so `edited` arrives with every merge to master — and it carries no `before`/`after`,
+which is exactly what the changelog comparison below needs. Excluding these two events costs
+nothing, because the version and the changelog only ever change through a commit, and this job
+publishes no required context, so a skipped run blocks nobody.
 
 1. The component comes from the branch name; the CHANGELOG path comes from
    `release-please-config.json`, not from a hard-coded constant.
@@ -364,9 +494,17 @@ instead of six, and the flow PR — whose only change was the date — says noth
 
 ## Part 5 — push notifications on a release merge (`claude-tools-5vg.20`)
 
-A release merge is detected by the commit touching `.release-please-manifest.json`: only
-release-please writes that file, which makes the signal semantic rather than a guess at the commit
-subject. One `git show --name-only` in the existing checkout.
+A release merge is detected by `.release-please-manifest.json` being touched: only release-please
+writes that file, which makes the signal semantic rather than a guess at the commit subject.
+
+The test runs over **the whole push**, not over its head commit: `github.event.commits[].modified`
+is already in the event payload, so no checkout, no history depth and no git command are involved.
+Reading only the head commit would have been enough under squash merges and wrong under a rebase
+merge — the flow release PR carries a second commit from `pin_marketplace_refs.py`, so its head is
+the pin commit and the manifest is one commit further back. The repository is now squash-only (see
+Rollout), which makes that case unreachable today; the range test is used anyway, so the detection
+does not silently depend on a merge policy somebody may widen again. The payload's 20-commit cap is
+irrelevant here — a release merge is one or two commits.
 
 - `notify-start` is skipped on a release merge.
 - `notify-finish` sends **only** when the verdict is `failed`. On the green path the merge produces
@@ -388,19 +526,20 @@ jobs.
 
 | File | Change |
 |---|---|
-| `.github/workflows/pr.yml` | calls the review gate; `REL` condition on `python-ci`, `notify-start`, `review-gate`; two mutually exclusive summary jobs; `Review Gate` wrapper |
-| `.github/workflows/review-gate.yml` | becomes `_reusable-review-gate.yml`; `pull_request_target` machinery removed; nudge and `codex-nudge` marker added |
-| `.github/workflows/_reusable-pr-summary.yml` | unchanged contract; called from `pr.yml` and `review-thread.yml` |
+| `.github/workflows/pr.yml` | calls the review gate; `REL` condition on `python-ci`, `notify-start`, `review-gate`; `EDIT` condition on both summary jobs; two mutually exclusive summary jobs; `Review Gate` wrapper; `concurrency` key left as-is (see Part 1) |
+| `.github/workflows/review-gate.yml` | becomes `_reusable-review-gate.yml`; `pull_request_target` machinery removed; nudge and `codex-nudge` marker (`comment:<id>@<cutoff>`) added; `current_head` check moved into the poll loop |
+| `.github/workflows/_reusable-pr-summary.yml` | `statuses: write` restored (writes `replied`); new `crossing-mode` input for the review-thread entry point; called from `pr.yml` and `review-thread.yml` |
 | `.github/workflows/_reusable-release-pr-summary.yml` | new — the release PR notification |
-| `.github/workflows/review-thread.yml` | new — `pull_request_review_thread` → summary |
+| `.github/workflows/review-thread.yml` | new — `pull_request_review_thread` → 60 s debounce → summary; own `concurrency` group with `cancel-in-progress: true` |
 | `.github/workflows/_reusable-claude-code-plugin-ci.yml` | new input `manifests-only` |
-| `.github/workflows/push.yml` | release-merge detection; start suppressed, finish only on failure |
+| `.github/workflows/push.yml` | release-merge detection over `github.event.commits[].modified`; start suppressed, finish only on failure |
 | `.github/scripts/changelog_section.py` | new — top-section parser |
 | `.github/scripts/pr_start.py` | new — start-message spec: verdict line + commits block |
-| `.github/scripts/pr_summary.py` | writes `replied` into the marker after sending |
+| `.github/scripts/pr_summary.py` | writes `replied` into the marker after sending; crossing mode for re-notification; `stale-head` kept and its purpose documented |
+| `.github/scripts/review_gate.py` | unchanged decision logic; the cutoff it receives now comes from the marker, not from the event |
 | `.github/scripts/tests/` | coverage for the above |
 | `AGENTS.md` | the review-gate security note is rewritten to describe the new model |
-| `docs/merge-gate-rollout.md` | Step 7 and the ruleset step updated (see below) |
+| `docs/merge-gate-rollout.md` | Steps 2, 6 and 7 and the ruleset step updated (see below) |
 
 ## Testing
 
@@ -408,7 +547,11 @@ Unit tests (pure functions, no network): CHANGELOG section parsing — top secti
 ignored in comparison, entry sets compared, missing file; commit-list assembly and its budget;
 anchor semantics — start suppressed when the marker is present, *Superseded* emitted when the
 marker on `before` lacks `replied`, nothing emitted when it has it; the gate wrapper's mapping of
-`skipped` / fork / failure onto exit codes.
+`skipped` / fork / failure onto exit codes; the `codex-nudge` marker — cutoff round-tripped through
+`comment:<id>@<cutoff>`, a malformed marker degrading to "ask again" rather than crashing; crossing
+mode — speaks at zero unresolved and at exactly one, silent at every intermediate count, and
+unaffected in default mode; release-merge detection over a commit list, including the two-commit
+shape where the manifest is not in the head commit.
 
 What becomes verifiable inside its own PR — a change from the previous design, where half the
 system could only be checked after merge because `review-gate.yml` always came from master: the
@@ -418,18 +561,38 @@ post-merge.
 
 ## Rollout order
 
+0. **Already done, before this design was finalised** (2026-08-13): the merge policy is narrowed to
+   squash-only — the ruleset's `allowed_merge_methods` is `["squash"]` and the repository has
+   `allow_rebase_merge: false` (merge commits were already off). Rolling back means putting
+   `"rebase"` back into that array and re-enabling `allow_rebase_merge`; nothing in this design
+   depends on the narrowing, which is why the release-merge detection reads the whole push anyway.
+   Step 2 of `docs/merge-gate-rollout.md` is updated to match.
 1. **Before the merge:** create `CODEX_NUDGE_TOKEN` and add it to repository secrets. Without it the
    gate cannot nudge, including on this PR itself.
 2. **The PR runs under the old ruleset**, which requires the `review-gate` context — a commit status
    still published by the base version of `review-gate.yml` until the merge. So the PR merges
    normally, with both gates active on it: the old one from base and the new one from the branch.
+   Two side effects of that overlap, both expected and both temporary:
+   - **Notifications arrive doubled on this PR.** `_reusable-pr-summary.yml` is called from the base
+     copy of `review-gate.yml` *and* from the branch copy of `pr.yml`, and neither knows about the
+     other. This is the last PR on which that happens.
+   - **Automatic Codex reviews have been off since 2026-07-31.** Until this branch lands, every
+     ordinary PR needs a hand-written `@codex review` from the owner's account, because nothing on
+     `master` nudges yet. On *this* PR the branch's own gate does the nudging, and the base gate
+     sees the same review.
 3. **Immediately after the merge — update the ruleset:** replace the required context `review-gate`
    with `Review Gate`. This is mandatory and time-critical: nothing publishes the old status any
    more, so until it is done every new PR sits at *"Expected — waiting for status to be reported"*.
    Do not open new PRs between the merge and this step.
-4. **Verify** on the next ordinary PR (nudge, thread, *Superseded*, re-run behaviour), on the next
-   release PR (silence on a rebase, one message with the changelog), and on the next release merge
-   (no push pair).
+
+   Naming the wrapper job `review-gate` instead — so the check run satisfies the existing required
+   context and the ruleset needs no edit at all — was considered and rejected: the time-critical
+   window is acceptable when nothing else is in flight, and the capitalised name matches the other
+   three gates.
+4. **Verify** on the next ordinary PR (nudge, thread, *Superseded*, re-run behaviour, silence on
+   `edited`), on the next release PR (silence when somebody else's merge force-pushes it and only
+   the changelog date moves; one message when its entries actually change), and on the next release
+   merge (no push pair).
 
 ## Risks and limitations
 
@@ -439,6 +602,14 @@ post-merge.
   times out on every PR. The way back is cheap and code-free: switch automatic reviews back on; the
   nudge becomes redundant but harmless.
 - **The gate is forgeable by a PR that edits `pr.yml`.** Accepted — see Part 1.
+- **The gate job runs PR-authored code while holding the owner's PAT**, `statuses: write` and the
+  Telegram credentials. Accepted on the same grounds and recorded in Part 1: same-repo PRs come
+  only from trusted developers, fork PRs never reach these jobs.
+- **A run cancelled mid-send loses its notification.** `cancel-in-progress` fires on two pushes in
+  a row, and the Telegram send has no retry. The thread is never left unanswered — the next push's
+  *Superseded* covers it — but a result message can be lost. On the re-notification path this is
+  neutralised by the 60 s debounce, which puts the cancellable window before the send rather than
+  around it.
 - **Two behaviours depend on undocumented connector semantics**: that a nudge from a PAT keeps
   working, and that the connector keeps reacting to the phrase in a comment. Both were measured, not
   assumed, and both are recorded here with dates so a future reader can re-measure.
@@ -447,9 +618,9 @@ post-merge.
 
 | Task | Outcome |
 |---|---|
-| `claude-tools-5vg.15` | dissolved — one speaker, so no duplicate to suppress; the verdict record does not return |
+| `claude-tools-5vg.15` | dissolved — one speaker, so no duplicate to suppress; the verdict record does not return. The two remaining duplicate paths are closed structurally: `edited` skips the summary, a burst of Resolve clicks is debounced |
 | `claude-tools-5vg.16` | fixed — *Superseded by `<sha>`* closes the abandoned thread |
-| `claude-tools-5vg.17` | fixed — `review-thread.yml`, transitions derived from the counter |
+| `claude-tools-5vg.17` | fixed — `review-thread.yml`, crossing mode over the counter, 60 s debounce |
 | `claude-tools-5vg.18` | fixed — release PR notifies only when its changelog entries actually changed |
 | `claude-tools-5vg.19` | fixed — automatic reviews off, the gate nudges only non-release PRs; the false comment corrected |
 | `claude-tools-5vg.20` | fixed — push pair suppressed on a release merge, except on failure |

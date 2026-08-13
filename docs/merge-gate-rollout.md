@@ -64,7 +64,7 @@ cat > /tmp/ruleset.json <<'JSON'
       "require_code_owner_review": false,
       "require_last_push_approval": false,
       "required_review_thread_resolution": true,
-      "allowed_merge_methods": ["squash", "rebase"]
+      "allowed_merge_methods": ["squash"]
     }},
     {"type": "required_status_checks", "parameters": {
       "strict_required_status_checks_policy": false,
@@ -84,8 +84,10 @@ gh api --method PUT "repos/$REPO/rulesets/$RULESET_ID" --input /tmp/ruleset.json
 
 Decisions encoded above, so a future reader does not "fix" them:
 
-- **`merge` dropped from `allowed_merge_methods`** — merge commits are disabled repo-wide and
-  conflict with linear history.
+- **`squash` is the only allowed merge method** — merge commits are disabled repo-wide and conflict
+  with linear history, and `rebase` was dropped on 2026-08-13 so that one PR always lands as exactly
+  one commit. The repository setting matches: `allow_rebase_merge: false`. Rolling back means
+  putting `"rebase"` back here *and* re-enabling the repository setting.
 - **`strict_required_status_checks_policy: false`** — "update branch" must not re-trigger the
   reviewers (`claude-tools-5vg.4`).
 - **`review-gate` is required although fork PRs never publish it** — that is precisely what keeps
