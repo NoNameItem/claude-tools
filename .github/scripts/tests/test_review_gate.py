@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from ..review_gate import CODEX_BOT, decide
+import pytest
+
+from ..review_gate import CODEX_BOT, decide, format_nudge_marker, parse_nudge_marker
 
 HEAD = "head1234"
 CUTOFF = "2026-07-01T10:00:00Z"  # push / base-change time, or head committer date
@@ -81,10 +83,34 @@ class TestCli:
 
     def test_cli_pass(self):
         payload = {"reviews": [], "reactions": [_thumb(AFTER)]}
-        out = self._run(payload, "--cutoff", CUTOFF, "--head-sha", HEAD)
+        out = self._run(payload, "decide", "--cutoff", CUTOFF, "--head-sha", HEAD)
         assert out == "pass"
 
     def test_cli_wait(self):
         payload = {"reviews": [], "reactions": [_thumb(BEFORE)]}
-        out = self._run(payload, "--cutoff", CUTOFF, "--head-sha", HEAD)
+        out = self._run(payload, "decide", "--cutoff", CUTOFF, "--head-sha", HEAD)
         assert out == "wait"
+
+
+class TestNudgeMarker:
+    def test_round_trip(self):
+        description = format_nudge_marker(4242, "2026-08-01T10:00:00Z")
+        assert description == "comment:4242@2026-08-01T10:00:00Z"
+        assert parse_nudge_marker(description) == (4242, "2026-08-01T10:00:00Z")
+
+    def test_marker_fits_a_commit_status_description(self):
+        # GitHub truncates a status description at 140 characters; a truncated marker would
+        # silently lose the cutoff and re-ask Codex on every re-run.
+        assert len(format_nudge_marker(10**12, "2026-08-01T10:00:00Z")) < 140
+
+    @pytest.mark.parametrize(
+        "description",
+        ["", None, "comment:@2026-08-01T10:00:00Z", "comment:12", "msg:12", "comment:abc@2026-08-01T10:00:00Z"],
+    )
+    def test_malformed_marker_reads_as_absent(self, description):
+        # "Absent" means "ask Codex again" — never a crash, and never a poll against a cutoff we
+        # made up.
+        assert parse_nudge_marker(description) is None
+
+    def test_surrounding_whitespace_is_tolerated(self):
+        assert parse_nudge_marker("  comment:7@2026-08-01T10:00:00Z  ") == (7, "2026-08-01T10:00:00Z")
