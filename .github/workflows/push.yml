@@ -16,8 +16,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A release merge carries versions, CHANGELOG entries and marketplace pins — it does not change
+  # the state of master in any meaningful way, and the manifests were already validated on the
+  # release PR. So it gets no push pair; the release notifications (Publishing… / Published to
+  # PyPI) are the ones that carry information.
+  #
+  # CI itself is NOT switched off: `-Dsonar.projectVersion` is set in _reusable-python-ci.yml, so
+  # the VERSION event in SonarCloud is registered precisely by this run, and publish-badges hangs
+  # off the same jobs.
+  release-merge:
+    name: Detect a release merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      is-release: ${{ steps.detect.outputs.is-release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - id: detect
+        env:
+          # The whole push, not just its head: under a rebase merge the manifest can sit one
+          # commit behind the head (the flow release PR carries a pin commit on top).
+          COMMITS: ${{ toJson(github.event.commits) }}
+        run: |
+          set -euo pipefail
+          is_release=$(printf '%s' "$COMMITS" | python3 .github/scripts/release_merge.py)
+          echo "is-release=$is_release" >> "$GITHUB_OUTPUT"
+          echo "Release merge: $is_release"
+
   notify-start:
     name: Notify Start
+    needs: [release-merge]
+    if: needs.release-merge.outputs.is-release != 'true'
     runs-on: ubuntu-latest
     outputs:
       message-id: ${{ steps.notify.outputs.message-id }}
@@ -165,7 +196,7 @@ jobs:
 
   notify-finish:
     name: Notify Finish
-    needs: [notify-start, detect, validate-commits, python-ci, claude-code-plugin-ci]
+    needs: [notify-start, detect, validate-commits, python-ci, claude-code-plugin-ci, release-merge]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -275,8 +306,16 @@ jobs:
               reply_to: (if $reply_to == "" then null else ($reply_to | tonumber) end)}' > spec.json
 
           jq -c '{status, blocks: [.blocks[].title]}' spec.json
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
-      - uses: ./.github/actions/telegram-notify
+      - name: Send the notification
+        # On a release merge only a FAILURE is worth a message: a flaky test, an unreachable
+        # SonarCloud or an infrastructure hiccup would otherwise be announced nowhere while the
+        # release message cheerfully reports success. The green path stays silent.
+        if: |
+          needs.release-merge.outputs.is-release != 'true' ||
+          steps.spec.outputs.status == 'failed'
+        uses: ./.github/actions/telegram-notify
         with:
           spec-file: spec.json
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
