@@ -137,6 +137,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
@@ -158,10 +159,13 @@ jobs:
 
           rewritten=false
           if [ -z "$anchor" ]; then
-            # First push, or the anchor commit vanished in a rebase. Report from the base and say
-            # so in the message.
+            # No anchor found: on `opened` that's expected (there is no anchor to find yet), but
+            # on any other action it means the anchor commit vanished in a rebase — only THAT
+            # case is a rewrite worth reporting.
             anchor="$BASE_SHA"
-            rewritten=true
+            if [ "$ACTION" != "opened" ]; then
+              rewritten=true
+            fi
           fi
           echo "rewritten=$rewritten" >> "$GITHUB_OUTPUT"
           echo "Commit list anchored at $anchor (rewritten=$rewritten)"
@@ -318,12 +322,23 @@ jobs:
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       github.event.pull_request.head.repo.full_name == github.repository
+    # Must mirror _reusable-review-gate.yml's own `permissions:` block: a called workflow's
+    # effective permissions are the INTERSECTION of what it declares and what the caller job
+    # holds, so anything missing here is silently withheld from it — and the gate needs
+    # `statuses: write` for the codex-nudge marker and `issues: read` for reactions on the PR.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      statuses: write
     uses: ./.github/workflows/_reusable-review-gate.yml
     secrets: inherit
 
   # A reusable-workflow call has no parent check run of its own — only child jobs named
-  # `Review Gate / review-gate-poll` — which is why the two CI gates already have wrappers and
-  # why this one needs the same treatment. The wrapper always runs, so the required context is
+  # `review-gate / review-gate-poll` (the caller job has no `name:`, only the wrapper below does)
+  # — which is why the two CI gates already have wrappers and why this one needs the same
+  # treatment. Leaving the caller job unnamed is what keeps its children from colliding with the
+  # wrapper's own `Review Gate` context. The wrapper always runs, so the required context is
   # always published by a job that actually executed.
   review-gate-result:
     name: Review Gate
@@ -404,10 +419,11 @@ jobs:
   pr-summary:
     name: PR Summary
     needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result, review-gate-result]
-    # `!EDIT` is what keeps the removal of the verdict record honest: `edited` re-runs the whole
-    # workflow, and with no memory of what was already reported the summary would answer a second
-    # time. The rest of the workflow still runs on `edited`, so every required context is
-    # re-published by a job that actually executed — only the notification is suppressed.
+    # `github.event.action != 'edited'` is what keeps the removal of the verdict record honest:
+    # `edited` re-runs the whole workflow, and with no memory of what was already reported the
+    # summary would answer a second time. The rest of the workflow still runs on `edited`, so
+    # every required context is re-published by a job that actually executed — only the
+    # notification is suppressed.
     # A release PR is handled by `release-pr-summary` instead.
     if: |
       always() && github.event_name == 'pull_request' &&
