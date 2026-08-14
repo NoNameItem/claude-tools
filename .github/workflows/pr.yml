@@ -432,13 +432,12 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     # Must mirror _reusable-pr-summary.yml's own `permissions:` block: a called workflow's
     # effective permissions are the INTERSECTION of what it declares and what the caller job
-    # holds, so anything missing here is silently withheld from it — and the summary reads the
-    # head SHA's statuses to resolve the required contexts and the reply anchor. Read, not write:
-    # the summary no longer records a marker of its own.
+    # holds, so anything missing here is silently withheld from it. `statuses: write` is the one
+    # write — the ` replied` half of the anchor marker.
     permissions:
       contents: read
       checks: read
-      statuses: read
+      statuses: write
       pull-requests: read
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:

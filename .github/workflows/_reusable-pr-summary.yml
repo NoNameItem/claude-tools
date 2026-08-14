@@ -2,12 +2,12 @@
 name: PR Summary (Reusable)
 
 # Sends the "result" Telegram notification for a PR — the one that says whether the PR is
-# mergeable. Called from BOTH producers of required checks:
-#   * pr.yml            — after Validate PR + the two CI gates
-#   * review-gate.yml   — after the Codex gate posts its commit status
-# Neither can see the other's completion (a status posted with GITHUB_TOKEN starts no workflow
-# run, so `on: status` cannot observe our own gate). So both call this, and pr_summary.py makes
-# every call but the last one silent.
+# mergeable. Two entry points, one implementation:
+#   * pr.yml's `pr-summary`     — after Validate PR, the two CI gates and the review gate
+#   * review-thread.yml         — after a Resolve/Unresolve click, in crossing mode
+# The first is ordered by `needs`, so every required context is terminal by construction when it
+# runs. The second is ordered by nothing, which is why `pr_summary.py` keeps reading head-SHA
+# state through the API rather than from `needs` — one implementation serves both.
 
 on:
   workflow_call:
@@ -20,6 +20,14 @@ on:
         description: 'PR head SHA — all state is keyed by it'
         required: true
         type: string
+      crossing-mode:
+        description: >-
+          Empty for the pr.yml entry point. For review-thread.yml, the event action
+          (`resolved` / `unresolved`): the summary then speaks only at a boundary — zero
+          unresolved threads, or exactly one — and stays silent at every count in between.
+        required: false
+        type: string
+        default: ''
     secrets:
       TELEGRAM_BOT_TOKEN:
         required: true
@@ -28,13 +36,14 @@ on:
       SONAR_TOKEN:
         required: false
 
-# `statuses: read`, not write: this workflow only READS the head SHA's statuses (the required
-# contexts and the reply anchor). It used to record a verdict marker of its own; that marker is
-# gone, and with it the only reason this job ever needed write access to commit statuses.
+# `statuses: write` for exactly one narrow write: appending ` replied` to the `pr-notify-anchor`
+# marker once this job has answered the thread, which is how the next push learns that the thread
+# does not need a *Superseded* reply. Everything else here is a read. This job runs PR-authored
+# scripts while holding it — see the trade-off in the design's Part 1.
 permissions:
   contents: read
   checks: read
-  statuses: read
+  statuses: write
   pull-requests: read
 
 jobs:
@@ -173,6 +182,7 @@ jobs:
           TITLE: ${{ steps.collect.outputs.title }}
           URL: ${{ steps.collect.outputs.url }}
           SERVER: ${{ github.server_url }}
+          CROSSING_MODE: ${{ inputs.crossing-mode }}
         run: |
           set -euo pipefail
           # `--opt=value`, not `--opt value`: PR_TITLE is attacker-controlled under
@@ -183,6 +193,7 @@ jobs:
             --url="$URL" \
             --footer="${REPO##*/} · PR ${PR}" \
             --checks-url="${SERVER}/${REPO}/pull/${PR}/checks" \
+            --crossing-mode="$CROSSING_MODE" \
             < payload.json > summary.json
 
           jq -r '"send=\(.send)", "verdict=\(.verdict)", "message-id=\(.message_id // "")", "reason=\(.reason)"' \
@@ -207,3 +218,23 @@ jobs:
           spec-file: spec.json
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # The thread has been answered. The next push reads this to decide whether the previous
+      # head's thread still owes a *Superseded* reply — see pr.yml's notify-start.
+      #
+      # Deliberately AFTER the send: if the send failed, the step above already failed the job and
+      # this never runs, so the marker keeps saying "unanswered" and the next push closes the
+      # thread. The two writers of this marker (notify-start creates it, this appends) never run
+      # concurrently for one SHA, because pr.yml's pr-summary sits on `needs: notify-start`.
+      - name: Mark the thread as answered
+        if: steps.decide.outputs.send == 'true' && steps.decide.outputs.message-id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ inputs.head-sha }}
+          MSG_ID: ${{ steps.decide.outputs.message-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=success -f context=pr-notify-anchor \
+            -f description="msg:${MSG_ID} replied" -f target_url="$RUN_URL" >/dev/null
