@@ -282,6 +282,7 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.changed) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
+      manifests-only: ${{ startsWith(github.event.pull_request.head.ref, 'release-please--') }}
 
   python-ci-info:
     name: Python CI (info)
@@ -443,4 +444,31 @@ jobs:
     with:
       pr-number: ${{ github.event.pull_request.number }}
       head-sha: ${{ github.event.pull_request.head.sha }}
+    secrets: inherit
+
+  # The release-please PR notification. A job rather than a separate workflow: a separate workflow
+  # could not use `needs` and would have to poll for the gates.
+  release-pr-summary:
+    name: Release PR Summary
+    needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result, review-gate-result]
+    # `opened` and `synchronize` only. release-please rewrites the PR body on every force-push, so
+    # `edited` arrives with every merge to master — and it carries no `before`/`after`, which is
+    # exactly what the changelog comparison needs. `reopened` is excluded for the same reason.
+    # Neither exclusion costs anything: the version and the changelog only ever change through a
+    # commit, and this job publishes no required context, so a skipped run blocks nobody.
+    if: |
+      always() && github.event_name == 'pull_request' &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      (github.event.action == 'opened' || github.event.action == 'synchronize') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/_reusable-release-pr-summary.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      head-ref: ${{ github.event.pull_request.head.ref }}
+      before-sha: ${{ github.event.before }}
+      after-sha: ${{ github.event.pull_request.head.sha }}
+      checks-json: ${{ toJson(needs) }}
     secrets: inherit

@@ -18,6 +18,15 @@ on:
         required: false
         type: boolean
         default: false
+      manifests-only:
+        description: >-
+          Run only validate-structure. Set for release-please PRs: the release commit rewrites
+          plugin.json, .codex-plugin/plugin.json and both marketplace.json files, and
+          validate_plugin.py checking their consistency is the only check capable of catching an
+          error release-please itself made. Lint and tests would run against unchanged code.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   validate-structure:
@@ -62,6 +71,7 @@ jobs:
 
   lint:
     name: Lint (${{ matrix.plugin }})
+    if: inputs.manifests-only == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -135,6 +145,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.plugin }})
+    if: inputs.manifests-only == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
