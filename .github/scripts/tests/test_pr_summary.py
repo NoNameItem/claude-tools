@@ -6,11 +6,11 @@ import itertools
 
 import pytest
 
-from ..pr_summary import CheckState, build_spec, collect_states, decide, parse_anchor
+from ..pr_summary import CheckState, build_spec, collect_states, crossing_allows, decide, parse_anchor
 
 HEAD = "abc123"
 
-REQUIRED = ["Validate PR", "Python CI Gate", "Claude Code Plugin CI Gate", "review-gate"]
+REQUIRED = ["Validate PR", "Python CI Gate", "Claude Code Plugin CI Gate", "Review Gate"]
 
 # Auto-assigned when a test doesn't care about `id` explicitly: monotonically increasing across
 # calls, so entries listed earlier in a test get a lower id than entries listed later — matching
@@ -42,7 +42,7 @@ def _payload(**overrides) -> dict:
         "current_head_sha": HEAD,
         "is_fork": False,
         "required_contexts": REQUIRED,
-        "statuses": [{"context": "review-gate", "state": "success", "target_url": "https://x"}],
+        "statuses": [{"context": "Review Gate", "state": "success", "target_url": "https://x"}],
         "check_runs": [
             _run("Validate PR", "success"),
             _run("Python CI Gate", "success"),
@@ -76,12 +76,12 @@ class TestParseAnchor:
 class TestCollectStates:
     def test_status_and_check_run_both_resolve(self) -> None:
         states = collect_states(
-            ["review-gate", "Python CI Gate"],
-            [{"context": "review-gate", "state": "failure", "target_url": "https://s"}],
+            ["Review Gate", "Python CI Gate"],
+            [{"context": "Review Gate", "state": "failure", "target_url": "https://s"}],
             [_run("Python CI Gate", "success")],
         )
         assert states == [
-            CheckState("review-gate", "failure", "https://s"),
+            CheckState("Review Gate", "failure", "https://s"),
             CheckState("Python CI Gate", "success", "https://github.com/o/r/runs/Python CI Gate"),
         ]
 
@@ -164,9 +164,9 @@ class TestDecide:
         assert decision.verdict == "comments"
 
     def test_failed_lists_failed_contexts(self) -> None:
-        decision = decide(_payload(statuses=[{"context": "review-gate", "state": "failure", "target_url": None}]))
+        decision = decide(_payload(statuses=[{"context": "Review Gate", "state": "failure", "target_url": None}]))
         assert decision.verdict == "failed"
-        assert decision.failed_contexts == ["review-gate"]
+        assert decision.failed_contexts == ["Review Gate"]
 
     def test_stale_head_is_silent(self) -> None:
         decision = decide(_payload(current_head_sha="def456"))
@@ -183,7 +183,7 @@ class TestDecide:
         assert decision.reason == "waiting"
 
     def test_non_terminal_required_context_is_silent(self) -> None:
-        decision = decide(_payload(statuses=[{"context": "review-gate", "state": "pending", "target_url": None}]))
+        decision = decide(_payload(statuses=[{"context": "Review Gate", "state": "pending", "target_url": None}]))
         assert decision.send is False
         assert decision.reason == "waiting"
 
@@ -191,7 +191,7 @@ class TestDecide:
         decision = decide(_payload(is_fork=True, statuses=[]))
         assert decision.send is True
         assert decision.verdict == "ready"
-        assert all(state.context != "review-gate" for state in decision.states)
+        assert all(state.context != "Review Gate" for state in decision.states)
 
     def test_terminal_state_is_the_only_condition_for_speaking(self) -> None:
         # There is no "already reported this verdict" record any more: every call that finds all
@@ -281,12 +281,12 @@ class TestBuildSpec:
         assert self._spec(unresolved_threads=3)["verdict"] == [{"text": "All checks passed, unresolved comments: 3"}]
 
     def test_failed_table_is_bare_and_only_the_name_is_bold(self) -> None:
-        spec = self._spec(statuses=[{"context": "review-gate", "state": "failure", "target_url": None}])
+        spec = self._spec(statuses=[{"context": "Review Gate", "state": "failure", "target_url": None}])
         checks = spec["blocks"][0]
         assert "title" not in checks  # bare table, not wrapped in <details>
-        failed_row = next(row for row in checks["rows"] if row[0]["text"] == "review-gate")
-        assert failed_row == [{"text": "review-gate", "bold": True}, {"text": "❌", "align": "center"}]
-        assert spec["verdict"] == [{"text": "Checks failed: "}, {"text": "review-gate", "bold": True}]
+        failed_row = next(row for row in checks["rows"] if row[0]["text"] == "Review Gate")
+        assert failed_row == [{"text": "Review Gate", "bold": True}, {"text": "❌", "align": "center"}]
+        assert spec["verdict"] == [{"text": "Checks failed: "}, {"text": "Review Gate", "bold": True}]
         assert spec["buttons"][-1] == {"text": "Checks", "url": "https://checks"}
 
     def test_failed_jobs_block_carries_the_count(self) -> None:
@@ -301,3 +301,68 @@ class TestBuildSpec:
         jobs_block = spec["blocks"][1]
         assert jobs_block["title"] == "Failed jobs: 1"
         assert jobs_block["open"] is True
+
+
+class TestCrossingAllows:
+    @pytest.mark.parametrize(
+        ("mode", "unresolved", "expected"),
+        [
+            ("", 0, True),
+            ("", 7, True),
+            ("resolved", 0, True),
+            ("resolved", 1, False),
+            ("unresolved", 1, True),
+            ("unresolved", 0, False),
+            ("unresolved", 2, False),
+            ("nonsense", 0, False),
+        ],
+    )
+    def test_matrix(self, mode, unresolved, expected):
+        assert crossing_allows(mode, unresolved) is expected
+
+
+class TestCrossingMode:
+    """`review-thread.yml` re-notifies only at the two boundaries, never in between."""
+
+    def test_default_mode_is_unaffected(self):
+        decision = decide(_payload(unresolved_threads=3))
+        assert decision.send is True
+        assert decision.verdict == "comments"
+
+    def test_resolved_speaks_at_zero(self):
+        decision = decide(_payload(unresolved_threads=0), crossing_mode="resolved")
+        assert decision.send is True
+        assert decision.verdict == "ready"
+
+    @pytest.mark.parametrize("count", [1, 2, 5])
+    def test_resolved_is_silent_above_zero(self, count):
+        decision = decide(_payload(unresolved_threads=count), crossing_mode="resolved")
+        assert decision.send is False
+        assert decision.reason == "no-crossing"
+
+    def test_unresolved_speaks_at_exactly_one(self):
+        decision = decide(_payload(unresolved_threads=1), crossing_mode="unresolved")
+        assert decision.send is True
+        assert decision.verdict == "comments"
+
+    @pytest.mark.parametrize("count", [0, 2, 5])
+    def test_unresolved_is_silent_otherwise(self, count):
+        decision = decide(_payload(unresolved_threads=count), crossing_mode="unresolved")
+        assert decision.send is False
+        assert decision.reason == "no-crossing"
+
+    def test_crossing_mode_keeps_the_anchor(self):
+        # The message id must survive a silent decision — the workflow logs it.
+        assert decide(_payload(unresolved_threads=2), crossing_mode="resolved").message_id == 4711
+
+    def test_waiting_wins_over_crossing(self):
+        # A required context that has not finished still reports `waiting`, not `no-crossing`.
+        decision = decide(
+            _payload(unresolved_threads=0, statuses=[]),
+            crossing_mode="resolved",
+        )
+        assert decision.reason == "waiting"
+
+    def test_stale_head_wins_over_crossing(self):
+        decision = decide(_payload(current_head_sha="deadbeef"), crossing_mode="resolved")
+        assert decision.reason == "stale-head"
