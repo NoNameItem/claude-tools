@@ -7,9 +7,9 @@
 **Goal:** Make the `master` ruleset the single source of truth for merge rules, with CI failures
 actually blocking merges, and confirm the new notification paths on live events.
 
-**Companion plan:** `docs/superpowers/plans/2026-07-28-pr-merge-gate-and-notifications.md`
-(Tasks 1–12 — all repository changes).
-**Design:** `docs/superpowers/specs/2026-07-27-pr-merge-gate-and-notifications-design.md` (Part 1).
+**Design:** `docs/superpowers/specs/2026-08-01-notification-triggers-design.md` (Steps 2, 2a, 6 and
+7 below come from this design; implementation plans live in `docs/superpowers/plans/`, which is
+git-ignored, so no plan path is a durable reference here).
 
 ## Why this is separate
 

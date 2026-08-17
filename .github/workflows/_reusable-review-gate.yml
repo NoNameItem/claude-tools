@@ -130,6 +130,14 @@ jobs:
             # interval rather than sitting out the full 25 minutes. It exits SUCCESSFULLY — the
             # summary that follows is silenced by pr_summary.py's `stale-head` branch, and the
             # abandoned thread is closed by the new push's *Superseded* reply.
+            #
+            # ACCEPTED RISK: the caller's `review-gate-result` wrapper cannot tell this clean exit
+            # apart from "Codex actually reviewed the head commit", so a green `Review Gate` check
+            # run lands on the abandoned SHA — one Codex never reviewed. Harmless while that SHA
+            # stays dead; if it is ever made the PR head again (`git reset --hard <old-sha> &&
+            # git push --force`), the window during which the stale green could read as the newest
+            # result for that SHA is unverified. `exit 1` here was considered and deliberately not
+            # taken (2026-08-17) — see the design's "Concurrency" and "Risks and limitations".
             current_head=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
             if [ -n "$current_head" ] && [ "$current_head" != "$HEAD_SHA" ]; then
               echo "PR head moved to $current_head (was $HEAD_SHA) — this poll is superseded."

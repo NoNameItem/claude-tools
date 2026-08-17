@@ -153,8 +153,9 @@ jobs:
               unresolved_threads: $unresolved, anchor_description: $anchor}' > payload.json
 
           # PR title and URL go through GITHUB_OUTPUT, never through inline GitHub Actions
-          # interpolation in a `run:` block: this workflow is also called from
-          # pull_request_target, where the title is attacker controlled. The next step reads
+          # interpolation in a `run:` block: this workflow's only caller is `pr.yml` on
+          # `pull_request`, but the title is still PR-authored, untrusted input — it reaches the
+          # shell only through `env:` below, never inline in a `run:` block. The next step reads
           # them as env vars.
           #
           # The heredoc delimiter is randomised (GitHub's own guidance for untrusted values):
@@ -178,9 +179,10 @@ jobs:
           SERVER: ${{ github.server_url }}
         run: |
           set -euo pipefail
-          # `--opt=value`, not `--opt value`: PR_TITLE is attacker-controlled under
-          # pull_request_target and can legally start with `-` (e.g. `-- WIP`), which argparse
-          # would otherwise parse as an option and exit 2, silently losing the notification.
+          # `--opt=value`, not `--opt value`: PR_TITLE is PR-authored, untrusted input — this
+          # workflow's only caller is `pr.yml` on `pull_request`, but the title still comes from
+          # the PR and can legally start with `-` (e.g. `-- WIP`), which argparse would otherwise
+          # parse as an option and exit 2, silently losing the notification.
           python3 .github/scripts/pr_summary.py \
             --title="$TITLE" \
             --url="$URL" \

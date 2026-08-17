@@ -3,9 +3,11 @@
 
 Release-please force-pushes EVERY pending release PR on EVERY merge to master, and on a pure
 rebase the only thing that changes inside the CHANGELOG is the date in the section heading. So
-the blob SHA is useless as a signal and the *set of entries in the top section* is the signal —
-which is what `entries_changed` compares, and what `_reusable-release-pr-summary.yml` uses to stay
-silent when somebody else's merge rebased this PR.
+the blob SHA is useless as a signal and the *ordered list of entries in the top section* is the
+signal — which is what `entries_changed` compares, and what `_reusable-release-pr-summary.yml`
+uses to stay silent when somebody else's merge rebased this PR. Release-please's own output is
+order-stable, so this is accurate for every automated push; a hand edit that only reorders two
+entries, without adding or removing any, reads as a change and produces one extra notification.
 
 Pure text in, data out: no network, no filesystem beyond the CLI's own file reads.
 
@@ -86,10 +88,13 @@ def parse_top_section(text: str) -> Section | None:
 
 
 def entries_changed(before: str | None, after: str | None) -> bool:
-    """Whether the top section gained or lost entries between two revisions of the file.
+    """Whether the top section's entries differ, as an ordered list, between two revisions.
 
     The date lives in the heading and is therefore never compared — that is the whole point:
-    a force-push caused by another component's merge moves only the date.
+    a force-push caused by another component's merge moves only the date. Order is compared too,
+    not just membership: release-please's own output is order-stable, so this only bites on a hand
+    edit that reorders two entries without adding or removing any — that reads as a change and
+    produces one extra notification.
 
     A missing/unparsable `before` counts as a change (there is something new to announce); a
     missing/unparsable `after` counts as no change (there is nothing to announce).

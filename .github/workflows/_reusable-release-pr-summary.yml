@@ -78,14 +78,31 @@ jobs:
         run: |
           set -euo pipefail
 
-          fetch() {
+          # `before` may genuinely be unfetchable: that commit was force-pushed away by the very
+          # push this run is reacting to, and a missing `before` is a normal input to
+          # `entries_changed` (it just counts as "changed" — see that function's docstring).
+          fetch_tolerant() {
             gh api "repos/$REPO/contents/${CHANGELOG}?ref=$1" \
               -H "Accept: application/vnd.github.raw" > "$2" || : > "$2"
           }
 
-          fetch "$AFTER_SHA" after.md
+          # `after` is this PR's current head — its CHANGELOG must exist there. Unlike `before`,
+          # normalising a failure here to an empty file would make `entries_changed` read as
+          # "nothing to announce" for a real release, silently cancelling the notification on a
+          # transient API failure (a 5xx, a rate limit) rather than reporting one. Fail loud
+          # instead: the same discipline `_reusable-pr-summary.yml` uses for its ruleset read —
+          # never compute a verdict from data you could not read.
+          fetch_required() {
+            if ! gh api "repos/$REPO/contents/${CHANGELOG}?ref=$1" \
+                  -H "Accept: application/vnd.github.raw" > "$2"; then
+              echo "::error::Could not read $2 (${CHANGELOG} at $1) — see the API error above." >&2
+              exit 1
+            fi
+          }
+
+          fetch_required "$AFTER_SHA" after.md
           if [ -n "$BEFORE_SHA" ]; then
-            fetch "$BEFORE_SHA" before.md
+            fetch_tolerant "$BEFORE_SHA" before.md
             changed=$(python3 .github/scripts/changelog_section.py changed \
               --before before.md --after after.md)
           else
@@ -96,25 +113,21 @@ jobs:
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "Changelog entries changed: $changed"
 
-      - name: Build the notification
-        id: spec
-        if: steps.read.outputs.changed == 'true'
+      # Runs regardless of whether the changelog changed (only guarded by the same
+      # component-known condition as `read`): `claude-code-plugin-ci` (in `manifests-only` mode)
+      # validates files release-please rewrites on EVERY force-push, including a pure rebase where
+      # the changelog itself is untouched. Computing the verdict here, ahead of the `changed`
+      # gate below, is what lets a broken manifest speak even when nothing else did — the same
+      # asymmetry `push.yml` applies to a release merge: only the green path may go quiet.
+      - name: Compute the gate verdict
+        id: verdict
+        if: steps.locate.outputs.path != ''
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          PR: ${{ inputs.pr-number }}
           NEEDS_JSON: ${{ inputs.checks-json }}
         run: |
           set -euo pipefail
 
-          pr=$(gh api "repos/$REPO/pulls/$PR")
-          # Through GITHUB_OUTPUT-free env only: the title is bot-written here, but the same
-          # discipline as _reusable-pr-summary.yml — never interpolate it into a `run:` block.
-          title=$(printf '%s' "$pr" | jq -r '.title')
-          url=$(printf '%s' "$pr" | jq -r '.html_url')
-
-          # The verdict line, from the caller's gate results. `skipped` is green: it means the
-          # job had nothing to do.
+          # `skipped` is green: it means the job had nothing to do.
           failed=$(printf '%s' "$NEEDS_JSON" | jq -c '
             {"validate-pr": "Validate PR",
              "python-ci-result": "Python CI Gate",
@@ -126,14 +139,41 @@ jobs:
                | $labels[.key]]')
 
           if [ "$(printf '%s' "$failed" | jq 'length')" -gt 0 ]; then
-            STATUS=failed
-            verdict=$(printf '%s' "$failed" | jq -c '
+            status=failed
+          else
+            status=ready
+          fi
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "failed=$failed" >> "$GITHUB_OUTPUT"
+          echo "Gate verdict: $status"
+
+      - name: Build the notification
+        id: spec
+        if: steps.read.outputs.changed == 'true' || steps.verdict.outputs.status == 'failed'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ inputs.pr-number }}
+          STATUS: ${{ steps.verdict.outputs.status }}
+          FAILED: ${{ steps.verdict.outputs.failed }}
+        run: |
+          set -euo pipefail
+
+          pr=$(gh api "repos/$REPO/pulls/$PR")
+          # Through GITHUB_OUTPUT-free env only: the title is bot-written here, but the same
+          # discipline as _reusable-pr-summary.yml — never interpolate it into a `run:` block.
+          title=$(printf '%s' "$pr" | jq -r '.title')
+          url=$(printf '%s' "$pr" | jq -r '.html_url')
+
+          # The verdict line, from the "Compute the gate verdict" step above.
+          if [ "$STATUS" = failed ]; then
+            verdict=$(printf '%s' "$FAILED" | jq -c '
               [{text: "Checks failed: "}]
               + ([to_entries[]
                   | if .key > 0 then [{text: ", "}, {text: .value, bold: true}]
                     else [{text: .value, bold: true}] end] | add)')
           else
-            STATUS=ready
             verdict='[{"text": "Ready to merge"}]'
           fi
 
@@ -161,7 +201,7 @@ jobs:
           jq -c '{status, blocks: [.blocks[].title]}' spec.json
 
       - name: Send the notification
-        if: steps.read.outputs.changed == 'true'
+        if: steps.read.outputs.changed == 'true' || steps.verdict.outputs.status == 'failed'
         uses: ./.github/actions/telegram-notify
         with:
           spec-file: spec.json

@@ -170,6 +170,21 @@ is bounded inside the gate instead: the `current_head != HEAD_SHA` check, which 
 before publishing success, moves into the loop body. A poll whose SHA has been superseded exits
 within one interval (≤30 s) rather than sitting out the full 25 minutes.
 
+**A superseded poll's `exit 0` is an accepted, undocumented-until-now risk.** It exits
+successfully — not a failure — because the summary that follows is silenced by `pr_summary.py`'s
+`stale-head` branch and the abandoned thread is closed by the new push's *Superseded* reply, not by
+this run. The wrapper job that publishes the `Review Gate` check run cannot distinguish that clean
+exit from "Codex actually reviewed the head commit", so a green check run lands on the *abandoned*
+SHA — one Codex never reviewed. That is harmless while the SHA stays dead. It stops being harmless
+if the SHA is ever made the PR head again (`git reset --hard <old-sha> && git push --force`):
+the new run's wrapper job waits on `needs: review-gate` for up to 25 minutes, and during that
+window the stale green check run from the old run may be the newest `Review Gate` result GitHub
+has for that SHA — whether it actually is depends on when GitHub materialises a check run for a
+job still queued behind `needs`, which is **unverified**. Turning the superseded exit into `exit 1`
+was considered and deliberately rejected (2026-08-17): it would fail the gate on every ordinary
+double-push, which is far more common than a reintroduced SHA, in exchange for closing a window
+that is unverified in the first place. See "Risks and limitations" below.
+
 Two consequences follow, and both are load-bearing:
 
 - **`pr_summary.py` keeps its `stale-head` branch.** A superseded run can still reach `pr-summary`
@@ -544,7 +559,8 @@ jobs.
 ## Testing
 
 Unit tests (pure functions, no network): CHANGELOG section parsing — top section extracted, date
-ignored in comparison, entry sets compared, missing file; commit-list assembly and its budget;
+ignored in comparison, entries compared as an ordered list, missing file; commit-list assembly and
+its budget;
 anchor semantics — start suppressed when the marker is present, *Superseded* emitted when the
 marker on `before` lacks `replied`, nothing emitted when it has it; the gate wrapper's mapping of
 `skipped` / fork / failure onto exit codes; the `codex-nudge` marker — cutoff round-tripped through
@@ -613,6 +629,12 @@ post-merge.
 - **Two behaviours depend on undocumented connector semantics**: that a nudge from a PAT keeps
   working, and that the connector keeps reacting to the phrase in a comment. Both were measured, not
   assumed, and both are recorded here with dates so a future reader can re-measure.
+- **A superseded poll's `exit 0` can green-light an unreviewed SHA if that SHA is ever reintroduced
+  as the PR head** (`git reset --hard <old-sha> && git push --force`). See "Concurrency" above for
+  the mechanism, the reintroduced-SHA scenario, and the unverified window during which the stale
+  check run may read as the newest `Review Gate` result. `exit 1` was considered and deliberately
+  not taken (2026-08-17): it would fail the gate on the common case (an ordinary double-push) to
+  close a window that is unverified to exist at all.
 
 ## Task mapping
 
