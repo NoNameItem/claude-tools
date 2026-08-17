@@ -20,12 +20,16 @@ Two `send=False` branches remain load-bearing rather than vestigial:
   keeps that run silent; the abandoned thread is closed by the new push's *Superseded* reply, not
   by this one. Do not remove it on the grounds that there is only one speaker now: the speaker can
   be speaking for a commit that no longer exists.
-* `waiting` — unreachable from `pr.yml`, where `needs` guarantees every gate is terminal. Kept for
-  the `review-thread.yml` entry point, where nothing orders the run against CI.
+* `waiting` — a required context that is `pending` or `missing`. `needs` makes it unreachable for a
+  context this workflow produces, but the required list comes from the ruleset, not from the
+  workflow: any context the ruleset names and nothing publishes reads as `missing`. That is exactly
+  the window between merging this branch and swapping the required context from `review-gate` to
+  `Review Gate` (docs/merge-gate-rollout.md, Step 2a), and staying silent through it is correct —
+  a verdict computed from a required list we cannot satisfy would be a guess.
 
-The second entry point also brings `crossing_mode`: a walk through five findings would otherwise
-report "unresolved comments: 3", then "…: 2", then "…: 1" on the way to silence. In crossing mode
-the script speaks only at the two boundaries — see `crossing_allows`.
+Re-notification on thread resolution was designed for this module (a "crossing mode" that spoke
+only when the unresolved count crossed zero) and removed unbuilt: GitHub Actions has no
+`pull_request_review_thread` trigger, so nothing can call it. See claude-tools-5vg.17.
 
 The one marker that remains is `pr-notify-anchor` (`msg:<id>`, rewritten to `msg:<id> replied`
 once this job has answered): it names the newest "checks running" message so the result can reply
@@ -34,8 +38,7 @@ answer. Absent — notify-start has not run, or its Telegram send failed — the
 standalone.
 
 Usage:
-    python3 pr_summary.py --title "…" --url "…" --footer "…" [--checks-url "…"]
-        [--crossing-mode resolved|unresolved] < payload.json
+    python3 pr_summary.py --title "…" --url "…" --footer "…" [--checks-url "…"] < payload.json
 
 Output (stdout):
     {"send": bool, "reason": str, "verdict": str, "message_id": int|null, "spec": {…}}
@@ -155,8 +158,10 @@ def _latest(entries: list[dict]) -> dict:
 def collect_states(required: list[str], statuses: list[dict], check_runs: list[dict]) -> list[CheckState]:
     """Resolve each required context against the rollup, preserving the required order.
 
-    Commit statuses win over check runs when a name collides: `review-gate` is published as a
-    status precisely because the job's own check run would be attributed to the base SHA.
+    Commit statuses win over check runs when a name collides. No required context is published as a
+    commit status any more — `Review Gate` is a check run like the other three gates — but the
+    precedence is kept: `pr-notify-anchor` and `codex-nudge` are statuses, and a future required
+    status must not be shadowed by a same-named check run.
     """
     by_status = {entry.get("context"): entry for entry in statuses if entry.get("context")}
     by_run: dict[str, list[dict]] = {}
@@ -206,42 +211,16 @@ def _failed_jobs(check_runs: list[dict]) -> list[str]:
     return sorted(names)[:_MAX_FAILED_JOBS]
 
 
-def crossing_allows(mode: str, unresolved: int) -> bool:
-    """Whether a thread-resolution event is one of the two boundaries worth reporting.
-
-    The transition is derivable from the counter alone, so no memory of the previous verdict is
-    needed: a `resolved` event that leaves zero unresolved threads means "the findings are gone",
-    and an `unresolved` event that leaves exactly one means the opposite crossing. Everything in
-    between is a step of the same review pass and stays silent.
-
-    Args:
-        mode: `github.event.action` of the `pull_request_review_thread` event, or `""` when the
-            caller is `pr.yml` (which never uses this).
-        unresolved: unresolved review threads after the event, counted post-debounce.
-    """
-    if not mode:
-        return True
-    if mode == "resolved":
-        return unresolved == 0
-    if mode == "unresolved":
-        return unresolved == 1
-    # Unreachable: argparse constrains the CLI to the three values above. Defensive silence, so a
-    # future caller that invents a mode does not get a message per Resolve click.
-    return False
-
-
-def decide(payload: dict, crossing_mode: str = "") -> Decision:
+def decide(payload: dict) -> Decision:
     """Decide whether to notify for this head SHA, and with what verdict.
 
     Args:
         payload: The rollup document described in this module's docstring.
-        crossing_mode: `""` for the `pr.yml` entry point; `"resolved"` / `"unresolved"` for the
-            `review-thread.yml` one, where only the two boundaries speak.
 
     Returns:
-        A :class:`Decision`. ``send=False`` carries one of three reasons: ``stale-head`` (the PR
-        advanced — this is the superseded gate poll), ``waiting`` (a required context is missing or
-        still running) or ``no-crossing`` (a thread event that is not a boundary).
+        A :class:`Decision`. ``send=False`` carries one of two reasons: ``stale-head`` (the PR
+        advanced — this is the superseded gate poll) or ``waiting`` (a required context is missing
+        or still running).
     """
     head_sha = payload.get("head_sha") or ""
     current = payload.get("current_head_sha") or ""
@@ -270,9 +249,6 @@ def decide(payload: dict, crossing_mode: str = "") -> Decision:
         verdict = "comments"
     else:
         verdict = "ready"
-
-    if not crossing_allows(crossing_mode, unresolved):
-        return Decision(send=False, reason="no-crossing", message_id=message_id, states=states)
 
     # No duplicate check. Reaching this line means every required context is terminal, and that is
     # the single condition for speaking — see the module docstring for why the "which verdict was
@@ -356,16 +332,10 @@ def main() -> int:
     parser.add_argument("--url", required=True, help="PR html_url (the primary button).")
     parser.add_argument("--footer", required=True, help='Footer line, e.g. "claude-tools · PR 118".')
     parser.add_argument("--checks-url", default=None, help="PR checks tab URL (button on failure).")
-    parser.add_argument(
-        "--crossing-mode",
-        default="",
-        choices=("", "resolved", "unresolved"),
-        help="Speak only at an unresolved-count boundary (the review-thread entry point).",
-    )
     args = parser.parse_args()
 
     payload = json.load(sys.stdin)
-    decision = decide(payload, crossing_mode=args.crossing_mode)
+    decision = decide(payload)
 
     result = {
         "send": decision.send,

@@ -2,12 +2,14 @@
 name: PR Summary (Reusable)
 
 # Sends the "result" Telegram notification for a PR — the one that says whether the PR is
-# mergeable. Two entry points, one implementation:
-#   * pr.yml's `pr-summary`     — after Validate PR, the two CI gates and the review gate
-#   * review-thread.yml         — after a Resolve/Unresolve click, in crossing mode
-# The first is ordered by `needs`, so every required context is terminal by construction when it
-# runs. The second is ordered by nothing, which is why `pr_summary.py` keeps reading head-SHA
-# state through the API rather than from `needs` — one implementation serves both.
+# mergeable. One entry point: pr.yml's `pr-summary`, after Validate PR, the two CI gates and the
+# review gate. It is ordered by `needs`, so every required context is terminal by construction when
+# it runs — which is what removed the cross-run bookkeeping this file used to need.
+#
+# `pr_summary.py` still reads head-SHA state through the API rather than from `needs`: the required
+# list comes from the ruleset, so a context the ruleset names and no job publishes has to be
+# observable here. A second entry point on thread resolution was designed and dropped — GitHub
+# Actions has no `pull_request_review_thread` trigger (claude-tools-5vg.17).
 
 on:
   workflow_call:
@@ -20,14 +22,6 @@ on:
         description: 'PR head SHA — all state is keyed by it'
         required: true
         type: string
-      crossing-mode:
-        description: >-
-          Empty for the pr.yml entry point. For review-thread.yml, the event action
-          (`resolved` / `unresolved`): the summary then speaks only at a boundary — zero
-          unresolved threads, or exactly one — and stays silent at every count in between.
-        required: false
-        type: string
-        default: ''
     secrets:
       TELEGRAM_BOT_TOKEN:
         required: true
@@ -182,7 +176,6 @@ jobs:
           TITLE: ${{ steps.collect.outputs.title }}
           URL: ${{ steps.collect.outputs.url }}
           SERVER: ${{ github.server_url }}
-          CROSSING_MODE: ${{ inputs.crossing-mode }}
         run: |
           set -euo pipefail
           # `--opt=value`, not `--opt value`: PR_TITLE is attacker-controlled under
@@ -193,7 +186,6 @@ jobs:
             --url="$URL" \
             --footer="${REPO##*/} · PR ${PR}" \
             --checks-url="${SERVER}/${REPO}/pull/${PR}/checks" \
-            --crossing-mode="$CROSSING_MODE" \
             < payload.json > summary.json
 
           jq -r '"send=\(.send)", "verdict=\(.verdict)", "message-id=\(.message_id // "")", "reason=\(.reason)"' \

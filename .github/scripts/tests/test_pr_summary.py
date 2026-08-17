@@ -6,7 +6,7 @@ import itertools
 
 import pytest
 
-from ..pr_summary import CheckState, build_spec, collect_states, crossing_allows, decide, parse_anchor
+from ..pr_summary import CheckState, build_spec, collect_states, decide, parse_anchor
 
 HEAD = "abc123"
 
@@ -301,68 +301,3 @@ class TestBuildSpec:
         jobs_block = spec["blocks"][1]
         assert jobs_block["title"] == "Failed jobs: 1"
         assert jobs_block["open"] is True
-
-
-class TestCrossingAllows:
-    @pytest.mark.parametrize(
-        ("mode", "unresolved", "expected"),
-        [
-            ("", 0, True),
-            ("", 7, True),
-            ("resolved", 0, True),
-            ("resolved", 1, False),
-            ("unresolved", 1, True),
-            ("unresolved", 0, False),
-            ("unresolved", 2, False),
-            ("nonsense", 0, False),
-        ],
-    )
-    def test_matrix(self, mode, unresolved, expected):
-        assert crossing_allows(mode, unresolved) is expected
-
-
-class TestCrossingMode:
-    """`review-thread.yml` re-notifies only at the two boundaries, never in between."""
-
-    def test_default_mode_is_unaffected(self):
-        decision = decide(_payload(unresolved_threads=3))
-        assert decision.send is True
-        assert decision.verdict == "comments"
-
-    def test_resolved_speaks_at_zero(self):
-        decision = decide(_payload(unresolved_threads=0), crossing_mode="resolved")
-        assert decision.send is True
-        assert decision.verdict == "ready"
-
-    @pytest.mark.parametrize("count", [1, 2, 5])
-    def test_resolved_is_silent_above_zero(self, count):
-        decision = decide(_payload(unresolved_threads=count), crossing_mode="resolved")
-        assert decision.send is False
-        assert decision.reason == "no-crossing"
-
-    def test_unresolved_speaks_at_exactly_one(self):
-        decision = decide(_payload(unresolved_threads=1), crossing_mode="unresolved")
-        assert decision.send is True
-        assert decision.verdict == "comments"
-
-    @pytest.mark.parametrize("count", [0, 2, 5])
-    def test_unresolved_is_silent_otherwise(self, count):
-        decision = decide(_payload(unresolved_threads=count), crossing_mode="unresolved")
-        assert decision.send is False
-        assert decision.reason == "no-crossing"
-
-    def test_crossing_mode_keeps_the_anchor(self):
-        # The message id must survive a silent decision — the workflow logs it.
-        assert decide(_payload(unresolved_threads=2), crossing_mode="resolved").message_id == 4711
-
-    def test_waiting_wins_over_crossing(self):
-        # A required context that has not finished still reports `waiting`, not `no-crossing`.
-        decision = decide(
-            _payload(unresolved_threads=0, statuses=[]),
-            crossing_mode="resolved",
-        )
-        assert decision.reason == "waiting"
-
-    def test_stale_head_wins_over_crossing(self):
-        decision = decide(_payload(current_head_sha="deadbeef"), crossing_mode="resolved")
-        assert decision.reason == "stale-head"
