@@ -530,6 +530,58 @@ def fetch_analyses(project: str, branch: str, token: str | None) -> list[dict]:
     return payload.get("analyses", [])
 
 
+def fetch_history(
+    project: str, branch: str, metrics: list[str], from_date: str, token: str | None
+) -> dict[str, list[dict]]:
+    """Fetch each metric's dated points from the baseline date onwards.
+
+    One call covers both ends of the window. ``ps=1000`` because the window holds one point per
+    analysis on ``master``, and a release cycle can easily hold a hundred.
+    """
+    params = {
+        "component": project,
+        "branch": branch,
+        "metrics": ",".join(metrics),
+        "from": from_date,
+        "ps": "1000",
+    }
+    payload = fetch_json(_api_url("measures/search_history", params), token)
+    if not payload:
+        return {}
+    return {
+        measure["metric"]: measure.get("history", [])
+        for measure in payload.get("measures", [])
+        if measure.get("metric")
+    }
+
+
+def history_pair(points: list[dict], baseline_date: str, head_date: str) -> tuple[str | None, str | None]:
+    """``(baseline value, head value)`` for one metric's points.
+
+    The head falls back to the last point: on a timed-out wait the head analysis is whatever
+    Sonar has most recently, and its date is then not the one we asked for. A metric with no
+    point at one end returns ``None`` there, and the row renders without an arrow.
+    """
+    by_date = {point.get("date"): point.get("value") for point in points}
+    head = by_date.get(head_date)
+    if head is None and points:
+        head = points[-1].get("value")
+    return by_date.get(baseline_date), head
+
+
+def split_history(history: dict[str, list[dict]], baseline_date: str, head_date: str) -> tuple[dict, dict]:
+    """Turn the per-metric point lists into the two ``{metric: value}`` maps the block renders."""
+    baseline: dict = {}
+    head: dict = {}
+    for metric, points in history.items():
+        before, after = history_pair(points, baseline_date, head_date)
+        if before is not None:
+            baseline[metric] = before
+        if after is not None:
+            head[metric] = after
+    return baseline, head
+
+
 def revision_matches(stored: str | None, wanted: str | None) -> bool:
     """Compare a commit stored by Sonar with the one we are looking for.
 

@@ -20,9 +20,11 @@ from ..sonar_pr_status import (
     format_breakdown,
     format_measure,
     format_threshold,
+    history_pair,
     pick_baseline,
     rating_letter,
     revision_matches,
+    split_history,
     trend_segment,
     version_event,
 )
@@ -504,6 +506,70 @@ class TestFetchAnalyses:
 
         monkeypatch.setattr(mod, "fetch_json", lambda url, token: None)
         assert mod.fetch_analyses("NoNameItem_statuskit", "master", None) == []
+
+
+class TestHistoryPair:
+    POINTS: ClassVar[list[dict]] = [
+        {"date": "2026-07-31T12:06:46+0000", "value": "93.4"},
+        {"date": "2026-07-31T12:53:12+0000", "value": "94.1"},
+    ]
+
+    def test_both_ends(self) -> None:
+        pair = history_pair(self.POINTS, "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
+        assert pair == ("93.4", "94.1")
+
+    def test_head_date_absent_falls_back_to_the_last_point(self) -> None:
+        pair = history_pair(self.POINTS, "2026-07-31T12:06:46+0000", "2026-08-01T10:00:00+0000")
+        assert pair == ("93.4", "94.1")
+
+    def test_metric_missing_at_the_baseline(self) -> None:
+        # A metric that did not exist when the previous release was cut: no arrow, current value only.
+        pair = history_pair(self.POINTS[1:], "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
+        assert pair == (None, "94.1")
+
+    def test_no_points_at_all(self) -> None:
+        assert history_pair([], "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000") == (None, None)
+
+
+class TestSplitHistory:
+    def test_splits_every_metric(self) -> None:
+        history = {
+            "coverage": [
+                {"date": "2026-07-31T12:06:46+0000", "value": "93.4"},
+                {"date": "2026-07-31T12:53:12+0000", "value": "94.1"},
+            ],
+            "ncloc": [{"date": "2026-07-31T12:53:12+0000", "value": "2280"}],
+        }
+        baseline, head = split_history(history, "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
+        assert baseline == {"coverage": "93.4"}
+        assert head == {"coverage": "94.1", "ncloc": "2280"}
+
+
+class TestFetchHistory:
+    def test_parses_measures_into_point_lists(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        seen: list[str] = []
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            seen.append(url)
+            return {
+                "measures": [
+                    {"metric": "coverage", "history": [{"date": "2026-07-31T12:06:46+0000", "value": "93.4"}]},
+                ]
+            }
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        history = mod.fetch_history("NoNameItem_statuskit", "master", ["coverage"], "2026-07-31T12:06:46+0000", None)
+        assert history == {"coverage": [{"date": "2026-07-31T12:06:46+0000", "value": "93.4"}]}
+        assert "measures/search_history" in seen[0]
+        assert "from=2026-07-31T12%3A06%3A46%2B0000" in seen[0]
+
+    def test_api_failure_is_an_empty_dict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: None)
+        assert mod.fetch_history("NoNameItem_statuskit", "master", ["coverage"], "2026-07-31", None) == {}
 
 
 class TestFetchAndDegrade:
