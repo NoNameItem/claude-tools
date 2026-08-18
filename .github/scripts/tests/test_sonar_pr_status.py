@@ -12,6 +12,7 @@ from ..sonar_pr_status import (
     build_branch_block,
     build_gate_block,
     build_new_code_block,
+    build_release_delta_block,
     delta_cell,
     delta_marker,
     extract_projects,
@@ -19,6 +20,7 @@ from ..sonar_pr_status import (
     format_measure,
     format_threshold,
     rating_letter,
+    trend_segment,
 )
 
 DASHBOARD = "https://sonarcloud.io/dashboard?id=NoNameItem_statuskit&pullRequest=112"
@@ -311,6 +313,99 @@ class TestBuildBranchBlock:
         assert rows["Vulnerabilities"] == "1 (blocker 1)"
         assert rows["Security"] == "E"
         assert rows["Lines of code"] == "2121"
+
+
+class TestTrendSegment:
+    def test_regressions_lead_and_improvements_follow(self) -> None:
+        assert trend_segment(["🔴", "🔴", "🟢", "🟢", ""]) == "🔴 2 worse, 🟢 2 better"
+
+    def test_green_omitted_when_zero(self) -> None:
+        assert trend_segment(["🔴", "", ""]) == "🔴 1 worse"
+
+    def test_improvements_only(self) -> None:
+        assert trend_segment(["🟢", "🟢", "🟢"]) == "🟢 3 better"
+
+    def test_nothing_changed_is_empty(self) -> None:
+        assert trend_segment(["", "", ""]) == ""
+
+
+class TestBuildReleaseDeltaBlock:
+    OVERVIEW = "https://sonarcloud.io/project/overview?id=NoNameItem_statuskit&branch=master"
+
+    BASELINE: ClassVar[dict] = {
+        "coverage": "93.4",
+        "violations": "13",
+        "vulnerabilities": "1",
+        "reliability_rating": "1.0",
+        "security_rating": "5.0",
+        "sqale_rating": "1.0",
+        "duplicated_lines_density": "0.0",
+        "ncloc": "2121",
+        "security_hotspots": "0",
+    }
+
+    HEAD: ClassVar[dict] = {
+        **BASELINE,
+        "coverage": "94.1",
+        "violations": "15",
+        "ncloc": "2280",
+        "security_issues": '{"total":1,"HIGH":0,"MEDIUM":0,"LOW":0,"INFO":0,"BLOCKER":1}',
+    }
+
+    def _block(self, head: dict | None = None, baseline: dict | None = None) -> dict:
+        return build_release_delta_block(
+            "statuskit",
+            "0.5.0",
+            self.BASELINE if baseline is None else baseline,
+            self.HEAD if head is None else head,
+            {"CRITICAL": 7, "MINOR": 4},
+            self.OVERVIEW,
+        )
+
+    def test_title_carries_baseline_and_trend(self) -> None:
+        assert self._block()["title"] == "Sonar · statuskit — since 0.5.0 · 🔴 1 worse, 🟢 1 better"
+
+    def test_title_drops_the_trend_when_nothing_moved(self) -> None:
+        block = self._block(head=dict(self.BASELINE))
+        assert block["title"] == "Sonar · statuskit — since 0.5.0"
+
+    def test_open_when_a_metric_regressed(self) -> None:
+        assert self._block()["open"] is True
+
+    def test_collapsed_when_only_improvements(self) -> None:
+        head = {**self.BASELINE, "coverage": "94.1"}
+        assert self._block(head=head)["open"] is False
+
+    def test_rows(self) -> None:
+        rows = {row[0]: row[1] for row in self._block()["rows"]}
+        assert rows["Coverage"] == "🟢 93.4% → 94.1%"
+        assert rows["Issues"] == "🔴 13 → 15 (critical 7, minor 4)"
+        assert rows["Vulnerabilities"] == "1 (blocker 1)"
+        assert rows["Security"] == "E"
+        assert rows["Lines of code"] == "2121 → 2280"
+
+    def test_row_labels_match_the_branch_block(self) -> None:
+        labels = [row[0] for row in self._block()["rows"]]
+        assert labels == [
+            "Coverage",
+            "Issues",
+            "Vulnerabilities",
+            "Reliability",
+            "Security",
+            "Maintainability",
+            "Duplication",
+            "Lines of code",
+        ]
+
+    def test_hotspot_row_present_when_non_zero(self) -> None:
+        head = {**self.HEAD, "security_hotspots": "2"}
+        assert any(row[0] == "Hotspots" for row in self._block(head=head)["rows"])
+
+    def test_no_bold_anywhere(self) -> None:
+        assert '"bold": true' not in json.dumps(self._block())
+
+    def test_links_to_the_overview(self) -> None:
+        assert self._block()["link"] == {"text": "Dashboard", "url": self.OVERVIEW}
 
 
 class TestFetchAndDegrade:

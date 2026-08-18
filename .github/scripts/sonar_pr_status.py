@@ -373,6 +373,71 @@ def build_branch_block(project: str, measures: dict, severities: dict, overview_
     }
 
 
+def trend_segment(markers: list[str]) -> str:
+    """``"🔴 2 worse, 🟢 2 better"`` — the title's verdict, visible while the block is collapsed.
+
+    Counts only markers, so neutral metrics (``ncloc``) never move it. Red leads because that is
+    the part worth acting on; green is omitted at zero, and an unmoved release gets no segment.
+    """
+    worse = markers.count("🔴")
+    better = markers.count("🟢")
+    if worse:
+        return f"🔴 {worse} worse, 🟢 {better} better" if better else f"🔴 {worse} worse"
+    return f"🟢 {better} better" if better else ""
+
+
+def build_release_delta_block(
+    project: str,
+    baseline_version: str,
+    baseline: dict,
+    head: dict,
+    severities: dict,
+    overview_url: str,
+) -> dict:
+    """Build the version-to-version delta block for a release notification.
+
+    Same rows as ``build_branch_block`` — the reader of a release message and the reader of a push
+    message care about the same metrics — but each value carries where it came from. Open when
+    something regressed, so a red release cannot hide inside a collapsed block.
+
+    Severity breakdowns are current-state only: Sonar has no history for facets.
+    """
+    cells: list[tuple[str, str, str | None]] = [
+        ("Coverage", "coverage", None),
+        ("Issues", "violations", _count_with_breakdown(head.get("violations"), severities)),
+        (
+            "Vulnerabilities",
+            "vulnerabilities",
+            _count_with_breakdown(head.get("vulnerabilities"), _parse_inline_counts(head.get("security_issues"))),
+        ),
+        ("Reliability", "reliability_rating", None),
+        ("Security", "security_rating", None),
+        ("Maintainability", "sqale_rating", None),
+        ("Duplication", "duplicated_lines_density", None),
+        ("Lines of code", "ncloc", None),
+    ]
+    # Same rule as the other blocks: the row exists only while a non-zero count does.
+    if head.get("security_hotspots") not in (None, "", "0"):
+        cells.append(("Hotspots", "security_hotspots", None))
+
+    rows: list = []
+    markers: list[str] = []
+    for label, metric, after_text in cells:
+        before, after = baseline.get(metric), head.get(metric)
+        rows.append([label, delta_cell(metric, before, after, after_text)])
+        markers.append(delta_marker(metric, before, after))
+
+    trend = trend_segment(markers)
+    title = f"Sonar · {project} — since {baseline_version}"
+    return {
+        "type": "table",
+        "title": f"{title} · {trend}" if trend else title,
+        "open": "🔴" in markers,
+        "rows": rows,
+        "link": _link("Dashboard", overview_url),
+    }
+
+
 def degraded_block(project: str, title: str, dashboard_url: str) -> dict:
     """Fallback block when the API is unreachable: the check run's title and a link, nothing else.
 
