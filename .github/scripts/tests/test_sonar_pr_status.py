@@ -16,11 +16,15 @@ from ..sonar_pr_status import (
     delta_cell,
     delta_marker,
     extract_projects,
+    find_analysis,
     format_breakdown,
     format_measure,
     format_threshold,
+    pick_baseline,
     rating_letter,
+    revision_matches,
     trend_segment,
+    version_event,
 )
 
 DASHBOARD = "https://sonarcloud.io/dashboard?id=NoNameItem_statuskit&pullRequest=112"
@@ -406,6 +410,100 @@ class TestBuildReleaseDeltaBlock:
 
     def test_links_to_the_overview(self) -> None:
         assert self._block()["link"] == {"text": "Dashboard", "url": self.OVERVIEW}
+
+
+def _analysis(date: str, revision: str, version: str | None = None) -> dict:
+    events = [{"category": "VERSION", "name": version}] if version else []
+    return {"key": date, "date": date, "events": events, "revision": revision}
+
+
+HEAD_SHA = "dab4b1f00b091b8c2bd1f7fa402500a42e77d059"
+PREV_SHA = "53704e5abd6ce69689bc4c1ce99460c29e16dfdd"
+OLD_SHA = "b761151bc3e962b0ad5d96588a418988be50046e"
+
+ANALYSES = [
+    _analysis("2026-07-31T12:53:12+0000", HEAD_SHA, "0.5.1"),
+    _analysis("2026-07-31T12:06:46+0000", PREV_SHA, "0.5.0"),
+    _analysis("2026-07-21T14:58:36+0000", OLD_SHA, "not provided"),
+]
+
+
+class TestRevisionMatches:
+    def test_full_sha(self) -> None:
+        assert revision_matches(HEAD_SHA, HEAD_SHA) is True
+
+    def test_short_sha_from_a_manual_run(self) -> None:
+        assert revision_matches(HEAD_SHA, "dab4b1f") is True
+
+    def test_different_commit(self) -> None:
+        assert revision_matches(HEAD_SHA, PREV_SHA) is False
+
+    def test_too_short_to_be_a_sha(self) -> None:
+        assert revision_matches(HEAD_SHA, "dab") is False
+
+    def test_missing_values(self) -> None:
+        assert revision_matches(None, HEAD_SHA) is False
+        assert revision_matches(HEAD_SHA, None) is False
+
+
+class TestVersionEvent:
+    def test_reads_the_version_event(self) -> None:
+        assert version_event(ANALYSES[0]) == "0.5.1"
+
+    def test_ignores_other_categories(self) -> None:
+        analysis = {"events": [{"category": "QUALITY_PROFILE", "name": "Changes in 'Sonar way' (py)"}]}
+        assert version_event(analysis) is None
+
+    def test_no_events(self) -> None:
+        assert version_event({}) is None
+
+
+class TestFindAnalysis:
+    def test_finds_the_release_commit(self) -> None:
+        assert find_analysis(ANALYSES, HEAD_SHA)["date"] == "2026-07-31T12:53:12+0000"
+
+    def test_absent_revision(self) -> None:
+        assert find_analysis(ANALYSES, "0" * 40) is None
+
+
+class TestPickBaseline:
+    def test_head_already_carries_the_released_version(self) -> None:
+        # The release analysis landed: the baseline is the second-newest VERSION event.
+        assert pick_baseline(ANALYSES, "0.5.1")["date"] == "2026-07-31T12:06:46+0000"
+
+    def test_head_does_not_carry_it_yet(self) -> None:
+        # Timed out and fell back to a later plain analysis: the newest VERSION event is the baseline.
+        analyses = [_analysis("2026-08-01T09:00:00+0000", "f" * 40), *ANALYSES]
+        assert pick_baseline(analyses, "0.6.0")["date"] == "2026-07-31T12:53:12+0000"
+
+    def test_rejects_not_provided(self) -> None:
+        # Only the poisoned pre-seeding event is left — that is no baseline at all.
+        assert pick_baseline(ANALYSES[2:], "0.5.1") is None
+
+    def test_no_previous_release(self) -> None:
+        assert pick_baseline(ANALYSES[:1], "0.5.1") is None
+
+
+class TestFetchAnalyses:
+    def test_returns_the_analyses_array(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        seen: list[str] = []
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            seen.append(url)
+            return {"analyses": ANALYSES}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        assert mod.fetch_analyses("NoNameItem_statuskit", "master", None) == ANALYSES
+        assert "project_analyses/search" in seen[0]
+        assert "branch=master" in seen[0]
+
+    def test_api_failure_is_an_empty_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: None)
+        assert mod.fetch_analyses("NoNameItem_statuskit", "master", None) == []
 
 
 class TestFetchAndDegrade:

@@ -45,6 +45,13 @@ _SONAR_APP_SLUG = "sonarqubecloud"
 
 _RATINGS = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"}
 
+# The version name Sonar writes when an analysis carries no `sonar.projectVersion`. It is a value,
+# not an absence — a baseline picker that only checks for a missing field would accept it.
+_NO_VERSION = "not provided"
+
+# Minimum length of a git short SHA for matching (7 characters, git default).
+_MIN_SHORT_SHA_LEN = 7
+
 # Metrics rendered as a percentage with one decimal.
 _PERCENT_METRICS = frozenset(
     {
@@ -512,6 +519,63 @@ def _fetch_severities(project: str, scope: dict[str, str], token: str | None, ne
         if facet.get("property") == "severities":
             return {entry["val"]: entry["count"] for entry in facet.get("values", [])}
     return {}
+
+
+def fetch_analyses(project: str, branch: str, token: str | None) -> list[dict]:
+    """Fetch the branch's analysis history, newest first. ``[]`` when Sonar has no such project."""
+    params = {"project": project, "branch": branch, "ps": "100"}
+    payload = fetch_json(_api_url("project_analyses/search", params), token)
+    if not payload:
+        return []
+    return payload.get("analyses", [])
+
+
+def revision_matches(stored: str | None, wanted: str | None) -> bool:
+    """Compare a commit stored by Sonar with the one we are looking for.
+
+    Sonar stores the full 40-character SHA and ``GITHUB_SHA`` is full too, but a hand-run
+    ``--revision dab4b1f`` must match as well — so a prefix of at least 7 characters counts.
+    """
+    if not stored or not wanted:
+        return False
+    shorter, longer = sorted((stored, wanted), key=len)
+    return len(shorter) >= _MIN_SHORT_SHA_LEN and longer.startswith(shorter)
+
+
+def version_event(analysis: dict) -> str | None:
+    """The name of the analysis's ``VERSION`` event, if it carries one."""
+    for event in analysis.get("events", []):
+        if event.get("category") == "VERSION":
+            return event.get("name")
+    return None
+
+
+def find_analysis(analyses: list[dict], revision: str) -> dict | None:
+    """The analysis produced from ``revision`` — the release commit, on a release run."""
+    for analysis in analyses:
+        if revision_matches(analysis.get("revision"), revision):
+            return analysis
+    return None
+
+
+def pick_baseline(analyses: list[dict], released_version: str) -> dict | None:
+    """The previous release's analysis — the left edge of the delta window.
+
+    ``analyses`` must start at the head analysis (newest first), so a baseline is never picked
+    from an analysis newer than the release. The newest ``VERSION`` event wins, except:
+
+    * the released version itself — that is the head, not a baseline;
+    * ``"not provided"`` — a real event name written by analyses from before
+      ``sonar.projectVersion`` was seeded (2026-07-31), not an absent field.
+
+    ``None`` means the project has no comparable earlier release; the caller degrades to absolute
+    values.
+    """
+    for analysis in analyses:
+        name = version_event(analysis)
+        if name and name not in (released_version, _NO_VERSION):
+            return analysis
+    return None
 
 
 def build_pr_blocks(
