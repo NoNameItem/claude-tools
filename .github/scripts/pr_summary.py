@@ -7,23 +7,34 @@ SHA's commit statuses and check runs, the required contexts read from the `maste
 the unresolved-thread count and the reply anchor; the script prints one JSON document saying
 whether to send and, if so, exactly what the message contains.
 
-Silence is the default, and it comes from exactly one rule: the aggregator is called from *both*
-producers of required checks (pr.yml and review-gate.yml), so only the call that sees every
-required context in a terminal state speaks. A producer that has not started yet reports as
-`missing`, which is as silent as `pending` — so "the other flow is still coming" and "the other
-flow is still running" are the same case here, and neither needs a job-level dependency to detect.
+There is exactly ONE producer of the result message now: `pr.yml`'s `pr-summary` job, which sits
+on `needs` of every gate. The second call site (review-gate.yml, a separate `pull_request_target`
+run that could not observe this one) is gone, and with it the "which verdict was already reported"
+record that arbitrated between them — a record that broke three times in review, always by turning
+into silence where a reply was owed.
 
-There is deliberately NO record of "which verdict was already reported". Earlier revisions kept
-one in a second commit status to suppress a repeated identical message, and every bug this file
-has had came from it: a verdict erased by the anchor write, then a guard that fixed the erasure
-but froze the anchor, then a verdict recorded before its anchor existed. What it bought was the
-suppression of a duplicate message; what it cost, three times over, was a "checks running" message
-that no result ever replied to. The remaining duplicate cases — both producers seeing the last
-context finish, and a manual re-run of an already-green job — are noise, not a wrong verdict.
+Two `send=False` branches remain load-bearing rather than vestigial:
 
-The one marker that remains is `pr-notify-anchor` (`msg:<id>`), written only by pr.yml's
-notify-start: it names the newest "checks running" message so the result can reply into that
-thread. Absent — notify-start has not run, or its Telegram send failed — the result is simply sent
+* `stale-head` — the gate's poll exits within one interval once the PR advances, but it exits
+  *successfully*, so this job still runs for a SHA that is no longer the head. This branch is what
+  keeps that run silent; the abandoned thread is closed by the new push's *Superseded* reply, not
+  by this one. Do not remove it on the grounds that there is only one speaker now: the speaker can
+  be speaking for a commit that no longer exists.
+* `waiting` — a required context that is `pending` or `missing`. `needs` makes it unreachable for a
+  context this workflow produces, but the required list comes from the ruleset, not from the
+  workflow: any context the ruleset names and nothing publishes reads as `missing`. That is exactly
+  the window between merging this branch and swapping the required context from `review-gate` to
+  `Review Gate` (docs/merge-gate-rollout.md, Step 2a), and staying silent through it is correct —
+  a verdict computed from a required list we cannot satisfy would be a guess.
+
+Re-notification on thread resolution was designed for this module (a "crossing mode" that spoke
+only when the unresolved count crossed zero) and removed unbuilt: GitHub Actions has no
+`pull_request_review_thread` trigger, so nothing can call it. See claude-tools-5vg.17.
+
+The one marker that remains is `pr-notify-anchor` (`msg:<id>`, rewritten to `msg:<id> replied`
+once this job has answered): it names the newest "checks running" message so the result can reply
+into that thread, and its `replied` half tells the next push whether that thread still owes an
+answer. Absent — notify-start has not run, or its Telegram send failed — the result is simply sent
 standalone.
 
 Usage:
@@ -50,8 +61,10 @@ _GOOD_STATUS_STATES = frozenset({"success"})
 # how a gate job reports "nothing to do here".
 _GOOD_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
 
-# Contexts that only exist for same-repo PRs (a fork run posts no status — by design).
-_SAME_REPO_ONLY = frozenset({"review-gate"})
+# Contexts that only exist for same-repo PRs. Belt-and-braces now: both entry points carry a fork
+# guard, so this job does not run for a fork at all — but the required list is read from the
+# ruleset, which does require `Review Gate`, and a fork's wrapper deliberately fails.
+_SAME_REPO_ONLY = frozenset({"Review Gate"})
 
 _ANCHOR_PATTERN = re.compile(r"\bmsg:(\S+)")
 
@@ -145,8 +158,10 @@ def _latest(entries: list[dict]) -> dict:
 def collect_states(required: list[str], statuses: list[dict], check_runs: list[dict]) -> list[CheckState]:
     """Resolve each required context against the rollup, preserving the required order.
 
-    Commit statuses win over check runs when a name collides: `review-gate` is published as a
-    status precisely because the job's own check run would be attributed to the base SHA.
+    Commit statuses win over check runs when a name collides. No required context is published as a
+    commit status any more — `Review Gate` is a check run like the other three gates — but the
+    precedence is kept: `pr-notify-anchor` and `codex-nudge` are statuses, and a future required
+    status must not be shadowed by a same-named check run.
     """
     by_status = {entry.get("context"): entry for entry in statuses if entry.get("context")}
     by_run: dict[str, list[dict]] = {}
@@ -204,8 +219,8 @@ def decide(payload: dict) -> Decision:
 
     Returns:
         A :class:`Decision`. ``send=False`` carries one of two reasons: ``stale-head`` (the PR
-        advanced — this is the superseded review-gate poll) or ``waiting`` (a required context is
-        missing or still running, so the other producer will be the one to send).
+        advanced — this is the superseded gate poll) or ``waiting`` (a required context is missing
+        or still running).
     """
     head_sha = payload.get("head_sha") or ""
     current = payload.get("current_head_sha") or ""

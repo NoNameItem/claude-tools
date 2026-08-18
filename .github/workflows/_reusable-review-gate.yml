@@ -1,0 +1,178 @@
+# .github/workflows/_reusable-review-gate.yml
+name: Review Gate (Reusable)
+
+# Blocks merge until Codex has reviewed the latest commit of a PR.
+#
+# Division of responsibility:
+#   - Codex is the only AI reviewer; Claude's review workflow was removed in 2595a29.
+#   - Unresolved findings are gated by the `master` ruleset's "require review thread resolution".
+#   - This workflow only asserts that *Codex* has reviewed the head commit.
+#
+# WE ASK FOR THE REVIEW. Automatic Codex reviews are switched off in the connector, because a
+# connector-wide toggle cannot be filtered and spent its budget on release-please version bumps.
+# Instead this job posts a literal `@codex review` comment. It must be posted with a PAT of a real
+# user: the connector attributes a request to the commenting account and requires it to have a
+# Codex subscription, and `github-actions[bot]` cannot have one (measured on PRs #122/#123 on
+# 2026-07-31 — see the design doc's "Experimental evidence").
+#
+# HOW THE REQUIRED CHECK IS PUBLISHED: it isn't, not here. Under `pull_request` a job's check run
+# is attributed to the head SHA automatically, so the caller's `review-gate-result` wrapper job
+# publishes the `Review Gate` context and this workflow posts no commit status of its own. The
+# `post_status` helper, the EXIT trap that posted `error`, and the separate "Superseded" status
+# are all gone with the `pull_request_target` machinery that made them necessary.
+#
+# SECURITY: `actions/checkout` here takes the PR merge ref, so every script this job runs comes
+# from the PR — while the job holds CODEX_NUDGE_TOKEN and `statuses: write`. That is a deliberate,
+# documented trade-off (same-repo PRs come only from trusted developers; the caller skips this
+# workflow for fork PRs and fails their wrapper). See the design's "Accepted trade-off".
+
+on:
+  workflow_call:
+    secrets:
+      CODEX_NUDGE_TOKEN:
+        description: 'Fine-grained PAT of the repository owner — posts the @codex review comment'
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read # reviews are read via the Pulls API
+  issues: read # reactions on a PR are read via the Issues API endpoint
+  statuses: write # the `codex-nudge` marker on the head SHA
+
+# No `concurrency` here. The caller's group already covers this run, and a group of our own would
+# let an unrelated event cancel a live poll.
+
+jobs:
+  review-gate-poll:
+    name: review-gate-poll
+    runs-on: ubuntu-latest
+    # The poll caps itself at 25 minutes; this is the backstop for the job around it.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Ask Codex to review the head commit, then wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUDGE_TOKEN: ${{ secrets.CODEX_NUDGE_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # ~25 min (Codex latency ~5-8 min norm; weekend spikes ~14 min). Tune this purely for
+          # the Codex gate's own latency: review-loop clients (e.g. /flow:review-loop's
+          # flow-wait-ci) use a generous local wait and are not coupled to it.
+          TIMEOUT=1500
+          INTERVAL=30
+          NUDGE_BODY='@codex review'
+
+          # 1. Has a review already been requested for THIS commit? The marker carries the
+          #    freshness cutoff, so a re-run (edited/reopened/manual) reuses the original window
+          #    instead of inventing a newer one that no review can ever satisfy.
+          marker=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
+            --jq '[.statuses[] | select(.context == "codex-nudge")] | first | .description // ""')
+          parsed=$(python3 .github/scripts/review_gate.py parse-marker --description="$marker")
+          comment_id=$(printf '%s' "$parsed" | jq -r '.comment_id // ""')
+          cutoff=$(printf '%s' "$parsed" | jq -r '.cutoff // ""')
+
+          if [ -n "$cutoff" ]; then
+            echo "Nudge already recorded for $HEAD_SHA (comment=$comment_id cutoff=$cutoff) — waiting."
+          else
+            # 2. Delete stale nudges before posting. Self-healing: whatever killed the previous
+            #    run (timeout, cancellation, a dead runner), this cleans up after it without any
+            #    state of its own. It also deletes a nudge the owner typed by hand — acceptable,
+            #    since we post our own immediately afterwards.
+            nudge_login=$(GH_TOKEN="$NUDGE_TOKEN" gh api user --jq '.login')
+            stale=$(GH_TOKEN="$NUDGE_TOKEN" gh api --paginate "repos/$REPO/issues/$PR/comments" \
+                      --jq '[.[] | {id, login: .user.login, body}]' | jq -s 'add // []' \
+                    | jq -r --arg login "$nudge_login" --arg body "$NUDGE_BODY" \
+                        '.[] | select(.login == $login) | select((.body | gsub("^\\s+|\\s+$"; "")) == $body) | .id')
+            for id in $stale; do
+              echo "Deleting stale nudge comment $id"
+              GH_TOKEN="$NUDGE_TOKEN" gh api --method DELETE "repos/$REPO/issues/comments/$id" >/dev/null
+            done
+
+            # 3. Ask. A failed POST is an explicit, named failure — an expired PAT must not look
+            #    like "Codex is not responding", which is what a silent fall-through into waiting
+            #    would produce for 25 minutes on every PR.
+            if ! response=$(GH_TOKEN="$NUDGE_TOKEN" gh api --method POST \
+                              "repos/$REPO/issues/$PR/comments" -f body="$NUDGE_BODY"); then
+              echo "::error::Could not post the Codex nudge on PR #$PR. CODEX_NUDGE_TOKEN is missing, expired, or lacks 'Pull requests: read and write' + 'Issues: read and write' on $REPO."
+              exit 1
+            fi
+            comment_id=$(printf '%s' "$response" | jq -r '.id')
+            # The cutoff is GitHub's own clock at the moment we asked, so any review that arrives
+            # afterwards counts and anything older does not.
+            cutoff=$(printf '%s' "$response" | jq -r '.created_at')
+
+            description=$(python3 .github/scripts/review_gate.py format-marker \
+              --comment-id "$comment_id" --cutoff "$cutoff")
+            # `state=success`: this is a marker, not a gate. It must never be added to the
+            # master ruleset's required contexts — see docs/merge-gate-rollout.md.
+            gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state=success -f context=codex-nudge \
+              -f description="$description" -f target_url="$RUN_URL" >/dev/null
+            echo "Asked Codex to review $HEAD_SHA (comment=$comment_id cutoff=$cutoff)."
+          fi
+
+          # 4. Wait. Codex signals via reactions/reviews and a 👍 fires no workflow event, so the
+          #    only way to observe it is to poll.
+          deadline=$(( $(date +%s) + TIMEOUT ))
+          while :; do
+            # The head check lives INSIDE the loop: two polls can be alive at once (the caller's
+            # concurrency key separates events, so an `opened` run is not cancelled by a later
+            # `synchronize`), and a poll whose SHA has been superseded must exit within one
+            # interval rather than sitting out the full 25 minutes. It exits SUCCESSFULLY — the
+            # summary that follows is silenced by pr_summary.py's `stale-head` branch, and the
+            # abandoned thread is closed by the new push's *Superseded* reply.
+            #
+            # ACCEPTED RISK: the caller's `review-gate-result` wrapper cannot tell this clean exit
+            # apart from "Codex actually reviewed the head commit", so a green `Review Gate` check
+            # run lands on the abandoned SHA — one Codex never reviewed. Harmless while that SHA
+            # stays dead; if it is ever made the PR head again (`git reset --hard <old-sha> &&
+            # git push --force`), the window during which the stale green could read as the newest
+            # result for that SHA is unverified. `exit 1` here was considered and deliberately not
+            # taken (2026-08-17) — see the design's "Concurrency" and "Risks and limitations".
+            current_head=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
+            if [ -n "$current_head" ] && [ "$current_head" != "$HEAD_SHA" ]; then
+              echo "PR head moved to $current_head (was $HEAD_SHA) — this poll is superseded."
+              exit 0
+            fi
+
+            # --paginate applies --jq per page and emits one array per page; `jq -s 'add // []'`
+            # merges them.
+            reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+              --jq '[.[] | {user: {login: .user.login}, commit_id, submitted_at}]' | jq -s 'add // []')
+            reactions=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
+              --jq '[.[] | {user: {login: .user.login}, content, created_at}]' | jq -s 'add // []')
+            payload=$(jq -n --argjson reviews "$reviews" --argjson reactions "$reactions" \
+              '{reviews: $reviews, reactions: $reactions}')
+
+            decision=$(printf '%s' "$payload" | python3 .github/scripts/review_gate.py decide \
+              --cutoff "$cutoff" --head-sha "$HEAD_SHA")
+
+            if [ "$decision" = "pass" ]; then
+              # Success: take our nudge back out of the thread. `|| true` — the comment may
+              # already be gone, and a clean thread is not worth failing a green gate over.
+              if [ -n "$comment_id" ]; then
+                GH_TOKEN="$NUDGE_TOKEN" gh api --method DELETE \
+                  "repos/$REPO/issues/comments/$comment_id" >/dev/null || true
+              fi
+              echo "Codex has reviewed $HEAD_SHA — gate open (findings, if any, are gated by conversation resolution)."
+              exit 0
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              # The nudge comment is deliberately KEPT on a timeout: it distinguishes "we never
+              # asked" from "we asked and Codex did not answer".
+              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. Re-run this job once Codex finishes — the codex-nudge marker means it will not be asked twice."
+              exit 1
+            fi
+            echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
+            sleep "$INTERVAL"
+          done

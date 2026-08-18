@@ -58,7 +58,8 @@ flag any change that force-adds them to git.
 - Any job using repository secrets must guard against fork PRs, e.g.
   `if: github.event.pull_request.head.repo.full_name == github.repository`.
 - `permissions:` must be least-privilege — read-only unless a write scope is exercised.
-- Never pair `pull_request_target` with a checkout of untrusted PR-head code.
+- Never pair `pull_request_target` with a checkout of untrusted PR-head code. (No workflow
+  here uses `pull_request_target` any more; the rule stands for anything new.)
 
 **Suppressions (P1).** Flag newly added `# noqa` / `# type: ignore` (or equivalent) without
 an inline justification — CI passes *because* the warning is suppressed, so only review
@@ -83,4 +84,11 @@ together**, rather than stopping at the first occurrence on the changed line:
   tags.
 - Russian-language text in comments, docs, commits, or PR descriptions — bilingual repo.
 - Anything CI already enforces: commit/PR scope, `ruff` lint/format, `ty` types.
+- `pr.yml`'s jobs holding `statuses: write`, `CODEX_NUDGE_TOKEN` and the Telegram credentials
+  while running PR-authored code. This is a deliberate, documented trade-off, not an oversight:
+  the gate had to move onto `pull_request` so it could be tested before merge, same-repo PRs come
+  only from trusted developers, and fork PRs never reach these jobs. See
+  `docs/superpowers/specs/2026-08-01-notification-triggers-design.md`, "Accepted trade-off".
+- A PR being able to edit the workflow that gates it. Accepted for the same reason, and visible in
+  the workflow diff during review.
 

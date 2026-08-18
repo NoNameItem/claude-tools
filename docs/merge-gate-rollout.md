@@ -7,9 +7,9 @@
 **Goal:** Make the `master` ruleset the single source of truth for merge rules, with CI failures
 actually blocking merges, and confirm the new notification paths on live events.
 
-**Companion plan:** `docs/superpowers/plans/2026-07-28-pr-merge-gate-and-notifications.md`
-(Tasks 1–12 — all repository changes).
-**Design:** `docs/superpowers/specs/2026-07-27-pr-merge-gate-and-notifications-design.md` (Part 1).
+**Design:** `docs/superpowers/specs/2026-08-01-notification-triggers-design.md` (Steps 2, 2a, 6 and
+7 below come from this design; implementation plans live in `docs/superpowers/plans/`, which is
+git-ignored, so no plan path is a durable reference here).
 
 ## Why this is separate
 
@@ -32,6 +32,27 @@ which is separated from Task 12 by a push, a PR, several review rounds and a mer
 ```bash
 REPO=NoNameItem/claude-tools
 ```
+
+## Step 0 — Create `CODEX_NUDGE_TOKEN` (before the merge)
+
+Automatic Codex reviews are switched off in the connector (2026-07-31), so the gate asks for each
+review itself by posting `@codex review`. The connector attributes the request to the commenting
+account and requires that account to hold a Codex subscription — a bot account cannot — so the
+comment must be posted with a PAT of a real user.
+
+1. Create a **fine-grained** PAT of the repository owner, scoped to `NoNameItem/claude-tools` only,
+   with `Pull requests: read and write` and `Issues: read and write` (a PR comment is created
+   through `issues/{n}/comments`, and GitHub checks both permissions depending on the object).
+   Deliberately **not** `RELEASE_PLEASE_TOKEN`, which can write to `master`.
+2. Add it as the repository secret `CODEX_NUDGE_TOKEN`.
+3. Note its expiry date somewhere you will see it: on that day the gate starts failing on every
+   PR. The failure is explicit and names the token — `_reusable-review-gate.yml` treats a failed
+   comment POST as an error rather than falling through into waiting, precisely so an expired PAT
+   does not look like "Codex is not responding".
+
+**Until this branch lands**, every ordinary PR needs a hand-written `@codex review` from the
+owner's account, because nothing on `master` nudges yet. On the branch's own PR the branch copy of
+the gate does the nudging.
 
 ## Step 1 — Capture the current configuration (this is the rollback)
 
@@ -64,7 +85,7 @@ cat > /tmp/ruleset.json <<'JSON'
       "require_code_owner_review": false,
       "require_last_push_approval": false,
       "required_review_thread_resolution": true,
-      "allowed_merge_methods": ["squash", "rebase"]
+      "allowed_merge_methods": ["squash"]
     }},
     {"type": "required_status_checks", "parameters": {
       "strict_required_status_checks_policy": false,
@@ -73,7 +94,7 @@ cat > /tmp/ruleset.json <<'JSON'
         {"context": "Validate PR"},
         {"context": "Python CI Gate"},
         {"context": "Claude Code Plugin CI Gate"},
-        {"context": "review-gate"}
+        {"context": "Review Gate"}
       ]
     }}
   ]
@@ -84,12 +105,22 @@ gh api --method PUT "repos/$REPO/rulesets/$RULESET_ID" --input /tmp/ruleset.json
 
 Decisions encoded above, so a future reader does not "fix" them:
 
-- **`merge` dropped from `allowed_merge_methods`** — merge commits are disabled repo-wide and
-  conflict with linear history.
+- **`squash` is the only allowed merge method** — merge commits are disabled repo-wide and conflict
+  with linear history, and `rebase` was dropped on 2026-08-13 so that one PR always lands as exactly
+  one commit. The repository setting matches: `allow_rebase_merge: false`. Rolling back means
+  putting `"rebase"` back here *and* re-enabling the repository setting.
 - **`strict_required_status_checks_policy: false`** — "update branch" must not re-trigger the
   reviewers (`claude-tools-5vg.4`).
-- **`review-gate` is required although fork PRs never publish it** — that is precisely what keeps
-  fork PRs unmergeable, as `review-gate.yml:66-69` documents.
+- **`Review Gate` is a check run, not a commit status.** The gate now runs as a job of `pr.yml`
+  under `pull_request`, where a job's check run is attributed to the head SHA automatically — so
+  the hand-rolled `review-gate` status is gone, and the `review-gate-result` wrapper job publishes
+  this context instead. The wrapper always runs (`if: always()`), so the context is always
+  published by a job that actually executed; it fails fork PRs explicitly, which is what keeps them
+  unmergeable, and passes a release-please PR, which needs no AI review.
+- **`codex-nudge` is deliberately not required, and must never be added.** Like `pr-notify-anchor`
+  it is bookkeeping: it records which `@codex review` comment was posted for this head SHA and the
+  freshness cutoff the poll uses, so a re-run does not ask Codex twice. It is posted as `success`
+  precisely so it never reads as an unfinished check.
 - **`SonarCloud Code Analysis` is deliberately not required** — it only exists on PRs with Python
   changes, and a conditionally-present required check blocks a PR forever. The Quality Gate
   blocks through `Python CI Gate` instead (`sonar.qualitygate.wait=true`).
@@ -98,7 +129,23 @@ Decisions encoded above, so a future reader does not "fix" them:
   should reply to, and a run whose Telegram send failed writes nothing at all. It is posted as
   `success` precisely so it never reads as an unfinished check — but making it required would let
   bookkeeping block a merge.
+  Its description gains ` replied` once the result notification has answered the thread — the same
+  marker, one more field, still not a verdict.
 - **`bypass_actors` stays empty.**
+
+## Step 2a — Swap the required context (time-critical)
+
+Do this **immediately after the merge**, and do not open new PRs in between. Nothing publishes the
+old `review-gate` commit status any more, so until the ruleset names `Review Gate` instead, every
+new PR sits at *"Expected — waiting for status to be reported"*.
+
+Naming the wrapper job `review-gate` — so the check run would satisfy the existing required
+context and no ruleset edit would be needed — was considered and rejected: the window is
+acceptable when nothing else is in flight, and the capitalised name matches the other three gates.
+
+Note that the PR that lands this change runs under BOTH gates: the old one arrives from `master`
+via `pull_request_target`, the new one from the branch. So its notifications arrive doubled, and
+that is expected. It is the last PR on which that happens.
 
 ## Step 3 — Delete the classic branch protection
 
@@ -119,7 +166,7 @@ Expected:
 - rule types include `deletion`, `non_fast_forward`, `required_linear_history`, `pull_request`,
   `required_status_checks`;
 - the contexts are exactly `Validate PR`, `Python CI Gate`, `Claude Code Plugin CI Gate`,
-  `review-gate`;
+  `Review Gate`;
 - the protection call returns `Branch not protected` (404).
 
 The second command is also what `_reusable-pr-summary.yml` reads at notification time — if it
@@ -146,24 +193,30 @@ the released ones anyway.
 
 Open a scratch PR against `master` and confirm, in order:
 
-1. **Green path** — one silent opener, then exactly one reply saying *Ready to merge* once both
-   producers have finished. `pr-notify-anchor` shows `msg:<id>` and the reply is threaded under
-   that message.
-2. **Red path** — push a commit that fails lint. The reply says *Checks failed:* with the gate in
+1. **Green path** — one silent opener carrying the commit list, then exactly one reply saying
+   *Ready to merge*. `pr-notify-anchor` shows `msg:<id> replied` afterwards.
+2. **The nudge** — the gate posts `@codex review` from the owner's account within seconds, Codex
+   reacts 👀, and the comment is deleted once the review lands. `codex-nudge` on the head SHA reads
+   `comment:<id>@<cutoff>`.
+3. **Red path** — push a commit that fails lint. The reply says *Checks failed:* with the gate in
    bold, the check table bare (not collapsed), and the failing child job listed.
-3. **Re-run** — re-run the failed job so it passes. A **new** reply arrives with the flipped
-   verdict.
-4. **Repeat calls are not suppressed** — re-running an already-green job produces another identical
-   reply. That is expected, not a defect: the aggregator keeps no record of what it already
-   reported (see the design doc for why that record was removed), so a duplicate here is the
-   accepted cost. What must NOT happen is a *checks running* message left with no reply at all.
-5. **Comments path** — leave an unresolved review comment and re-run. The verdict becomes
+4. **Re-run** — re-run the failed job so it passes. Exactly one new reply arrives with the flipped
+   verdict, and the gate does not ask Codex a second time (the marker is what prevents it).
+5. **`edited`** — change the PR title. The checks re-run and no message is sent at all.
+6. **Two pushes in quick succession** — the first thread receives a silent *Superseded by `<sha>`*
+   reply; only the new SHA gets a verdict.
+7. **Comments path** — leave an unresolved review comment and re-run. The verdict becomes
    *All checks passed, unresolved comments: 1*.
-6. **Superseded gate** — push twice in quick succession. The surviving poll for the old SHA sends
-   nothing; only the new SHA notifies.
-7. **Push pair** — merge the scratch PR and confirm the push pair on `master`, with the Sonar
+8. **Thread resolution sends nothing** — resolve the comment and confirm no message arrives. This
+   is a known gap, not a defect: GitHub Actions has no `pull_request_review_thread` trigger, so
+   `claude-tools-5vg.17` stays open (see Task 9). The PR becomes mergeable silently.
+9. **Push pair** — merge the scratch PR and confirm the push pair on `master`, with the Sonar
    project-state block.
-8. **Release pair** — on the next release-please merge, confirm the release pair with the notes block.
+10. **Release PR** — on the next merge to master, the pending release PRs are force-pushed:
+    only the component whose changelog entries actually changed sends a message; the others,
+    whose changelog moved by one date, stay silent.
+11. **Release merge** — merging a release PR produces no push pair, only the release pair
+    (*Publishing…* / *Published to PyPI*). A failing release merge still notifies.
 
 Close the scratch PR. When something misbehaves, the `PR Summary` job's `Decision:` log line
 (`{"send":…,"reason":…,"verdict":…}`) names the branch of `pr_summary.py` that was taken.
@@ -177,10 +230,13 @@ action against the new inputs and silently break every notification on the branc
 
 The gap it closes: `pr.yml` runs on `pull_request`, so `actions/checkout` takes the PR merge ref.
 `notify-start` then executes `./.github/actions/telegram-notify` — the PR author's copy — while
-holding `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` and `statuses: write`. `_reusable-pr-summary.yml`
-has the same shape for the scripts it runs. Only same-repo PRs reach either job (both carry the
-fork guard), so this is a collaborator-trust boundary, not an anonymous one — but it is one the
-repo has decided to close rather than document.
+holding `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` and `statuses: write`; `_reusable-pr-summary.yml`
+and `_reusable-review-gate.yml` have the same shape for the scripts they run, and the gate also
+holds `CODEX_NUDGE_TOKEN`. Only same-repo PRs reach any of them (all carry the fork guard), so this
+is a collaborator-trust boundary, not an anonymous one — but it is one the repo has decided to
+narrow where it cheaply can. Note that pinning cannot close the gate itself: the nudge logic lives
+in the workflow file, which `pull_request` reads from the PR branch. See the design's
+"Accepted trade-off".
 
 1. In `.github/actions/telegram-notify/action.yml`, run the script from the action's own
    checkout rather than the workspace:
