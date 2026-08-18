@@ -572,6 +572,61 @@ class TestFetchHistory:
         assert mod.fetch_history("NoNameItem_statuskit", "master", ["coverage"], "2026-07-31", None) == {}
 
 
+class TestWaitForAnalysis:
+    def _responses(self, monkeypatch: pytest.MonkeyPatch, pages: list[list[dict]]) -> list[float]:
+        """Stub `fetch_analyses` with one response per poll; return the list sleeps are recorded in."""
+        from .. import sonar_pr_status as mod
+
+        remaining = list(pages)
+        monkeypatch.setattr(mod, "fetch_analyses", lambda project, branch, token: remaining.pop(0))
+        return []
+
+    def test_found_on_the_first_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [ANALYSES])
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head["revision"] == HEAD_SHA
+        assert analyses == ANALYSES
+        assert slept == []
+
+    def test_appears_on_the_third_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        without_head = ANALYSES[1:]
+        slept = self._responses(monkeypatch, [without_head, without_head, ANALYSES])
+        _, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head["revision"] == HEAD_SHA
+        assert slept == [15.0, 15.0]
+
+    def test_ceiling_is_ten_minutes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        without_head = ANALYSES[1:]
+        slept = self._responses(monkeypatch, [without_head] * 41)
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head is None
+        assert analyses == without_head  # the caller degrades to the latest analysis
+        assert sum(slept) == 600.0
+
+    def test_timeout_reports_the_degradation(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [ANALYSES[1:]] * 41)
+        mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert HEAD_SHA in capsys.readouterr().err
+
+    def test_no_analyses_returns_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No project in Sonar (a `flow` release) or the API is down — waiting changes neither.
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [[]])
+        assert mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append) == ([], None)
+        assert slept == []
+
+
 class TestFetchAndDegrade:
     def test_degraded_block_uses_check_run_title(self) -> None:
         from ..sonar_pr_status import degraded_block

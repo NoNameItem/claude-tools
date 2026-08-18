@@ -35,13 +35,23 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _API_BASE = "https://sonarcloud.io"
 _REQUEST_TIMEOUT = 30.0
 _SONAR_APP_SLUG = "sonarqubecloud"
+
+# publish.yml and the Sonar analysis of the same commit are two independent workflow runs, and
+# neither waits for the other: on statuskit 0.5.1 the analysis landed 10 s after publish finished.
+_POLL_INTERVAL_SECONDS = 15.0
+_POLL_CEILING_SECONDS = 600.0
 
 _RATINGS = {"1": "A", "2": "B", "3": "C", "4": "D", "5": "E"}
 
@@ -608,6 +618,42 @@ def find_analysis(analyses: list[dict], revision: str) -> dict | None:
         if revision_matches(analysis.get("revision"), revision):
             return analysis
     return None
+
+
+def wait_for_analysis(
+    project: str,
+    branch: str,
+    revision: str,
+    token: str | None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[list[dict], dict | None]:
+    """Poll until the release commit's analysis appears in Sonar.
+
+    Returns ``(analyses, head)``. ``head`` is ``None`` when the ceiling was reached — the caller
+    then falls back to the latest analysis, which is a smaller lie than no notification.
+
+    An empty response ends the wait immediately: either the project is not in Sonar (a ``flow``
+    release) or the API is unreachable, and neither is fixed by waiting ten minutes.
+
+    ``sleep`` is injected so tests do not actually wait.
+    """
+    attempts = int(_POLL_CEILING_SECONDS // _POLL_INTERVAL_SECONDS)
+    analyses: list[dict] = []
+    for attempt in range(attempts + 1):
+        analyses = fetch_analyses(project, branch, token)
+        if not analyses:
+            return [], None
+        head = find_analysis(analyses, revision)
+        if head is not None:
+            return analyses, head
+        if attempt < attempts:
+            sleep(_POLL_INTERVAL_SECONDS)
+    print(
+        f"No Sonar analysis for revision {revision} after {_POLL_CEILING_SECONDS:.0f}s; "
+        f"falling back to the latest analysis.",
+        file=sys.stderr,
+    )
+    return analyses, None
 
 
 def pick_baseline(analyses: list[dict], released_version: str) -> dict | None:
