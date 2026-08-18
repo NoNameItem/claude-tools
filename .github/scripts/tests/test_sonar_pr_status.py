@@ -627,6 +627,102 @@ class TestWaitForAnalysis:
         assert slept == []
 
 
+class TestBuildReleaseBlocks:
+    HISTORY: ClassVar[dict] = {
+        "coverage": [
+            {"date": "2026-07-31T12:06:46+0000", "value": "93.4"},
+            {"date": "2026-07-31T12:53:12+0000", "value": "94.1"},
+        ],
+        "violations": [
+            {"date": "2026-07-31T12:06:46+0000", "value": "13"},
+            {"date": "2026-07-31T12:53:12+0000", "value": "15"},
+        ],
+    }
+
+    GATE: ClassVar[dict] = {
+        "projectStatus": {
+            "status": "OK",
+            "conditions": [
+                {
+                    "metricKey": "new_coverage",
+                    "comparator": "LT",
+                    "errorThreshold": "80",
+                    "actualValue": "96.83",
+                    "status": "OK",
+                }
+            ],
+        }
+    }
+
+    def _wire(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        analyses: list[dict] | None = None,
+        head: dict | None = None,
+        history: dict | None = None,
+        branch_blocks: list[dict] | None = None,
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(
+            mod,
+            "wait_for_analysis",
+            lambda project, branch, revision, token, sleep=None: (
+                ANALYSES if analyses is None else analyses,
+                ANALYSES[0] if head is None else head,
+            ),
+        )
+        monkeypatch.setattr(mod, "fetch_history", lambda *args, **kwargs: self.HISTORY if history is None else history)
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {"CRITICAL": 7, "MINOR": 4})
+        # The only `fetch_json` call left in this path is the quality gate.
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: self.GATE)
+        monkeypatch.setattr(
+            mod,
+            "build_branch_blocks",
+            lambda project, branch, token: [] if branch_blocks is None else branch_blocks,
+        )
+
+    def _build(self) -> list[dict]:
+        from .. import sonar_pr_status as mod
+
+        return mod.build_release_blocks("NoNameItem_statuskit", "master", "0.5.1", HEAD_SHA, None)
+
+    def test_gate_block_first_then_delta(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._wire(monkeypatch)
+        titles = [block["title"] for block in self._build()]
+        assert titles == [
+            "Sonar · statuskit — Quality Gate passed",
+            "Sonar · statuskit — since 0.5.0 · 🔴 1 worse, 🟢 1 better",
+        ]
+
+    def test_gate_unavailable_keeps_the_delta(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        self._wire(monkeypatch)
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: None)  # gate call fails
+        blocks = self._build()
+        assert len(blocks) == 1
+        assert blocks[0]["title"].startswith("Sonar · statuskit — since 0.5.0")
+
+    def test_no_baseline_degrades_to_the_project_state_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = {"type": "table", "title": "Sonar · statuskit — project state", "open": False, "rows": []}
+        self._wire(monkeypatch, analyses=ANALYSES[:1], head=ANALYSES[0], branch_blocks=[state])
+        assert [block["title"] for block in self._build()] == [
+            "Sonar · statuskit — Quality Gate passed",
+            "Sonar · statuskit — project state",
+        ]
+
+    def test_history_unavailable_degrades_the_same_way(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = {"type": "table", "title": "Sonar · statuskit — project state", "open": False, "rows": []}
+        self._wire(monkeypatch, history={}, branch_blocks=[state])
+        assert self._build()[-1]["title"] == "Sonar · statuskit — project state"
+
+    def test_project_absent_from_sonar_yields_no_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._wire(monkeypatch, analyses=[], head=None, branch_blocks=[])
+        assert self._build() == []
+
+
 class TestFetchAndDegrade:
     def test_degraded_block_uses_check_run_title(self) -> None:
         from ..sonar_pr_status import degraded_block

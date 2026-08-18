@@ -711,6 +711,60 @@ def build_branch_blocks(project: str, branch: str, token: str | None) -> list[di
     return [build_branch_block(_short_name(project), measures, severities, overview_url)]
 
 
+def build_release_blocks(
+    project: str,
+    branch: str,
+    version: str,
+    revision: str,
+    token: str | None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict]:
+    """Gate block + version-to-version delta block for one released project.
+
+    The gate is the same one the PR path shows: the new-code period on ``master`` is
+    ``previous_version``, so it judges precisely the code this release adds. The delta is about
+    the whole project — two coordinate systems, two blocks.
+
+    Every failure narrows the output instead of raising: see the design's degradation table.
+    """
+    scope = _scope_params(None, branch)
+    short = _short_name(project)
+    overview_url = f"{_API_BASE}/project/overview?id={urllib.parse.quote(project)}&branch={urllib.parse.quote(branch)}"
+
+    analyses, head = wait_for_analysis(project, branch, revision, token, sleep)
+    if head is None and analyses:
+        head = analyses[0]
+
+    body: list[dict] = []
+    if head is not None and analyses:
+        baseline = pick_baseline(analyses[analyses.index(head) :], version)
+        if baseline is not None:
+            history = fetch_history(project, branch, _BRANCH_METRICS, baseline["date"], token)
+            if history:
+                baseline_measures, head_measures = split_history(history, baseline["date"], head["date"])
+                severities = _fetch_severities(project, scope, token, new_code=False)
+                body = [
+                    build_release_delta_block(
+                        short,
+                        version_event(baseline) or "",
+                        baseline_measures,
+                        head_measures,
+                        severities,
+                        overview_url,
+                    )
+                ]
+    if not body:
+        # No baseline, no history, or no analyses at all — today's absolute block is the same
+        # rendering a project's first release gets, so it needs no "unavailable" presentation.
+        body = build_branch_blocks(project, branch, token)
+    if not body:
+        return []
+
+    status = fetch_json(_api_url("qualitygates/project_status", {"projectKey": project, **scope}), token)
+    gate = [build_gate_block(short, status, overview_url)] if status else []
+    return gate + body
+
+
 def _short_name(project_key: str) -> str:
     """``NoNameItem_statuskit`` -> ``statuskit`` (the name a human recognises)."""
     return project_key.split("_", 1)[-1]
