@@ -236,11 +236,16 @@ jobs:
 
           # 1. Check table from the gating jobs' results. `skipped` is green: it means the job
           #    had nothing to do (no Python changes, no plugin changes).
+          #    `release-merge` is in this table for a different reason: it gates nothing, but a
+          #    failed detector leaves `is-release` empty, which every consumer reads as "not a
+          #    release" — so without it here the run would fail open and announce "All checks
+          #    passed" while the release detection never actually ran.
           rows=$(printf '%s' "$NEEDS_JSON" | jq -c '
             {"detect": "Detect changes",
              "validate-commits": "Validate commits",
              "python-ci": "Python CI",
-             "claude-code-plugin-ci": "Claude Code Plugin CI"} as $labels
+             "claude-code-plugin-ci": "Claude Code Plugin CI",
+             "release-merge": "Detect a release merge"} as $labels
             | [to_entries[]
                | select($labels[.key] != null)
                | (if .value.result == "failure" then {icon: "❌", bold: true}
