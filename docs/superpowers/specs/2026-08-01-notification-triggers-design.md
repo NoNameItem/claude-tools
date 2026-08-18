@@ -76,12 +76,11 @@ and `review_gate.py` unchanged.
      │          │                                                │
      └──────────┴────────────────────┬───────────────────────────┘
                                      │ needs: [validate-pr, the three gates]
-                     ┌───────────────┴───────────────┐
-                     ▼                               ▼
-             pr-summary                      release-pr-summary
-             if: always()                    if: always()
-                 && !REL && !EDIT                && REL && !EDIT
-                                                 && action != 'reopened'
+                                     │
+                                     ▼
+                             pr-summary
+                             if: always() && !REL && !EDIT
+                             (a release PR gets no PR notification at all)
 
   notify-start ── in parallel, if: !REL
 
@@ -472,40 +471,30 @@ Established from the live repository on 2026-07-31, not assumed:
   as any project file changed, and a release PR always changes files inside a project — so they are
   already off.
 
-### The release PR notification
+### The release PR notification — dropped (2026-08-19)
 
-A separate job `release-pr-summary` in `pr.yml`, calling a new `_reusable-release-pr-summary.yml`.
-It is a separate job rather than a separate workflow because a separate workflow could not use
-`needs` and would have to poll. There is no start message: it would say nothing, and there is no
-thread to maintain.
+There is none. The design originally added a `release-pr-summary` job in `pr.yml` calling a
+`_reusable-release-pr-summary.yml`, which compared the top CHANGELOG section at `before` and
+`after` (via a new `changelog_section.py`) and announced only the component the push actually
+touched. It was built, reviewed on PR #124, and then removed before merge.
 
-Its condition is `always() && REL` restricted to `opened` and `synchronize`. `edited` and
-`reopened` are excluded for a concrete reason: release-please rewrites the PR body on every
-force-push, so `edited` arrives with every merge to master — and it carries no `before`/`after`,
-which is exactly what the changelog comparison below needs. Excluding these two events costs
-nothing, because the version and the changelog only ever change through a commit, and this job
-publishes no required context, so a skipped run blocks nobody.
+The reason is that it carried almost no information the other notifications did not. Its changelog
+entry is the subject of the PR whose merge into master was announced a minute earlier by `push.yml`,
+and the same changelog arrives again as *Release notes* from `publish.yml` when the release goes
+out. The only unique payloads were the version number release-please decided on and the gate status
+of a bot-authored PR that virtually never fails — not worth a message on every merge to master.
 
-1. The component comes from the branch name; the CHANGELOG path comes from
-   `release-please-config.json`, not from a hard-coded constant.
-2. On `synchronize`: read the CHANGELOG at `before` and at `after` through the Contents API
-   (`?ref=<sha>` returns content even for a commit made unreachable by a force-push — verified
-   against live SHAs), take the top version section, drop the heading line with its date, and
-   compare the remaining entries. Identical → a pure rebase caused by somebody else's merge → stay
-   silent. This is what "notify only about the component the last push actually touched" means in
-   practice.
-3. On `opened`: always send.
-4. The message: PR title as the heading, the checks outcome as the verdict line
-   (`Ready to merge` / `Checks failed: …`), a collapsed *Changelog* block with the entries of the
-   new version, and a button to the PR. The block is rendered by the existing `release_notes.py`,
-   which already converts release-please markdown into Telegram rich markup within its budgets.
+It also had a defect that made keeping it more expensive than it looked. `pr.yml`'s concurrency
+group cancels the in-flight `synchronize` run on every new force-push, and release-please force-pushes
+each pending release PR on every merge; a cancelled run's changelog delta is simply lost, because the
+next run compares against a `before` that already contains those entries. Observed in this repo's own
+history: three double force-pushes 4-7 s apart across ~10 release updates. Fixing that would have
+required a persistent marker of what was already announced, mirroring `pr-notify-anchor` — real work
+for a message that duplicates two others.
 
-Parsing the CHANGELOG moves into a new `.github/scripts/changelog_section.py` returning
-`{version, date, entries}` for the top section — a pure function over text, used by both the
-comparison and the block, and covered by pytest without network.
-
-Effect on the 31 July sequence: the merge of #120 produces one message about the statuskit release
-instead of six, and the flow PR — whose only change was the date — says nothing.
+So a release PR is now silent on both ends: `notify-start` skips it (it always did) and `pr-summary`
+excludes it. Release information reaches Telegram exclusively through the release notifications
+(Publishing… / Published to PyPI). `changelog_section.py` and its tests are removed with the job.
 
 ## Part 5 — push notifications on a release merge (`claude-tools-5vg.20`)
 
@@ -541,14 +530,12 @@ jobs.
 
 | File | Change |
 |---|---|
-| `.github/workflows/pr.yml` | calls the review gate; `REL` condition on `python-ci`, `notify-start`, `review-gate`; `EDIT` condition on both summary jobs; two mutually exclusive summary jobs; `Review Gate` wrapper; `concurrency` key left as-is (see Part 1) |
+| `.github/workflows/pr.yml` | calls the review gate; `REL` condition on `python-ci`, `notify-start`, `review-gate`, `pr-summary`; `EDIT` condition on `pr-summary`; `Review Gate` wrapper; `concurrency` key left as-is (see Part 1) |
 | `.github/workflows/review-gate.yml` | becomes `_reusable-review-gate.yml`; `pull_request_target` machinery removed; nudge and `codex-nudge` marker (`comment:<id>@<cutoff>`) added; `current_head` check moved into the poll loop |
 | `.github/workflows/_reusable-pr-summary.yml` | `statuses: write` restored (writes `replied`); new `crossing-mode` input for the review-thread entry point; called from `pr.yml` and `review-thread.yml` |
-| `.github/workflows/_reusable-release-pr-summary.yml` | new — the release PR notification |
 | `.github/workflows/review-thread.yml` | new — `pull_request_review_thread` → 60 s debounce → summary; own `concurrency` group with `cancel-in-progress: true` |
 | `.github/workflows/_reusable-claude-code-plugin-ci.yml` | new input `manifests-only` |
 | `.github/workflows/push.yml` | release-merge detection over `github.event.commits[].modified`; start suppressed, finish only on failure |
-| `.github/scripts/changelog_section.py` | new — top-section parser |
 | `.github/scripts/pr_start.py` | new — start-message spec: verdict line + commits block |
 | `.github/scripts/pr_summary.py` | writes `replied` into the marker after sending; crossing mode for re-notification; `stale-head` kept and its purpose documented |
 | `.github/scripts/review_gate.py` | unchanged decision logic; the cutoff it receives now comes from the marker, not from the event |
@@ -643,7 +630,7 @@ post-merge.
 | `claude-tools-5vg.15` | dissolved — one speaker, so no duplicate to suppress; the verdict record does not return. The two remaining duplicate paths are closed structurally: `edited` skips the summary, a burst of Resolve clicks is debounced |
 | `claude-tools-5vg.16` | fixed — *Superseded by `<sha>`* closes the abandoned thread |
 | `claude-tools-5vg.17` | fixed — `review-thread.yml`, crossing mode over the counter, 60 s debounce |
-| `claude-tools-5vg.18` | fixed — release PR notifies only when its changelog entries actually changed |
+| `claude-tools-5vg.18` | ~~fixed — release PR notifies only when its changelog entries actually changed~~ → **dropped before merge**: the deduplicated message was still one more message per merge to master, duplicating the push notification and the later release notes. The fan-out is eliminated by removing the notification, not by deduping it — see "The release PR notification — dropped" |
 | `claude-tools-5vg.19` | fixed — automatic reviews off, the gate nudges only non-release PRs; the false comment corrected |
 | `claude-tools-5vg.20` | fixed — push pair suppressed on a release merge, except on failure |
 | `claude-tools-5vg.1` | fixed as a side effect — an explicit nudge replaces reliance on the `synchronize` webhook |

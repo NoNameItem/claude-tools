@@ -33,8 +33,9 @@ jobs:
     #   * `pull_request` only — a workflow_dispatch run has no head to announce.
     #   * not `edited` — editing a title is not a push, and the summary is skipped on `edited`
     #     too, so announcing here would leave a thread nobody ever answers.
-    #   * not a release-please PR — its notification is release-pr-summary's job, and it has no
-    #     thread to maintain.
+    #   * not a release-please PR — a bot-authored version bump is announced by the release
+    #     notifications (Publishing… / Published to PyPI), which carry the same changelog; a PR
+    #     thread here would only duplicate them on every force-push.
     #   * same-repo only — this job reads TELEGRAM_* directly, and GitHub withholds repository
     #     secrets from fork-origin runs.
     if: |
@@ -346,6 +347,11 @@ jobs:
     needs: [review-gate]
     if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # The wrapper reads `needs.review-gate.result` and exits — it calls no API at all, so it takes
+    # none of the workflow-level write scopes. The check run that publishes the required context is
+    # created by Actions itself, not through this token.
+    permissions:
+      contents: read
     steps:
       - name: Check result
         env:
@@ -425,7 +431,8 @@ jobs:
     # summary would answer a second time. The rest of the workflow still runs on `edited`, so
     # every required context is re-published by a job that actually executed — only the
     # notification is suppressed.
-    # A release PR is handled by `release-pr-summary` instead.
+    # A release PR is deliberately silent here for the same reason notify-start skips it: its
+    # content reaches Telegram through the release notifications instead.
     if: |
       always() && github.event_name == 'pull_request' &&
       github.event.action != 'edited' &&
@@ -444,31 +451,4 @@ jobs:
     with:
       pr-number: ${{ github.event.pull_request.number }}
       head-sha: ${{ github.event.pull_request.head.sha }}
-    secrets: inherit
-
-  # The release-please PR notification. A job rather than a separate workflow: a separate workflow
-  # could not use `needs` and would have to poll for the gates.
-  release-pr-summary:
-    name: Release PR Summary
-    needs: [validate-pr, python-ci-result, claude-code-plugin-ci-result, review-gate-result]
-    # `opened` and `synchronize` only. release-please rewrites the PR body on every force-push, so
-    # `edited` arrives with every merge to master — and it carries no `before`/`after`, which is
-    # exactly what the changelog comparison needs. `reopened` is excluded for the same reason.
-    # Neither exclusion costs anything: the version and the changelog only ever change through a
-    # commit, and this job publishes no required context, so a skipped run blocks nobody.
-    if: |
-      always() && github.event_name == 'pull_request' &&
-      startsWith(github.event.pull_request.head.ref, 'release-please--') &&
-      (github.event.action == 'opened' || github.event.action == 'synchronize') &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/_reusable-release-pr-summary.yml
-    with:
-      pr-number: ${{ github.event.pull_request.number }}
-      head-ref: ${{ github.event.pull_request.head.ref }}
-      before-sha: ${{ github.event.before }}
-      after-sha: ${{ github.event.pull_request.head.sha }}
-      checks-json: ${{ toJson(needs) }}
     secrets: inherit

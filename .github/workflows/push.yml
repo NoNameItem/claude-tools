@@ -28,6 +28,11 @@ jobs:
     name: Detect a release merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A job-level block REPLACES the workflow-level set: this job only checks out the repo and
+    # parses the push payload with a local script, so the inherited `checks: write` /
+    # `pull-requests: write` would be credentials it never uses.
+    permissions:
+      contents: read
     outputs:
       is-release: ${{ steps.detect.outputs.is-release }}
     steps:
