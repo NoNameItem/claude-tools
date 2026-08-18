@@ -12,6 +12,8 @@ from ..sonar_pr_status import (
     build_branch_block,
     build_gate_block,
     build_new_code_block,
+    delta_cell,
+    delta_marker,
     extract_projects,
     format_breakdown,
     format_measure,
@@ -107,6 +109,61 @@ class TestFormatBreakdown:
 
     def test_all_zero(self) -> None:
         assert format_breakdown({"BLOCKER": 0}) == ""
+
+
+class TestDeltaMarker:
+    @pytest.mark.parametrize(
+        ("metric", "before", "after", "expected"),
+        [
+            ("coverage", "93.4", "94.1", "🟢"),
+            ("coverage", "94.1", "93.4", "🔴"),
+            ("violations", "13", "15", "🔴"),
+            ("violations", "15", "13", "🟢"),
+            ("vulnerabilities", "0", "1", "🔴"),
+            ("duplicated_lines_density", "0.0", "1.5", "🔴"),
+            ("security_hotspots", "2", "0", "🟢"),
+            # Sonar encodes ratings 1..5 with 1 = A, so a numeric rise is a downgrade.
+            ("reliability_rating", "1.0", "2.0", "🔴"),
+            ("security_rating", "5.0", "1.0", "🟢"),
+            ("sqale_rating", "1.0", "1.0", ""),
+            # Neutral metric: no marker, and so no trend counter either.
+            ("ncloc", "2121", "2280", ""),
+            ("coverage", None, "93.4", ""),
+            ("coverage", "93.4", None, ""),
+            ("coverage", "93.4", "not-a-number", ""),
+        ],
+    )
+    def test_marker(self, metric: str, before: str | None, after: str | None, expected: str) -> None:
+        assert delta_marker(metric, before, after) == expected
+
+
+class TestDeltaCell:
+    def test_changed_with_polarity(self) -> None:
+        assert delta_cell("coverage", "93.4", "94.1") == "🟢 93.4% → 94.1%"
+
+    def test_changed_without_polarity(self) -> None:
+        assert delta_cell("ncloc", "2121", "2280") == "2121 → 2280"
+
+    def test_unchanged_renders_the_value_alone(self) -> None:
+        assert delta_cell("coverage", "93.4", "93.4") == "93.4%"
+
+    def test_one_end_missing_renders_the_current_value(self) -> None:
+        assert delta_cell("coverage", None, "93.4") == "93.4%"
+        assert delta_cell("coverage", "93.4", None) == "—"
+
+    def test_ratings_render_as_letters(self) -> None:
+        assert delta_cell("security_rating", "1.0", "5.0") == "🔴 A → E"
+
+    def test_breakdown_rides_on_the_head_value(self) -> None:
+        cell = delta_cell("violations", "13", "15", after_text="15 (critical 7, minor 4)")
+        assert cell == "🔴 13 → 15 (critical 7, minor 4)"
+
+    def test_unchanged_keeps_the_breakdown(self) -> None:
+        assert delta_cell("violations", "13", "13", after_text="13 (critical 7)") == "13 (critical 7)"
+
+    def test_display_equal_values_count_as_unchanged(self) -> None:
+        # 93.40 and 93.44 both render as 93.4% — an arrow between two identical strings is noise.
+        assert delta_cell("coverage", "93.40", "93.44") == "93.4%"
 
 
 class TestBuildGateBlock:

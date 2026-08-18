@@ -98,6 +98,20 @@ _BRANCH_METRICS = [
     "ncloc",
 ]
 
+# Which way is good. `+1`: a rise is an improvement; `-1`: a rise is a regression. A metric absent
+# from this map is neutral (`ncloc`) — it renders a plain arrow and never moves the trend counter.
+# Ratings are Sonar's `1..5` with `1` = A, so a numeric rise is a downgrade.
+_METRIC_POLARITY = {
+    "coverage": 1,
+    "violations": -1,
+    "vulnerabilities": -1,
+    "security_hotspots": -1,
+    "duplicated_lines_density": -1,
+    "reliability_rating": -1,
+    "security_rating": -1,
+    "sqale_rating": -1,
+}
+
 
 def extract_projects(check_runs: list[dict]) -> list[tuple[str, str]]:
     """Discover analysed Sonar projects from the head SHA's check runs.
@@ -188,6 +202,47 @@ def format_breakdown(counts: dict) -> str:
         if isinstance(count, int) and count > 0:
             parts.append(f"{severity.lower()} {count}")
     return ", ".join(parts)
+
+
+def delta_marker(metric: str, before: str | None, after: str | None) -> str:
+    """``🟢`` / ``🔴`` for a metric whose direction means something, ``""`` otherwise.
+
+    Telegram renders no colour except emoji — ``<span style="color:…">`` and friends are accepted
+    by the Bot API and silently dropped — so the marker is the only way a row can be red or green,
+    and ``<b>`` stays reserved for "this is a problem".
+    """
+    polarity = _METRIC_POLARITY.get(metric, 0)
+    if not polarity or before is None or after is None:
+        return ""
+    try:
+        change = float(after) - float(before)
+    except ValueError:
+        return ""
+    if change == 0:
+        return ""
+    return "🟢" if change * polarity > 0 else "🔴"
+
+
+def delta_cell(metric: str, before: str | None, after: str | None, after_text: str | None = None) -> str:
+    """Render one delta row's right-hand cell.
+
+    Four cases, in the order they are checked: one end of the window missing (current value, no
+    arrow), unchanged (the value alone), changed with a polarity (``🟢 93.4% → 94.1%``), changed
+    without one (``2121 → 2280``).
+
+    ``after_text`` overrides the head's rendering so ``Issues`` can carry today's severity
+    breakdown — Sonar exposes no history for facets, so a row reads "was 13, is 15, and here is
+    what today's 15 consists of".
+    """
+    head_text = format_measure(metric, after)
+    text = head_text if after_text is None else after_text
+    if before in (None, "") or after in (None, ""):
+        return text
+    base_text = format_measure(metric, before)
+    if base_text == head_text:
+        return text
+    marker = delta_marker(metric, before, after)
+    return f"{marker} {base_text} → {text}" if marker else f"{base_text} → {text}"
 
 
 def _count_with_breakdown(total: str | None, counts: dict) -> str:
