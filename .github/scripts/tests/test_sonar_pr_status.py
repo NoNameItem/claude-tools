@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -627,6 +627,11 @@ class TestWaitForAnalysis:
         assert slept == []
 
 
+# Distinguishes "the test didn't pass `head`" from an explicit `head=None` — plain `None`
+# can't do that job since `None` is also the real "no head found" value under test.
+_UNSET: Any = object()
+
+
 class TestBuildReleaseBlocks:
     HISTORY: ClassVar[dict] = {
         "coverage": [
@@ -659,7 +664,7 @@ class TestBuildReleaseBlocks:
         monkeypatch: pytest.MonkeyPatch,
         *,
         analyses: list[dict] | None = None,
-        head: dict | None = None,
+        head: dict | None = _UNSET,
         history: dict | None = None,
         branch_blocks: list[dict] | None = None,
     ) -> None:
@@ -670,7 +675,7 @@ class TestBuildReleaseBlocks:
             "wait_for_analysis",
             lambda project, branch, revision, token, sleep=None: (
                 ANALYSES if analyses is None else analyses,
-                ANALYSES[0] if head is None else head,
+                ANALYSES[0] if head is _UNSET else head,
             ),
         )
         monkeypatch.setattr(mod, "fetch_history", lambda *args, **kwargs: self.HISTORY if history is None else history)
