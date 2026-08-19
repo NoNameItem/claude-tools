@@ -391,17 +391,10 @@ class TestBuildReleaseDeltaBlock:
         assert rows["Lines of code"] == "2121 → 2280"
 
     def test_row_labels_match_the_branch_block(self) -> None:
-        labels = [row[0] for row in self._block()["rows"]]
-        assert labels == [
-            "Coverage",
-            "Issues",
-            "Vulnerabilities",
-            "Reliability",
-            "Security",
-            "Maintainability",
-            "Duplication",
-            "Lines of code",
-        ]
+        """The delta block must show the same rows as the branch block, or the two drift apart."""
+        branch_labels = [row[0] for row in build_branch_block("statuskit", self.BASELINE, {}, self.OVERVIEW)["rows"]]
+        delta_labels = [row[0] for row in self._block()["rows"]]
+        assert delta_labels == branch_labels
 
     def test_hotspot_row_present_when_non_zero(self) -> None:
         head = {**self.HEAD, "security_hotspots": "2"}
@@ -726,6 +719,24 @@ class TestBuildReleaseBlocks:
     def test_project_absent_from_sonar_yields_no_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._wire(monkeypatch, analyses=[], head=None, branch_blocks=[])
         assert self._build() == []
+
+    def test_timed_out_wait_with_no_newer_analysis_degrades_to_project_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Timeout: `head` falls back to `analyses[0]`, whose VERSION event is the previous
+        release (0.5.1) because no push landed between it and this release commit. If the version
+        being released (0.5.2) is newer still, `pick_baseline` returns that very same analysis —
+        the window collapses to a single point. That must degrade to the project-state block, not
+        render "since 0.5.1" with every row reported unchanged."""
+        from .. import sonar_pr_status as mod
+
+        state = {"type": "table", "title": "Sonar · statuskit — project state", "open": False, "rows": []}
+        self._wire(monkeypatch, analyses=ANALYSES, head=None, branch_blocks=[state])
+        blocks = mod.build_release_blocks("NoNameItem_statuskit", "master", "0.5.2", HEAD_SHA, None)
+        assert [block["title"] for block in blocks] == [
+            "Sonar · statuskit — Quality Gate passed",
+            "Sonar · statuskit — project state",
+        ]
 
 
 class TestReleaseCli:

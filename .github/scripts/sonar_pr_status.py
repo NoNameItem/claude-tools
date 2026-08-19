@@ -291,6 +291,11 @@ def _link(text: str, url: str) -> dict:
     return {"text": text, "url": url}
 
 
+def _overview_url(project: str, branch: str) -> str:
+    """The project dashboard URL for a given branch, shared by the branch and release paths."""
+    return f"{_API_BASE}/project/overview?id={urllib.parse.quote(project)}&branch={urllib.parse.quote(branch)}"
+
+
 def build_gate_block(project: str, project_status: dict, dashboard_url: str) -> dict:
     """Build the quality-gate block from the API's ``conditions`` array.
 
@@ -712,7 +717,7 @@ def build_branch_blocks(project: str, branch: str, token: str | None) -> list[di
     if not measures:
         return []
     severities = _fetch_severities(project, scope, token, new_code=False)
-    overview_url = f"{_API_BASE}/project/overview?id={urllib.parse.quote(project)}&branch={urllib.parse.quote(branch)}"
+    overview_url = _overview_url(project, branch)
     return [build_branch_block(_short_name(project), measures, severities, overview_url)]
 
 
@@ -734,7 +739,7 @@ def build_release_blocks(
     """
     scope = _scope_params(None, branch)
     short = _short_name(project)
-    overview_url = f"{_API_BASE}/project/overview?id={urllib.parse.quote(project)}&branch={urllib.parse.quote(branch)}"
+    overview_url = _overview_url(project, branch)
 
     analyses, head = wait_for_analysis(project, branch, revision, token, sleep)
     if head is None and analyses:
@@ -742,11 +747,21 @@ def build_release_blocks(
 
     body: list[dict] = []
     if head is not None and analyses:
+        head_date = head.get("date")
         baseline = pick_baseline(analyses[analyses.index(head) :], version)
-        if baseline is not None:
-            history = fetch_history(project, branch, _BRANCH_METRICS, baseline["date"], token)
+        baseline_date = baseline.get("date") if baseline is not None else None
+        # A baseline whose date equals the head's is no baseline at all. On the timed-out wait
+        # path `head` falls back to `analyses[0]`, and `pick_baseline` is handed a slice that
+        # starts at that same head — so it can return the head's own analysis (e.g. no push
+        # landed between the previous release and this one). Without this guard the window
+        # collapses to a single point and the block renders "since <version>" with every row
+        # reported unchanged, passing off the previous release's numbers as this one's. `.get`
+        # also means a malformed analysis record (missing "date") degrades the same way instead
+        # of raising past the per-project loop in `main`.
+        if baseline is not None and baseline_date is not None and head_date is not None and baseline_date != head_date:
+            history = fetch_history(project, branch, _BRANCH_METRICS, baseline_date, token)
             if history:
-                baseline_measures, head_measures = split_history(history, baseline["date"], head["date"])
+                baseline_measures, head_measures = split_history(history, baseline_date, head_date)
                 severities = _fetch_severities(project, scope, token, new_code=False)
                 body = [
                     build_release_delta_block(
