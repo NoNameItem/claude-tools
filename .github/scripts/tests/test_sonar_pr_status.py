@@ -790,6 +790,52 @@ class TestReleaseCli:
         assert mod.main() == 0
         assert json.loads(capsys.readouterr().out) == []
 
+    def test_release_mode_requires_version(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(
+            mod.sys,
+            "argv",
+            [
+                "sonar_pr_status.py",
+                "--mode",
+                "release",
+                "--revision",
+                HEAD_SHA,
+                "--project-keys",
+                '["NoNameItem_statuskit"]',
+            ],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            mod.main()
+        assert exc_info.value.code == 2
+        assert "--version is required when --mode release" in capsys.readouterr().err
+
+    def test_release_mode_requires_revision(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(
+            mod.sys,
+            "argv",
+            [
+                "sonar_pr_status.py",
+                "--mode",
+                "release",
+                "--version",
+                "0.5.1",
+                "--project-keys",
+                '["NoNameItem_statuskit"]',
+            ],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            mod.main()
+        assert exc_info.value.code == 2
+        assert "--revision is required when --mode release" in capsys.readouterr().err
+
 
 class TestFetchAndDegrade:
     def test_degraded_block_uses_check_run_title(self) -> None:

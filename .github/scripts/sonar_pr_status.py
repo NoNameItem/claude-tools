@@ -786,6 +786,11 @@ def main() -> int:
     parser.add_argument("--version", default="", help="Released version (mode=release).")
     parser.add_argument("--revision", default="", help="Commit SHA the release tag points at (mode=release).")
     args = parser.parse_args()
+    if args.mode == "release":
+        if not args.version:
+            parser.error("--version is required when --mode release")
+        if not args.revision:
+            parser.error("--revision is required when --mode release")
 
     token = os.environ.get("SONAR_TOKEN") or None
     blocks: list[dict] = []
