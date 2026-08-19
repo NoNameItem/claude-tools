@@ -275,9 +275,14 @@ jobs:
           # `flow` release simply has none. `--mode release` waits for the analysis of this very
           # commit (publish and the analysis are independent workflow runs), then reports the
           # quality gate plus what changed since the previous release.
-          python3 .github/scripts/sonar_pr_status.py --mode release --branch master \
-            --version "$VERSION" --revision "$GITHUB_SHA" \
-            --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json
+          if [ "$RESOLVE_RESULT" = "success" ]; then
+            python3 .github/scripts/sonar_pr_status.py --mode release --branch master \
+              --version "$VERSION" --revision "$GITHUB_SHA" \
+              --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json
+          else
+            # An unresolved release has no project name or version to ask Sonar about.
+            echo '[]' > sonar.json
+          fi
 
           jq -n \
             --arg status "$STATUS" \
