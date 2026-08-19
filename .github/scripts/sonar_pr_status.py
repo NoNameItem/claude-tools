@@ -9,6 +9,9 @@ Two shapes, both emitted as `table` blocks in the notify-spec contract:
 * ``--mode branch`` — per project: the overall state of the branch. New-code metrics on
   ``master`` are meaningless until ``sonar.projectVersion`` has seeded a new-code period, and
   accumulated problems (e.g. a BLOCKER vulnerability) are only visible in the overall state.
+* ``--mode release`` — per project: the quality gate on ``master`` plus a version-to-version
+  delta of the whole project since the previous release. Waits for the analysis of the tag's
+  commit, because ``publish.yml`` and the analysis are independent workflow runs.
 
 Data comes from the SonarCloud Web API, never from the check run's markdown ``output.summary``:
 the API is a documented contract and carries the gate thresholds and per-condition status that
@@ -21,6 +24,8 @@ not the notification.
 Usage:
     python3 sonar_pr_status.py --mode pr --pr 118 --check-runs-file runs.json
     python3 sonar_pr_status.py --mode branch --branch master --project-keys '["NoNameItem_statuskit"]'
+    python3 sonar_pr_status.py --mode release --branch master --version 0.5.1 --revision dab4b1f \
+        --project-keys '["NoNameItem_statuskit"]'
 
 Environment variables:
     SONAR_TOKEN  Optional. Public projects answer anonymously; passed anyway so private ones work.
@@ -773,11 +778,13 @@ def _short_name(project_key: str) -> str:
 def main() -> int:
     """CLI entrypoint. Always returns 0 — no Sonar data is a valid outcome."""
     parser = argparse.ArgumentParser(description="Build Sonar blocks for a Telegram notification.")
-    parser.add_argument("--mode", choices=["pr", "branch"], required=True)
+    parser.add_argument("--mode", choices=["pr", "branch", "release"], required=True)
     parser.add_argument("--pr", default=None, help="PR number (mode=pr).")
-    parser.add_argument("--branch", default="master", help="Branch name (mode=branch).")
+    parser.add_argument("--branch", default="master", help="Branch name (mode=branch|release).")
     parser.add_argument("--check-runs-file", default=None, help="JSON file with the head SHA's check runs (mode=pr).")
     parser.add_argument("--project-keys", default=None, help="JSON array, e.g. '[\"NoNameItem_statuskit\"]'.")
+    parser.add_argument("--version", default="", help="Released version (mode=release).")
+    parser.add_argument("--revision", default="", help="Commit SHA the release tag points at (mode=release).")
     args = parser.parse_args()
 
     token = os.environ.get("SONAR_TOKEN") or None
@@ -799,6 +806,10 @@ def main() -> int:
                 blocks.extend(
                     build_pr_blocks(project, dashboard_url, args.pr, token, titles.get(project, "Quality Gate"))
                 )
+        elif args.mode == "release":
+            keys = json.loads(args.project_keys) if args.project_keys else []
+            for project in keys:
+                blocks.extend(build_release_blocks(project, args.branch, args.version, args.revision, token))
         else:
             keys = json.loads(args.project_keys) if args.project_keys else []
             for project in keys:

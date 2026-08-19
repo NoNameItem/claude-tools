@@ -728,6 +728,69 @@ class TestBuildReleaseBlocks:
         assert self._build() == []
 
 
+class TestReleaseCli:
+    def test_release_mode_passes_version_and_revision(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        seen: list[tuple] = []
+
+        def fake_build(project, branch, version, revision, token, sleep=None):
+            seen.append((project, branch, version, revision))
+            return [{"type": "table", "title": "Sonar · statuskit — since 0.5.0", "open": False, "rows": []}]
+
+        monkeypatch.setattr(mod, "build_release_blocks", fake_build)
+        monkeypatch.setattr(
+            mod.sys,
+            "argv",
+            [
+                "sonar_pr_status.py",
+                "--mode",
+                "release",
+                "--branch",
+                "master",
+                "--version",
+                "0.5.1",
+                "--revision",
+                HEAD_SHA,
+                "--project-keys",
+                '["NoNameItem_statuskit"]',
+            ],
+        )
+        assert mod.main() == 0
+        assert seen == [("NoNameItem_statuskit", "master", "0.5.1", HEAD_SHA)]
+        assert json.loads(capsys.readouterr().out)[0]["title"] == "Sonar · statuskit — since 0.5.0"
+
+    def test_failure_inside_the_loop_still_prints_json(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        def boom(*args, **kwargs):
+            message = "Sonar exploded"
+            raise RuntimeError(message)
+
+        monkeypatch.setattr(mod, "build_release_blocks", boom)
+        monkeypatch.setattr(
+            mod.sys,
+            "argv",
+            [
+                "sonar_pr_status.py",
+                "--mode",
+                "release",
+                "--version",
+                "0.5.1",
+                "--revision",
+                HEAD_SHA,
+                "--project-keys",
+                '["NoNameItem_statuskit"]',
+            ],
+        )
+        assert mod.main() == 0
+        assert json.loads(capsys.readouterr().out) == []
+
+
 class TestFetchAndDegrade:
     def test_degraded_block_uses_check_run_title(self) -> None:
         from ..sonar_pr_status import degraded_block
