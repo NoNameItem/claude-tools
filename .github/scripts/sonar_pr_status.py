@@ -6,9 +6,9 @@ Two shapes, both emitted as `table` blocks in the notify-spec contract:
 * ``--mode pr``     — per project: the quality gate (from ``conditions``, so a gate that gains
   a condition shows up with no code change) plus a new-code summary with a severity breakdown
   Sonar's own comment does not provide.
-* ``--mode branch`` — per project: the overall state of the branch. New-code metrics on
-  ``master`` are meaningless until ``sonar.projectVersion`` has seeded a new-code period, and
-  accumulated problems (e.g. a BLOCKER vulnerability) are only visible in the overall state.
+* ``--mode branch`` — per project: the overall state of the branch. A push message answers "did
+  my commit break anything", and accumulated problems (e.g. a BLOCKER vulnerability) are only
+  visible in the overall state. The delta since the previous release belongs to ``release``.
 * ``--mode release`` — per project: the quality gate on ``master`` plus a version-to-version
   delta of the whole project since the previous release. Waits for the analysis of the tag's
   commit, because ``publish.yml`` and the analysis are independent workflow runs.

@@ -278,9 +278,10 @@ jobs:
           failed_jobs=$(gh api --paginate "repos/$REPO/actions/runs/$RUN_ID/jobs" \
             --jq '[.jobs[] | select(.conclusion == "failure") | .name]' | jq -s 'add // [] | .[:20]')
 
-          # 3. Sonar reports the OVERALL state of the branch here, not new code: the new-code
-          #    period on master only becomes meaningful once projectVersion has seeded a version
-          #    history, and accumulated problems are visible nowhere else.
+          # 3. Sonar reports the OVERALL state of the branch here, not new code: a push message
+          #    answers "did my commit break anything", and accumulated problems are visible
+          #    nowhere else. (The new-code period on master is meaningful since projectVersion
+          #    was seeded on 2026-07-31 — the release notification uses it; a push does not.)
           keys=$(printf '%s' "$DETECT_RESULT" \
             | jq -c '[.by_type.python.matrix.include[]?.project] | map("NoNameItem_" + .)')
           python3 .github/scripts/sonar_pr_status.py \
