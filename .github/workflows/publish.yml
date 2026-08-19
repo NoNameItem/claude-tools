@@ -258,13 +258,13 @@ jobs:
               skipped) STATUS=released; VERDICT="Released" ;;
               *)       STATUS=failed;   VERDICT="Publish failed" ;;
             esac
-            TITLE="$PROJECT_NAME $VERSION"
+            TITLE="Release $PROJECT_NAME $VERSION"
           else
             STATUS=failed
             VERDICT="Release resolution $RESOLVE_RESULT — nothing was published"
             # project-name/version are resolve's own outputs, so both are empty when it did not
             # succeed; the release tag is the only identifier left to title the message with.
-            TITLE="$TAG"
+            TITLE="Release $TAG"
           fi
 
           # Release notes come from GitHub, not from a diff: release-please already wrote them.
@@ -272,9 +272,11 @@ jobs:
             | python3 .github/scripts/release_notes.py > notes.json
 
           # Sonar is conditional: only projects that exist in SonarCloud produce a block, so a
-          # `flow` release simply has none. There is no version-pinned analysis — Sonar analyses
-          # branches, never tags — so this is the state of master, which is what was released.
-          python3 .github/scripts/sonar_pr_status.py --mode branch --branch master \
+          # `flow` release simply has none. `--mode release` waits for the analysis of this very
+          # commit (publish and the analysis are independent workflow runs), then reports the
+          # quality gate plus what changed since the previous release.
+          python3 .github/scripts/sonar_pr_status.py --mode release --branch master \
+            --version "$VERSION" --revision "$GITHUB_SHA" \
             --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json
 
           jq -n \
