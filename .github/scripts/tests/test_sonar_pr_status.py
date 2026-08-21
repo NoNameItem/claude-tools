@@ -139,6 +139,8 @@ class TestDeltaMarker:
             ("coverage", None, "93.4", ""),
             ("coverage", "93.4", None, ""),
             ("coverage", "93.4", "not-a-number", ""),
+            # Sub-precision move: 93.44 and 93.43 both render "93.4%" — no visible change, no marker.
+            ("coverage", "93.44", "93.43", ""),
         ],
     )
     def test_marker(self, metric: str, before: str | None, after: str | None, expected: str) -> None:
@@ -172,6 +174,24 @@ class TestDeltaCell:
     def test_display_equal_values_count_as_unchanged(self) -> None:
         # 93.40 and 93.44 both render as 93.4% — an arrow between two identical strings is noise.
         assert delta_cell("coverage", "93.40", "93.44") == "93.4%"
+
+
+class TestDeltaMarkerAgreesWithDeltaCell:
+    """`delta_marker` and `delta_cell` must never disagree about whether a metric moved.
+
+    Before the fix, `delta_marker` compared raw `float(before)` vs `float(after)` while
+    `delta_cell` compared `format_measure()`-rendered text — so a sub-precision move (e.g.
+    coverage 93.44 -> 93.43) fed a red/green marker into `trend_segment`'s title and the block's
+    `open` flag even though the rendered table showed no change at all on that row.
+    """
+
+    def test_sub_precision_percent_change_yields_no_marker_and_a_plain_cell(self) -> None:
+        assert delta_marker("coverage", "93.44", "93.43") == ""
+        assert delta_cell("coverage", "93.44", "93.43") == "93.4%"
+
+    def test_real_percent_change_still_produces_a_marker(self) -> None:
+        assert delta_marker("coverage", "93.4", "94.1") == "🟢"
+        assert delta_cell("coverage", "93.4", "94.1") == "🟢 93.4% → 94.1%"
 
 
 class TestBuildGateBlock:
@@ -501,6 +521,53 @@ class TestFetchAnalyses:
         assert mod.fetch_analyses("NoNameItem_statuskit", "master", None) == []
 
 
+def _analyses_page(count: int, offset: int) -> list[dict]:
+    """A page of distinct, order-trackable analysis stubs (content is irrelevant to pagination)."""
+    return [{"key": f"a{i}", "revision": f"rev{i}"} for i in range(offset, offset + count)]
+
+
+class TestFetchAnalysesPagination:
+    def test_pages_through_and_concatenates_in_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # More than one page's worth of analyses accumulated since the previous release: a
+        # single ps=100 call would leave `pick_baseline` unable to see the older pages at all.
+        from .. import sonar_pr_status as mod
+
+        pages = [
+            _analyses_page(mod._ANALYSES_PAGE_SIZE, 0),
+            _analyses_page(mod._ANALYSES_PAGE_SIZE, 100),
+            _analyses_page(30, 200),  # short page: the normal end-of-data signal
+        ]
+        responses = iter(pages)
+        seen: list[str] = []
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            seen.append(url)
+            return {"analyses": next(responses)}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        result = mod.fetch_analyses("NoNameItem_statuskit", "master", None)
+        assert result == pages[0] + pages[1] + pages[2]
+        assert len(seen) == 3
+        assert "p=1" in seen[0]
+        assert "p=2" in seen[1]
+        assert "p=3" in seen[2]
+
+    def test_stops_at_the_cap_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A misbehaving API that never returns a short page must not spin forever, and must not
+        # raise either — every Sonar failure in this file degrades (see module docstring).
+        from .. import sonar_pr_status as mod
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            return {"analyses": _analyses_page(mod._ANALYSES_PAGE_SIZE, 0)}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        result = mod.fetch_analyses("NoNameItem_statuskit", "master", None)
+        assert len(result) == mod._ANALYSES_PAGE_SIZE * mod._MAX_ANALYSIS_PAGES
+        assert "cap" in capsys.readouterr().err
+
+
 class TestHistoryPair:
     POINTS: ClassVar[list[dict]] = [
         {"date": "2026-07-31T12:06:46+0000", "value": "93.4"},
@@ -567,17 +634,28 @@ class TestFetchHistory:
 
 class TestWaitForAnalysis:
     def _responses(self, monkeypatch: pytest.MonkeyPatch, pages: list[list[dict]]) -> list[float]:
-        """Stub `fetch_analyses` with one response per poll; return the list sleeps are recorded in."""
+        """Stub `fetch_analyses` with one response per call; return the list sleeps are recorded in.
+
+        One response is consumed per call regardless of `max_pages` — each poll tick makes one
+        call (bounded to page 1) and, once the loop resolves, exactly one further call rebuilds the
+        full list, so callers must supply one extra page beyond what the old single-fetch-per-tick
+        contract needed.
+        """
         from .. import sonar_pr_status as mod
 
         remaining = list(pages)
-        monkeypatch.setattr(mod, "fetch_analyses", lambda project, branch, token: remaining.pop(0))
+        monkeypatch.setattr(
+            mod,
+            "fetch_analyses",
+            lambda project, branch, token, max_pages=mod._MAX_ANALYSIS_PAGES: remaining.pop(0),
+        )
         return []
 
     def test_found_on_the_first_poll(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from .. import sonar_pr_status as mod
 
-        slept = self._responses(monkeypatch, [ANALYSES])
+        # One response for the poll tick that finds the head, one for the post-loop full re-fetch.
+        slept = self._responses(monkeypatch, [ANALYSES, ANALYSES])
         analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
         assert head["revision"] == HEAD_SHA
         assert analyses == ANALYSES
@@ -587,7 +665,7 @@ class TestWaitForAnalysis:
         from .. import sonar_pr_status as mod
 
         without_head = ANALYSES[1:]
-        slept = self._responses(monkeypatch, [without_head, without_head, ANALYSES])
+        slept = self._responses(monkeypatch, [without_head, without_head, ANALYSES, ANALYSES])
         _, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
         assert head["revision"] == HEAD_SHA
         assert slept == [15.0, 15.0]
@@ -596,7 +674,8 @@ class TestWaitForAnalysis:
         from .. import sonar_pr_status as mod
 
         without_head = ANALYSES[1:]
-        slept = self._responses(monkeypatch, [without_head] * 41)
+        # 41 poll ticks (none find the head) plus the one full re-fetch after the ceiling is hit.
+        slept = self._responses(monkeypatch, [without_head] * 42)
         analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
         assert head is None
         assert analyses == without_head  # the caller degrades to the latest analysis
@@ -607,17 +686,104 @@ class TestWaitForAnalysis:
     ) -> None:
         from .. import sonar_pr_status as mod
 
-        slept = self._responses(monkeypatch, [ANALYSES[1:]] * 41)
+        slept = self._responses(monkeypatch, [ANALYSES[1:]] * 42)
         mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
         assert HEAD_SHA in capsys.readouterr().err
 
     def test_no_analyses_returns_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No project in Sonar (a `flow` release) or the API is down — waiting changes neither.
+        # No post-loop re-fetch happens either: a single empty response ends everything.
         from .. import sonar_pr_status as mod
 
         slept = self._responses(monkeypatch, [[]])
         assert mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append) == ([], None)
         assert slept == []
+
+
+class TestWaitForAnalysisPagination:
+    """`fetch_analyses` calls inside `wait_for_analysis` at the `fetch_json` level.
+
+    These exercise the split directly against request URLs, rather than through the
+    `fetch_analyses`-stubbing helper above, so the assertions can see the actual `p=` values sent.
+    """
+
+    def test_polls_only_page_one_then_fetches_the_full_history_once(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        # A project whose master history spans three pages: `pick_baseline` needs all of it, but
+        # the poll loop must never ask for anything past page 1 — that is where Sonar puts the
+        # release commit's analysis the moment it exists.
+        page1_without_head = _analyses_page(mod._ANALYSES_PAGE_SIZE, 0)
+        head_analysis = _analysis("2026-08-01T00:00:00+0000", HEAD_SHA)
+        page1_with_head = [head_analysis, *page1_without_head[:-1]]
+        page2 = _analyses_page(mod._ANALYSES_PAGE_SIZE, 100)
+        page3 = _analyses_page(30, 200)
+
+        # Poll ticks 1-2 miss, tick 3 finds it (all page 1); then the full re-fetch walks p=1,2,3.
+        responses = iter([page1_without_head, page1_without_head, page1_with_head, page1_with_head, page2, page3])
+        seen: list[str] = []
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            seen.append(url)
+            return {"analyses": next(responses)}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=lambda s: None)
+
+        poll_urls, refetch_urls = seen[:3], seen[3:]
+        assert all("p=1" in url for url in poll_urls)
+        assert all("p=2" not in url and "p=3" not in url for url in poll_urls)
+
+        assert "p=1" in refetch_urls[0]
+        assert "p=2" in refetch_urls[1]
+        assert "p=3" in refetch_urls[2]
+
+        assert analyses == page1_with_head + page2 + page3
+        assert head == head_analysis
+        assert head in analyses  # `build_release_blocks`'s `analyses.index(head)` must not raise
+
+    def test_head_found_while_polling_is_looked_up_fresh_in_the_final_list(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        # The page-1 response seen on the poll tick and the page-1 response seen during the
+        # post-loop full re-fetch are for the same revision but are NOT the same object, and not
+        # even `==` (Sonar can easily add fields, e.g. an `events` entry, between two calls). If
+        # `wait_for_analysis` returned the object it saw while polling instead of re-locating it in
+        # the final list, `analyses.index(head)` would raise `ValueError` once that exact object is
+        # no longer present in the returned list.
+        rest = _analyses_page(mod._ANALYSES_PAGE_SIZE - 2, 0)
+        stale_head = {"key": "a", "revision": HEAD_SHA, "date": "2026-08-01T00:00:00+0000"}
+        fresh_head = {"key": "a", "revision": HEAD_SHA, "date": "2026-08-01T00:00:00+0000", "events": []}
+        responses = iter([[stale_head, *rest], [fresh_head, *rest]])
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            return {"analyses": next(responses)}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=lambda s: None)
+
+        assert head is fresh_head
+        assert head in analyses
+        assert analyses.index(head) == 0  # would raise ValueError if `head` were still `stale_head`
+
+
+class TestFetchAnalysesMaxPages:
+    def test_bounded_call_stops_at_one_page_without_a_cap_warning(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # `wait_for_analysis`'s poll loop deliberately asks for one page only; a short-of-the-full-
+        # history stop is then normal, not the runaway-history condition the stderr note is for.
+        from .. import sonar_pr_status as mod
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            return {"analyses": _analyses_page(mod._ANALYSES_PAGE_SIZE, 0)}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+        result = mod.fetch_analyses("NoNameItem_statuskit", "master", None, max_pages=1)
+        assert len(result) == mod._ANALYSES_PAGE_SIZE
+        assert capsys.readouterr().err == ""
 
 
 # Distinguishes "the test didn't pass `head`" from an explicit `head=None` — plain `None`

@@ -236,6 +236,14 @@ def delta_marker(metric: str, before: str | None, after: str | None) -> str:
     polarity = _METRIC_POLARITY.get(metric, 0)
     if not polarity or before is None or after is None:
         return ""
+    # Must agree with `delta_cell`'s "no visible change" check, or the two can disagree: a percent
+    # metric moving 93.44 -> 93.43 renders as the same "93.4%" in the table (`delta_cell` compares
+    # the rendered text and short-circuits), but a raw `float(after) - float(before)` here is still
+    # nonzero — so a row with no visible change fed a false regression into `trend_segment`'s title
+    # and the block's `open` flag. Comparing the same rendered/rounded values `delta_cell` uses
+    # makes that impossible.
+    if format_measure(metric, before) == format_measure(metric, after):
+        return ""
     try:
         change = float(after) - float(before)
     except ValueError:
@@ -541,13 +549,66 @@ def _fetch_severities(project: str, scope: dict[str, str], token: str | None, ne
     return {}
 
 
-def fetch_analyses(project: str, branch: str, token: str | None) -> list[dict]:
-    """Fetch the branch's analysis history, newest first. ``[]`` when Sonar has no such project."""
-    params = {"project": project, "branch": branch, "ps": "100"}
-    payload = fetch_json(_api_url("project_analyses/search", params), token)
-    if not payload:
-        return []
-    return payload.get("analyses", [])
+# Analyses accumulate on `master` between releases; `pick_baseline` scans the full list for the
+# previous release's VERSION event, so a single page is not enough once more than one page's worth
+# of analyses has landed since then — the event falls outside the window and the delta block
+# silently degrades to the absolute one (see module docstring). Page size matches Sonar's own cap.
+_ANALYSES_PAGE_SIZE = 100
+
+# Hard cap on pagination, mirroring `publish_badges.fetch_jobs`: bounds a misbehaving API or an
+# ever-growing history instead of looping forever. 20 pages * 100 analyses = 2000, comfortably
+# above anything a real release window holds.
+_MAX_ANALYSIS_PAGES = 20
+
+
+def fetch_analyses(
+    project: str,
+    branch: str,
+    token: str | None,
+    max_pages: int = _MAX_ANALYSIS_PAGES,
+) -> list[dict]:
+    """Fetch up to `max_pages` pages of the branch's analysis history, newest first.
+
+    `max_pages` exists for `wait_for_analysis`'s poll loop: Sonar returns analyses newest-first, so
+    the release commit's analysis is on page 1 the instant it exists, and that loop can tick up to
+    41 times over the ten-minute ceiling. Walking the full (potentially `_MAX_ANALYSIS_PAGES` x
+    `_ANALYSES_PAGE_SIZE`-deep) history on every tick would multiply request volume for no benefit
+    and risk SonarCloud rate-limiting, so the loop passes `max_pages=1` and the default here stays
+    the full cap for every other caller (including `wait_for_analysis`'s own post-loop re-fetch).
+
+    Unlike `publish_badges.fetch_jobs`, hitting the cap must never raise: every Sonar failure in
+    this file degrades instead of propagating past `main`'s per-project `except Exception` (see
+    module docstring). The stderr note about a truncated walk only fires when `max_pages` is the
+    full default — an intentional partial fetch (`max_pages=1`) truncating is normal, not a
+    degradation worth reporting.
+
+    ``[]`` when Sonar has no such project.
+    """
+    analyses: list[dict] = []
+    page = 1
+    while page <= max_pages:
+        params = {"project": project, "branch": branch, "ps": str(_ANALYSES_PAGE_SIZE), "p": str(page)}
+        payload = fetch_json(_api_url("project_analyses/search", params), token)
+        if not payload:
+            break
+        batch = payload.get("analyses", [])
+        analyses.extend(batch)
+        # Sonar's `paging.total` is the authoritative stop signal when present, but a short page
+        # (or an empty one) ends the walk just as well and works even if `paging` is absent.
+        total = (payload.get("paging") or {}).get("total")
+        if total is not None and len(analyses) >= total:
+            break
+        if len(batch) < _ANALYSES_PAGE_SIZE:
+            break
+        page += 1
+    else:
+        if max_pages >= _MAX_ANALYSIS_PAGES:
+            print(
+                f"Sonar analysis pagination for {project} hit the {max_pages}-page cap; "
+                f"returning the {len(analyses)} analyses collected so far.",
+                file=sys.stderr,
+            )
+    return analyses
 
 
 def fetch_history(
@@ -639,8 +700,18 @@ def wait_for_analysis(
 ) -> tuple[list[dict], dict | None]:
     """Poll until the release commit's analysis appears in Sonar.
 
-    Returns ``(analyses, head)``. ``head`` is ``None`` when the ceiling was reached — the caller
-    then falls back to the latest analysis, which is a smaller lie than no notification.
+    Returns ``(analyses, head)``. ``analyses`` is always the FULL paginated history — that is what
+    `pick_baseline` scans for the previous release's `VERSION` event, so it must include pages
+    beyond wherever `head` happened to be found. ``head`` is ``None`` when the ceiling was reached
+    — the caller then falls back to the latest analysis, which is a smaller lie than no
+    notification.
+
+    Each poll tick fetches only page 1 (`fetch_analyses(..., max_pages=1)`): Sonar returns analyses
+    newest-first, so the release commit's analysis appears on page 1 the instant it exists, and
+    this loop can tick up to 41 times over the ten-minute ceiling. Paginating the whole history on
+    every tick would multiply request volume for no benefit and risk SonarCloud rate-limiting. The
+    full, unbounded pagination happens exactly once, after the loop resolves either way — found or
+    timed out — solely to build the list `pick_baseline` needs.
 
     An empty response ends the wait immediately: either the project is not in Sonar (a ``flow``
     release) or the API is unreachable, and neither is fixed by waiting ten minutes.
@@ -648,22 +719,31 @@ def wait_for_analysis(
     ``sleep`` is injected so tests do not actually wait.
     """
     attempts = int(_POLL_CEILING_SECONDS // _POLL_INTERVAL_SECONDS)
-    analyses: list[dict] = []
+    found = False
     for attempt in range(attempts + 1):
-        analyses = fetch_analyses(project, branch, token)
-        if not analyses:
+        page_one = fetch_analyses(project, branch, token, max_pages=1)
+        if not page_one:
             return [], None
-        head = find_analysis(analyses, revision)
-        if head is not None:
-            return analyses, head
+        if find_analysis(page_one, revision) is not None:
+            found = True
+            break
         if attempt < attempts:
             sleep(_POLL_INTERVAL_SECONDS)
-    print(
-        f"No Sonar analysis for revision {revision} after {_POLL_CEILING_SECONDS:.0f}s; "
-        f"falling back to the latest analysis.",
-        file=sys.stderr,
-    )
-    return analyses, None
+
+    # The full re-fetch happens after polling ends, so a `head` found on page 1 earlier can be a
+    # stale object — new analyses may have landed on `master` between that tick and this call. Look
+    # it up fresh in the final list rather than reusing it: `build_release_blocks`'s
+    # `analyses.index(head)` requires `head` to be an element of `analyses`, and re-finding it here
+    # is what guarantees that (instead of raising `ValueError` on an object no longer present).
+    analyses = fetch_analyses(project, branch, token)
+    if not found:
+        print(
+            f"No Sonar analysis for revision {revision} after {_POLL_CEILING_SECONDS:.0f}s; "
+            f"falling back to the latest analysis.",
+            file=sys.stderr,
+        )
+        return analyses, None
+    return analyses, find_analysis(analyses, revision)
 
 
 def pick_baseline(analyses: list[dict], released_version: str) -> dict | None:
