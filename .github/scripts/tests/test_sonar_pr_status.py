@@ -690,14 +690,70 @@ class TestWaitForAnalysis:
         mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
         assert HEAD_SHA in capsys.readouterr().err
 
-    def test_no_analyses_returns_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No project in Sonar (a `flow` release) or the API is down — waiting changes neither.
-        # No post-loop re-fetch happens either: a single empty response ends everything.
+    def test_ceiling_reached_but_head_surfaces_in_the_full_history(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         from .. import sonar_pr_status as mod
 
-        slept = self._responses(monkeypatch, [[]])
+        # Every poll tick only ever sees page 1, so a revision that never surfaces there over all
+        # 41 ticks is not necessarily missing — it can still be sitting deeper in the FULL
+        # paginated history the post-loop re-fetch builds. That re-fetch must win over conceding:
+        # otherwise `build_release_blocks` would fall back to `analyses[0]`, the latest analysis,
+        # and report the wrong revision's metrics even though the real one was one call away.
+        without_head = ANALYSES[1:]
+        slept = self._responses(monkeypatch, [without_head] * 41 + [ANALYSES])
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head is not None
+        assert head["revision"] == HEAD_SHA
+        assert head in analyses  # `build_release_blocks`'s `analyses.index(head)` must not raise
+        assert analyses == ANALYSES
+        assert capsys.readouterr().err == ""  # no "falling back to the latest analysis" note
+
+    def test_no_analyses_returns_immediately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No project in Sonar (a `flow` release) or the API is down — waiting changes neither. An
+        # empty page 1 triggers exactly one full probe first; when that probe is empty too, the
+        # wait ends immediately with no polling and no post-loop re-fetch.
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [[], []])
         assert mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append) == ([], None)
         assert slept == []
+
+    def test_empty_page_one_but_probe_finds_the_revision(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Page 1 blipped empty on the very first tick, but the one-shot full probe it triggers
+        # finds the revision straight away: the wait must resolve on the spot, with the probe's own
+        # full history returned as `analyses` and no "falling back" degradation note (nothing was
+        # degraded — the revision was found).
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [[], ANALYSES])
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head["revision"] == HEAD_SHA
+        assert head in analyses
+        assert analyses == ANALYSES
+        assert slept == []
+        assert capsys.readouterr().err == ""
+
+    def test_empty_page_one_probe_without_revision_keeps_polling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The probe is non-empty (the project exists, the API is alive) but does not yet contain
+        # the wanted revision: that must NOT be treated as a concession. Several later ticks come
+        # back with an empty page 1 too — the probe must not run again for any of them (it is up to
+        # `_MAX_ANALYSIS_PAGES` requests, unaffordable every tick) — until a later tick's page 1
+        # finally carries the revision and the wait resolves normally.
+        from .. import sonar_pr_status as mod
+
+        without_head = ANALYSES[1:]
+        # tick0: empty page 1 -> one-shot probe (non-empty, no revision yet).
+        # tick1, tick2: empty page 1 again -> no re-probe, just another transient miss.
+        # tick3: page 1 carries the revision -> resolves; then the post-loop full re-fetch.
+        slept = self._responses(monkeypatch, [[], without_head, [], [], ANALYSES, ANALYSES])
+        analyses, head = mod.wait_for_analysis("NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append)
+        assert head["revision"] == HEAD_SHA
+        assert head in analyses
+        assert analyses == ANALYSES
+        assert slept == [15.0, 15.0, 15.0]
 
 
 class TestWaitForAnalysisPagination:

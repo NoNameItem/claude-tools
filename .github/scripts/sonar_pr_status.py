@@ -702,28 +702,62 @@ def wait_for_analysis(
 
     Returns ``(analyses, head)``. ``analyses`` is always the FULL paginated history — that is what
     `pick_baseline` scans for the previous release's `VERSION` event, so it must include pages
-    beyond wherever `head` happened to be found. ``head`` is ``None`` when the ceiling was reached
-    — the caller then falls back to the latest analysis, which is a smaller lie than no
-    notification.
+    beyond wherever `head` happened to be found. Reaching the ceiling no longer guarantees
+    ``head`` is ``None``: the poll loop only ever inspects page 1, so a revision that never
+    surfaced there can still be sitting deeper in the full paginated history fetched once the loop
+    gives up, and that deeper history is checked before conceding. ``head`` is ``None`` only when
+    the revision is absent from that full history too — the caller then falls back to the latest
+    analysis, which is a smaller lie than no notification.
 
     Each poll tick fetches only page 1 (`fetch_analyses(..., max_pages=1)`): Sonar returns analyses
     newest-first, so the release commit's analysis appears on page 1 the instant it exists, and
     this loop can tick up to 41 times over the ten-minute ceiling. Paginating the whole history on
     every tick would multiply request volume for no benefit and risk SonarCloud rate-limiting. The
-    full, unbounded pagination happens exactly once, after the loop resolves either way — found or
-    timed out — solely to build the list `pick_baseline` needs.
+    full, unbounded pagination happens after the loop resolves either way — found or timed out —
+    solely to build the list `pick_baseline` needs, plus at most one earlier probe (below) when a
+    tick's page 1 comes back empty.
 
-    An empty response ends the wait immediately: either the project is not in Sonar (a ``flow``
-    release) or the API is unreachable, and neither is fixed by waiting ten minutes.
+    An empty page-1 response no longer ends the wait immediately by itself: `fetch_json` returns
+    ``[]`` both when the project genuinely has no analyses in Sonar (a ``flow`` release, an outage)
+    and when that single request merely blipped (a transient 5xx or timeout), and page 1 alone
+    cannot tell the two apart. The first time any tick's page 1 comes back empty, one full
+    paginated fetch (`fetch_analyses` with the default, unbounded `max_pages`) probes deeper before
+    conceding. Only when that probe is *also* empty do we give up on the spot — the project is
+    demonstrably absent from Sonar or the API is down, and neither is fixed by waiting ten minutes.
+    A non-empty probe proves the API is alive, so the wait keeps polling instead of bailing out,
+    even if the probe itself does not contain the wanted revision yet (see below).
 
     ``sleep`` is injected so tests do not actually wait.
     """
     attempts = int(_POLL_CEILING_SECONDS // _POLL_INTERVAL_SECONDS)
     found = False
+    # Set once the deep probe below has proven the project exists in Sonar. Kept across ticks so a
+    # later empty page 1 is treated as just another transient miss instead of re-running the probe
+    # (up to `_MAX_ANALYSIS_PAGES` requests) on every one of the up to 41 ticks in the ceiling.
+    project_seen = False
     for attempt in range(attempts + 1):
         page_one = fetch_analyses(project, branch, token, max_pages=1)
         if not page_one:
-            return [], None
+            if not project_seen:
+                # A one-shot deep probe: page 1 alone cannot distinguish "no analyses exist" from
+                # "this one request blipped", so fall back to the full paginated history before
+                # conceding. One-shot because the probe is up to `_MAX_ANALYSIS_PAGES` requests —
+                # affordable once, but repeating it on every empty-page-1 tick would multiply
+                # request volume for no benefit and risk SonarCloud rate-limiting.
+                analyses = fetch_analyses(project, branch, token)
+                if not analyses:
+                    return [], None
+                project_seen = True
+                deep_match = find_analysis(analyses, revision)
+                if deep_match is not None:
+                    return analyses, deep_match
+                # The probe proved the project exists (non-empty) but the revision is not in it
+                # yet: the empty page 1 was a transient blip, not evidence the analysis is missing.
+                # Conceding here would hand `build_release_blocks` the latest analysis — another
+                # revision's metrics — just because one request blipped, so keep polling instead.
+            if attempt < attempts:
+                sleep(_POLL_INTERVAL_SECONDS)
+            continue
         if find_analysis(page_one, revision) is not None:
             found = True
             break
@@ -737,6 +771,15 @@ def wait_for_analysis(
     # is what guarantees that (instead of raising `ValueError` on an object no longer present).
     analyses = fetch_analyses(project, branch, token)
     if not found:
+        # The poll loop only ever inspected page 1 (`max_pages=1` above), so the revision may
+        # simply have been sitting beyond the newest 100 records the whole time. This full,
+        # unbounded list is strictly more evidence than any single poll tick had — checking it
+        # before giving up is required, or we would discard a real match and report another
+        # revision's metrics (`build_release_blocks` falls back to `analyses[0]`, the latest
+        # analysis, whenever `head` is ``None``).
+        deep_match = find_analysis(analyses, revision)
+        if deep_match is not None:
+            return analyses, deep_match
         print(
             f"No Sonar analysis for revision {revision} after {_POLL_CEILING_SECONDS:.0f}s; "
             f"falling back to the latest analysis.",
