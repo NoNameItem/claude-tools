@@ -420,6 +420,26 @@ class TestBuildReleaseDeltaBlock:
         head = {**self.HEAD, "security_hotspots": "2"}
         assert any(row[0] == "Hotspots" for row in self._block(head=head)["rows"])
 
+    def test_metric_missing_at_head_renders_em_dash_not_a_stale_value(self) -> None:
+        # `history_pair` never falls back to an older point for the head end (see TestHistoryPair),
+        # so a metric absent from `head` must come through as the same "—" every other unavailable
+        # head value gets — never the baseline figure re-shown as if it were current.
+        head = dict(self.HEAD)
+        del head["ncloc"]
+        rows = {row[0]: row[1] for row in self._block(head=head)["rows"]}
+        assert rows["Lines of code"] == "—"
+
+    def test_hotspot_row_present_when_missing_at_head_but_present_at_baseline(self) -> None:
+        # Regression guard for the bug this suite exists to catch: the hotspots row used to be
+        # included only when `head` carried a non-zero count, so a metric merely unresolved at
+        # head_date read the same as a confirmed zero and the row vanished instead of showing
+        # "value → —". It must survive here on baseline data alone.
+        baseline = {**self.BASELINE, "security_hotspots": "3"}
+        head = dict(self.HEAD)
+        del head["security_hotspots"]
+        rows = {row[0]: row[1] for row in self._block(baseline=baseline, head=head)["rows"]}
+        assert rows["Hotspots"] == "—"
+
     def test_no_bold_anywhere(self) -> None:
         assert '"bold": true' not in json.dumps(self._block())
 
@@ -578,9 +598,12 @@ class TestHistoryPair:
         pair = history_pair(self.POINTS, "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
         assert pair == ("93.4", "94.1")
 
-    def test_head_date_absent_falls_back_to_the_last_point(self) -> None:
+    def test_head_date_absent_yields_no_head_value(self) -> None:
+        # head_date is always the head analysis's own date (see build_release_blocks), so a miss
+        # means Sonar has no value for this metric at that analysis. Reporting an older point as
+        # current would be worse than an absent end: the row must render without an arrow.
         pair = history_pair(self.POINTS, "2026-07-31T12:06:46+0000", "2026-08-01T10:00:00+0000")
-        assert pair == ("93.4", "94.1")
+        assert pair == ("93.4", None)
 
     def test_metric_missing_at_the_baseline(self) -> None:
         # A metric that did not exist when the previous release was cut: no arrow, current value only.
@@ -603,6 +626,19 @@ class TestSplitHistory:
         baseline, head = split_history(history, "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
         assert baseline == {"coverage": "93.4"}
         assert head == {"coverage": "94.1", "ncloc": "2280"}
+
+    def test_metric_present_only_at_baseline(self) -> None:
+        # Mirror of `ncloc` above but for the opposite end: a metric with a point dated at the
+        # baseline and none at head_date (Sonar didn't recompute it for the head analysis). It must
+        # land in `baseline` only — `split_history` must not fabricate a head value by reusing the
+        # baseline one, or a caller like the release delta block's hotspots row would render a
+        # stale figure as current instead of the "unavailable" it actually is.
+        history = {
+            "security_hotspots": [{"date": "2026-07-31T12:06:46+0000", "value": "3"}],
+        }
+        baseline, head = split_history(history, "2026-07-31T12:06:46+0000", "2026-07-31T12:53:12+0000")
+        assert baseline == {"security_hotspots": "3"}
+        assert "security_hotspots" not in head
 
 
 class TestFetchHistory:

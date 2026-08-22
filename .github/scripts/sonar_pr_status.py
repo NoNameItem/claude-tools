@@ -451,8 +451,18 @@ def build_release_delta_block(
         ("Duplication", "duplicated_lines_density", None),
         ("Lines of code", "ncloc", None),
     ]
-    # Same rule as the other blocks: the row exists only while a non-zero count does.
-    if head.get("security_hotspots") not in (None, "", "0"):
+    # Unlike the other blocks, this one reads two ends of a history window rather than one live
+    # snapshot, so "the row exists only while a non-zero count does" is ambiguous here: a missing
+    # head point (`history_pair` never falls back to an older one — see its docstring) looks
+    # identical to a confirmed zero if only `head` is consulted, and the row would vanish outright
+    # instead of rendering "—" like every other metric does when its head end is unavailable. So
+    # decide from both ends: keep the row whenever baseline data exists to show, even with the
+    # head unresolved, and only fold it away when head reports a genuine zero with nothing at
+    # baseline to fall back on either. (`build_branch_block`'s otherwise-identical check above has
+    # no baseline to pair with — it is a single snapshot, not a window — so it is left alone.)
+    baseline_hotspots, head_hotspots = baseline.get("security_hotspots"), head.get("security_hotspots")
+    head_unavailable = head_hotspots in (None, "")
+    if (not head_unavailable and head_hotspots != "0") or (head_unavailable and baseline_hotspots not in (None, "")):
         cells.append(("Hotspots", "security_hotspots", None))
 
     rows: list = []
@@ -639,15 +649,15 @@ def fetch_history(
 def history_pair(points: list[dict], baseline_date: str, head_date: str) -> tuple[str | None, str | None]:
     """``(baseline value, head value)`` for one metric's points.
 
-    The head falls back to the last point: on a timed-out wait the head analysis is whatever
-    Sonar has most recently, and its date is then not the one we asked for. A metric with no
-    point at one end returns ``None`` there, and the row renders without an arrow.
+    Only the point dated exactly ``head_date`` counts as the head value. ``head_date`` is always
+    the head analysis's own date (``build_release_blocks`` sets it from the matched revision, or
+    from ``analyses[0]`` on a timed-out wait), so a miss here means Sonar has no value for this
+    metric at that analysis, not that we asked for the wrong date. Falling back to an older point
+    would present a stale value as current, so a metric with no point at either end returns
+    ``None`` there and the row renders without an arrow.
     """
     by_date = {point.get("date"): point.get("value") for point in points}
-    head = by_date.get(head_date)
-    if head is None and points:
-        head = points[-1].get("value")
-    return by_date.get(baseline_date), head
+    return by_date.get(baseline_date), by_date.get(head_date)
 
 
 def split_history(history: dict[str, list[dict]], baseline_date: str, head_date: str) -> tuple[dict, dict]:
