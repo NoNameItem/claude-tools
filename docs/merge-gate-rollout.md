@@ -187,7 +187,8 @@ Expected: at least one analysis carrying a `VERSION` event with the current vers
 Until a **second** `VERSION` event exists, release notifications legitimately fall back to the
 current state of `master` with no version-to-version delta. That is not an error state and must
 not be reported as one — releases are cut from `master` right after the merge, so the numbers are
-the released ones anyway.
+the released ones anyway. It is the same rendering a project's first release gets; see
+`docs/superpowers/specs/2026-08-19-release-notification-sonar-delta-design.md`, "Degradation".
 
 ## Step 6 — Exercise the notification paths on a throwaway PR
 
