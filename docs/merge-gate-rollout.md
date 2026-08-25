@@ -222,38 +222,46 @@ Open a scratch PR against `master` and confirm, in order:
 Close the scratch PR. When something misbehaves, the `PR Summary` job's `Decision:` log line
 (`{"send":…,"reason":…,"verdict":…}`) names the branch of `pr_summary.py` that was taken.
 
-## Step 7 — Pin the notification implementation to a trusted revision (`claude-tools-5vg.14`)
+## Step 7 — Pinning the notification implementation: decided against (`claude-tools-5vg.14`)
 
-This step **only becomes possible after the merge**, which is why it is here rather than in the
-PR: it pins the privileged notification code to `master`, and until this branch lands, `master`
-carries neither `telegram_notify.py` nor `pr_summary.py` — pinning earlier would run the old
-action against the new inputs and silently break every notification on the branch.
+**Not a step any more.** This section used to instruct pinning the privileged notification code to
+a trusted revision. That was decided against on 2026-08-25; it is kept here rather than deleted
+because the rest of this runbook was executed with the pin still on the plan, and a reader who
+finds Steps 0–6 done will otherwise look for the seventh.
 
-The gap it closes: `pr.yml` runs on `pull_request`, so `actions/checkout` takes the PR merge ref.
-`notify-start` then executes `./.github/actions/telegram-notify` — the PR author's copy — while
-holding `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` and `statuses: write`; `_reusable-pr-summary.yml`
-and `_reusable-review-gate.yml` have the same shape for the scripts they run, and the gate also
-holds `CODEX_NUDGE_TOKEN`. Only same-repo PRs reach any of them (all carry the fork guard), so this
-is a collaborator-trust boundary, not an anonymous one — but it is one the repo has decided to
-narrow where it cheaply can. Note that pinning cannot close the gate itself: the nudge logic lives
-in the workflow file, which `pull_request` reads from the PR branch. See the design's
-"Accepted trade-off".
+**What was proposed** (decision of 2026-07-29, PR #119 round 5): run `telegram_notify.py` from the
+action's own checkout (`${GITHUB_ACTION_PATH}`), replace `notify-start`'s local action reference
+with `NoNameItem/claude-tools/.github/actions/telegram-notify@master` and drop its checkout, and
+pin `_reusable-pr-summary.yml`'s checkout to `github.event.pull_request.base.sha`.
 
-1. In `.github/actions/telegram-notify/action.yml`, run the script from the action's own
-   checkout rather than the workspace:
-   `python3 "${GITHUB_ACTION_PATH}/../../scripts/telegram_notify.py"`.
-2. In `pr.yml`'s `notify-start`, replace the local reference with a pinned remote one —
-   `uses: NoNameItem/claude-tools/.github/actions/telegram-notify@master` — and drop the
-   `actions/checkout` step, which then has nothing left to provide.
-3. In `_reusable-pr-summary.yml`, pin the checkout: `ref: ${{ github.event.pull_request.base.sha }}`.
-   Its `run:` steps invoke `.github/scripts/*.py` from the workspace, so the checkout is the only
-   lever there.
-4. Verify on a scratch PR that notifications still arrive, then re-run Step 6's green path.
+**What changed underneath it.** PR #124 reworked `review-gate.yml` into
+`_reusable-review-gate.yml`, called from `pr.yml`, moving it from `pull_request_target` to
+`pull_request`. The premise above — that the gate checks out the base branch and is therefore out
+of scope — no longer holds: there are three jobs running PR-authored code under privilege, not two,
+and the third holds `CODEX_NUDGE_TOKEN` (the owner's PAT), the most valuable of the three secrets.
 
-**What this does not close:** on a `pull_request` event GitHub reads the workflow file itself from
-the PR branch, so a PR can still edit `pr.yml` to unpin the reference. That change is a visible
-one-liner in the workflow diff, which is the point — the alternative (moving the notify jobs to
-`pull_request_target`) makes notification changes untestable before merge.
+**Why it was dropped.** On a `pull_request` event GitHub reads the workflow file itself from the PR
+branch. A PR can therefore add a step that reads `TELEGRAM_BOT_TOKEN` or `CODEX_NUDGE_TOKEN`
+directly, with or without the pin. Pinning the *scripts* does not close that; it only moves where a
+malicious or accidental change has to appear — into the workflow diff instead of a Python diff.
+That is worth something, but it is not what "pin the implementation" promised, and
+`2026-08-01-notification-triggers-design.md` had already weighed exactly this trade for the gate
+(`ref: base.sha`) and rejected it under this repository's threat model: same-repo PRs come only
+from the owner and trusted collaborators, fork PRs never reach these jobs, and the realistic threat
+is an accidental edit — which the workflow diff already surfaces. Applying the same reasoning to
+`notify-start` and the summary produces the same answer.
+
+The mechanics had also gone stale: `notify-start` cannot drop its checkout, because two of its
+steps run `.github/scripts/pr_start.py` from the workspace (`pr.yml`, the "Read the anchor markers"
+and "Build the start message" steps).
+
+**Where the accepted boundary is documented:** `AGENTS.md`, "Do not flag" — `pr.yml`'s jobs holding
+`statuses: write`, `CODEX_NUDGE_TOKEN` and the Telegram credentials while running PR-authored code,
+and a PR being able to edit the workflow that gates it. The reasoning behind both lives in
+`docs/superpowers/specs/2026-08-01-notification-triggers-design.md`, "Accepted trade-off".
+
+Related and still open: `claude-tools-5vg.12` (fork guard on the pre-existing `secrets: inherit`
+jobs) — an independent hardening item that this decision does not touch.
 
 ## Rollback
 
