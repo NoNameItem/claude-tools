@@ -440,6 +440,55 @@ class TestBuildReleaseDeltaBlock:
         rows = {row[0]: row[1] for row in self._block(baseline=baseline, head=head)["rows"]}
         assert rows["Hotspots"] == "—"
 
+    @pytest.mark.parametrize(
+        ("baseline_hotspots", "head_hotspots", "expected_present"),
+        [
+            # Pinned as the whole nine-cell table (A = absent, Z = confirmed zero, N = a real
+            # value) rather than one-off cases: this row's inclusion rule has already been wrong
+            # twice — first dropping a real baseline paired with an unresolved head, then dropping
+            # a real baseline that improved to a confirmed zero at head — so a single regression
+            # test only proves the last mistake stays fixed, not the next one.
+            (None, None, False),  # A -> A
+            (None, "0", False),  # A -> Z
+            (None, "5", True),  # A -> N
+            ("0", None, False),  # Z -> A
+            ("0", "0", False),  # Z -> Z
+            ("0", "5", True),  # Z -> N
+            ("3", None, True),  # N -> A
+            ("3", "0", True),  # N -> Z (the regression this round fixes)
+            ("3", "5", True),  # N -> N
+            # `""` is a second spelling of "A": `split_history` only filters out `None` values, so
+            # an empty string is a reachable endpoint value too (Sonar can return one), and it must
+            # collapse to the same "absent" state as a missing key rather than being read as real.
+            ("", "0", False),  # A(empty) -> Z
+            ("", "5", True),  # A(empty) -> N
+            ("3", "", True),  # N -> A(empty)
+        ],
+    )
+    def test_hotspot_row_inclusion_table(
+        self, baseline_hotspots: str | None, head_hotspots: str | None, expected_present: bool
+    ) -> None:
+        baseline = dict(self.BASELINE)
+        head = dict(self.HEAD)
+        if baseline_hotspots is None:
+            baseline.pop("security_hotspots", None)
+        else:
+            baseline["security_hotspots"] = baseline_hotspots
+        if head_hotspots is None:
+            head.pop("security_hotspots", None)
+        else:
+            head["security_hotspots"] = head_hotspots
+        rows = {row[0]: row[1] for row in self._block(baseline=baseline, head=head)["rows"]}
+        assert ("Hotspots" in rows) is expected_present
+
+    def test_hotspot_row_renders_the_nonzero_to_zero_improvement(self) -> None:
+        # N -> Z is the case this round fixes: it must not just show the row, it must show the
+        # green "3 -> 0" it exists to report — the best news this row can ever carry.
+        baseline = {**self.BASELINE, "security_hotspots": "3"}
+        head = {**self.HEAD, "security_hotspots": "0"}
+        rows = {row[0]: row[1] for row in self._block(baseline=baseline, head=head)["rows"]}
+        assert rows["Hotspots"] == "🟢 3 → 0"
+
     def test_no_bold_anywhere(self) -> None:
         assert '"bold": true' not in json.dumps(self._block())
 

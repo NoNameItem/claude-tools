@@ -294,6 +294,18 @@ def _parse_inline_counts(value: str | None) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _is_real_measure(value: str | None) -> bool:
+    """Distinguish an actual count from a confirmed zero or no data at all.
+
+    Sonar's measures API reports a metric in three distinct states: a real, non-zero value; an
+    explicit ``"0"`` (the metric was measured and there is nothing to report); or ``None``/``""``
+    (the metric was not returned at all). Only the first state earns a table row — a confirmed
+    zero and an absent measure both carry nothing worth showing, so both are treated as "not
+    real" here.
+    """
+    return value not in (None, "", "0")
+
+
 def _link(text: str, url: str) -> dict:
     """The block's optional `link`, rendered as `<p><a>` after the table."""
     return {"text": text, "url": url}
@@ -368,7 +380,7 @@ def build_new_code_block(
     # Hotspots are being folded into vulnerabilities upstream; show the row only while a
     # non-zero count still exists, so it disappears on its own as the migration completes.
     hotspots = measures.get("new_security_hotspots")
-    if hotspots not in (None, "", "0"):
+    if _is_real_measure(hotspots):
         rows.append(["Hotspots", format_measure("new_security_hotspots", hotspots)])
     return {
         "type": "table",
@@ -397,7 +409,7 @@ def build_branch_block(project: str, measures: dict, severities: dict, overview_
         ["Lines of code", format_measure("ncloc", measures.get("ncloc"))],
     ]
     hotspots = measures.get("security_hotspots")
-    if hotspots not in (None, "", "0"):
+    if _is_real_measure(hotspots):
         rows.append(["Hotspots", format_measure("security_hotspots", hotspots)])
     return {
         "type": "table",
@@ -451,18 +463,19 @@ def build_release_delta_block(
         ("Duplication", "duplicated_lines_density", None),
         ("Lines of code", "ncloc", None),
     ]
+
     # Unlike the other blocks, this one reads two ends of a history window rather than one live
-    # snapshot, so "the row exists only while a non-zero count does" is ambiguous here: a missing
-    # head point (`history_pair` never falls back to an older one — see its docstring) looks
-    # identical to a confirmed zero if only `head` is consulted, and the row would vanish outright
-    # instead of rendering "—" like every other metric does when its head end is unavailable. So
-    # decide from both ends: keep the row whenever baseline data exists to show, even with the
-    # head unresolved, and only fold it away when head reports a genuine zero with nothing at
-    # baseline to fall back on either. (`build_branch_block`'s otherwise-identical check above has
-    # no baseline to pair with — it is a single snapshot, not a window — so it is left alone.)
+    # snapshot, so a single "is it a non-zero count" test is not enough: either end can be a real
+    # value, a confirmed zero, or simply missing (`history_pair` never falls back to an older
+    # point — see its docstring), and the row must earn its place from whichever end actually says
+    # something. Two zeros or two absences carry no information either way and stay hidden; a real
+    # value at *either* end is worth showing, including a real baseline against a confirmed zero
+    # head — "3 -> 0" is the best news this row can ever report, and dropping it here was the bug.
+    # (`build_branch_block` and `build_new_code_block` share the same `_is_real_measure` predicate
+    # but consult a single end, because a live snapshot has no baseline to pair with: there a
+    # confirmed zero rightly hides the row, since nothing is being compared to it.)
     baseline_hotspots, head_hotspots = baseline.get("security_hotspots"), head.get("security_hotspots")
-    head_unavailable = head_hotspots in (None, "")
-    if (not head_unavailable and head_hotspots != "0") or (head_unavailable and baseline_hotspots not in (None, "")):
+    if _is_real_measure(baseline_hotspots) or _is_real_measure(head_hotspots):
         cells.append(("Hotspots", "security_hotspots", None))
 
     rows: list = []
