@@ -192,11 +192,14 @@ jobs:
           else
             MESSAGE="Publish failed"
           fi
-          # Use heredoc for multiline output
+          # The heredoc delimiter is randomised: a message that happens to contain a line equal
+          # to a fixed delimiter (e.g. exactly "EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="MESSAGE_$(openssl rand -hex 8)"
           {
-            echo "message<<EOF"
+            echo "message<<$delimiter"
             echo "$MESSAGE"
-            echo "EOF"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
   summary:
