@@ -263,9 +263,20 @@ jobs:
     needs: [detect, validate-pr]
     # A release commit changes one version string in pyproject.toml, so tests and lint would run
     # against unchanged code. `Python CI Gate` reports success from the skipped dependency.
+    #
+    # The fork guard sits on the whole job rather than on the secret-consuming step, because the
+    # step is already covered: `sonarcloud` — the only consumer of an inherited secret in the
+    # called workflow — carries its own fork guard in _reusable-python-ci.yml. What is left would
+    # still not work on a fork: reviewdog, the coverage comment and the test reporter all write
+    # back to the PR, and a fork-origin `pull_request` run gets a read-only GITHUB_TOKEN. So no
+    # useful signal survives, and the PR is unmergeable regardless — `Review Gate` keeps a fork
+    # red by design (see review-gate-result below). The `!= 'pull_request'` half leaves
+    # workflow_dispatch runs alone; they carry no `pull_request` payload to compare against.
     if: |
       fromJson(needs.detect.outputs.result).by_type.python.has_changed == true &&
-      !startsWith(github.event.pull_request.head.ref, 'release-please--')
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
       matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.matrix) }}
@@ -288,9 +299,14 @@ jobs:
   python-ci-info:
     name: Python CI (info)
     needs: [detect, validate-pr]
+    # Same fork guard as `python-ci`, for the same reasons, plus one of its own: this call passes
+    # `info-only: true`, which skips `sonarcloud` outright, so the job consumes no repository
+    # secret at all and its `secrets: inherit` below is inert.
     if: |
       fromJson(needs.detect.outputs.result).tooling_changed == true &&
-      fromJson(needs.detect.outputs.result).by_type.python.has_unchanged == true
+      fromJson(needs.detect.outputs.result).by_type.python.has_unchanged == true &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
       matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.unchanged_matrix) }}
