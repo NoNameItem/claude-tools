@@ -48,12 +48,14 @@ jobs:
           python-version: '3.11'
 
       - name: Validate plugin structure
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
           EXTRA_ARGS=()
-          if [ "${{ matrix.plugin }}" = "flow" ]; then
+          if [ "$PLUGIN" = "flow" ]; then
             EXTRA_ARGS+=(--require-codex-manifest)
           fi
-          python .github/scripts/validate_plugin.py "${EXTRA_ARGS[@]}" "plugins/${{ matrix.plugin }}"
+          python .github/scripts/validate_plugin.py "${EXTRA_ARGS[@]}" "plugins/$PLUGIN"
 
       # flow skills must never call AskUserQuestion: its dialog auto-submits the
       # pre-selected option after the AFK idle timeout (CLAUDE_AFK_TIMEOUT_MS,
@@ -85,8 +87,10 @@ jobs:
 
       - name: Check for Python files
         id: check-python
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
-          if find "plugins/${{ matrix.plugin }}" -name "*.py" 2>/dev/null | grep -q .; then
+          if find "plugins/$PLUGIN" -name "*.py" 2>/dev/null | grep -q .; then
             echo "has_python=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_python=false" >> "$GITHUB_OUTPUT"
@@ -106,14 +110,18 @@ jobs:
         if: steps.check-python.outputs.has_python == 'true'
         run: uv tool install ruff
 
+      # Every workflow value reaches the script through `env:`, never through `${{ }}`
+      # inside `run:`. CHANGED_FILES is built from the PR's own file names
+      # (.github/scripts/detect_changes.py), and git allows `'` and `$` in a path — so
+      # interpolating it here would let a crafted file name run arbitrary shell.
       - name: Determine files to lint
         if: steps.check-python.outputs.has_python == 'true'
         id: files
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          CHANGED_FILES: ${{ inputs.changed-files }}
+          TOOLING_CHANGED: ${{ inputs.tooling-changed }}
         run: |
-          PLUGIN="${{ matrix.plugin }}"
-          CHANGED_FILES='${{ inputs.changed-files }}'
-          TOOLING_CHANGED="${{ inputs.tooling-changed }}"
-
           if [ "$TOOLING_CHANGED" == "true" ] || [ "$CHANGED_FILES" == "{}" ]; then
             # Lint all Python files in plugin
             echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
@@ -135,13 +143,25 @@ jobs:
             fi
           fi
 
+      # `read -r -a` is what splits LINT_FILES back into one argument per file: it applies
+      # word splitting only, so — unlike an unquoted expansion — a file named `a*.py`
+      # cannot glob against the work tree, and nothing in the value is ever re-parsed
+      # as shell. The step's `if:` guarantees the array is non-empty.
       - name: Ruff format check
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
-        run: ruff format --config pyproject.toml --check ${{ steps.files.outputs.files }}
+        env:
+          LINT_FILES: ${{ steps.files.outputs.files }}
+        run: |
+          read -r -a FILES <<< "$LINT_FILES"
+          ruff format --config pyproject.toml --check -- "${FILES[@]}"
 
       - name: Ruff lint
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
-        run: ruff check --config pyproject.toml ${{ steps.files.outputs.files }}
+        env:
+          LINT_FILES: ${{ steps.files.outputs.files }}
+        run: |
+          read -r -a FILES <<< "$LINT_FILES"
+          ruff check --config pyproject.toml -- "${FILES[@]}"
 
   test:
     name: Test (${{ matrix.plugin }})
@@ -159,8 +179,10 @@ jobs:
 
       - name: Check for plugin tests
         id: check-tests
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
-          if [ -d "plugins/${{ matrix.plugin }}/bin/tests" ]; then
+          if [ -d "plugins/$PLUGIN/bin/tests" ]; then
             echo "has_tests=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_tests=false" >> "$GITHUB_OUTPUT"
@@ -179,4 +201,6 @@ jobs:
 
       - name: Run tests
         if: steps.check-tests.outputs.has_tests == 'true'
-        run: uv run pytest "plugins/${{ matrix.plugin }}/bin/tests"
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: uv run pytest "plugins/$PLUGIN/bin/tests"
