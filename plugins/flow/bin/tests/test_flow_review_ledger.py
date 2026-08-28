@@ -317,6 +317,63 @@ class TestRowPrimitives:
         assert _ledger.id_advanced("abc", "def") is True  # non-numeric ids: any change counts
 
 
+class TestReplyPrimitives:
+    def test_is_ours_matches_the_run_account(self):
+        assert _ledger.is_ours({"user": "me"}, "me")
+        assert not _ledger.is_ours({"user": "coderabbitai"}, "me")
+
+    def test_is_ours_is_false_when_the_account_is_unknown(self):
+        """A meta document without `me` must not make every reply ours."""
+        assert not _ledger.is_ours({"user": "me"}, None)
+        assert not _ledger.is_ours({"user": "me"}, "")
+
+    def test_reply_order_sorts_chronologically(self):
+        replies = [
+            {"id": 2, "created_at": "2026-07-20T12:00:00Z"},
+            {"id": 1, "created_at": "2026-07-20T10:00:00Z"},
+        ]
+        assert [r["id"] for r in sorted(replies, key=_ledger.reply_order)] == [1, 2]
+
+    def test_reply_order_parses_a_trailing_z(self):
+        """`fromisoformat` learned the bare `Z` only in 3.11; these helpers run on a 3.9 floor,
+        so the suffix is rewritten before parsing. Without it the sort degrades to a no-op on
+        exactly the interpreters CI never exercises."""
+        assert _ledger.reply_order({"created_at": "2026-07-20T10:00:00Z"})[0] == 0
+
+    def test_reply_order_parses_an_explicit_offset_with_fractional_seconds(self):
+        assert _ledger.reply_order({"created_at": "2026-07-20T10:00:00.000+02:00"})[0] == 0
+
+    def test_reply_order_sinks_an_unusable_timestamp_to_the_tail(self):
+        replies = [
+            {"id": 1, "created_at": None},
+            {"id": 2, "created_at": "2026-07-20T10:00:00Z"},
+            {"id": 3, "created_at": "not a date"},
+        ]
+        assert [r["id"] for r in sorted(replies, key=_ledger.reply_order)] == [2, 1, 3]
+
+    def test_reply_order_keeps_insertion_order_for_equal_timestamps(self):
+        stamp = "2026-07-20T10:00:00Z"
+        replies = [{"id": 1, "created_at": stamp}, {"id": 2, "created_at": stamp}]
+        assert [r["id"] for r in sorted(replies, key=_ledger.reply_order)] == [1, 2]
+
+    def test_unseen_lists_only_replies_carrying_a_false_bit(self):
+        row = {
+            "thread": [
+                {"id": 1, "seen": True},
+                {"id": 2, "seen": False},
+                {"id": 3},  # no bit at all -> not from a ledger row, so not "new to us"
+            ]
+        }
+        assert [r["id"] for r in _ledger.unseen(row)] == [2]
+
+    def test_unseen_tolerates_a_thread_that_is_not_a_list(self):
+        """`flow-comment-card` renders untyped input through this helper; a string thread must
+        not reach `.get` and die as a bare traceback."""
+        assert _ledger.unseen({"thread": "nonsense"}) == []
+        assert _ledger.unseen({"thread": ["not a dict"]}) == []
+        assert _ledger.unseen({}) == []
+
+
 from conftest import run_helper  # noqa: E402  # after the sys.path bootstrap above
 
 

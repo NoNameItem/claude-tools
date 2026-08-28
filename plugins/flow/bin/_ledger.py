@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -351,6 +352,50 @@ def platform_state_of(item: dict) -> str:
     collector aborts on that instead, which is what allowed this function to be two lines.
     """
     return "resolved" if item.get("resolved") else "live"
+
+
+def is_ours(reply: dict, me: object) -> bool:
+    """True when a thread reply comes from the account this run posts as.
+
+    Our own replies arrive already `seen`, so a reply the agent posted but failed to report
+    (the POST succeeded, the `--jq` extraction did not) cannot come back off the forge as an
+    unknown id, re-open the finding and draw a second reply into the same thread. The cost —
+    an instruction a human posts from that same account no longer re-opens a settled row — is
+    a recorded decision, not an oversight; see the design doc.
+    """
+    return bool(me) and str(reply.get("user")) == str(me)
+
+
+def reply_order(reply: dict) -> tuple[int, float]:
+    """Sort key for a stored thread: chronological, with unusable timestamps in the tail.
+
+    `Z` is rewritten to `+00:00` because bare `fromisoformat` accepts that suffix only from
+    3.11, while these helpers hold a 3.9 floor (`test_py39_compat.py`). Left alone, GitHub's
+    timestamps would parse on CI and fail on an older interpreter — the sort silently becoming
+    a no-op exactly where nobody looks.
+
+    The leading bucket keeps an unparseable reply from jumping to the front of an argument it
+    did not start; `sorted` is stable, so equal timestamps keep insertion order.
+    """
+    raw = str(reply.get("created_at") or "")
+    try:
+        return (0, datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return (1, 0.0)
+
+
+def unseen(row: dict) -> list[dict]:
+    """Stored replies we have not acted on yet, in stored order.
+
+    A reply with NO `seen` key is not counted. Every writer stamps the bit, so an unstamped
+    reply means the dict never came from a ledger row — `flow-comment-card` renders collector
+    output through these same helpers — and treating it as new would put a `**Resurfaced:**`
+    line on a card that has no ledger behind it.
+    """
+    thread = row.get("thread")
+    if not isinstance(thread, list):
+        return []
+    return [reply for reply in thread if isinstance(reply, dict) and "seen" in reply and not reply["seen"]]
 
 
 def threadless(row: dict) -> bool:
