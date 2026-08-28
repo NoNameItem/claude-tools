@@ -95,6 +95,22 @@ class TestPickAnalysis:
 
         assert pick_analysis([{"key": "a1", "revision": "0" * 40}], base, "packages/statuskit", temp_repo) is None
 
+    def test_a_rejected_revision_is_skipped_without_re_checking_it(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from .. import sonar_release_gate as mod
+
+        ahead = _commit(temp_repo, "packages/statuskit/src/statuskit/quota.py", "feat: quota module")
+        calls: list[str] = []
+        monkeypatch.setattr(mod, "is_ancestor", lambda revision, base_sha, repo_root: calls.append(revision))
+
+        found = pick_analysis(
+            [{"key": "a2", "revision": ahead}], "0" * 40, "packages/statuskit", temp_repo, rejected={ahead}
+        )
+
+        assert found is None
+        assert calls == []
+
 
 class TestWaitForReleaseAnalysis:
     TARGET = ReleaseTarget(component="statuskit", project_key="NoNameItem_statuskit", path="packages/statuskit")
@@ -125,6 +141,21 @@ class TestWaitForReleaseAnalysis:
 
         assert mod.wait_for_release_analysis(self.TARGET, "master", None, base, temp_repo, sleep=slept.append) is None
         assert len(slept) == int(mod._POLL_CEILING_SECONDS // mod._POLL_INTERVAL_SECONDS)
+
+    def test_no_analyses_at_all_is_reported_distinctly_on_the_first_tick(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_release_gate as mod
+
+        base = _commit(temp_repo, "packages/statuskit/src/statuskit/git.py", "feat: git module")
+        pages = iter([[], []])
+        monkeypatch.setattr(mod, "fetch_analyses", lambda *args, **kwargs: next(pages, []))
+
+        mod.wait_for_release_analysis(self.TARGET, "master", None, base, temp_repo, sleep=lambda seconds: None)
+
+        stderr = capsys.readouterr().err
+        assert stderr.count("has no analyses on master") == 1
+        assert "NoNameItem_statuskit" in stderr
 
 
 OK_STATUS = {
@@ -198,6 +229,26 @@ class TestRenderReport:
         assert "need ≤ 0" in report
         assert "13" in report
         assert "93.4%" in report
+
+    def test_names_the_condition_count(self) -> None:
+        from .. import sonar_release_gate as mod
+
+        report = mod.render_report(ERROR_STATUS, ANALYSIS, "NoNameItem_statuskit")
+
+        # Cheap insurance against the gate being re-analysed under the wrong composition (e.g. the
+        # three overall conditions never actually landed on the gate): the row count is visible
+        # right next to the verdict, not just implied by the table's length.
+        assert "2 conditions" in report
+
+    def test_a_null_date_renders_as_unknown_date_not_the_string_none(self) -> None:
+        from .. import sonar_release_gate as mod
+
+        analysis = {**ANALYSIS, "date": None}
+
+        report = mod.render_report(OK_STATUS, analysis, "NoNameItem_statuskit")
+
+        assert "unknown date" in report
+        assert "None" not in report
 
 
 class TestMain:
@@ -298,6 +349,22 @@ class TestMain:
         monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
 
         assert mod.main() == 1
+
+    def test_an_analysis_with_no_key_fails_closed_without_calling_sonar(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A resolved analysis dict with an empty `key` would otherwise build `analysisId=` and get
+        # a 400 from `fetch_status`, surfacing as the same generic "did not answer" as a network
+        # failure — this case gets its own message and never reaches the API at all.
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(mod, "wait_for_release_analysis", lambda *args, **kwargs: {**ANALYSIS, "key": ""})
+        monkeypatch.setattr(mod, "fetch_status", lambda *args, **kwargs: pytest.fail("must not call Sonar"))
+        monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
+
+        assert mod.main() == 1
+        assert "carries no key" in capsys.readouterr().out
 
     def test_a_ref_without_a_component_fails_closed(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from .. import sonar_release_gate as mod

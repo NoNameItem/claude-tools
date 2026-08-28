@@ -331,11 +331,15 @@ jobs:
   # therefore reads master's own analysis, which is what the release is built from.
   # Same-repo only, like every other secret-bearing job: the script reads SONAR_TOKEN, which GitHub
   # withholds from fork-origin runs (a fork cannot author a release PR anyway).
+  # Not `edited`, like `notify-start`: editing a release PR's title is not a new commit, and
+  # `concurrency.group` deliberately keeps `edited` out of `synchronize`'s group — so without this
+  # guard a title edit would start a second 15-minute wait alongside whatever is already running.
   release-sonar-gate:
     name: Release Sonar Gate
     needs: [validate-pr]
     if: |
       github.event_name == 'pull_request' &&
+      github.event.action != 'edited' &&
       startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest

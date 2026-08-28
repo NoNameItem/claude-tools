@@ -168,30 +168,52 @@ def package_changed_between(revision: str, base_sha: str, path: str, repo_root: 
     ``path`` is the package directory, which is exactly what makes `push.yml` run the scanner for
     this project — tooling-only changes route to the info-only call, which skips Sonar, so they
     correctly do not count as staleness (design D4).
+
+    A tree comparison (``git diff``), not a history walk (``git log``): the question is "do the two
+    trees differ under ``path``", and a commit-plus-revert pair or merge-commit history
+    simplification can make `git log` answer "changed" for a tree that did not (harmless here —
+    it is the conservative direction — but needless and more expensive than asking directly).
     """
     result = subprocess.run(
-        ["git", "log", "--oneline", f"{revision}..{base_sha}", "--", path],  # noqa: S607 - git from PATH
+        ["git", "diff", "--quiet", revision, base_sha, "--", path],  # noqa: S607 - git from PATH, as elsewhere here
         cwd=repo_root,
         capture_output=True,
-        check=True,
-        text=True,
+        check=False,
     )
-    return bool(result.stdout.strip())
+    return result.returncode != 0
 
 
-def pick_analysis(analyses: list[dict], base_sha: str, path: str, repo_root: Path) -> dict | None:
+def pick_analysis(
+    analyses: list[dict],
+    base_sha: str,
+    path: str,
+    repo_root: Path,
+    rejected: set[str] | None = None,
+) -> dict | None:
     """The newest analysis that judges the released state of ``path``, or ``None``.
 
     Both conditions are required: the analysed revision is an ancestor of the release base, and
     nothing under ``path`` changed between it and that base. The second is what makes a still
     running scan visible as "not usable yet" and, at the same time, keeps an older analysis valid
     when master merely moved ahead on docs or plugins.
+
+    ``rejected``, when given, is a set of revisions already known to fail either check. The pair
+    ``(revision, base_sha)`` is fixed for the lifetime of one poll, so a revision rejected once can
+    never become usable — only a new analysis at the top of the list can change the answer. The
+    caller carries this set across poll ticks so `is_ancestor`/`package_changed_between` are not
+    re-run for revisions already ruled out.
     """
     for analysis in analyses:
         revision = analysis.get("revision")
-        if not revision or not is_ancestor(revision, base_sha, repo_root):
+        if not revision or revision in (rejected if rejected is not None else ()):
+            continue
+        if not is_ancestor(revision, base_sha, repo_root):
+            if rejected is not None:
+                rejected.add(revision)
             continue
         if package_changed_between(revision, base_sha, path, repo_root):
+            if rejected is not None:
+                rejected.add(revision)
             continue
         return analysis
     return None
@@ -211,9 +233,17 @@ def wait_for_release_analysis(
     there the instant it exists. ``sleep`` is injected so tests do not actually wait.
     """
     attempts = int(_POLL_CEILING_SECONDS // _POLL_INTERVAL_SECONDS)
+    rejected: set[str] = set()
+    first_tick = True
     for attempt in range(attempts + 1):
         analyses = fetch_analyses(target.project_key, branch, token, max_pages=1)
-        found = pick_analysis(analyses, base_sha, target.path, repo_root)
+        if first_tick and not analyses:
+            print(
+                f"{target.project_key} has no analyses on {branch} — the project may not exist in SonarCloud yet.",
+                file=sys.stderr,
+            )
+        first_tick = False
+        found = pick_analysis(analyses, base_sha, target.path, repo_root, rejected)
         if found is not None:
             return found
         if attempt < attempts:
@@ -248,15 +278,18 @@ def render_report(status: dict, analysis: dict, project_key: str) -> str:
     the verdict without opening SonarCloud.
     """
     revision = (analysis.get("revision") or "")[:7]
+    conditions = status.get("conditions", [])
+    date = analysis.get("date") or "unknown date"
+    gate_status = status.get("status", "UNKNOWN")
     lines = [
         f"### Sonar release gate — {project_key}",
         "",
-        f"Analysis `{revision}` · {analysis.get('date', 'unknown date')} · gate **{status.get('status', 'UNKNOWN')}**",
+        f"Analysis `{revision}` · {date} · gate **{gate_status}** · {len(conditions)} conditions",
         "",
         "| Condition | Threshold | Actual | |",
         "| --- | --- | --- | --- |",
     ]
-    for condition in status.get("conditions", []):
+    for condition in conditions:
         metric = condition.get("metricKey", "")
         threshold = format_threshold(metric, condition.get("comparator", ""), condition.get("errorThreshold"))
         actual = format_measure(metric, condition.get("actualValue"))
@@ -303,7 +336,12 @@ def main() -> int:
         )
         return 1
 
-    status = fetch_status(analysis.get("key", ""), token)
+    analysis_key = analysis.get("key", "")
+    if not analysis_key:
+        print(f"::error::The resolved analysis of {args.branch} carries no key; cannot ask SonarCloud for its verdict.")
+        return 1
+
+    status = fetch_status(analysis_key, token)
     if status is None:
         print("::error::SonarCloud did not answer; the release gate does not pass on missing data.")
         return 1
