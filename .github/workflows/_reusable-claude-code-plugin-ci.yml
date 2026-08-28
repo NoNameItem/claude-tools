@@ -110,6 +110,22 @@ jobs:
         if: steps.check-python.outputs.has_python == 'true'
         run: uv tool install ruff
 
+      # reviewdog turns every ruff finding into an inline review comment on the PR, which is what
+      # makes plugin lint findings visible line by line and processable by flow:review-comments —
+      # the same treatment _reusable-python-ci.yml gives the packages.
+      #
+      # Both `-name` values carry the plugin. On a PR the reporter is `github-pr-review` and the
+      # name is only a prefix in the comment body, but on a push it is `github-check` and the name
+      # BECOMES the check run's name. A repo-scoped push (anything under .github/) sets
+      # `tooling_changed`, which runs `python-ci-info` and `claude-code-plugin-ci-info` in the same
+      # run — both linting with ruff — so a bare `-name="ruff"` would publish two check runs with
+      # one name and no way to tell them apart. The same holds between matrix legs here. These
+      # check runs are NOT required contexts (see docs/merge-gate-rollout.md), so this is about
+      # legibility, not about the merge gate.
+      - name: Setup reviewdog
+        if: steps.check-python.outputs.has_python == 'true'
+        uses: reviewdog/action-setup@v1
+
       # Every workflow value reaches the script through `env:`, never through `${{ }}`
       # inside `run:`. CHANGED_FILES is built from the PR's own file names
       # (.github/scripts/detect_changes.py), and git allows `'` and `$` in a path — so
@@ -147,21 +163,68 @@ jobs:
       # word splitting only, so — unlike an unquoted expansion — a file named `a*.py`
       # cannot glob against the work tree, and nothing in the value is ever re-parsed
       # as shell. The step's `if:` guarantees the array is non-empty.
+      #
+      # `--diff` rather than `--check`: `ruff format` has no rdjson output, so the diff it prints
+      # is what reviewdog reads (`-f=diff`), exactly as in _reusable-python-ci.yml.
+      #
+      # `continue-on-error` on both steps, with "Check results" below turning the outcomes into
+      # the job's verdict: without it the first failing linter would abort the job and the second
+      # one's findings would never reach the PR.
+      #
+      # `set -o pipefail` because the default shell is `bash -e {0}` — `-e` WITHOUT pipefail, so a
+      # pipeline's status is the LAST command's. Should ruff abort without parseable output (broken
+      # config, crash, missing file), reviewdog would see zero diagnostics, exit 0, and the step
+      # would be recorded as success — a silently green lint job. On the ordinary path nothing
+      # changes: with real findings reviewdog already fails through `-fail-level=any`.
       - name: Ruff format check
+        id: format
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
+        continue-on-error: true
         env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           LINT_FILES: ${{ steps.files.outputs.files }}
+          PLUGIN: ${{ matrix.plugin }}
         run: |
+          set -o pipefail
           read -r -a FILES <<< "$LINT_FILES"
-          ruff format --config pyproject.toml --check -- "${FILES[@]}"
+          ruff format --config pyproject.toml --diff -- "${FILES[@]}" | \
+            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format ($PLUGIN)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
+        id: lint
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
+        continue-on-error: true
         env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           LINT_FILES: ${{ steps.files.outputs.files }}
+          PLUGIN: ${{ matrix.plugin }}
         run: |
+          set -o pipefail
           read -r -a FILES <<< "$LINT_FILES"
-          ruff check --config pyproject.toml -- "${FILES[@]}"
+          ruff check --config pyproject.toml --output-format=rdjson -- "${FILES[@]}" 2>&1 | \
+            reviewdog -f=rdjson -name="ruff ($PLUGIN)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+
+      # No `if:` — when the linters above are skipped their outcome is `skipped`, not `failure`,
+      # so this step is a no-op for plugins without Python files.
+      - name: Check results
+        env:
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          failed=false
+          if [ "$FORMAT_OUTCOME" == "failure" ]; then
+            echo "::error::Ruff format check failed"
+            failed=true
+          fi
+          if [ "$LINT_OUTCOME" == "failure" ]; then
+            echo "::error::Ruff lint failed"
+            failed=true
+          fi
+          if [ "$failed" == "true" ]; then
+            exit 1
+          fi
 
   test:
     name: Test (${{ matrix.plugin }})

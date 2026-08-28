@@ -54,6 +54,21 @@ jobs:
           enable-cache: true
           python-version: ${{ steps.py-version.outputs.version }}
 
+      # Every `-name` below carries the project. On a PR the reporter is `github-pr-review` and
+      # the name is only a prefix in the comment body, but on a push it is `github-check` and the
+      # name BECOMES the check run's name. A repo-scoped push (anything under .github/) sets
+      # `tooling_changed`, which runs `python-ci-info` and `claude-code-plugin-ci-info` in the
+      # same run — both linting with ruff — so a bare `-name="ruff"` would publish two check runs
+      # with one name and no way to tell them apart. The same holds between matrix legs here.
+      # These check runs are NOT required contexts (see docs/merge-gate-rollout.md), so this is
+      # about legibility, not about the merge gate.
+      #
+      # Every pipeline below opens with `set -o pipefail` because the default shell is
+      # `bash -e {0}` — `-e` WITHOUT pipefail, so a pipeline's status is the LAST command's. Should
+      # ruff or ty abort without parseable output (broken config, crash, missing file), reviewdog
+      # would see zero diagnostics, exit 0, and the step would be recorded as success — a silently
+      # green lint job. On the ordinary path nothing changes: with real findings reviewdog already
+      # fails through `-fail-level=any`.
       - uses: reviewdog/action-setup@v1
 
       - name: Install dependencies
@@ -96,10 +111,12 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           PY_FILES: ${{ steps.filter.outputs.py_files }}
+          PROJECT: ${{ matrix.project }}
         run: |
+          set -o pipefail
           read -r -a FILES <<< "$PY_FILES"
           uv run ruff format --diff -- "${FILES[@]}" | \
-            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
         id: lint
@@ -109,10 +126,12 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           PY_FILES: ${{ steps.filter.outputs.py_files }}
+          PROJECT: ${{ matrix.project }}
         run: |
+          set -o pipefail
           read -r -a FILES <<< "$PY_FILES"
           uv run ruff check --output-format=rdjson -- "${FILES[@]}" 2>&1 | \
-            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjson -name="ruff ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Type check
         id: typecheck
@@ -120,10 +139,12 @@ jobs:
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+          PROJECT: ${{ matrix.project }}
         run: |
+          set -o pipefail
           uv run ty check --output-format concise 2>&1 | \
             python "$GITHUB_WORKSPACE/.github/scripts/ty_to_rdjsonl.py" | \
-            reviewdog -f=rdjsonl -name="ty" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjsonl -name="ty ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
         working-directory: ${{ matrix.path }}
 
       - name: Check results
