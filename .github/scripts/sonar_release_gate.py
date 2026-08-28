@@ -28,10 +28,13 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
+import os
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 try:  # The scripts run both as files (`python3 .github/scripts/…`) and as a package under pytest.
@@ -40,13 +43,26 @@ except ImportError:
     from projects import discover_projects  # type: ignore[unresolved-import]
 
 try:
-    from .sonar_pr_status import fetch_analyses
+    # `_api_url` is imported rather than re-derived so both scripts keep one API base URL.
+    from .sonar_pr_status import _api_url, fetch_analyses, fetch_json, format_measure, format_threshold
 except ImportError:
-    from sonar_pr_status import fetch_analyses  # type: ignore[unresolved-import]
+    from sonar_pr_status import (  # type: ignore[unresolved-import]
+        _api_url,
+        fetch_analyses,
+        fetch_json,
+        format_measure,
+        format_threshold,
+    )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+
+# Sonar being unreachable is not a statement about code quality, so the gate retries before it
+# refuses (design D5).
+_API_ATTEMPTS = 3
+_API_BACKOFF_SECONDS = 5.0
+
+_STATUS_ICON = {"OK": "✅", "ERROR": "❌"}
 
 # release-please's branch naming, fixed by `separate-pull-requests: true` in release-please-config.json.
 _RELEASE_REF_PREFIX = "release-please--"
@@ -176,3 +192,102 @@ def wait_for_release_analysis(
             )
             sleep(_POLL_INTERVAL_SECONDS)
     return None
+
+
+def fetch_status(analysis_id: str, token: str | None, sleep: Callable[[float], None] = time.sleep) -> dict | None:
+    """The stored quality-gate verdict of one analysis, or ``None`` when Sonar never answered.
+
+    Addressing the analysis by id is what makes the answer immune to a scan finishing mid-run: a
+    branch-scoped query would silently switch to the newer analysis (design D3).
+    """
+    url = _api_url("qualitygates/project_status", {"analysisId": analysis_id})
+    for attempt in range(_API_ATTEMPTS):
+        payload = fetch_json(url, token)
+        if payload:
+            return payload.get("projectStatus")
+        if attempt < _API_ATTEMPTS - 1:
+            sleep(_API_BACKOFF_SECONDS * (attempt + 1))
+    return None
+
+
+def render_report(status: dict, analysis: dict, project_key: str) -> str:
+    """The Markdown report for the step summary — one row per gate condition.
+
+    Release PRs are silent in Telegram by design, so this table is the only place a human reads
+    the verdict without opening SonarCloud.
+    """
+    revision = (analysis.get("revision") or "")[:7]
+    lines = [
+        f"### Sonar release gate — {project_key}",
+        "",
+        f"Analysis `{revision}` · {analysis.get('date', 'unknown date')} · gate **{status.get('status', 'UNKNOWN')}**",
+        "",
+        "| Condition | Threshold | Actual | |",
+        "| --- | --- | --- | --- |",
+    ]
+    for condition in status.get("conditions", []):
+        metric = condition.get("metricKey", "")
+        threshold = format_threshold(metric, condition.get("comparator", ""), condition.get("errorThreshold"))
+        actual = format_measure(metric, condition.get("actualValue"))
+        icon = _STATUS_ICON.get(condition.get("status", ""), "•")
+        lines.append(f"| `{metric}` | {threshold} | {actual} | {icon} |")
+    return "\n".join(lines)
+
+
+def emit(text: str) -> None:
+    """Print to the log and, when running in Actions, append to the step summary."""
+    print(text)
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        with Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write(f"{text}\n")
+
+
+def main() -> int:
+    """CLI entrypoint. Returns 0 only when the gate passed or the component is not in Sonar."""
+    parser = argparse.ArgumentParser(description="Fail a release PR when master's Sonar state is not releasable.")
+    parser.add_argument("--head-ref", required=True, help="The release PR's head ref.")
+    parser.add_argument("--base-sha", required=True, help="The PR's base commit on the release branch.")
+    parser.add_argument("--branch", default="master", help="Branch analysed in Sonar.")
+    parser.add_argument("--repo-root", default=".", help="Repository root.")
+    args = parser.parse_args()
+
+    repo_root = Path(args.repo_root)
+    component = component_from_ref(args.head_ref)
+    if component is None:
+        print(f"::error::Cannot tell what is being released from head ref '{args.head_ref}'.")
+        return 1
+
+    target = resolve_target(component, repo_root)
+    if target is None:
+        emit(f"Component `{component}` is not analysed by SonarCloud — nothing to check.")
+        return 0
+
+    token = os.environ.get("SONAR_TOKEN") or None
+    analysis = wait_for_release_analysis(target, args.branch, token, args.base_sha, repo_root)
+    if analysis is None:
+        print(
+            f"::error::No SonarCloud analysis of {args.branch} covers the release base "
+            f"{args.base_sha[:7]} after {_POLL_CEILING_SECONDS:.0f}s — master's analysis is missing or stale."
+        )
+        return 1
+
+    status = fetch_status(analysis.get("key", ""), token)
+    if status is None:
+        print("::error::SonarCloud did not answer; the release gate does not pass on missing data.")
+        return 1
+
+    emit(render_report(status, analysis, target.project_key))
+    for condition in status.get("conditions", []):
+        if condition.get("status") != "ERROR":
+            continue
+        metric = condition.get("metricKey", "")
+        actual = format_measure(metric, condition.get("actualValue"))
+        threshold = format_threshold(metric, condition.get("comparator", ""), condition.get("errorThreshold"))
+        print(f"::error::{metric}: {actual} ({threshold})")
+
+    return 0 if status.get("status") == "OK" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

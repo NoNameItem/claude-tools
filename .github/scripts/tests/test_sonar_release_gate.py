@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from typing import TYPE_CHECKING
+
+import pytest
 
 from ..sonar_release_gate import (
     ReleaseTarget,
@@ -14,8 +17,6 @@ from ..sonar_release_gate import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 class TestComponentFromRef:
@@ -121,3 +122,167 @@ class TestWaitForReleaseAnalysis:
 
         assert mod.wait_for_release_analysis(self.TARGET, "master", None, base, temp_repo, sleep=slept.append) is None
         assert len(slept) == int(mod._POLL_CEILING_SECONDS // mod._POLL_INTERVAL_SECONDS)
+
+
+OK_STATUS = {
+    "status": "OK",
+    "conditions": [
+        {"status": "OK", "metricKey": "violations", "comparator": "GT", "errorThreshold": "0", "actualValue": "0"},
+    ],
+}
+
+ERROR_STATUS = {
+    "status": "ERROR",
+    "conditions": [
+        {"status": "ERROR", "metricKey": "violations", "comparator": "GT", "errorThreshold": "0", "actualValue": "13"},
+        {
+            "status": "OK",
+            "metricKey": "coverage",
+            "comparator": "LT",
+            "errorThreshold": "80",
+            "actualValue": "93.4",
+        },
+    ],
+}
+
+ANALYSIS = {"key": "a1", "revision": "effda08fc354f37fc640ed47c14d8e56885171b0", "date": "2026-08-28T14:45:38+0000"}
+
+
+class TestFetchStatus:
+    def test_asks_for_the_named_analysis(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        seen: list[str] = []
+
+        def fake_fetch(url: str, token: str | None) -> dict:
+            seen.append(url)
+            return {"projectStatus": OK_STATUS}
+
+        monkeypatch.setattr(mod, "fetch_json", fake_fetch)
+
+        assert mod.fetch_status("a1", None) == OK_STATUS
+        assert "qualitygates/project_status" in seen[0]
+        assert "analysisId=a1" in seen[0]
+
+    def test_retries_before_giving_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: None)
+        slept: list[float] = []
+
+        assert mod.fetch_status("a1", None, sleep=slept.append) is None
+        assert len(slept) == mod._API_ATTEMPTS - 1
+
+    def test_a_late_answer_still_counts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        answers = iter([None, {"projectStatus": OK_STATUS}])
+        monkeypatch.setattr(mod, "fetch_json", lambda url, token: next(answers))
+
+        assert mod.fetch_status("a1", None, sleep=lambda seconds: None) == OK_STATUS
+
+
+class TestRenderReport:
+    def test_names_the_analysis_and_every_condition(self) -> None:
+        from .. import sonar_release_gate as mod
+
+        report = mod.render_report(ERROR_STATUS, ANALYSIS, "NoNameItem_statuskit")
+
+        assert "NoNameItem_statuskit" in report
+        assert "effda08" in report
+        assert "2026-08-28T14:45:38+0000" in report
+        assert "`violations`" in report
+        assert "need ≤ 0" in report
+        assert "13" in report
+        assert "93.4%" in report
+
+
+class TestMain:
+    def _args(self, base_sha: str) -> list[str]:
+        return [
+            "--head-ref=release-please--branches--master--components--statuskit",
+            f"--base-sha={base_sha}",
+        ]
+
+    def test_a_passing_gate_exits_zero_and_writes_the_summary(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from .. import sonar_release_gate as mod
+
+        summary = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        monkeypatch.setattr(mod, "wait_for_release_analysis", lambda *args, **kwargs: ANALYSIS)
+        monkeypatch.setattr(mod, "fetch_status", lambda *args, **kwargs: OK_STATUS)
+        monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
+
+        assert mod.main() == 0
+        assert "NoNameItem_statuskit" in summary.read_text()
+
+    def test_a_failing_gate_exits_one(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(mod, "wait_for_release_analysis", lambda *args, **kwargs: ANALYSIS)
+        monkeypatch.setattr(mod, "fetch_status", lambda *args, **kwargs: ERROR_STATUS)
+        monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
+
+        assert mod.main() == 1
+
+    def test_a_component_without_a_sonar_project_is_skipped(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(
+            mod, "wait_for_release_analysis", lambda *args, **kwargs: pytest.fail("must not call Sonar")
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "sonar_release_gate.py",
+                "--head-ref=release-please--branches--master--components--flow",
+                "--base-sha=abc1234",
+                f"--repo-root={temp_repo}",
+            ],
+        )
+
+        assert mod.main() == 0
+        assert "flow" in capsys.readouterr().out
+
+    def test_no_usable_analysis_fails_closed(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(mod, "wait_for_release_analysis", lambda *args, **kwargs: None)
+        monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
+
+        assert mod.main() == 1
+
+    def test_an_unanswered_api_fails_closed(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(mod, "wait_for_release_analysis", lambda *args, **kwargs: ANALYSIS)
+        monkeypatch.setattr(mod, "fetch_status", lambda *args, **kwargs: None)
+        monkeypatch.setattr(sys, "argv", ["sonar_release_gate.py", *self._args("abc1234"), f"--repo-root={temp_repo}"])
+
+        assert mod.main() == 1
+
+    def test_a_ref_without_a_component_fails_closed(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "sonar_release_gate.py",
+                "--head-ref=release-please--branches--master",
+                "--base-sha=abc1234",
+                f"--repo-root={temp_repo}",
+            ],
+        )
+
+        assert mod.main() == 1
