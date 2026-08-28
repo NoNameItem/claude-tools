@@ -114,14 +114,16 @@ jobs:
       # makes plugin lint findings visible line by line and processable by flow:review-comments —
       # the same treatment _reusable-python-ci.yml gives the packages.
       #
-      # Both `-name` values carry the plugin. On a PR the reporter is `github-pr-review` and the
-      # name is only a prefix in the comment body, but on a push it is `github-check` and the name
-      # BECOMES the check run's name. A repo-scoped push (anything under .github/) sets
-      # `tooling_changed`, which runs `python-ci-info` and `claude-code-plugin-ci-info` in the same
-      # run — both linting with ruff — so a bare `-name="ruff"` would publish two check runs with
-      # one name and no way to tell them apart. The same holds between matrix legs here. These
-      # check runs are NOT required contexts (see docs/merge-gate-rollout.md), so this is about
-      # legibility, not about the merge gate.
+      # The `-name` values are plain, with no project suffix, and deliberately so: reviewdog only
+      # honors `-name` for formats that carry no tool name of their own. `ruff check`'s rdjson
+      # embeds `"source": {"name": "ruff"}` and wins over the flag (verified in #131: the
+      # `-f=diff` format step was labelled `ruff-format (flow)` while the rdjson lint step came
+      # out as plain `ruff`), so a suffix would apply to some pipelines and not others — worse
+      # than none. It buys little anyway: these names only become check run names under the
+      # `github-check` reporter on a push, they are not required contexts (see
+      # docs/merge-gate-rollout.md), and python CI and plugin CI only lint in the same run when a
+      # root tooling file changes (`tooling_files` in pyproject.toml — pyproject.toml, uv.lock,
+      # sonar-project.properties; a change under .github/ is repo-level but NOT tooling_changed).
       - name: Setup reviewdog
         if: steps.check-python.outputs.has_python == 'true'
         uses: reviewdog/action-setup@v1
@@ -184,12 +186,11 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           LINT_FILES: ${{ steps.files.outputs.files }}
-          PLUGIN: ${{ matrix.plugin }}
         run: |
           set -o pipefail
           read -r -a FILES <<< "$LINT_FILES"
           ruff format --config pyproject.toml --diff -- "${FILES[@]}" | \
-            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format ($PLUGIN)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
         id: lint
@@ -199,12 +200,11 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           LINT_FILES: ${{ steps.files.outputs.files }}
-          PLUGIN: ${{ matrix.plugin }}
         run: |
           set -o pipefail
           read -r -a FILES <<< "$LINT_FILES"
           ruff check --config pyproject.toml --output-format=rdjson -- "${FILES[@]}" 2>&1 | \
-            reviewdog -f=rdjson -name="ruff ($PLUGIN)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       # No `if:` — when the linters above are skipped their outcome is `skipped`, not `failure`,
       # so this step is a no-op for plugins without Python files.

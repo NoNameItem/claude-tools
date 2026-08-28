@@ -54,14 +54,17 @@ jobs:
           enable-cache: true
           python-version: ${{ steps.py-version.outputs.version }}
 
-      # Every `-name` below carries the project. On a PR the reporter is `github-pr-review` and
-      # the name is only a prefix in the comment body, but on a push it is `github-check` and the
-      # name BECOMES the check run's name. A repo-scoped push (anything under .github/) sets
-      # `tooling_changed`, which runs `python-ci-info` and `claude-code-plugin-ci-info` in the
-      # same run — both linting with ruff — so a bare `-name="ruff"` would publish two check runs
-      # with one name and no way to tell them apart. The same holds between matrix legs here.
-      # These check runs are NOT required contexts (see docs/merge-gate-rollout.md), so this is
-      # about legibility, not about the merge gate.
+      # The `-name` values below are plain, with no project suffix, and deliberately so: reviewdog
+      # only honors `-name` for formats that carry no tool name of their own. `ruff check`'s rdjson
+      # embeds `"source": {"name": "ruff"}` and ty_to_rdjsonl.py writes `"source": {"name": "ty"}`,
+      # both of which win over the flag (verified in #131: the `-f=diff` format step was labelled
+      # `ruff-format (flow)` while the rdjson lint step came out as plain `ruff`), so a suffix
+      # would apply to some pipelines and not others — worse than none. It buys little anyway:
+      # these names only become check run names under the `github-check` reporter on a push, they
+      # are not required contexts (see docs/merge-gate-rollout.md), and python CI and plugin CI
+      # only lint in the same run when a root tooling file changes (`tooling_files` in
+      # pyproject.toml — pyproject.toml, uv.lock, sonar-project.properties; a change under
+      # .github/ is repo-level but NOT tooling_changed).
       #
       # Every pipeline below opens with `set -o pipefail` because the default shell is
       # `bash -e {0}` — `-e` WITHOUT pipefail, so a pipeline's status is the LAST command's. Should
@@ -111,12 +114,11 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           PY_FILES: ${{ steps.filter.outputs.py_files }}
-          PROJECT: ${{ matrix.project }}
         run: |
           set -o pipefail
           read -r -a FILES <<< "$PY_FILES"
           uv run ruff format --diff -- "${FILES[@]}" | \
-            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
         id: lint
@@ -126,12 +128,11 @@ jobs:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
           PY_FILES: ${{ steps.filter.outputs.py_files }}
-          PROJECT: ${{ matrix.project }}
         run: |
           set -o pipefail
           read -r -a FILES <<< "$PY_FILES"
           uv run ruff check --output-format=rdjson -- "${FILES[@]}" 2>&1 | \
-            reviewdog -f=rdjson -name="ruff ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Type check
         id: typecheck
@@ -139,12 +140,11 @@ jobs:
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
           REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
-          PROJECT: ${{ matrix.project }}
         run: |
           set -o pipefail
           uv run ty check --output-format concise 2>&1 | \
             python "$GITHUB_WORKSPACE/.github/scripts/ty_to_rdjsonl.py" | \
-            reviewdog -f=rdjsonl -name="ty ($PROJECT)" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+            reviewdog -f=rdjsonl -name="ty" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
         working-directory: ${{ matrix.path }}
 
       - name: Check results
