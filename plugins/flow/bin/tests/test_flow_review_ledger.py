@@ -726,10 +726,10 @@ class TestReconcileLifecycle:
         assert {e["ref"] for e in out["working_set"]} == {"C1", "C2"}
 
     def test_done_github_summary_never_reopens(self, harness):
-        """The GitHub companion case: a review-body summary is threadless, so it can never carry
-        a reply we haven't accounted for — `id_advanced` is False whenever `current` is None,
-        independent of `kind`. That is the deterministic elf.31 guarantee: a re-imported review
-        carries the same, immutable summary id."""
+        """The GitHub companion case: a review-body summary is threadless, so its stored thread
+        is empty. Nothing in an empty thread can be unseen, and `reopen_if_unseen` never fires.
+        That is the deterministic elf.31 guarantee: a re-imported review carries the same,
+        immutable summary id."""
         summary = inline_comment(None, kind="summary", summary_id=900, path="(summary)", line=None)
         meta = meta_doc([summary])
         harness.reconcile(meta)
@@ -1137,7 +1137,7 @@ class TestGet:
         assert json.loads(result.stdout)["resurfaced"] is True
 
     def test_get_reports_not_resurfaced_for_an_undelivered_decision(self, harness):
-        """`open` + a decision + an unadvanced thread means "decided, never delivered" — the
+        """`open` + a decision + a thread with nothing unseen means "decided, never delivered" — the
         round's job is to deliver it, not to re-litigate it."""
         meta = meta_doc([inline_comment(1, thread=[reply(10), reply(11)])])
         harness.reconcile(meta)
@@ -1794,6 +1794,27 @@ class TestSeenSetLifecycle:
         meta = meta_doc([inline_comment(1, thread=[reply(100)])])
         harness.reconcile(meta)
         assert "thread_mark" not in self._row(harness, meta)
+
+    def test_a_reply_recorded_with_a_string_id_is_not_appended_again_as_an_int(self, harness):
+        """`merge_thread` normalises both sides through `str()`. Task 2's companion test covers
+        `paint_seen`'s side; this one covers the merge, where a mismatch appends our own reply a
+        second time and the finding re-surfaces forever."""
+        meta = meta_doc([inline_comment(1, thread=[reply(100)])])
+        harness.reconcile(meta)
+        posted = {"id": "110", "user": "me", "body": "Fixed", "created_at": "2026-07-20T12:00:00Z"}
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "reply": posted}})
+        assert result.returncode == 0, result.stderr
+        later = meta_doc(
+            [
+                inline_comment(
+                    1,
+                    thread=[reply(100), reply(110, user="me", is_bot=False, created_at="2026-07-20T12:00:00Z")],
+                )
+            ]
+        )
+        assert harness.reconcile(later)["working_set"] == []
+        thread = self._row(harness, meta)["thread"]
+        assert [str(x["id"]) for x in thread] == ["100", "110"]
 
 
 def test_the_high_water_mark_machinery_is_gone():

@@ -381,9 +381,8 @@ def unseen(row: dict) -> list[dict]:
 def resurfaced(row: dict) -> bool:
     """True when the row holds a reply we have not acted on.
 
-    One function of one input, shared by `reopen_if_unseen`, `cmd_get` and `flow-comment-card`.
-    The predecessor asked "did the thread advance past a mark?" from two different inputs — the
-    fresh collector item in `reconcile`, the stored row everywhere else — held together only by
-    both routing through `id_advanced`. There is nothing left to diverge on.
+    Shared by `reopen_if_unseen`, `cmd_get` and `flow-comment-card` to decide whether a row
+    should be reopened. The decision is uniform: check whether any reply in the thread is
+    marked as unseen — no special cases for row shape or kind.
     """
     return bool(unseen(row))

@@ -469,7 +469,7 @@ def test_readme_documents_the_ledger_helper() -> None:
     assert "flow-review-ledger" in readme
 
 
-# --- Follow-up: thread_mark null means threadless, not "is a summary" (claude-tools-elf.39) --
+# --- Follow-up: threadless rows (GitHub summaries) have immutable content (claude-tools-elf.39) --
 
 
 def test_review_comments_every_ledger_get_carries_a_locator() -> None:
@@ -511,7 +511,7 @@ def test_review_comments_has_no_deleted_status_and_explains_platform_resolution(
 
 
 # --- Task 7: SKILL.md follows the model (open/done status, platform_state, resurfaced, the
-#             `record` thread_mark guard, the collector's exit 4) --------------------------
+#             unseen reply set, the collector's exit 4) --------------------------
 
 
 def test_review_comments_has_no_large_pr_cap() -> None:
