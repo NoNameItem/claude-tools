@@ -364,18 +364,27 @@ def reply_order(reply: dict) -> tuple[int, float]:
         return (1, 0.0)
 
 
-def unseen(row: dict) -> list[dict]:
-    """Stored replies we have not acted on yet, in stored order.
+def is_unseen(reply: dict) -> bool:
+    """True for a stored reply we have not acted on yet.
 
-    A reply with NO `seen` key is not counted. Every writer stamps the bit, so an unstamped
-    reply means the dict never came from a ledger row — `flow-comment-card` renders collector
-    output through these same helpers — and treating it as new would put a `**Resurfaced:**`
-    line on a card that has no ledger behind it.
+    The `seen` key must be PRESENT and false. Every ledger writer stamps the bit, so a reply
+    without it never came from a ledger row — `flow-comment-card` renders raw collector output
+    through these same helpers — and treating that as new would mark every reply on a card that
+    has no ledger behind it.
+
+    One home for the rule: `unseen` decides re-surfacing with it and the card decides its `[new]`
+    markers with it, and the present-versus-false subtlety is exactly the kind that drifts when
+    it is written out twice.
     """
+    return "seen" in reply and not reply["seen"]
+
+
+def unseen(row: dict) -> list[dict]:
+    """Stored replies we have not acted on yet, in stored order."""
     thread = row.get("thread")
     if not isinstance(thread, list):
         return []
-    return [reply for reply in thread if isinstance(reply, dict) and "seen" in reply and not reply["seen"]]
+    return [reply for reply in thread if isinstance(reply, dict) and is_unseen(reply)]
 
 
 def resurfaced(row: dict) -> bool:

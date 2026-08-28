@@ -384,6 +384,14 @@ def test_review_comments_replies_to_the_ledger_thread_id() -> None:
     assert not re.search(r"comment_id\s*==\s*null", text)
 
 
+def test_review_comments_5_7a_warns_that_reply_is_never_null() -> None:
+    # `reply` is not in NULLABLE_FIELDS and `validate_decisions` rejects a non-object, so an
+    # agent carrying over the old `thread_mark: null` habit loses the whole batch to a shape
+    # error. The skill must say to omit the key instead of nulling it.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert re.search(r"`reply` is never `null`", text)
+
+
 def test_review_comments_cap_gates_on_a_count_reconcile_emits() -> None:
     # reconcile prints counts {total, open, skipped, pending, done, working}. `counts.actionable`
     # is the COLLECTOR's key: gating on it reads a missing key and the large-PR cap never fires.
@@ -393,9 +401,10 @@ def test_review_comments_cap_gates_on_a_count_reconcile_emits() -> None:
 
 
 def test_review_comments_already_replied_does_not_mute_a_resurfaced_row() -> None:
-    # `already_replied` is true exactly when the last replier was our own account — which is the
-    # documented "a human posted an instruction in the thread" re-open case. A blanket
-    # do-not-reply rule triages the re-surfaced row and then silently drops its reply.
+    # `already_replied` is a SEEDING signal `reconcile` uses on first insert — it settles a
+    # thread we had already answered before the ledger existed — not a per-round mute. A row can
+    # reach Phase 5 with it true and still hold a reviewer reply we have not acted on. A blanket
+    # do-not-reply rule triages that re-surfaced row and then silently drops its reply.
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert not re.search(r"Do\s+NOT\s+reply\s+to\s+comments\s+where\s+`already_replied`\s+is\s+true", text)
     phase = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]

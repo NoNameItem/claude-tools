@@ -8,7 +8,7 @@
     flow-review-ledger purge     [--meta … | --url … --number …]
 
 Durable working memory keyed by thread id: what was found, what was decided about it, and
-whether the thread has advanced since. Pure stdlib. Every untrusted value (bodies, thread
+which of its replies we have not acted on yet. Pure stdlib. Every untrusted value (bodies, thread
 replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
 reaches a command line.
 

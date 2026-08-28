@@ -1062,7 +1062,8 @@ Rules for filling it in — one entry per ref that reached Phase 5:
 one you name under `reply`, so the round's own answer never reads as something new next round.
 You may omit it — `reconcile` recognises our own account and stamps the reply seen when the forge
 hands it back — but the row then carries no record of what we said, and a later round cannot quote
-it.
+it. `reply` is never `null`: it is not one of the clearable fields, and a null fails shape
+validation and rejects the whole batch. Omit the key instead.
 
 #### 5.8. Summary Report
 
@@ -1090,7 +1091,7 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces threads that advanced
+- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces any thread holding a reply we have not acted on
 - **Record every decision back into the ledger** after replying, and report the PR's cumulative triage stats
 - Analyze the whole **working set** `reconcile` returned with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments

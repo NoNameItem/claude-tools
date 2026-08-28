@@ -869,7 +869,7 @@ class TestReconcileResolution:
 
     def test_an_unresolved_thread_returns_to_work_even_though_its_status_was_never_open(self, harness):
         """The escape hatch that makes the exclusion above safe: un-resolving is what a reviewer
-        does to ask for another look, and it must work even when no reply id advanced and no
+        does to ask for another look, and it must work even when no new reply arrived and no
         status write ever happened."""
         meta = meta_doc([inline_comment(1, thread=[reply(50)], resolved=True)])
         harness.reconcile(meta)
@@ -984,7 +984,7 @@ def test_the_whole_transition_table(harness, status, platform_state, observation
     assert (len(payload["working_set"]) == 1) is expected[2]
 
 
-def test_a_done_row_still_reopens_when_its_thread_advances(harness):
+def test_a_done_row_still_reopens_when_its_thread_gains_an_unseen_reply(harness):
     """The one status write reconcile still performs, isolated from the platform axis."""
     meta = meta_doc([inline_comment(1, thread=[reply(10)])])
     harness.reconcile(meta)
