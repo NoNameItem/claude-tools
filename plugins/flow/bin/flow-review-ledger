@@ -277,6 +277,11 @@ def validate_decisions(decisions: object) -> None:
         if decision is not None and decision not in _ledger.DECISIONS:
             msg = f"decision for {ref} has unknown decision {decision!r}"
             raise ValueError(msg)
+        if "reply" in entry:
+            posted = entry["reply"]
+            if not isinstance(posted, dict) or posted.get("id") is None:
+                msg = f"decision for {ref} has a `reply` that is not an object with an `id`"
+                raise ValueError(msg)
 
 
 #: Every field `record` can update on a row, with ordinary JSON-merge semantics:
@@ -290,6 +295,32 @@ def validate_decisions(decisions: object) -> None:
 #: row that belongs to no status bucket.
 NULLABLE_FIELDS = ("decision", "reason", "followup_task_id", "thread_mark")
 RECORD_FIELDS = ("status", *NULLABLE_FIELDS)
+
+
+def paint_seen(row: dict, posted: object) -> None:
+    """Mark every stored reply as acted-on, then append the reply this round posted.
+
+    Painting is unconditional on `status`. A ref in the decisions file went through Phase 4,
+    where the card put the whole thread in front of the agent — that is what `seen` asserts,
+    and it is true whether or not the round managed to deliver the verdict. This is what stops
+    a withheld decision from being re-litigated next round.
+
+    The append is idempotent by id, normalised through `str()` on both sides: 5.7 checkpoints a
+    ref the moment its reply is accepted and 5.7a records it again, and the same id handed back
+    as text must not store a second copy.
+    """
+    if not isinstance(row.get("thread"), list):
+        row["thread"] = []
+    thread = row["thread"]
+    for stored in thread:
+        if isinstance(stored, dict):
+            stored["seen"] = True
+    if not isinstance(posted, dict):
+        return
+    known = {str(stored.get("id")) for stored in thread if isinstance(stored, dict)}
+    if str(posted.get("id")) not in known:
+        thread.append({**posted, "seen": True})
+        thread.sort(key=_ledger.reply_order)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -314,6 +345,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         for field in RECORD_FIELDS:
             if field in entry:
                 row[field] = entry[field]
+        paint_seen(row, entry.get("reply"))
         # A `done` row is only settled if we accounted for the reply that settled it. This guard
         # catches the case where the mark is absent entirely (never set or explicitly cleared to null),
         # which would cause `id_advanced` to read our reply as an advance and re-open forever next round.

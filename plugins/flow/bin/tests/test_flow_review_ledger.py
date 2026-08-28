@@ -642,8 +642,8 @@ class TestReconcileInsert:
         assert rows["summary:42"]["thread_id"] == "42"
 
 
-def reply(reply_id, *, user="coderabbitai", body="ack", is_bot=True):
-    return {"user": user, "body": body, "id": reply_id, "created_at": "2026-07-20T10:00:00Z", "is_bot": is_bot}
+def reply(reply_id, *, user="coderabbitai", body="ack", is_bot=True, created_at="2026-07-20T10:00:00Z"):
+    return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": is_bot}
 
 
 def settle(harness, meta, ref, *, thread_mark, status="done", decision="fix"):
@@ -1673,3 +1673,121 @@ class TestResurfaced:
         # must never disagree about the same row.
         row = {"thread": [{"id": 7}], "thread_mark": None}
         assert _ledger.resurfaced(row) is _ledger.id_advanced(7, None)
+
+
+class TestRecordReply:
+    """`record`'s new one-round instruction: the reply this round posted."""
+
+    @staticmethod
+    def _thread(harness, meta):
+        return harness.ledger(meta)["rows"]["comment:1"]["thread"]
+
+    def test_record_paints_every_stored_reply_seen(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50), reply(51)])])
+        harness.reconcile(meta)
+        result = record_decisions(harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 51}})
+        assert result.returncode == 0, result.stderr
+        assert [x.get("seen") for x in self._thread(harness, meta)] == [True, True]
+
+    def test_record_paints_on_an_open_row_too(self, harness):
+        """The re-litigation fix depends on it: a decided-but-undelivered row went through
+        Phase 4 with the whole thread in front of the agent, which is what `seen` asserts."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        result = record_decisions(
+            harness, meta, {"U1": {"status": "open", "decision": "fix", "reason": "push skipped"}}
+        )
+        assert result.returncode == 0, result.stderr
+        assert [x.get("seen") for x in self._thread(harness, meta)] == [True]
+
+    def test_record_appends_the_posted_reply_marked_seen(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        posted = {"id": 60, "user": "me", "body": "Fixed: guard added", "created_at": "2026-07-20T11:00:00Z"}
+        result = record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": posted}}
+        )
+        assert result.returncode == 0, result.stderr
+        thread = self._thread(harness, meta)
+        assert [x["id"] for x in thread] == [50, 60]
+        assert thread[-1]["seen"] is True
+        assert thread[-1]["body"] == "Fixed: guard added"
+
+    def test_the_appended_reply_sorts_by_created_at_not_arrival(self, harness):
+        """Arrival order is wrong in C2's own scenario: a reviewer's reply merged after ours
+        can predate it, and a thread where our answer precedes the objection it answers reads
+        backwards."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50, created_at="2026-07-20T10:00:00Z")])])
+        harness.reconcile(meta)
+        posted = {"id": 60, "user": "me", "body": "Fixed", "created_at": "2026-07-20T09:00:00Z"}
+        record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": posted}}
+        )
+        assert [x["id"] for x in self._thread(harness, meta)] == [60, 50]
+
+    def test_appending_the_same_reply_twice_stores_it_once(self, harness):
+        """5.7 checkpoints a ref the moment its reply is accepted, then 5.7a closes the round.
+        Storing it twice would render it twice and re-surface the finding forever."""
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        posted = {"id": 60, "user": "me", "body": "Fixed", "created_at": "2026-07-20T11:00:00Z"}
+        entry = {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": posted}}
+        record_decisions(harness, meta, entry)
+        record_decisions(harness, meta, entry)
+        assert [x["id"] for x in self._thread(harness, meta)] == [50, 60]
+
+    def test_a_stored_numeric_id_matches_a_string_id_handed_back(self, harness):
+        meta = meta_doc([inline_comment(1, thread=[reply(50)])])
+        harness.reconcile(meta)
+        base = {"user": "me", "body": "Fixed", "created_at": "2026-07-20T11:00:00Z"}
+        record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": {**base, "id": 60}}}
+        )
+        record_decisions(
+            harness,
+            meta,
+            {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": {**base, "id": "60"}}},
+        )
+        assert [str(x["id"]) for x in self._thread(harness, meta)] == ["50", "60"]
+
+    def test_reply_is_not_stored_as_a_row_field(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        posted = {"id": 60, "user": "me", "body": "Fixed", "created_at": "2026-07-20T11:00:00Z"}
+        record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": posted}}
+        )
+        assert "reply" not in harness.ledger(meta)["rows"]["comment:1"]
+
+    def test_a_reply_without_an_id_rejects_the_whole_batch(self, harness):
+        """The id is the sole basis of matching: a reply stored without one is appended again
+        by the next reconcile as if new, and the row re-surfaces forever."""
+        meta = meta_doc([inline_comment(1), inline_comment(2)])
+        harness.reconcile(meta)
+        result = record_decisions(
+            harness,
+            meta,
+            {
+                "U1": {"status": "done", "decision": "fix", "thread_mark": 60},
+                "U2": {
+                    "status": "done",
+                    "decision": "wont_fix",
+                    "thread_mark": 61,
+                    "reply": {"user": "me", "body": "x"},
+                },
+            },
+        )
+        assert result.returncode == 2
+        assert "reply" in result.stderr
+        rows = harness.ledger(meta)["rows"]
+        assert rows["comment:1"]["status"] == "open"
+        assert rows["comment:2"]["status"] == "open"
+
+    def test_a_reply_that_is_not_an_object_rejects_the_batch(self, harness):
+        meta = meta_doc([inline_comment(1)])
+        harness.reconcile(meta)
+        result = record_decisions(
+            harness, meta, {"U1": {"status": "done", "decision": "fix", "thread_mark": 60, "reply": "3518155060"}}
+        )
+        assert result.returncode == 2
+        assert harness.ledger(meta)["rows"]["comment:1"]["status"] == "open"
