@@ -28,6 +28,9 @@ Exit codes:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -36,7 +39,13 @@ try:  # The scripts run both as files (`python3 .github/scripts/…`) and as a p
 except ImportError:
     from projects import discover_projects  # type: ignore[unresolved-import]
 
+try:
+    from .sonar_pr_status import fetch_analyses
+except ImportError:
+    from sonar_pr_status import fetch_analyses  # type: ignore[unresolved-import]
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 # release-please's branch naming, fixed by `separate-pull-requests: true` in release-please-config.json.
@@ -48,6 +57,13 @@ _SONAR_PROJECT_KIND = "python"
 
 # SonarCloud project keys in this organisation.
 _PROJECT_KEY_PREFIX = "NoNameItem_"
+
+# The poll that closes the race between a master scan and this job (design D3). Same cadence and
+# ceiling as `sonar_pr_status.wait_for_analysis`, for the same reason: a scan takes tens of seconds
+# once the push's tests finish, and ten minutes is generous enough that reaching it means the push
+# CI is broken rather than slow.
+_POLL_INTERVAL_SECONDS = 15.0
+_POLL_CEILING_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -81,3 +97,82 @@ def resolve_target(component: str, repo_root: Path) -> ReleaseTarget | None:
         project_key=f"{_PROJECT_KEY_PREFIX}{component}",
         path=project.path,
     )
+
+
+def is_ancestor(revision: str, base_sha: str, repo_root: Path) -> bool:
+    """Is ``revision`` reachable from the release base?
+
+    An analysis of a commit that landed AFTER the base judges code this release does not contain.
+    A revision the clone does not know (git exits 128) is not usable either, and lands here as
+    ``False``.
+    """
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", revision, base_sha],  # noqa: S607 - git from PATH, as elsewhere here
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def package_changed_between(revision: str, base_sha: str, path: str, repo_root: Path) -> bool:
+    """Did anything Sonar analyses change between the analysed commit and the released one?
+
+    ``path`` is the package directory, which is exactly what makes `push.yml` run the scanner for
+    this project — tooling-only changes route to the info-only call, which skips Sonar, so they
+    correctly do not count as staleness (design D4).
+    """
+    result = subprocess.run(
+        ["git", "log", "--oneline", f"{revision}..{base_sha}", "--", path],  # noqa: S607 - git from PATH
+        cwd=repo_root,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    return bool(result.stdout.strip())
+
+
+def pick_analysis(analyses: list[dict], base_sha: str, path: str, repo_root: Path) -> dict | None:
+    """The newest analysis that judges the released state of ``path``, or ``None``.
+
+    Both conditions are required: the analysed revision is an ancestor of the release base, and
+    nothing under ``path`` changed between it and that base. The second is what makes a still
+    running scan visible as "not usable yet" and, at the same time, keeps an older analysis valid
+    when master merely moved ahead on docs or plugins.
+    """
+    for analysis in analyses:
+        revision = analysis.get("revision")
+        if not revision or not is_ancestor(revision, base_sha, repo_root):
+            continue
+        if package_changed_between(revision, base_sha, path, repo_root):
+            continue
+        return analysis
+    return None
+
+
+def wait_for_release_analysis(
+    target: ReleaseTarget,
+    branch: str,
+    token: str | None,
+    base_sha: str,
+    repo_root: Path,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict | None:
+    """Poll page 1 of the branch's analyses until one of them judges the released code.
+
+    Page 1 is enough: Sonar returns analyses newest-first, so a scan that finishes mid-wait appears
+    there the instant it exists. ``sleep`` is injected so tests do not actually wait.
+    """
+    attempts = int(_POLL_CEILING_SECONDS // _POLL_INTERVAL_SECONDS)
+    for attempt in range(attempts + 1):
+        analyses = fetch_analyses(target.project_key, branch, token, max_pages=1)
+        found = pick_analysis(analyses, base_sha, target.path, repo_root)
+        if found is not None:
+            return found
+        if attempt < attempts:
+            print(
+                f"No analysis of {branch} covers {base_sha[:7]} yet; retrying in {_POLL_INTERVAL_SECONDS:.0f}s.",
+                file=sys.stderr,
+            )
+            sleep(_POLL_INTERVAL_SECONDS)
+    return None
