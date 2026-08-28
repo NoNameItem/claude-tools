@@ -91,6 +91,13 @@ class ReleaseTarget:
     path: str
 
 
+@dataclass(frozen=True)
+class GateError:
+    """A reason `main` must fail closed (D5), distinct from a legitimate skip."""
+
+    message: str
+
+
 def component_from_ref(head_ref: str) -> str | None:
     """``release-please--branches--master--components--statuskit`` -> ``statuskit``.
 
@@ -104,7 +111,14 @@ def component_from_ref(head_ref: str) -> str | None:
 
 
 def resolve_target(component: str, repo_root: Path) -> ReleaseTarget | None:
-    """The Sonar project for a released component, or ``None`` when it has none (e.g. `flow`)."""
+    """The Sonar project for a released component, or ``None`` when it has none.
+
+    ``None`` covers two different situations that `main` must not treat alike: a component that
+    exists but is not a Python package (e.g. `flow` — a legitimate skip), and a component this repo
+    does not know at all (a renamed package, a stale `release-please-config.json`, a broken
+    checkout — fail-closed material under D5). Telling them apart means asking `discover_projects`
+    directly rather than through this function; see `main`.
+    """
     project = discover_projects(repo_root).get(component)
     if project is None or project.kind != _SONAR_PROJECT_KIND:
         return None
@@ -113,6 +127,23 @@ def resolve_target(component: str, repo_root: Path) -> ReleaseTarget | None:
         project_key=f"{_PROJECT_KEY_PREFIX}{component}",
         path=project.path,
     )
+
+
+def resolve_component(head_ref: str, repo_root: Path) -> str | GateError:
+    """The released component named by ``head_ref``, or why it cannot be resolved.
+
+    Both failure cases fail closed (D5): a ref with no component marker at all, and a component
+    this repo does not recognise (a renamed package, a stale `release-please-config.json`, a
+    broken checkout). The second is kept distinct from `resolve_target`'s "no Sonar project"
+    `None`, which the caller must treat as a legitimate skip for a known non-Python component
+    (`flow`), not as missing data.
+    """
+    component = component_from_ref(head_ref)
+    if component is None:
+        return GateError(f"Cannot tell what is being released from head ref '{head_ref}'.")
+    if component not in discover_projects(repo_root):
+        return GateError(f"Component `{component}` is not a known package or plugin in this repository.")
+    return component
 
 
 def is_ancestor(revision: str, base_sha: str, repo_root: Path) -> bool:
@@ -253,9 +284,9 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root)
-    component = component_from_ref(args.head_ref)
-    if component is None:
-        print(f"::error::Cannot tell what is being released from head ref '{args.head_ref}'.")
+    component = resolve_component(args.head_ref, repo_root)
+    if isinstance(component, GateError):
+        print(f"::error::{component.message}")
         return 1
 
     target = resolve_target(component, repo_root)

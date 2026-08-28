@@ -41,7 +41,10 @@ class TestResolveTarget:
     def test_a_plugin_has_no_sonar_project(self, temp_repo: Path) -> None:
         assert resolve_target("flow", temp_repo) is None
 
-    def test_an_unknown_component_has_no_sonar_project(self, temp_repo: Path) -> None:
+    def test_an_unknown_component_maps_to_no_target(self, temp_repo: Path) -> None:
+        # `resolve_target` alone cannot distinguish this from `flow`'s legitimate skip above —
+        # both come back `None`. `main` tells them apart by checking `discover_projects` directly
+        # before calling this function; see `TestMain.test_an_unknown_component_fails_closed`.
         assert resolve_target("nope", temp_repo) is None
 
 
@@ -250,6 +253,32 @@ class TestMain:
 
         assert mod.main() == 0
         assert "flow" in capsys.readouterr().out
+
+    def test_an_unknown_component_fails_closed(
+        self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A renamed package, a stale release-please-config.json, or a broken checkout would all
+        # produce a head ref naming a component nothing in the repo recognises. That must not read
+        # the same as `flow`'s legitimate "not a Sonar project" skip above.
+        from .. import sonar_release_gate as mod
+
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+        monkeypatch.setattr(
+            mod, "wait_for_release_analysis", lambda *args, **kwargs: pytest.fail("must not call Sonar")
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "sonar_release_gate.py",
+                "--head-ref=release-please--branches--master--components--nope",
+                "--base-sha=abc1234",
+                f"--repo-root={temp_repo}",
+            ],
+        )
+
+        assert mod.main() == 1
+        assert "nope" in capsys.readouterr().out
 
     def test_no_usable_analysis_fails_closed(self, temp_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from .. import sonar_release_gate as mod
