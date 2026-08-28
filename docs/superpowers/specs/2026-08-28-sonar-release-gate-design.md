@@ -158,8 +158,10 @@ The check therefore resolves an analysis first and reads that analysis's verdict
    The job checks out with `fetch-depth: 0`.
 2. Walk `project_analyses/search?branch=master` (newest first) for the first analysis whose
    revision `R` satisfies both: `R` is an ancestor of `base_sha`
-   (`git merge-base --is-ancestor R base_sha`), and `git log R..base_sha -- packages/<component>`
-   is **empty** — nothing Sonar analyses changed between the analysed state and the released one.
+   (`git merge-base --is-ancestor R base_sha`), and `git diff --quiet R base_sha -- packages/<component>`
+   reports **no difference** — nothing Sonar analyses changed between the analysed state and the
+   released one. A tree comparison, not a history walk: a commit-plus-revert pair or merge-commit
+   history simplification can make `git log` answer "changed" for a tree that did not.
 3. Read `project_status?analysisId=<key>` for that analysis. A newer scan finishing mid-run cannot
    change the answer, because the answer is bound to a revision.
 4. No such analysis yet → sleep 15 s and repeat, to a ceiling of 10 minutes; then fail with
@@ -228,7 +230,7 @@ new required context — the same reasoning that gave the reusable-workflow call
 
 The job itself is guarded like every other secret-bearing job in `pr.yml`: it runs only on
 `release-please--*` head refs and only for same-repo PRs (it reads `SONAR_TOKEN`, which GitHub
-withholds from fork-origin runs). Its permissions are `contents: read` — a checkout and `git log`
+withholds from fork-origin runs). Its permissions are `contents: read` — a checkout and `git diff`
 are all it needs; the check run publishing the context is created by Actions itself.
 
 ## Scope
@@ -296,9 +298,22 @@ Acceptance:
 - **`violations GT 0` is a ratchet.** An analyser update that surfaces old findings blocks releases
   until they are fixed or marked Accepted. That is the intended behaviour, and Accepted is visible
   in the UI — unlike a quietly lowered threshold.
-- **The staleness check assumes the analysed path set.** `git log R..base -- packages/<component>`
+- **The staleness check assumes the analysed path set.** `git diff R base -- packages/<component>`
   mirrors what triggers an analysis today. If `projectBaseDir` or `sonar.sources` change, this check
   must change with them.
+- **`base_sha` is a payload snapshot, not the merge target at run time.** The gate judges
+  `github.event.pull_request.base.sha` — the release base as it stood when the PR event fired. The
+  ruleset sets `strict_required_status_checks_policy: false` (`docs/merge-gate-rollout.md`), so
+  branches are not required to be up to date, and merging the release PR merges into whatever
+  master is at that moment. If a commit touching the released package lands on master after the
+  last `synchronize` AND does not cause release-please to re-open the PR (a type hidden from
+  `changelog-sections`, e.g. `chore:`/`refactor:`/`test:`), the release carries code the gate never
+  judged. This is narrow: it needs a same-window master push whose commit type release-please
+  ignores, on a package a release PR for that same component is already open against. The option
+  not taken is deriving the base from the checked-out merge ref's `HEAD^1` instead, which is
+  recomputed when the job runs and is therefore fresher than the payload value — left for the
+  repository owner to revisit, since it would also change what "the release base" means for every
+  other guard that reads `base.sha`.
 
 ## References
 
