@@ -120,6 +120,9 @@ jobs:
       test-matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.test_matrix) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
+      # A branch analysis evaluates the gate's overall conditions; blocking on them here would keep
+      # master's CI red for debt the release gate is responsible for (release-gate design, D2).
+      qualitygate-wait: false
     secrets: inherit
 
   claude-code-plugin-ci:
@@ -284,8 +287,11 @@ jobs:
           #    was seeded on 2026-07-31 — the release notification uses it; a push does not.)
           keys=$(printf '%s' "$DETECT_RESULT" \
             | jq -c '[.by_type.python.matrix.include[]?.project] | map("NoNameItem_" + .)')
+          # `--revision` restores what `qualitygate.wait=true` used to guarantee incidentally: that
+          # the analysis of THIS commit exists before its state is reported (release-gate design, D2).
           python3 .github/scripts/sonar_pr_status.py \
-            --mode branch --branch master --project-keys "$keys" > sonar.json
+            --mode branch --branch master --project-keys "$keys" \
+            --revision "$GITHUB_SHA" > sonar.json
 
           # 4. Assemble.
           jq -n \
