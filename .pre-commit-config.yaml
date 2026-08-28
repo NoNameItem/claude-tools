@@ -6,7 +6,7 @@ repos:
     rev: v0.15.19
     hooks:
       - id: ruff-format
-      - id: ruff
+      - id: ruff-check
 
   - repo: local
     hooks:
