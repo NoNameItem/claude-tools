@@ -97,16 +97,22 @@ card and leave the analysis unsorted. Sorting on write covers both:
 
 ```python
 def reply_order(reply: dict) -> tuple[int, float]:
+    raw = str(reply.get("created_at") or "")
     try:
-        return (0, datetime.fromisoformat(str(reply.get("created_at"))).timestamp())
-    except (TypeError, ValueError):
+        return (0, datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+    except ValueError:
         return (1, 0.0)
 ```
 
-`fromisoformat` accepts the trailing `Z` from 3.11 on, which is the floor the CI runs. A reply
-with no usable `created_at` sinks to the tail in arrival order rather than jumping to the front,
-and the sort is stable, so equal timestamps keep insertion order. "Append-only" goes on meaning
-what justifies it: nothing is dropped and nothing is rewritten.
+The `Z` is rewritten to `+00:00` before parsing, and that is not cosmetic: bare `fromisoformat`
+accepts a trailing `Z` only from 3.11, while `test_py39_compat.py` holds the helpers to a **3.9**
+floor. Left alone, GitHub's `2026-07-30T09:14:22Z` would parse on the CI and fail on a user's
+older interpreter — sorting silently degrading to a no-op on exactly the machines nobody tests
+on. Both forges' other shapes (a UTC offset, fractional seconds) parse on 3.9 unaided.
+
+A reply with no usable `created_at` sinks to the tail in arrival order rather than jumping to the
+front, and the sort is stable, so equal timestamps keep insertion order. "Append-only" goes on
+meaning what justifies it: nothing is dropped and nothing is rewritten.
 
 Re-surfacing is then a property of the row alone:
 
