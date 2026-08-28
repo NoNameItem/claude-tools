@@ -856,8 +856,27 @@ def build_pr_blocks(
     ]
 
 
-def build_branch_blocks(project: str, branch: str, token: str | None) -> list[dict]:
-    """Project-state block for one project. Returns ``[]`` when the project is not in Sonar."""
+def build_branch_blocks(
+    project: str,
+    branch: str,
+    token: str | None,
+    revision: str | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[dict]:
+    """Project-state block for one project. Returns ``[]`` when the project is not in Sonar.
+
+    ``revision`` makes the call wait for that commit's analysis before reading measures. Pushes to
+    master pass it because the scanner no longer holds the job open there: `qualitygate-wait` is
+    `false` on push (release-gate design, D2), and without the wait this block would report the
+    previous commit's state — or none at all, on the first analysis of a project.
+    """
+    if revision:
+        _, head = wait_for_analysis(project, branch, revision, token, sleep)
+        if head is None:
+            print(
+                f"No Sonar analysis for revision {revision}; reporting the branch's latest state instead.",
+                file=sys.stderr,
+            )
     scope = _scope_params(None, branch)
     measures = _fetch_measures(project, _BRANCH_METRICS, scope, token)
     if not measures:
@@ -945,7 +964,11 @@ def main() -> int:
     parser.add_argument("--check-runs-file", default=None, help="JSON file with the head SHA's check runs (mode=pr).")
     parser.add_argument("--project-keys", default=None, help="JSON array, e.g. '[\"NoNameItem_statuskit\"]'.")
     parser.add_argument("--version", default="", help="Released version (mode=release).")
-    parser.add_argument("--revision", default="", help="Commit SHA the release tag points at (mode=release).")
+    parser.add_argument(
+        "--revision",
+        default="",
+        help="Commit SHA: the released tag's commit (mode=release), or the pushed commit to wait for (mode=branch).",
+    )
     args = parser.parse_args()
     if args.mode == "release":
         if not args.version:
@@ -979,7 +1002,7 @@ def main() -> int:
         else:
             keys = json.loads(args.project_keys) if args.project_keys else []
             for project in keys:
-                blocks.extend(build_branch_blocks(project, args.branch, token))
+                blocks.extend(build_branch_blocks(project, args.branch, token, args.revision or None))
     except Exception as exc:
         print(f"Sonar block assembly failed: {exc}", file=sys.stderr)
         blocks = []

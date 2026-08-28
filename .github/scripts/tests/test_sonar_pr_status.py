@@ -1181,3 +1181,51 @@ class TestFetchAndDegrade:
 
         monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
         assert mod.fetch_json("https://sonarcloud.io/api/measures/component", None) is None
+
+
+class TestBranchModeRevisionWait:
+    def test_waits_for_the_revision_before_reading_measures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        seen: list[str] = []
+
+        def fake_wait(
+            project: str, branch: str, revision: str, token: str | None, sleep: object
+        ) -> tuple[list[dict], dict]:
+            seen.append(revision)
+            return [], {"key": "a1", "revision": revision}
+
+        monkeypatch.setattr(mod, "wait_for_analysis", fake_wait)
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        blocks = mod.build_branch_blocks("NoNameItem_statuskit", "master", None, revision="effda08")
+
+        assert seen == ["effda08"]
+        assert blocks[0]["title"].endswith("project state")
+
+    def test_without_a_revision_nothing_is_awaited(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        def forbidden(*args: object, **kwargs: object) -> tuple[list[dict], None]:
+            pytest.fail("build_branch_blocks must not poll when no revision is given")
+
+        monkeypatch.setattr(mod, "wait_for_analysis", forbidden)
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        assert mod.build_branch_blocks("NoNameItem_statuskit", "master", None) != []
+
+    def test_a_missing_analysis_still_reports_the_branch(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(mod, "wait_for_analysis", lambda *args, **kwargs: ([], None))
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        blocks = mod.build_branch_blocks("NoNameItem_statuskit", "master", None, revision="deadbee")
+
+        assert blocks != []
+        assert "deadbee" in capsys.readouterr().err
