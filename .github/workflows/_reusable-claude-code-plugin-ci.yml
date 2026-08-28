@@ -18,6 +18,15 @@ on:
         required: false
         type: boolean
         default: false
+      manifests-only:
+        description: >-
+          Run only validate-structure. Set for release-please PRs: the release commit rewrites
+          plugin.json, .codex-plugin/plugin.json and both marketplace.json files, and
+          validate_plugin.py checking their consistency is the only check capable of catching an
+          error release-please itself made. Lint and tests would run against unchanged code.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   validate-structure:
@@ -39,12 +48,14 @@ jobs:
           python-version: '3.11'
 
       - name: Validate plugin structure
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
           EXTRA_ARGS=()
-          if [ "${{ matrix.plugin }}" = "flow" ]; then
+          if [ "$PLUGIN" = "flow" ]; then
             EXTRA_ARGS+=(--require-codex-manifest)
           fi
-          python .github/scripts/validate_plugin.py "${EXTRA_ARGS[@]}" "plugins/${{ matrix.plugin }}"
+          python .github/scripts/validate_plugin.py "${EXTRA_ARGS[@]}" "plugins/$PLUGIN"
 
       # flow skills must never call AskUserQuestion: its dialog auto-submits the
       # pre-selected option after the AFK idle timeout (CLAUDE_AFK_TIMEOUT_MS,
@@ -62,6 +73,7 @@ jobs:
 
   lint:
     name: Lint (${{ matrix.plugin }})
+    if: inputs.manifests-only == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -75,8 +87,10 @@ jobs:
 
       - name: Check for Python files
         id: check-python
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
-          if find "plugins/${{ matrix.plugin }}" -name "*.py" 2>/dev/null | grep -q .; then
+          if find "plugins/$PLUGIN" -name "*.py" 2>/dev/null | grep -q .; then
             echo "has_python=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_python=false" >> "$GITHUB_OUTPUT"
@@ -100,14 +114,36 @@ jobs:
         # run can reproduce.
         run: uv tool install ruff==0.15.19
 
+      # reviewdog turns every ruff finding into an inline review comment on the PR, which is what
+      # makes plugin lint findings visible line by line and processable by flow:review-comments —
+      # the same treatment _reusable-python-ci.yml gives the packages.
+      #
+      # The `-name` values are plain, with no project suffix, and deliberately so: reviewdog only
+      # honors `-name` for formats that carry no tool name of their own. `ruff check`'s rdjson
+      # embeds `"source": {"name": "ruff"}` and wins over the flag (verified in #131: the
+      # `-f=diff` format step was labelled `ruff-format (flow)` while the rdjson lint step came
+      # out as plain `ruff`), so a suffix would apply to some pipelines and not others — worse
+      # than none. It buys little anyway: these names only become check run names under the
+      # `github-check` reporter on a push, they are not required contexts (see
+      # docs/merge-gate-rollout.md), and python CI and plugin CI only lint in the same run when a
+      # root tooling file changes (`tooling_files` in pyproject.toml — pyproject.toml, uv.lock,
+      # sonar-project.properties; a change under .github/ is repo-level but NOT tooling_changed).
+      - name: Setup reviewdog
+        if: steps.check-python.outputs.has_python == 'true'
+        uses: reviewdog/action-setup@v1
+
+      # Every workflow value reaches the script through `env:`, never through `${{ }}`
+      # inside `run:`. CHANGED_FILES is built from the PR's own file names
+      # (.github/scripts/detect_changes.py), and git allows `'` and `$` in a path — so
+      # interpolating it here would let a crafted file name run arbitrary shell.
       - name: Determine files to lint
         if: steps.check-python.outputs.has_python == 'true'
         id: files
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+          CHANGED_FILES: ${{ inputs.changed-files }}
+          TOOLING_CHANGED: ${{ inputs.tooling-changed }}
         run: |
-          PLUGIN="${{ matrix.plugin }}"
-          CHANGED_FILES='${{ inputs.changed-files }}'
-          TOOLING_CHANGED="${{ inputs.tooling-changed }}"
-
           if [ "$TOOLING_CHANGED" == "true" ] || [ "$CHANGED_FILES" == "{}" ]; then
             # Lint all Python files in plugin
             echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
@@ -129,16 +165,74 @@ jobs:
             fi
           fi
 
+      # `read -r -a` is what splits LINT_FILES back into one argument per file: it applies
+      # word splitting only, so — unlike an unquoted expansion — a file named `a*.py`
+      # cannot glob against the work tree, and nothing in the value is ever re-parsed
+      # as shell. The step's `if:` guarantees the array is non-empty.
+      #
+      # `--diff` rather than `--check`: `ruff format` has no rdjson output, so the diff it prints
+      # is what reviewdog reads (`-f=diff`), exactly as in _reusable-python-ci.yml.
+      #
+      # `continue-on-error` on both steps, with "Check results" below turning the outcomes into
+      # the job's verdict: without it the first failing linter would abort the job and the second
+      # one's findings would never reach the PR.
+      #
+      # `set -o pipefail` because the default shell is `bash -e {0}` — `-e` WITHOUT pipefail, so a
+      # pipeline's status is the LAST command's. Should ruff abort without parseable output (broken
+      # config, crash, missing file), reviewdog would see zero diagnostics, exit 0, and the step
+      # would be recorded as success — a silently green lint job. On the ordinary path nothing
+      # changes: with real findings reviewdog already fails through `-fail-level=any`.
       - name: Ruff format check
+        id: format
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
-        run: ruff format --config pyproject.toml --check ${{ steps.files.outputs.files }}
+        continue-on-error: true
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+          LINT_FILES: ${{ steps.files.outputs.files }}
+        run: |
+          set -o pipefail
+          read -r -a FILES <<< "$LINT_FILES"
+          ruff format --config pyproject.toml --diff -- "${FILES[@]}" | \
+            reviewdog -f=diff -f.diff.strip=0 -name="ruff-format" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
 
       - name: Ruff lint
+        id: lint
         if: steps.check-python.outputs.has_python == 'true' && steps.files.outputs.files != ''
-        run: ruff check --config pyproject.toml ${{ steps.files.outputs.files }}
+        continue-on-error: true
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ github.token }}
+          REVIEWDOG_REPORTER: ${{ github.event.pull_request && 'github-pr-review' || 'github-check' }}
+          LINT_FILES: ${{ steps.files.outputs.files }}
+        run: |
+          set -o pipefail
+          read -r -a FILES <<< "$LINT_FILES"
+          ruff check --config pyproject.toml --output-format=rdjson -- "${FILES[@]}" 2>&1 | \
+            reviewdog -f=rdjson -name="ruff" -reporter="${REVIEWDOG_REPORTER}" -filter-mode=nofilter -fail-level=any
+
+      # No `if:` — when the linters above are skipped their outcome is `skipped`, not `failure`,
+      # so this step is a no-op for plugins without Python files.
+      - name: Check results
+        env:
+          FORMAT_OUTCOME: ${{ steps.format.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
+        run: |
+          failed=false
+          if [ "$FORMAT_OUTCOME" == "failure" ]; then
+            echo "::error::Ruff format check failed"
+            failed=true
+          fi
+          if [ "$LINT_OUTCOME" == "failure" ]; then
+            echo "::error::Ruff lint failed"
+            failed=true
+          fi
+          if [ "$failed" == "true" ]; then
+            exit 1
+          fi
 
   test:
     name: Test (${{ matrix.plugin }})
+    if: inputs.manifests-only == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -152,8 +246,10 @@ jobs:
 
       - name: Check for plugin tests
         id: check-tests
+        env:
+          PLUGIN: ${{ matrix.plugin }}
         run: |
-          if [ -d "plugins/${{ matrix.plugin }}/bin/tests" ]; then
+          if [ -d "plugins/$PLUGIN/bin/tests" ]; then
             echo "has_tests=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_tests=false" >> "$GITHUB_OUTPUT"
@@ -172,4 +268,6 @@ jobs:
 
       - name: Run tests
         if: steps.check-tests.outputs.has_tests == 'true'
-        run: uv run pytest "plugins/${{ matrix.plugin }}/bin/tests"
+        env:
+          PLUGIN: ${{ matrix.plugin }}
+        run: uv run pytest "plugins/$PLUGIN/bin/tests"

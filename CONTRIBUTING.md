@@ -390,6 +390,9 @@ classifiers = [
    - ✅ test (all Python versions)
    - ✅ sonarcloud
 3. Check PR for SonarCloud status check and summary comment
+4. Merge the PR and confirm the `sonarcloud` job ran on that `master` push and the analysis is visible in SonarCloud — **before the first release is cut.**
+
+**Why this matters:** the release notification (`sonar_pr_status.py --mode release`, run from `publish.yml`) polls `project_analyses/search` for the release commit's analysis, but an *empty* response — indistinguishable from "project has no analyses yet" — ends the wait immediately instead of retrying. If `master` has never had an analysis for this project, the first release notification permanently ships with no Sonar blocks at all, even if the analysis lands seconds later.
 
 ## Authoring Flow Skills
 

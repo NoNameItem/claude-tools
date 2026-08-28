@@ -192,11 +192,14 @@ jobs:
           else
             MESSAGE="Publish failed"
           fi
-          # Use heredoc for multiline output
+          # The heredoc delimiter is randomised: a message that happens to contain a line equal
+          # to a fixed delimiter (e.g. exactly "EOF") would close the heredoc early and corrupt
+          # $GITHUB_OUTPUT.
+          delimiter="MESSAGE_$(openssl rand -hex 8)"
           {
-            echo "message<<EOF"
+            echo "message<<$delimiter"
             echo "$MESSAGE"
-            echo "EOF"
+            echo "$delimiter"
           } >> "$GITHUB_OUTPUT"
 
   summary:
@@ -258,13 +261,13 @@ jobs:
               skipped) STATUS=released; VERDICT="Released" ;;
               *)       STATUS=failed;   VERDICT="Publish failed" ;;
             esac
-            TITLE="$PROJECT_NAME $VERSION"
+            TITLE="Release $PROJECT_NAME $VERSION"
           else
             STATUS=failed
             VERDICT="Release resolution $RESOLVE_RESULT — nothing was published"
             # project-name/version are resolve's own outputs, so both are empty when it did not
             # succeed; the release tag is the only identifier left to title the message with.
-            TITLE="$TAG"
+            TITLE="Release $TAG"
           fi
 
           # Release notes come from GitHub, not from a diff: release-please already wrote them.
@@ -272,10 +275,23 @@ jobs:
             | python3 .github/scripts/release_notes.py > notes.json
 
           # Sonar is conditional: only projects that exist in SonarCloud produce a block, so a
-          # `flow` release simply has none. There is no version-pinned analysis — Sonar analyses
-          # branches, never tags — so this is the state of master, which is what was released.
-          python3 .github/scripts/sonar_pr_status.py --mode branch --branch master \
-            --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json
+          # `flow` release simply has none. `--mode release` waits for the analysis of this very
+          # commit (publish and the analysis are independent workflow runs), then reports the
+          # quality gate plus what changed since the previous release.
+          if [ "$RESOLVE_RESULT" = "success" ]; then
+            # `--mode release` is the first mode that can exit non-zero (a missing --version or
+            # --revision is a parser.error), and under `set -euo pipefail` that would abort this
+            # step and lose the whole notification. This path is already guarded on
+            # RESOLVE_RESULT so it should be unreachable, but the invariant is "a Sonar failure
+            # costs detail, never the notification" — so fall back to no blocks instead of dying.
+            python3 .github/scripts/sonar_pr_status.py --mode release --branch master \
+              --version "$VERSION" --revision "$GITHUB_SHA" \
+              --project-keys "$(jq -nc --arg p "$PROJECT_NAME" '["NoNameItem_" + $p]')" > sonar.json \
+              || echo '[]' > sonar.json
+          else
+            # An unresolved release has no project name or version to ask Sonar about.
+            echo '[]' > sonar.json
+          fi
 
           jq -n \
             --arg status "$STATUS" \

@@ -7,12 +7,14 @@ on:
     types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
-# Deliberately NO workflow-level `statuses: write`. Exactly one job here writes a commit status —
-# notify-start, which records the `pr-notify-anchor` marker — and it grants itself that permission
-# at job level. Every OTHER job runs PR-authored code: this workflow triggers on `pull_request`, so
-# actions/checkout takes the PR merge ref, and validate-pr / python-ci / claude-code-plugin-ci
-# execute scripts from it. A workflow-level grant would hand that code the ability to forge commit
-# statuses — including `review-gate`, which the master ruleset requires.
+# Permissions are still granted per job rather than workflow-wide, but no longer as a security
+# boundary: `notify-start`, the review gate and the summary all run PR-authored code (this
+# workflow triggers on `pull_request`, so actions/checkout takes the PR merge ref) while holding
+# `statuses: write`, the Telegram credentials and — in the gate — the owner's CODEX_NUDGE_TOKEN.
+# That is the design's accepted trade-off: same-repo PRs come only from the owner and any trusted
+# collaborator, fork PRs never reach these jobs (every one of them carries a fork guard), and the
+# gate the PR could forge is the one it would also have to visibly edit in its own diff.
+# See docs/superpowers/specs/2026-08-01-notification-triggers-design.md, "Accepted trade-off".
 permissions:
   contents: read
   checks: write
@@ -27,76 +29,183 @@ concurrency:
 jobs:
   notify-start:
     name: Notify Start
-    # Same fork guard as the pr-summary job below, for the same reason: this job reads
-    # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID directly, and GitHub withholds repository secrets from
-    # fork-origin runs — so without the guard every external contribution turns this job red
-    # instead of quietly skipping the notification.
+    # Four guards, each for its own reason:
+    #   * `pull_request` only — a workflow_dispatch run has no head to announce.
+    #   * not `edited` — editing a title is not a push, and the summary is skipped on `edited`
+    #     too, so announcing here would leave a thread nobody ever answers.
+    #   * not a release-please PR — a bot-authored version bump is announced by the release
+    #     notifications (Publishing… / Published to PyPI), which carry the same changelog; a PR
+    #     thread here would only duplicate them on every force-push.
+    #   * same-repo only — this job reads TELEGRAM_* directly, and GitHub withholds repository
+    #     secrets from fork-origin runs.
     if: |
       github.event_name == 'pull_request' &&
+      github.event.action != 'edited' &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    # A job-level block REPLACES the workflow-level set for this job, so everything this job
-    # needs is listed here — `contents: read` for the checkout below, and `statuses: write` for
-    # the anchor marker. Nothing PR-authored runs in this job.
+    # A job-level block REPLACES the workflow-level set for this job, so everything this job needs
+    # is listed here: `contents: read` for the checkout and the commit comparison, `statuses: write`
+    # for the anchor marker, `pull-requests: read` to walk the PR's commits.
     permissions:
       contents: read
       statuses: write
-    # No shared concurrency group with _reusable-pr-summary.yml, and none is needed: this job is
-    # now the ONLY writer of any notification marker, so there is nothing to serialise against.
-    # (Earlier designs had the summary write to the same status, which needed first a
-    # read-before-write guard and then a second context; both are gone.) A shared group would also
-    # be actively harmful: a queued job is cancelled outright as soon as a third claimant joins its
-    # group (`cancel-in-progress: false` protects only the job already running), which would take
-    # the Telegram send below with it, and that send has no retry.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Compose the verdict line
-        id: verdict
+      - name: Read the anchor markers
+        id: markers
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
           ACTION: ${{ github.event.action }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Present on `synchronize` only — it names the head this push replaced.
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          # `edited` changes the title or body, not the head — saying "New commit" would lie.
-          if [ "$ACTION" = "edited" ]; then
-            JSON='[{"text": "PR updated, checks running"}]'
-          else
-            JSON=$(jq -nc --arg sha "${HEAD_SHA:0:7}" \
-              '[{text: "New commit "}, {text: $sha, code: true}, {text: ", checks running"}]')
-          fi
-          echo "json=$JSON" >> "$GITHUB_OUTPUT"
 
-      - id: notify
+          read_marker() {
+            if [ -z "$1" ]; then
+              echo ""
+              return
+            fi
+            gh api "repos/$REPO/commits/$1/status" \
+              --jq '[.statuses[] | select(.context == "pr-notify-anchor")] | first | .description // ""'
+          }
+
+          head_marker=$(read_marker "$HEAD_SHA")
+          before_marker=""
+          if [ "$ACTION" = "synchronize" ]; then
+            before_marker=$(read_marker "$BEFORE_SHA")
+          fi
+
+          python3 .github/scripts/pr_start.py plan \
+            --action="$ACTION" --head-marker="$head_marker" --before-marker="$before_marker" > plan.json
+
+          jq -r '"send-start=\(.send_start)", "supersede-message-id=\(.supersede_message_id // "")"' \
+            plan.json >> "$GITHUB_OUTPUT"
+          superseded=$(jq -nc --arg sha "${HEAD_SHA:0:7}" \
+            '[{text: "Superseded by "}, {text: $sha, code: true}]')
+          echo "superseded-json=$superseded" >> "$GITHUB_OUTPUT"
+          echo "Start plan: $(jq -c . plan.json)"
+
+      # The previous push announced itself and nothing ever replied — its run was cancelled or
+      # superseded mid-flight. Close that thread here rather than leaving it open forever
+      # (claude-tools-5vg.16), with no concurrency surgery: this job is the only writer of the
+      # marker on `before`.
+      - name: Close the superseded thread
+        if: steps.markers.outputs.supersede-message-id != ''
         uses: ./.github/actions/telegram-notify
         with:
-          status: started
+          status: cancelled
           event-type: pr
           title: ${{ github.event.pull_request.title }}
           event-url: ${{ github.event.pull_request.html_url }}
-          verdict-json: ${{ steps.verdict.outputs.json }}
+          verdict-json: ${{ steps.markers.outputs.superseded-json }}
           footer: "${{ github.event.repository.name }} · PR ${{ github.event.pull_request.number }}"
           silent: 'true'
+          reply-to: ${{ steps.markers.outputs.supersede-message-id }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      # The anchor is how the result notification — sent from a different workflow run — finds the
-      # message to reply to. It is written UNCONDITIONALLY, so it always names the newest "checks
-      # running" message for this head SHA.
-      #
-      # This job is the only writer of this — or any — notification marker, which is what makes an
-      # unconditional write safe. Earlier designs also recorded the reported verdict here, to
-      # suppress a repeated result message; that cost three review rounds (a verdict erased by this
-      # write, then a guard that fixed the erasure but froze the anchor, then a verdict recorded
-      # before its anchor) and was dropped. The remaining cost of dropping it is an occasional
-      # duplicate result message — cheaper than the failure it kept producing, which was a start
-      # message that no result ever replied to.
-      #
-      # The summary's silence therefore comes from ONE rule now: it speaks only when every required
-      # context is terminal (a not-yet-started producer reads as `missing`, which is silent too), so
-      # the call that sees the last one finish is the one that reports.
+      - name: Mark the superseded thread as answered
+        if: steps.markers.outputs.supersede-message-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BEFORE_SHA: ${{ github.event.before }}
+          MSG_ID: ${{ steps.markers.outputs.supersede-message-id }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh api --method POST "repos/$REPO/statuses/$BEFORE_SHA" \
+            -f state=success -f context=pr-notify-anchor \
+            -f description="msg:${MSG_ID} replied" -f target_url="$RUN_URL" >/dev/null
+
+      # Which commits have not been reported yet: walk the PR's commits from the head downwards
+      # and stop at the first one carrying an anchor. Anchoring on the marker rather than on
+      # `before` is what keeps commits from a push whose run was cancelled before this job — they
+      # simply appear in the next message.
+      - name: Assemble the commit list
+        if: steps.markers.outputs.send-start == 'true'
+        id: commits
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+
+          # `pulls/{n}/commits` is oldest-first; reverse it and drop the head itself, then look
+          # back at most 20 commits — beyond that a walk costs more API calls than the list is
+          # worth, and a rebase has almost certainly removed the anchor anyway.
+          candidates=$(gh api --paginate "repos/$REPO/pulls/$PR/commits" --jq '[.[] | .sha]' \
+            | jq -r -s 'add // [] | reverse | .[1:21] | .[]')
+
+          anchor=""
+          for sha in $candidates; do
+            description=$(gh api "repos/$REPO/commits/$sha/status" \
+              --jq '[.statuses[] | select(.context == "pr-notify-anchor")] | first | .description // ""')
+            if [ -n "$description" ]; then
+              anchor="$sha"
+              break
+            fi
+          done
+
+          rewritten=false
+          if [ -z "$anchor" ]; then
+            # No anchor found: on `opened` that's expected (there is no anchor to find yet), but
+            # on any other action it means the anchor commit vanished in a rebase — only THAT
+            # case is a rewrite worth reporting.
+            anchor="$BASE_SHA"
+            if [ "$ACTION" != "opened" ]; then
+              rewritten=true
+            fi
+          fi
+          echo "rewritten=$rewritten" >> "$GITHUB_OUTPUT"
+          echo "Commit list anchored at $anchor (rewritten=$rewritten)"
+
+          gh api "repos/$REPO/compare/$anchor...$HEAD_SHA" \
+            --jq '{commits: [.commits[] | {sha, subject: (.commit.message | split("\n")[0])}]}' > compare.json
+
+      - name: Build the start message
+        if: steps.markers.outputs.send-start == 'true'
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TITLE: ${{ github.event.pull_request.title }}
+          URL: ${{ github.event.pull_request.html_url }}
+          FOOTER: "${{ github.event.repository.name }} · PR ${{ github.event.pull_request.number }}"
+          REWRITTEN: ${{ steps.commits.outputs.rewritten }}
+        run: |
+          set -euo pipefail
+          # `--opt=value`, not `--opt value`: a PR title can legally start with `-` (e.g. `-- WIP`),
+          # which argparse would otherwise parse as an option and exit 2, losing the notification.
+          args=()
+          if [ "$REWRITTEN" = "true" ]; then
+            args+=(--rewritten-history)
+          fi
+          python3 .github/scripts/pr_start.py spec \
+            --head-sha="$HEAD_SHA" --title="$TITLE" --url="$URL" --footer="$FOOTER" \
+            "${args[@]}" < compare.json > spec.json
+
+      - id: notify
+        if: steps.markers.outputs.send-start == 'true'
+        uses: ./.github/actions/telegram-notify
+        with:
+          spec-file: spec.json
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat-id: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # The anchor is how the result notification finds the message to reply to, and how the NEXT
+      # push learns whether this thread was ever answered. `pr-summary` appends ` replied` to it;
+      # the two writers never run concurrently for one SHA, because that job sits on `needs` of
+      # this one.
       #
       # `state=success`, not `pending`: this is a marker, not a gate, and a permanently pending
       # status would read as an unfinished check. It must never be added to the master ruleset's
@@ -152,7 +261,22 @@ jobs:
   python-ci:
     name: Python CI
     needs: [detect, validate-pr]
-    if: fromJson(needs.detect.outputs.result).by_type.python.has_changed == true
+    # A release commit changes one version string in pyproject.toml, so tests and lint would run
+    # against unchanged code. `Python CI Gate` reports success from the skipped dependency.
+    #
+    # The fork guard sits on the whole job rather than on the secret-consuming step, because the
+    # step is already covered: `sonarcloud` — the only consumer of an inherited secret in the
+    # called workflow — carries its own fork guard in _reusable-python-ci.yml. What is left would
+    # still not work on a fork: reviewdog, the coverage comment and the test reporter all write
+    # back to the PR, and a fork-origin `pull_request` run gets a read-only GITHUB_TOKEN. So no
+    # useful signal survives, and the PR is unmergeable regardless — `Review Gate` keeps a fork
+    # red by design (see review-gate-result below). The `!= 'pull_request'` half leaves
+    # workflow_dispatch runs alone; they carry no `pull_request` payload to compare against.
+    if: |
+      fromJson(needs.detect.outputs.result).by_type.python.has_changed == true &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
       matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.matrix) }}
@@ -170,13 +294,19 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.changed) }}
       changed-files: ${{ toJson(fromJson(needs.detect.outputs.result).changed_files) }}
       tooling-changed: ${{ fromJson(needs.detect.outputs.result).tooling_changed }}
+      manifests-only: ${{ startsWith(github.event.pull_request.head.ref, 'release-please--') }}
 
   python-ci-info:
     name: Python CI (info)
     needs: [detect, validate-pr]
+    # Same fork guard as `python-ci`, for the same reasons, plus one of its own: this call passes
+    # `info-only: true`, which skips `sonarcloud` outright, so the job consumes no repository
+    # secret at all and its `secrets: inherit` below is inert.
     if: |
       fromJson(needs.detect.outputs.result).tooling_changed == true &&
-      fromJson(needs.detect.outputs.result).by_type.python.has_unchanged == true
+      fromJson(needs.detect.outputs.result).by_type.python.has_unchanged == true &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     uses: ./.github/workflows/_reusable-python-ci.yml
     with:
       matrix: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.python.unchanged_matrix) }}
@@ -195,6 +325,76 @@ jobs:
     with:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
+
+  # The Codex review gate, now a job of this run rather than a separate pull_request_target
+  # workflow. That is the whole architecture: with both producers of required checks in one run,
+  # `pr-summary` reaches its turn through `needs` and there is no second speaker to deduplicate
+  # against.
+  review-gate:
+    needs: [validate-pr]
+    # Fork guard, like every other secret-bearing job: a fork run gets no CODEX_NUDGE_TOKEN, so
+    # the nudge is impossible and the call is skipped rather than failed inside. Release PRs are
+    # bot-generated version bumps — no AI review is required, and asking for one spends budget on
+    # a diff nobody reads.
+    if: |
+      github.event_name == 'pull_request' &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Must mirror _reusable-review-gate.yml's own `permissions:` block: a called workflow's
+    # effective permissions are the INTERSECTION of what it declares and what the caller job
+    # holds, so anything missing here is silently withheld from it — and the gate needs
+    # `statuses: write` for the codex-nudge marker and `issues: read` for reactions on the PR.
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      statuses: write
+    uses: ./.github/workflows/_reusable-review-gate.yml
+    secrets: inherit
+
+  # A reusable-workflow call has no parent check run of its own — only child jobs named
+  # `review-gate / review-gate-poll` (the caller job has no `name:`, only the wrapper below does)
+  # — which is why the two CI gates already have wrappers and why this one needs the same
+  # treatment. Leaving the caller job unnamed is what keeps its children from colliding with the
+  # wrapper's own `Review Gate` context. The wrapper always runs, so the required context is
+  # always published by a job that actually executed.
+  review-gate-result:
+    name: Review Gate
+    needs: [review-gate]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # The wrapper reads `needs.review-gate.result` and exits — it calls no API at all, so it takes
+    # none of the workflow-level write scopes. The check run that publishes the required context is
+    # created by Actions itself, not through this token.
+    permissions:
+      contents: read
+    steps:
+      - name: Check result
+        env:
+          RESULT: ${{ needs.review-gate.result }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          IS_RELEASE: ${{ startsWith(github.event.pull_request.head.ref, 'release-please--') }}
+        run: |
+          echo "Review Gate result: $RESULT (fork=$IS_FORK release=$IS_RELEASE)"
+          # A release PR and a fork PR both arrive here as `skipped`, and they must resolve
+          # differently: a release PR legitimately needs no AI review, while a fork PR must stay
+          # unmergeable. Since the ruleset reads `skipped` as passing, the fork case has to be
+          # turned into a real failure here.
+          if [ "$IS_FORK" = "true" ]; then
+            echo "::error::Fork PRs cannot be Codex-gated — this check stays red by design."
+            exit 1
+          fi
+          case "$RESULT" in
+            success) exit 0 ;;  # Codex reviewed the head commit
+            skipped)
+              # Skipped for any reason OTHER than being a release PR means an upstream job failed
+              # or was cancelled — do not let that read as a passing gate.
+              if [ "$IS_RELEASE" = "true" ]; then exit 0; fi
+              echo "::error::The review gate did not run, and this is not a release PR."
+              exit 1
+              ;;
+            *) exit 1 ;;  # failure, cancelled, timed out
+          esac
 
   # Gate jobs for the master ruleset's required status checks.
   # When reusable workflows run, they create sub-jobs like "Python CI / Lint (statuskit)"
@@ -237,27 +437,31 @@ jobs:
             *) exit 1 ;;
           esac
 
-  # The result notification. This is only ONE of the two producers of required checks — the
-  # other is review-gate.yml, which makes the same call. pr_summary.py silences whichever call
-  # arrives while the other producer is still running.
+  # The result notification, and now the ONLY producer of it: `needs` puts this job after every
+  # required context, so there is nothing left to coordinate with.
   pr-summary:
     name: PR Summary
-    needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result]
-    # Fork guard, matching review-gate.yml's pr-summary job: a fork-origin PR gets no repository
-    # secrets from `secrets: inherit`, so TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID would be empty and
-    # the send step would fail outright instead of just skipping the notification.
+    needs: [notify-start, validate-pr, python-ci-result, claude-code-plugin-ci-result, review-gate-result]
+    # `github.event.action != 'edited'` is what keeps the removal of the verdict record honest:
+    # `edited` re-runs the whole workflow, and with no memory of what was already reported the
+    # summary would answer a second time. The rest of the workflow still runs on `edited`, so
+    # every required context is re-published by a job that actually executed — only the
+    # notification is suppressed.
+    # A release PR is deliberately silent here for the same reason notify-start skips it: its
+    # content reaches Telegram through the release notifications instead.
     if: |
       always() && github.event_name == 'pull_request' &&
+      github.event.action != 'edited' &&
+      !startsWith(github.event.pull_request.head.ref, 'release-please--') &&
       github.event.pull_request.head.repo.full_name == github.repository
     # Must mirror _reusable-pr-summary.yml's own `permissions:` block: a called workflow's
     # effective permissions are the INTERSECTION of what it declares and what the caller job
-    # holds, so anything missing here is silently withheld from it — and the summary reads the
-    # head SHA's statuses to resolve the required contexts and the reply anchor. Read, not write:
-    # the summary no longer records a marker of its own.
+    # holds, so anything missing here is silently withheld from it. `statuses: write` is the one
+    # write — the ` replied` half of the anchor marker.
     permissions:
       contents: read
       checks: read
-      statuses: read
+      statuses: write
       pull-requests: read
     uses: ./.github/workflows/_reusable-pr-summary.yml
     with:
