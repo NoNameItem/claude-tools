@@ -40,13 +40,13 @@ from typing import TYPE_CHECKING
 try:  # The scripts run both as files (`python3 .github/scripts/…`) and as a package under pytest.
     from .projects import discover_projects
 except ImportError:
-    from projects import discover_projects  # type: ignore[unresolved-import]
+    from projects import discover_projects  # type: ignore[unresolved-import] - runtime sys.path in script mode
 
 try:
     # `_api_url` is imported rather than re-derived so both scripts keep one API base URL.
     from .sonar_pr_status import _api_url, fetch_analyses, fetch_json, format_measure, format_threshold
 except ImportError:
-    from sonar_pr_status import (  # type: ignore[unresolved-import]
+    from sonar_pr_status import (  # type: ignore[unresolved-import] - runtime sys.path in script mode
         _api_url,
         fetch_analyses,
         fetch_json,

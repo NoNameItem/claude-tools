@@ -720,6 +720,7 @@ def wait_for_analysis(
     revision: str,
     token: str | None,
     sleep: Callable[[float], None] = time.sleep,
+    expect_project: bool = False,
 ) -> tuple[list[dict], dict | None]:
     """Poll until the release commit's analysis appears in Sonar.
 
@@ -745,10 +746,21 @@ def wait_for_analysis(
     and when that single request merely blipped (a transient 5xx or timeout), and page 1 alone
     cannot tell the two apart. The first time any tick's page 1 comes back empty, one full
     paginated fetch (`fetch_analyses` with the default, unbounded `max_pages`) probes deeper before
-    conceding. Only when that probe is *also* empty do we give up on the spot — the project is
-    demonstrably absent from Sonar or the API is down, and neither is fixed by waiting ten minutes.
-    A non-empty probe proves the API is alive, so the wait keeps polling instead of bailing out,
-    even if the probe itself does not contain the wanted revision yet (see below).
+    conceding. Only when that probe is *also* empty do we give up on the spot — by default, an
+    empty deep probe means the project is demonstrably absent from Sonar or the API is down, and
+    neither is fixed by waiting ten minutes. A non-empty probe proves the API is alive, so the wait
+    keeps polling instead of bailing out, even if the probe itself does not contain the wanted
+    revision yet (see below).
+
+    That default is wrong when the caller already knows the project has an analysis coming —
+    ``expect_project=True`` says so. The clearest case is a project's genuine first-ever analysis:
+    the scan is in flight and nothing is indexed yet, so *both* page 1 and the deep probe are
+    empty at the very first attempt, which is indistinguishable from "no Sonar project" by the
+    default reasoning above. With ``expect_project=True`` an empty deep probe no longer ends the
+    wait; it is treated the same as a transient blip, and the loop polls on to the ceiling. The
+    probe itself still only runs once (`project_seen` is set the moment it runs, whatever it
+    finds) — repeating a full paginated fetch on every empty tick would multiply request volume for
+    no benefit.
 
     ``sleep`` is injected so tests do not actually wait.
     """
@@ -766,18 +778,27 @@ def wait_for_analysis(
                 # "this one request blipped", so fall back to the full paginated history before
                 # conceding. One-shot because the probe is up to `_MAX_ANALYSIS_PAGES` requests —
                 # affordable once, but repeating it on every empty-page-1 tick would multiply
-                # request volume for no benefit and risk SonarCloud rate-limiting.
+                # request volume for no benefit and risk SonarCloud rate-limiting. `project_seen`
+                # is set here regardless of what the probe finds, which is what keeps it one-shot
+                # in both outcomes rather than only the "found something" one.
                 analyses = fetch_analyses(project, branch, token)
-                if not analyses:
-                    return [], None
                 project_seen = True
-                deep_match = find_analysis(analyses, revision)
-                if deep_match is not None:
-                    return analyses, deep_match
-                # The probe proved the project exists (non-empty) but the revision is not in it
-                # yet: the empty page 1 was a transient blip, not evidence the analysis is missing.
-                # Conceding here would hand `build_release_blocks` the latest analysis — another
-                # revision's metrics — just because one request blipped, so keep polling instead.
+                if not analyses:
+                    if not expect_project:
+                        return [], None
+                    # `expect_project` says this project is known to have an analysis coming — a
+                    # project's genuine first-ever scan, for instance. An empty history at attempt
+                    # 0 is exactly that in-flight state, not evidence the project is absent, so
+                    # keep polling instead of conceding on the spot.
+                else:
+                    deep_match = find_analysis(analyses, revision)
+                    if deep_match is not None:
+                        return analyses, deep_match
+                    # The probe proved the project exists (non-empty) but the revision is not in it
+                    # yet: the empty page 1 was a transient blip, not evidence the analysis is
+                    # missing. Conceding here would hand `build_release_blocks` the latest analysis
+                    # — another revision's metrics — just because one request blipped, so keep
+                    # polling instead.
             if attempt < attempts:
                 sleep(_POLL_INTERVAL_SECONDS)
             continue
@@ -869,9 +890,20 @@ def build_branch_blocks(
     master pass it because the scanner no longer holds the job open there: `qualitygate-wait` is
     `false` on push (release-gate design, D2), and without the wait this block would report the
     previous commit's state — or none at all, on the first analysis of a project.
+
+    That wait passes ``expect_project=True`` to `wait_for_analysis`. A project's genuine first-ever
+    analysis lands with an empty history at attempt 0 — the scan is in flight and nothing is
+    indexed yet — which is indistinguishable from "no Sonar project" by `wait_for_analysis`'s
+    default reasoning; without `expect_project` the wait would bail on the first tick and this
+    function would silently return ``[]`` for exactly the push its docstring promises to cover.
+    The tradeoff: if the project genuinely has no Sonar project at all, this call now spends the
+    full ten-minute ceiling before falling back to ``[]`` instead of bailing immediately. That is
+    accepted here because the caller only reaches this branch when `revision` is set, and the push
+    workflow only sets it after `needs.python-ci.result == 'success'` — the scanner really ran, so
+    an analysis really is coming.
     """
     if revision:
-        _, head = wait_for_analysis(project, branch, revision, token, sleep)
+        _, head = wait_for_analysis(project, branch, revision, token, sleep, expect_project=True)
         if head is None:
             print(
                 f"No Sonar analysis for revision {revision}; reporting the branch's latest state instead.",
