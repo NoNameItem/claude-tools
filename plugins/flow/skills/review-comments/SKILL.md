@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write Grep
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Bash(jq:*) Agent Read Write Grep
 ---
 
 # Flow: Review Comments
