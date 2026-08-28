@@ -63,7 +63,8 @@ it."
 ## Model
 
 `thread` stops being a snapshot field and becomes a durable, append-only log. It leaves
-`_ledger.SNAPSHOT_FIELDS`; `refresh_snapshot` no longer touches it.
+`_ledger.SNAPSHOT_FIELDS`; `refresh_snapshot` no longer touches it. `body` leaves with it, for a
+reason of its own — see "Why edits are ignored, for replies and for the comment itself".
 
 Each reply is stored in the shape `flow-review-collect` already builds, plus one bit:
 
@@ -76,10 +77,36 @@ Each reply is stored in the shape `flow-review-collect` already builds, plus one
 
 Two writers, and they do not overlap:
 
-- `reconcile` appends forge replies whose ids we do not hold, with `seen: false`. It never
-  touches a stored reply — neither the bit nor the body.
+- `reconcile` appends forge replies whose ids we do not hold — `seen: true` when the author is
+  our own account (see below), `seen: false` otherwise. It never touches a stored reply, neither
+  the bit nor the body.
 - `record` paints every stored reply `seen: true` and appends our own posted reply, also
   `seen: true`.
+
+```python
+def is_ours(reply: dict, me: str | None) -> bool:
+    return bool(me) and str(reply.get("user")) == me
+```
+
+The list is kept in `created_at` order, not arrival order. Arrival order is wrong in exactly
+C2's scenario: the reviewer's reply 105 reaches our copy AFTER our own 110, and a thread where
+our answer precedes the objection it answers is one the next round reads backwards. Both
+consumers depend on the order — `flow-comment-card` renders the list as it stands, and Phase 3's
+subagent reads `thread` straight out of the row extract — so sorting at render time would fix the
+card and leave the analysis unsorted. Sorting on write covers both:
+
+```python
+def reply_order(reply: dict) -> tuple[int, float]:
+    try:
+        return (0, datetime.fromisoformat(str(reply.get("created_at"))).timestamp())
+    except (TypeError, ValueError):
+        return (1, 0.0)
+```
+
+`fromisoformat` accepts the trailing `Z` from 3.11 on, which is the floor the CI runs. A reply
+with no usable `created_at` sinks to the tail in arrival order rather than jumping to the front,
+and the sort is stable, so equal timestamps keep insertion order. "Append-only" goes on meaning
+what justifies it: nothing is dropped and nothing is rewritten.
 
 Re-surfacing is then a property of the row alone:
 
@@ -102,13 +129,41 @@ not, because `record` paints **everything we store**, not everything the forge r
 re-surfaces exactly once, the agent reads it on that round (which is the point of keeping it), and
 the next `record` marks it seen along with the rest.
 
-### Why edits to stored replies are ignored
+### Why our own replies arrive already seen
 
-`reconcile` drops forge replies whose ids it already holds, rather than refreshing their bodies.
-This extends a decision already in force for the comment body itself: a reviewer who edits text
-in place gets no reaction, and is expected to post a new reply instead. Making thread replies
-behave differently from the comment they hang off would be the inconsistency, not the other way
-round.
+A reply the forge attributes to our own account is marked `seen` the moment `reconcile` first
+holds it. This closes the one failure the deleted `record` guard used to catch: the agent posts a
+reply and does not report its id — the POST succeeded, the `--jq` extraction did not. Without the
+rule, the next `reconcile` pulls our own reply off the forge as an id we do not hold, marks it
+unseen, re-opens the finding, and the round replies a second time into the same thread. Publicly,
+and again every round after that.
+
+`me` already sits at the top level of the collector's document, so `reconcile` needs no new field
+on the reply and `flow-review-collect` does not change. Where `me` is absent the rule simply does
+not fire, which is the behaviour we have today.
+
+**The cost, taken deliberately.** `reopen_if_advanced` keys on the reply id rather than the author
+precisely because the agent's replies and the human's own comments come from the SAME account —
+that is what let "a human posts an instruction in the thread" re-open a settled finding. That
+channel closes. It is narrower than it first sounds: `seen` is a marker and not a filter, so an
+instruction sitting in the thread of a row that is still `open` is read by the triage like any
+other reply, and only the re-opening of a `done` row is lost. A human who needs a settled finding
+revisited replies from another account, or purges the ledger. Recorded here so a later reader
+finds a decision rather than an oversight.
+
+### Why edits are ignored, for replies and for the comment itself
+
+`reconcile` drops forge replies whose ids it already holds, rather than refreshing their bodies. A
+reviewer who edits text in place gets no reaction and is expected to post a new reply instead.
+
+The comment's own `body` follows the replies rather than the reverse: it leaves `SNAPSHOT_FIELDS`.
+Today it is refreshed every round, so the stored text tracks an edit while nothing reacts to it —
+half of each rule. Freezing it makes one rule out of the two halves: the text the agent triaged is
+the text the card shows and the text a later round re-reads, and an edit reaches us only as a new
+reply. Nothing but display consumes `body` — the card's blockquote and `working_entry`'s `brief` —
+so this costs no logic. The fields that stay refreshed are the ones describing the CODE rather
+than the reviewer's words: `path`, `line`, `start_line`, `diff_hunk`, `snippet`, `outdated`,
+`already_replied`. Freezing those would strand a finding at a line the diff has since moved.
 
 ### Id comparison
 
@@ -120,33 +175,35 @@ second time with `seen: false`, and the finding re-surfaces every round forever.
 
 ### `reconcile`
 
-**Insert.** A new row takes the item's thread whole, and every reply's `seen` bit takes the same
-value that decides the row's status:
+**Insert.** A new row takes the item's thread whole, and each reply's `seen` bit follows the value
+that decides the row's status — unless the reply is ours, which settles it on its own:
 
 ```python
 already = bool(item.get("already_replied"))
 "status": "done" if already else "open"
-# and, for every reply copied from the item: "seen": already
+# and, for every reply copied from the item: "seen": already or is_ours(reply, me)
 ```
 
 A row seeded `done` is seeded with its thread fully accounted for — we replied into that thread
 before this ledger existed, or before a purge. Without this, the next `reconcile` re-opens it
 immediately and the seeding is worthless: a re-run against a live PR after
 `flow:done` purged its ledger would send every settled finding back for triage. A row seeded
-`open` honestly takes `false`; it costs nothing, since the row is in the working set on
-`open + live` regardless.
+`open` honestly takes `false` for everyone but us; it costs nothing, since the row is in the
+working set on `open + live` regardless.
 
 **Merge.**
 
 ```python
-def merge_thread(row: dict, item: dict) -> None:
+def merge_thread(row: dict, item: dict, me: str | None) -> None:
     known = {str(reply.get("id")) for reply in row.get("thread") or []}
+    thread = row.setdefault("thread", [])
     for reply in item.get("thread") or []:
         if str(reply.get("id")) not in known:
-            row.setdefault("thread", []).append({**reply, "seen": False})
+            thread.append({**reply, "seen": is_ours(reply, me)})
+    thread.sort(key=reply_order)
 ```
 
-**Order.** `merge_thread(row, item)` → `reopen_if_unseen(row)` → `platform_state`. The current
+**Order.** `merge_thread(row, item, me)` → `reopen_if_unseen(row)` → `platform_state`. The current
 order is the reverse (`reopen_if_advanced` before `refresh_snapshot`) because the decision was
 made from the fresh `item`. It is now made from the merged row, so the merge must come first.
 
@@ -182,7 +239,9 @@ summary — no reply target, so no `reply` key, and no per-row-shape rule anywhe
 For every ref it touches, `record`:
 
 1. paints every stored reply `seen: true`;
-2. appends `reply` (if present, and if its id is not stored already) with `seen: true`.
+2. appends `reply` (if present, and if its id is not stored already) with `seen: true`, then
+   re-sorts by `reply_order` — the posted reply is newest in the common case, but the round may
+   have raced a reviewer whose reply `reconcile` merged first.
 
 Painting is **unconditional on `status`**. A ref in the decisions file went through Phase 4, where
 the card showed it the whole thread; that is what "seen" asserts, and it is true whether or not
@@ -207,12 +266,14 @@ appended again by the next `reconcile` as if new, and the row re-surfaces foreve
 no reply is now legal for every row shape: a threadless GitHub summary, and an acknowledgement
 with nothing left to do, both settle on `status: done` alone.
 
-The one remaining failure — a reply was posted and not reported — was undetectable before this
-change too. That is the "stale mark" half the 2026-07-30 spec recorded explicitly: the guard read
-the row's value after the merge, so it caught only a row with no mark at all, never one whose mark
-was merely out of date. The difference now is that this is the absence of a guard rather than a
-hole in one, and the discipline sits in 5.7, where the id comes from the API response that just
-returned.
+The failure it did catch — a reply posted and not reported — becomes structurally impossible
+rather than merely undetected. Its coverage was always partial: `new_row` seeds the mark from
+`last_reply_id`, which is `None` only for a comment that has no replies yet, so the guard fired on
+a first-round thread and never on one already carrying a mark. That is the "stale mark" half the
+2026-07-30 spec recorded explicitly — the guard read the row's value after the merge, so a mark
+merely out of date passed it. What replaces the guard is not a better guard but the rule above: an
+unreported reply comes back off the forge under our own account and arrives already `seen`, so it
+re-opens nothing, on the first round or any later one.
 
 `flow-review-collect`'s comment on elf.31 determinism must be rewritten. The guarantee — a GitHub
 review-body summary never re-opens — survives, but it now rests on the row having an empty thread
@@ -230,6 +291,10 @@ reading. `seen` is a **marker, not a filter** — hiding earlier rounds would co
 context that makes a considered verdict possible. The existing instruction that `resurfaced` comes
 from `flow-review-ledger get` and is never re-derived by hand stays, pointed at the bits.
 
+The same cell lists "a human instruction in the thread" among the continuations that re-open a
+row. It gains the qualifier that an instruction posted from OUR own account no longer does — see
+"Why our own replies arrive already seen" — so the cell promises only what the mechanism delivers.
+
 **Card.** `flow-comment-card` marks unseen replies:
 
 ```
@@ -240,9 +305,16 @@ from `flow-review-ledger get` and is never re-derived by hand stays, pointed at 
 ```
 
 On a row's first triage every reply carries the marker, because nothing in that thread has been
-acted on yet — which reads correctly and needs no special case. The `**Resurfaced:**` line stays;
-its wording changes from "the thread advanced past the reply we last accounted for" to a count of
-replies that appeared since our last action.
+acted on yet — which reads correctly and needs no special case.
+
+The `**Resurfaced:**` line does need one. Its wording changes from "the thread advanced past the
+reply we last accounted for" to a count of replies that appeared since our last action, and that
+sentence is false on a first triage, where there was no last action for anything to appear since.
+Today the line cannot fire there at all — `new_row` seeds the mark from `last_reply_id`, so a
+fresh row is never `resurfaced` — and per-reply bits remove that accident: an untriaged row with
+three reviewer replies is unseen three times over. So the line is suppressed while the row carries
+no `decision`, which is exactly the Phase 3 shape "a new finding — analyse from scratch". The
+per-reply markers stay: on a first read they say "all of this is new to us", which is true.
 
 **Phase 5.7.** "Capture the posted reply's id" becomes "capture the created object". Both forges
 return it from the POST:
@@ -290,6 +362,7 @@ outright — there is nothing left to distinguish. So is the sentence in 5.7 tha
 | `reopen_if_advanced(row, item)` | `reopen_if_unseen(row)` |
 | `cmd_record`'s done-without-a-mark guard | shape-only validation of `reply` |
 | `thread` in `SNAPSHOT_FIELDS` | `merge_thread` |
+| `body` in `SNAPSHOT_FIELDS` | — (the text we triaged is the text we keep) |
 
 ## Testing
 
@@ -307,6 +380,11 @@ outright — there is nothing left to distinguish. So is the sentence in 5.7 tha
 | `record` paints `seen` on `status: open` entries too | the re-litigation fix depends on it |
 | a `reply` without an `id` rejects the whole batch, file untouched | all-or-nothing |
 | the card marks unseen replies | the Phase 3 / card contract above |
+| a reply merged after ours sorts before it when its `created_at` is older | C2's own scenario leaves the thread out of order |
+| a reply with an unparseable `created_at` sinks to the tail instead of the front | the fallback must not reorder the argument |
+| a reply from our own account arrives `seen` and re-opens nothing | replaces the deleted `record` guard |
+| an edited comment `body` does not overwrite the stored one | `body` left `SNAPSHOT_FIELDS` |
+| the card omits `**Resurfaced:**` while the row has no `decision` | it would claim a last action that never happened |
 
 Plus contract tests over the prose: the 5.7a table in its new shape, the Phase 3 wording, and the
 absence of `thread_mark` anywhere in the skill.
@@ -317,9 +395,11 @@ axis changes here — only the trigger that moves `done` back to `open`.
 ## Non-goals and recorded decisions
 
 **No schema version gate, no migration.** `load_ledger` does not compare `schema` today, and this
-change does not add the comparison. There is no population to migrate: the ledger has never
-shipped in a release, so no ledger written by the old model exists anywhere. The transitional case
-is empty by construction rather than tolerated.
+change does not add the comparison. There is no population to migrate, and that was verified
+rather than assumed: no `flow-v*` tag exists, the installed plugin release (3.1.0) carries no
+`flow-review-ledger` at all — PR #118 merged after it — and `~/.cache/flow/review-ledger/` on the
+development machine holds no files. The transitional case is empty by construction rather than
+tolerated.
 
 **Concurrency is still unguarded.** `save_ledger`'s atomic temp+rename gives crash safety, not
 mutual exclusion. Two overlapping `review-comments` runs on one PR remain last-writer-wins, and
