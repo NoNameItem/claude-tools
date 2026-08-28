@@ -324,9 +324,9 @@ def test_review_comments_decisions_example_carries_a_reply_wherever_one_was_post
 def test_review_comments_phase_3_qualifies_the_human_instruction_channel() -> None:
     # A human instruction posted from OUR account no longer re-opens a settled row: reconcile
     # stamps our own replies seen on arrival. The table must not promise what it cannot deliver.
-    text = REVIEW_COMMENTS_SKILL.read_text()
-    phase_3 = text.split("### Phase 3", 1)[1].split("### Phase 4", 1)[0]
-    assert "seen" in phase_3
+    phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
+    assert re.search(r"own account", phase_3)
+    assert re.search(r"does not re-?open", phase_3, re.IGNORECASE)
 
 
 def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
@@ -364,7 +364,11 @@ def test_review_comments_5_7a_states_the_null_merge_rule() -> None:
     # substring guard never matches the prose it means to forbid -- match around them.
     assert not re.search(r"only\W{0,4}when the entry supplies a non-null id", merge_rule_section)
     assert re.search(r"\bclears\b", merge_rule_section), "5.7a must say that an explicit null clears the field"
-    assert re.search(r"\bomit", merge_rule_section), "5.7a must say that an omitted key leaves the value unchanged"
+    # Pin the merge-semantics table row itself, not the word "omit" -- a stray "omit" survives
+    # elsewhere in the section (the unrelated `reply`-key sentence) even if this row is deleted.
+    assert re.search(r"key absent\s*\|\s*no-op", merge_rule_section), (
+        "5.7a's merge-semantics table must state that an absent key is a no-op (leaves the stored value unchanged)"
+    )
 
 
 def test_review_comments_replies_to_the_ledger_thread_id() -> None:
@@ -467,9 +471,6 @@ def test_review_comments_states_the_real_working_set_rule() -> None:
 def test_readme_documents_the_ledger_helper() -> None:
     readme = (FLOW_ROOT / "README.md").read_text()
     assert "flow-review-ledger" in readme
-
-
-# --- Follow-up: threadless rows (GitHub summaries) have immutable content (claude-tools-elf.39) --
 
 
 def test_review_comments_every_ledger_get_carries_a_locator() -> None:

@@ -924,7 +924,8 @@ or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break o
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
-  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
+  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
+  --jq '{id, user: .user.login, body, created_at}'
 ```
 
 **GitLab** (`thread_id` = the discussion id, NOT a comment id — a new note in the discussion):
@@ -932,24 +933,12 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
 ```bash
 glab api --method POST \
   "projects/{project}/merge_requests/{iid}/discussions/{thread_id}/notes" \
-  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
+  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
+  | jq '{id, user: .author.username, body, created_at}'
 ```
 
 **Capture the created object from the API response** for every reply you send — 5.7a records it
 under `reply`, and it is the only place that object exists.
-
-```bash
-# GitHub
-gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
-  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
-  --jq '{id, user: .user.login, body, created_at}'
-
-# GitLab — jq separately: glab's flag set varies by version
-glab api --method POST \
-  "projects/{project}/merge_requests/{iid}/discussions/{thread_id}/notes" \
-  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
-  | jq '{id, user: .author.username, body, created_at}'
-```
 
 **Reply format by decision** (identical on both platforms):
 
