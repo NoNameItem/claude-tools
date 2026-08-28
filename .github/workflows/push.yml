@@ -239,6 +239,11 @@ jobs:
           REPLY_TO: ${{ needs.notify-start.outputs.message-id }}
           NEEDS_JSON: ${{ toJson(needs) }}
           DETECT_RESULT: ${{ needs.detect.outputs.result }}
+          # Empty when python-ci did not succeed (skipped or failed): no analysis of $GITHUB_SHA
+          # will ever appear then (the sonarcloud job needs [lint, test] and is skipped with them),
+          # so waiting on it would only burn the full ten-minute ceiling before falling back —
+          # delaying a "Checks failed" message exactly when it is most wanted.
+          REVISION: ${{ needs.python-ci.result == 'success' && github.sha || '' }}
         run: |
           set -euo pipefail
 
@@ -289,9 +294,12 @@ jobs:
             | jq -c '[.by_type.python.matrix.include[]?.project] | map("NoNameItem_" + .)')
           # `--revision` restores what `qualitygate.wait=true` used to guarantee incidentally: that
           # the analysis of THIS commit exists before its state is reported (release-gate design, D2).
+          # It is passed only when python-ci actually ran the scanner: when it was skipped or
+          # failed, no analysis of $GITHUB_SHA will ever exist, so waiting for one would only spend
+          # the full ceiling — an empty --revision disables the wait (`args.revision or None`).
           python3 .github/scripts/sonar_pr_status.py \
             --mode branch --branch master --project-keys "$keys" \
-            --revision "$GITHUB_SHA" > sonar.json
+            --revision "$REVISION" > sonar.json
 
           # 4. Assemble.
           jq -n \
