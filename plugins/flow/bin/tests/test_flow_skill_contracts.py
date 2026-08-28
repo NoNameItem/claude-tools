@@ -292,28 +292,41 @@ def test_review_comments_followup_description_reads_the_ledger_row() -> None:
     assert not re.search(r"the\s+reviewer's\s+comment\s+text\s+read\s+from\s+`metadata\.json`", text)
 
 
-def test_review_comments_captures_the_reply_id_for_thread_mark() -> None:
-    # 5.7a sets thread_mark to "the id of the reply you just posted", but nothing in 5.7 tells
-    # the agent to capture that id from the gh/glab response. Pin that 5.7 now does.
+def test_review_comments_never_mentions_thread_mark() -> None:
+    """The field is gone from the ledger; a skill that still names it teaches a write that
+    `record` silently ignores."""
+    assert "thread_mark" not in REVIEW_COMMENTS_SKILL.read_text()
+
+
+def test_review_comments_captures_the_posted_reply_object() -> None:
+    # 5.7a needs the whole created object (id, user, body, created_at), not just the id, and
+    # nothing but 5.7 can capture it — the POST response is the only place it exists.
     text = REVIEW_COMMENTS_SKILL.read_text()
     phase_5_7 = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
     assert re.search(r"capture", phase_5_7, re.IGNORECASE)
-    assert "thread_mark" in phase_5_7
+    assert "created_at" in phase_5_7
 
 
-def test_review_comments_decisions_example_always_carries_thread_mark() -> None:
-    # `record` writes `thread_mark` only when the entry supplies it (flow-review-ledger:212), so a
-    # `done` entry that omits it keeps its pre-reply mark: the reply the agent posts has a higher
-    # id, `reopen_if_advanced` fires, and the settled finding re-opens every round. The canonical
-    # example must teach the rule 5.7a states. A threadless row (GitHub's `kind == "summary"`)
-    # carries an explicit `null`, so the key is present on every `done` entry without exception.
+def test_review_comments_decisions_example_carries_a_reply_wherever_one_was_posted() -> None:
+    # An entry that posted a reply and does not report it leaves our own reply to come back off
+    # the forge; a GitHub review-body summary has no reply target and must carry no `reply`.
     text = REVIEW_COMMENTS_SKILL.read_text()
     block = text.split("$FLOW_RC_DIR/decisions.json", 1)[1].split("```json", 1)[1].split("```", 1)[0]
     decisions = json.loads(block)
-    missing = sorted(
-        ref for ref, entry in decisions.items() if entry.get("status") == "done" and "thread_mark" not in entry
-    )
-    assert missing == [], f"done entries without `thread_mark` (they will re-open): {missing}"
+    replied = {ref for ref, entry in decisions.items() if entry.get("status") == "done"}
+    with_reply = {ref for ref, entry in decisions.items() if "reply" in entry}
+    assert with_reply, "the example must show at least one posted reply"
+    assert with_reply < replied, "the example must also show a done entry that posted nothing"
+    for ref in with_reply:
+        assert decisions[ref]["reply"].get("id") is not None, f"{ref}'s reply must carry an id"
+
+
+def test_review_comments_phase_3_qualifies_the_human_instruction_channel() -> None:
+    # A human instruction posted from OUR account no longer re-opens a settled row: reconcile
+    # stamps our own replies seen on arrival. The table must not promise what it cannot deliver.
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    phase_3 = text.split("### Phase 3", 1)[1].split("### Phase 4", 1)[0]
+    assert "seen" in phase_3
 
 
 def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
@@ -457,25 +470,6 @@ def test_readme_documents_the_ledger_helper() -> None:
 
 
 # --- Follow-up: thread_mark null means threadless, not "is a summary" (claude-tools-elf.39) --
-
-
-def test_review_comments_thread_mark_null_rule_is_scoped_to_threadless_rows() -> None:
-    # A GitHub review-body summary (`kind == "summary"`) is threadless, so `thread_mark: null`
-    # is correct for it. But a GitLab general discussion is ALSO `kind == "summary"` (see
-    # gl_collect) while carrying a real thread and reply target — flow-review-ledger's
-    # `reopen_if_advanced`/`new_row` key on `_ledger.last_reply_id`, not `kind`, precisely
-    # because "summary" alone does not imply "no thread". The unscoped "a summary row/rows"
-    # phrasing must not reappear here.
-    text = REVIEW_COMMENTS_SKILL.read_text()
-    # Whitespace-tolerant: a line wrap must not defeat the guard (this repo has shipped a
-    # substring-only guard that a wrap silently evaded, twice).
-    assert not re.search(r"a\s+summary\s+row\s+clears\s+`thread_mark`", text)
-    assert not re.search(r"`null`\s*—\s*a\s+summary\s+has\s+no\s+thread", text)
-    assert not re.search(r"`null`\s+is\s+for\s+summary\s+rows\s+only", text)
-    # The corrected rule must be present: null means threadless, keyed on the thread, not `kind`.
-    required_field_section = text.split("**`thread_mark` is a REQUIRED field", 1)[1].split("#### 5.8", 1)[0]
-    assert re.search(r"\bthreadless\b", required_field_section)
-    assert re.search(r"GitLab", required_field_section)
 
 
 def test_review_comments_every_ledger_get_carries_a_locator() -> None:
