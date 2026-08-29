@@ -8,13 +8,15 @@
     flow-review-ledger purge     [--meta … | --url … --number …]
 
 Durable working memory keyed by thread id: what was found, what was decided about it, and
-whether the thread has advanced since. Pure stdlib. Every untrusted value (bodies, thread
+which of its replies we have not acted on yet. Pure stdlib. Every untrusted value (bodies, thread
 replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
 reaches a command line.
 
 `record`'s decisions file merges into a row the way JSON merge does: an ABSENT key leaves the
 stored value alone, an explicit `null` CLEARS it. Clearable fields: `decision`, `reason`,
-`followup_task_id`, `thread_mark`. `status` is not clearable — a null there is rejected.
+`followup_task_id`. `status` is not clearable — a null there is rejected. `reply` is not a
+stored field at all: it is a one-round instruction naming the reply this round posted, which
+`record` appends to the thread and marks seen.
 """
 
 from __future__ import annotations
@@ -80,8 +82,27 @@ def refresh_snapshot(row: dict, item: dict) -> None:
         row[field] = item.get(field)
 
 
-def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
+def seed_thread(item: dict, me: object, already: bool) -> list:
+    """The thread a NEW row starts with, each reply carrying its `seen` bit.
+
+    A row seeded `done` — we replied into that thread before this ledger existed, or before a
+    purge — is seeded with its thread fully accounted for. Without that, the next `reconcile`
+    re-opens it immediately and the seeding is worthless: a re-run against a live PR after
+    `flow:done` purged its ledger would send every settled finding back for triage. A row seeded
+    `open` takes `false` for everyone but us.
+    """
+    thread = [
+        {**reply, "seen": already or _ledger.is_ours(reply, me)}
+        for reply in item.get("thread") or []
+        if isinstance(reply, dict)
+    ]
+    thread.sort(key=_ledger.reply_order)
+    return thread
+
+
+def new_row(thread_id: str, item: dict, doc: dict, round_no: int, me: object) -> dict:
     kind = item.get("kind") or "inline"
+    already = bool(item.get("already_replied"))
     row = {
         # The BARE platform id — the reply target. The ledger's own key is namespaced
         # (`_ledger.row_key_of`); the two must not be conflated, or a prefixed value would
@@ -91,15 +112,17 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
         "ref": alloc_ref(doc, bool(item.get("is_bot"))),
         "kind": kind,
         # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
-        # after a purge) — never the re-surface trigger; that is `thread_mark`. Resolution does
-        # NOT seed `done`: a row first seen already-resolved gets `status: open` +
-        # `platform_state: resolved`, so if the thread is un-resolved it arrives for triage
-        # instead of staying closed by someone else's verdict forever.
-        "status": "done" if item.get("already_replied") else "open",
+        # after a purge) — never the re-surface trigger; that is the per-reply `seen` bit.
+        # Resolution does NOT seed `done`: a row first seen already-resolved gets
+        # `status: open` + `platform_state: resolved`, so if the thread is un-resolved it
+        # arrives for triage instead of staying closed by someone else's verdict forever.
+        "status": "done" if already else "open",
         "decision": None,
         "reason": None,
         "followup_task_id": None,
-        "thread_mark": _ledger.last_reply_id(item),
+        # Set on insert and never refreshed — see SNAPSHOT_FIELDS.
+        "body": item.get("body"),
+        "thread": seed_thread(item, me, already),
         "first_seen_round": round_no,
         "last_round": round_no,
         "head": None,
@@ -108,26 +131,44 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int) -> dict:
     return row
 
 
-def reopen_if_advanced(row: dict, item: dict) -> None:
-    """A done row re-opens iff its thread carries a reply we have not accounted for.
+def merge_thread(row: dict, item: dict, me: object) -> None:
+    """Append forge replies we do not already hold, then restore chronological order.
 
-    One rule covers all three real continuations — reviewer objects, reviewer acknowledges,
-    human posts an instruction — because it keys on the reply ID, not authorship (the agent's
-    replies and the human's manual comments come from the SAME account). This is NOT gated on
-    `kind`: a GitHub review-body summary (`kind == "summary"`) happens to be threadless, so
-    `_ledger.last_reply_id` returns None for it and `_ledger.id_advanced` is unconditionally
-    False whenever `current` is None — that is what makes it never re-open, and it is the
-    deterministic elf.31 guarantee (a re-imported review carries the same, immutable summary
-    id). A GitLab general discussion is ALSO `kind == "summary"` (see `gl_collect`) but is NOT
-    threadless — it carries a real thread that can grow a new note — so it must re-open like
-    any other threaded row. The prior `decision`/`reason` are kept as history.
+    Ids normalise through `str()` on both sides: GitHub returns a numeric `.id` and the agent
+    may hand the same id back as text; a naive comparison would append our own reply a second
+    time and re-surface the finding every round forever.
+
+    A reply whose id we already hold is dropped rather than refreshed, so an edit made in place
+    on the forge does not rewrite what we stored — the same rule the comment's own `body`
+    follows.
+    """
+    if not isinstance(row.get("thread"), list):
+        row["thread"] = []
+    thread = row["thread"]
+    known = {str(reply.get("id")) for reply in thread if isinstance(reply, dict)}
+    for reply in item.get("thread") or []:
+        if isinstance(reply, dict) and str(reply.get("id")) not in known:
+            thread.append({**reply, "seen": _ledger.is_ours(reply, me)})
+    thread.sort(key=_ledger.reply_order)
+
+
+def reopen_if_unseen(row: dict) -> None:
+    """A done row re-opens iff it holds a reply we have not acted on.
+
+    NOT gated on `kind`. A GitHub review-body summary is threadless, so it holds nothing that
+    can be unseen and never re-opens — that is the deterministic elf.31 guarantee, now resting
+    on the empty thread itself. A GitLab general discussion is ALSO `kind == "summary"` but
+    carries a real, appendable thread, so it re-opens like any other row. The prior
+    `decision`/`reason` are kept as history.
+
+    A reply from our own account is stamped seen on arrival, so the third continuation the old
+    id-keyed rule covered — a human posting an instruction from that same account — no longer
+    re-opens a settled row. Deliberate; see the design doc.
 
     This is the one status write `reconcile` still performs — the platform axis (see
     `cmd_reconcile`) never touches `status`.
     """
-    if row.get("status") != "done":
-        return
-    if _ledger.id_advanced(_ledger.last_reply_id(item), row.get("thread_mark")):
+    if row.get("status") == "done" and _ledger.resurfaced(row):
         row["status"] = "open"
 
 
@@ -176,6 +217,7 @@ def counts_of(doc: dict, working: list | None = None) -> dict:
 def cmd_reconcile(args: argparse.Namespace) -> int:
     meta = read_json(args.meta)
     unit = (meta.get("unit") or {}) if isinstance(meta, dict) else {}
+    me = meta.get("me") if isinstance(meta, dict) else None
     path = _ledger.ledger_path(unit.get("url", ""), unit.get("number"))
     doc = _ledger.load_ledger(path)
     doc["unit"] = {"platform": meta.get("platform"), "number": unit.get("number"), "url": unit.get("url")}
@@ -197,10 +239,11 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         seen.add(key)
         row = doc["rows"].get(key)
         if row is None:
-            row = new_row(thread_id, item, doc, round_no)
+            row = new_row(thread_id, item, doc, round_no, me)
             doc["rows"][key] = row
         else:
-            reopen_if_advanced(row, item)
+            merge_thread(row, item, me)
+            reopen_if_unseen(row)
             refresh_snapshot(row, item)
         # The platform axis, for new and existing rows alike — one writer, one statement.
         row["platform_state"] = _ledger.platform_state_of(item)
@@ -250,11 +293,11 @@ def cmd_get(args: argparse.Namespace) -> int:
 def validate_decisions(decisions: object) -> None:
     """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing).
 
-    The check for an insufficient thread mark on a done row cannot live here because it needs
-    to see the row's stored platform and kind; it runs in cmd_record's merge loop after fields
-    are merged into the in-memory row copy. Raising mid-loop preserves the all-or-nothing
-    guarantee: doc is loaded from disk and nothing has been written yet, so an exception leaves
-    the file untouched.
+    Shape only. There is no longer a semantic guard on a `done` row: `done` with no reply is
+    legal for every row shape — a threadless GitHub review-body summary, and an acknowledgement
+    with nothing left to do, both settle on `status: done` alone. The failure the old guard
+    caught (a reply posted and not reported) is handled where it belongs, in `reconcile`: our
+    own reply arrives already seen, so it re-opens nothing.
     """
     if not isinstance(decisions, dict):
         msg = "decisions file must be a JSON object keyed by ref"
@@ -277,19 +320,49 @@ def validate_decisions(decisions: object) -> None:
         if decision is not None and decision not in _ledger.DECISIONS:
             msg = f"decision for {ref} has unknown decision {decision!r}"
             raise ValueError(msg)
+        if "reply" in entry:
+            posted = entry["reply"]
+            if not isinstance(posted, dict) or posted.get("id") is None:
+                msg = f"decision for {ref} has a `reply` that is not an object with an `id`"
+                raise ValueError(msg)
 
 
 #: Every field `record` can update on a row, with ordinary JSON-merge semantics:
 #: an ABSENT key is a no-op ("this round supplied no new information"), an explicit JSON
 #: `null` CLEARS the stored value. review-comments 5.7a's canonical decisions.json relies on
 #: the clear — a ref re-decided `fix` writes `"followup_task_id": null` to drop the task id an
-#: earlier `follow_up` round filed, and a GitHub `kind == "summary"` row writes
-#: `"thread_mark": null` because it has no thread.
+#: earlier `follow_up` round filed.
 #: `status` is the one exception: it is a non-nullable enum (a row is always in exactly one of
 #: `_ledger.STATUSES`), so `validate_decisions` rejects an explicit null rather than writing a
 #: row that belongs to no status bucket.
-NULLABLE_FIELDS = ("decision", "reason", "followup_task_id", "thread_mark")
+NULLABLE_FIELDS = ("decision", "reason", "followup_task_id")
 RECORD_FIELDS = ("status", *NULLABLE_FIELDS)
+
+
+def paint_seen(row: dict, posted: object) -> None:
+    """Mark every stored reply as acted-on, then append the reply this round posted.
+
+    Painting is unconditional on `status`. A ref in the decisions file went through Phase 4,
+    where the card put the whole thread in front of the agent — that is what `seen` asserts,
+    and it is true whether or not the round managed to deliver the verdict. This is what stops
+    a withheld decision from being re-litigated next round.
+
+    The append is idempotent by id, normalised through `str()` on both sides: 5.7 checkpoints a
+    ref the moment its reply is accepted and 5.7a records it again, and the same id handed back
+    as text must not store a second copy.
+    """
+    if not isinstance(row.get("thread"), list):
+        row["thread"] = []
+    thread = row["thread"]
+    for stored in thread:
+        if isinstance(stored, dict):
+            stored["seen"] = True
+    if not isinstance(posted, dict):
+        return
+    known = {str(stored.get("id")) for stored in thread if isinstance(stored, dict)}
+    if str(posted.get("id")) not in known:
+        thread.append({**posted, "seen": True})
+        thread.sort(key=_ledger.reply_order)
 
 
 def cmd_record(args: argparse.Namespace) -> int:
@@ -314,19 +387,7 @@ def cmd_record(args: argparse.Namespace) -> int:
         for field in RECORD_FIELDS:
             if field in entry:
                 row[field] = entry[field]
-        # A `done` row is only settled if we accounted for the reply that settled it. This guard
-        # catches the case where the mark is absent entirely (never set or explicitly cleared to null),
-        # which would cause `id_advanced` to read our reply as an advance and re-open forever next round.
-        # Note: supplying a stale mark instead of the id of the reply just posted cannot be detected
-        # mechanically here — the row's thread from the last reconcile cannot contain our just-posted reply —
-        # so that remains the caller's responsibility, which the skill's prose already mandates.
-        # A threadless row (a GitHub review body) has no thread to mark and is the one exemption.
-        if row.get("status") == "done" and row.get("thread_mark") is None and not _ledger.threadless(row):
-            msg = (
-                f"decision for {ref} sets status 'done' with no thread_mark — supply the id of the "
-                f"reply just posted (only a GitHub review-body summary may omit it)"
-            )
-            raise ValueError(msg)
+        paint_seen(row, entry.get("reply"))
         row["last_round"] = doc.get("round", 0)
         row["head"] = args.head
     _ledger.save_ledger(path, doc)
@@ -475,11 +536,9 @@ def build_parser() -> argparse.ArgumentParser:
         "record",
         description=(
             "Merge a decisions file into the ledger. Per entry, an ABSENT key is a no-op and an "
-            "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id, "
-            "thread_mark (null = 'no thread' — true only for a threadless row, e.g. a GitHub "
-            "review-body summary; on any row that HAS a thread, including a GitLab "
-            "general-discussion summary, a cleared mark makes the finding re-open). status is "
-            "not clearable: null is rejected."
+            "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id. "
+            "status is not clearable: null is rejected. `reply` is not a stored field — it names "
+            "the reply this round posted, and record appends it to the thread marked seen."
         ),
     )
     record.add_argument("--decisions", required=True)

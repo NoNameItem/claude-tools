@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -35,8 +36,11 @@ KINDS = ("inline", "file", "summary")
 PLATFORM_STATES = ("live", "resolved", "absent")
 
 # Current-snapshot fields: refreshed from the collector every round. Durable fields
-# (status/decision/reason/followup_task_id/thread_mark/first_seen_round/last_round/head) and the
-# set-on-insert identity fields (ref/kind/thread_id) are NEVER in this list.
+# (status/decision/reason/followup_task_id/first_seen_round/last_round/head), the
+# set-on-insert identity fields (ref/kind/thread_id) and the two set-on-insert content fields
+# (`body`, `thread`) are NEVER in this list. `body` and `thread` are the reviewer's WORDS: an
+# edit made in place gets no reaction and reaches us only as a new reply. What stays here
+# describes the CODE, which genuinely moves under a finding between rounds.
 SNAPSHOT_FIELDS = (
     "user",
     "is_bot",
@@ -49,8 +53,6 @@ SNAPSHOT_FIELDS = (
     "snippet",
     "side",
     "position",
-    "body",
-    "thread",
 )
 
 # Segments that mark the route in a PR/MR URL: GitHub `/pull/<n>` (and `/pulls/<n>`),
@@ -317,27 +319,6 @@ def row_key_of(item: dict) -> str | None:
     return None
 
 
-def last_reply_id(item: dict) -> object:
-    thread = item.get("thread") or []
-    return thread[-1].get("id") if thread else None
-
-
-def id_advanced(current: object, mark: object) -> bool:
-    """True when `current` is a thread reply we have not accounted for yet.
-
-    Ids are monotonic, so a numeric `>` is exact; a deleted reply can at worst MISS a
-    re-surface, never lose data. Non-numeric ids fall back to inequality.
-    """
-    if current is None:
-        return False
-    if mark is None:
-        return True
-    try:
-        return int(current) > int(mark)
-    except (TypeError, ValueError):
-        return str(current) != str(mark)
-
-
 def platform_state_of(item: dict) -> str:
     """The platform axis for an item PRESENT in this round's snapshot.
 
@@ -353,24 +334,64 @@ def platform_state_of(item: dict) -> str:
     return "resolved" if item.get("resolved") else "live"
 
 
-def threadless(row: dict) -> bool:
-    """True for the ONE row shape with no reply target and no platform resolution.
+def is_ours(reply: dict, me: object) -> bool:
+    """True when a thread reply comes from the account this run posts as.
 
-    A GitHub review body is not a thread: there is no endpoint to reply into and nothing to
-    resolve, so our own `done` is its only exit. A GitLab general discussion is also
-    `kind == "summary"` but carries a real discussion id, so it is a normal threaded row —
-    conflating the two would let a `done` row skip its thread mark and then re-open on our own
-    reply, forever.
+    Our own replies arrive already `seen`, so a reply the agent posted but failed to report
+    (the POST succeeded, the `--jq` extraction did not) cannot come back off the forge as an
+    unknown id, re-open the finding and draw a second reply into the same thread. The cost —
+    an instruction a human posts from that same account no longer re-opens a settled row — is
+    a recorded decision, not an oversight; see the design doc.
     """
-    return row.get("platform") == "github" and row.get("kind") == "summary"
+    return bool(me) and str(reply.get("user")) == str(me)
+
+
+def reply_order(reply: dict) -> tuple[int, float]:
+    """Sort key for a stored thread: chronological, with unusable timestamps in the tail.
+
+    `Z` is rewritten to `+00:00` because bare `fromisoformat` accepts that suffix only from
+    3.11, while these helpers hold a 3.9 floor (`test_py39_compat.py`). Left alone, GitHub's
+    timestamps would parse on CI and fail on an older interpreter — the sort silently becoming
+    a no-op exactly where nobody looks.
+
+    The leading bucket keeps an unparseable reply from jumping to the front of an argument it
+    did not start; `sorted` is stable, so equal timestamps keep insertion order.
+    """
+    raw = str(reply.get("created_at") or "")
+    try:
+        return (0, datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return (1, 0.0)
+
+
+def is_unseen(reply: dict) -> bool:
+    """True for a stored reply we have not acted on yet.
+
+    The `seen` key must be PRESENT and false. Every ledger writer stamps the bit, so a reply
+    without it never came from a ledger row — `flow-comment-card` renders raw collector output
+    through these same helpers — and treating that as new would mark every reply on a card that
+    has no ledger behind it.
+
+    One home for the rule: `unseen` decides re-surfacing with it and the card decides its `[new]`
+    markers with it, and the present-versus-false subtlety is exactly the kind that drifts when
+    it is written out twice.
+    """
+    return "seen" in reply and not reply["seen"]
+
+
+def unseen(row: dict) -> list[dict]:
+    """Stored replies we have not acted on yet, in stored order."""
+    thread = row.get("thread")
+    if not isinstance(thread, list):
+        return []
+    return [reply for reply in thread if isinstance(reply, dict) and is_unseen(reply)]
 
 
 def resurfaced(row: dict) -> bool:
-    """True when the row's thread holds a reply we have not accounted for.
+    """True when the row holds a reply we have not acted on.
 
-    Deliberately the same `id_advanced` call `reopen_if_advanced` makes: "did the thread
-    advance?" gets ONE implementation, or the flag a Phase-3 subagent reads and the re-open the
-    reconcile performs will eventually disagree about the same row. It stays true from the
-    re-open until `record` writes a fresh mark, because only `record` advances the mark.
+    Shared by `reopen_if_unseen`, `cmd_get` and `flow-comment-card` to decide whether a row
+    should be reopened. The decision is uniform: check whether any reply in the thread is
+    marked as unseen — no special cases for row shape or kind.
     """
-    return id_advanced(last_reply_id(row), row.get("thread_mark"))
+    return bool(unseen(row))

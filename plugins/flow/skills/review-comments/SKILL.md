@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Agent Read Write Grep
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Bash(jq:*) Agent Read Write Grep
 ---
 
 # Flow: Review Comments
@@ -287,11 +287,16 @@ every listed row file.) The collector already reconstructed `snippet` wherever t
 | Row shape | What it means | What to do |
 |---|---|---|
 | `decision` is null | a new finding | analyze from scratch |
-| `decision` set, `resurfaced` **true** | the thread advanced past the reply we accounted for | take `decision` + `reason` as your own prior verdict, and read the newest `thread` replies as what changed (a reviewer objection, a reviewer acknowledgement, or a human instruction addressed to you) — decide from BOTH; an acknowledgement with nothing left to do is a legitimate `outdated_fixed`, a human instruction in the thread is an order to carry out |
+| `decision` set, `resurfaced` **true** | the thread holds replies we have not acted on | take `decision` + `reason` as your own prior verdict, and read the replies marked `[new]` on the card (`"seen": false` in the row) as what appeared since — a reviewer objection or a reviewer acknowledgement. Read the rest too: it is the history of the argument, and `seen` is a marker, not a filter. Decide from BOTH; an acknowledgement with nothing left to do is a legitimate `outdated_fixed` |
 | `decision` set, `resurfaced` **false** | we decided last round and the action did not land (apply failed, push skipped) | **do not re-litigate it** — the verdict stands; the round's job is to deliver it |
 
-`resurfaced` is computed by `flow-review-ledger get`; never derive it yourself from
-`thread_mark`. One rule, one implementation — a second copy in prose drifts.
+`resurfaced` is computed by `flow-review-ledger get` from the per-reply `seen` bits; never
+derive it yourself. One rule, one implementation — a second copy in prose drifts.
+
+**An instruction you post from our own account does not re-open a settled row.** `reconcile`
+stamps every reply from that account `seen` on arrival, which is what stops a reply we posted
+but failed to report from drawing a second reply into the same thread. A human who needs a
+settled finding revisited replies from a different account.
 
 Comment ref: {ref} (by {user})
 File: {path}
@@ -797,7 +802,7 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
 
 The status stays **`open`** — the task exists but this round's reply is not posted yet, so nothing
 has been delivered. That is exactly the state the checkpoint must capture: 5.7's own checkpoint
-flips it to `done` with the reply's `thread_mark`, and an absent key is a no-op under the merge
+flips it to `done` with the posted `reply`, and an absent key is a no-op under the merge
 rules (5.7a), so neither write clobbers the other's fields. A run that dies between the two leaves
 an `open` row carrying its `followup_task_id` — the next round re-surfaces it and the "drop the
 refs that already have a task" step above reuses that id instead of filing a duplicate. The
@@ -919,7 +924,8 @@ or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break o
 
 ```bash
 gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
-  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
+  -f body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
+  --jq '{id, user: .user.login, body, created_at}'
 ```
 
 **GitLab** (`thread_id` = the discussion id, NOT a comment id — a new note in the discussion):
@@ -927,11 +933,12 @@ gh api repos/{owner}/{repo}/pulls/{number}/comments/{thread_id}/replies \
 ```bash
 glab api --method POST \
   "projects/{project}/merge_requests/{iid}/discussions/{thread_id}/notes" \
-  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")"
+  --raw-field body="$(cat "$FLOW_RC_DIR/reply-C1.txt")" \
+  | jq '{id, user: .author.username, body, created_at}'
 ```
 
-**Capture the posted reply's id from the API response** (its `.id` field, on both platforms) for
-every reply you send — 5.7a's `thread_mark` needs it.
+**Capture the created object from the API response** for every reply you send — 5.7a records it
+under `reply`, and it is the only place that object exists.
 
 **Reply format by decision** (identical on both platforms):
 
@@ -943,7 +950,9 @@ every reply you send — 5.7a's `thread_mark` needs it.
 | won't-fix | `"Won't fix: {reasoning}"` — the reasoning is the **recorded rejection reason** (= the card's `thought` only when the verdict was `disagree`; otherwise the explicit reason collected at triage, invariant 2) |
 | follow-up | `"Filed as follow-up: {task-id}"` (the beads task from 5.4) |
 
-**Reply to every working-set ref that reached Phase 5 with a `fix` / `won't-fix` / `follow-up` decision, including rows whose `already_replied` is true.** `already_replied` is a **seeding** signal `reconcile` uses on first insert — it settles a thread we had already answered before the ledger existed — not a per-round mute. A row that reaches Phase 5 with `already_replied` true is a **re-surfaced** row: its thread advanced past `thread_mark` while our own account was the last replier, which is exactly the "a human posted an instruction in the thread" case. It gets this round's reply like any other.
+**Reply to every working-set ref that reached Phase 5 with a `fix` / `won't-fix` / `follow-up` decision, including rows whose `already_replied` is true.** `already_replied` is a **seeding** signal `reconcile` uses on first insert — it settles a thread we had already answered before the ledger existed — not a per-round mute. A row that reaches Phase 5 with `already_replied` true is a **re-surfaced** row: its thread grew
+a reply we had not acted on while our own account was the last replier. It gets this round's
+reply like any other.
 
 **Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks /
 `$` / quotes, including quoted reviewer text) need no special handling — the Write-tool-to-file +
@@ -960,8 +969,8 @@ GitHub + `kind == "summary"` is the **only** combination with no reply target.
 **Checkpoint each ref into the ledger the moment its reply is accepted** — same rule, same reason as
 the `bd create` loop in 5.4: a posted reply is irreversible and this loop is sequential, so a failure
 at ref 3 of 5 must not cost the record of refs 1-2. Write that ref's final entry (the `status` /
-`decision` / `reason` / `thread_mark` its row earns per the table in 5.7a, using the id of the reply
-just posted) to `$FLOW_RC_DIR/checkpoint-{ref}.json` and record it right away:
+`decision` / `reason` / `reply` its row earns per the table in 5.7a, using the object the POST
+just returned) to `$FLOW_RC_DIR/checkpoint-{ref}.json` and record it right away:
 
 ```bash
 flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
@@ -997,20 +1006,24 @@ reviewer-derived free text, so it goes by file, never through a shell:
 
 ```json
 { "C1": { "status": "done", "decision": "fix", "reason": "guard added in resolve_branch",
-          "followup_task_id": null, "thread_mark": "3518155060" },
+          "followup_task_id": null,
+          "reply": { "id": 3518155060, "user": "artem.vasin", "body": "Fixed: …",
+                     "created_at": "2026-08-01T11:02:44Z" } },
   "U1": { "status": "done", "decision": "wont_fix", "reason": "module is camelCase throughout",
-          "thread_mark": "3518155061" },
+          "reply": { "id": 3518155061, "user": "artem.vasin", "body": "Won't fix: …",
+                     "created_at": "2026-08-01T11:03:10Z" } },
   "C3": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12",
-          "thread_mark": "3518155062" },
-  "C5": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-13",
-          "thread_mark": null },
+          "reply": { "id": 3518155062, "user": "artem.vasin", "body": "Filed as follow-up: …",
+                     "created_at": "2026-08-01T11:03:41Z" } },
+  "C5": { "status": "done", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-13" },
   "C4": { "status": "open", "decision": "fix", "reason": "push skipped" } }
 ```
 
-`C1`/`U1`/`C3` each carry the id of the reply just posted. `C5` is a GitHub `kind == "summary"` row:
-no thread, no reply, so its mark is `null`. `C1`'s `"followup_task_id": null` drops the task id an
-earlier round filed when it decided `follow_up` — this round it is a `fix`. `C4` is not `done` — its
-push was skipped, so it stays `open` and re-enters next round's working set on its own.
+`C1`/`U1`/`C3` each carry the reply just posted. `C5` is a GitHub `kind == "summary"` row: no
+reply target, so no `reply` key and nothing else to say — `status: done` settles it. `C1`'s
+`"followup_task_id": null` drops the task id an earlier round filed when it decided `follow_up`;
+this round it is a `fix`. `C4` is not `done` — its push was skipped, so it stays `open` and
+re-enters next round's working set on its own.
 
 **How an entry merges into the row** — ordinary JSON-merge semantics, per field:
 
@@ -1018,12 +1031,11 @@ push was skipped, so it stays `open` and re-enters next round's working set on i
 |---|---|
 | key absent | no-op — the stored value survives ("this round supplied nothing new") |
 | key with a value | overwrites |
-| key with an explicit `null` | **clears** the field (`decision`, `reason`, `followup_task_id`, `thread_mark`) |
+| key with an explicit `null` | **clears** the field (`decision`, `reason`, `followup_task_id`) |
 
 `status` is the one field that cannot be cleared — a row is always in exactly one status, so
 `record` rejects `"status": null` outright (nothing in the file is written). Write a null only when
-you mean "this row no longer has one": a reversed `follow_up` clears `followup_task_id`, a threadless
-row (GitHub's `kind == "summary"`) clears `thread_mark`.
+you mean "this row no longer has one": a reversed `follow_up` clears `followup_task_id`.
 
 Then:
 
@@ -1040,36 +1052,18 @@ one unrecorded ref into a duplicate reply or a second follow-up task for the sam
 
 Rules for filling it in — one entry per ref that reached Phase 5:
 
-| Outcome this run | `status` | `decision` | `thread_mark` |
+| Outcome this run | `status` | `decision` | `reply` |
 |---|---|---|---|
-| fix applied **and** pushed **and** replied | `done` | `fix` | id of the reply just posted |
-| `outdated_fixed`, "Fixed in subsequent commits" posted | `done` | `outdated` | id of the reply just posted |
-| won't-fix replied | `done` | `wont_fix` | id of the reply just posted |
-| follow-up task filed and replied | `done` | `follow_up` | id of the reply just posted |
-| settled with no reply sent (acknowledgement with nothing to do) | `done` | the decision it earned | id of the current last reply in the row's `thread` |
-| GitHub `kind == "summary"` (task filed, no reply target) | `done` | `follow_up` | `null` — threadless |
-| decided, but the reply was **withheld** (push skipped/failed, branch ahead of remote, or any of the aborted actions above) | `open` | the decision it earned | omit |
+| reply posted (fix / outdated / won't-fix / follow-up) | `done` | the decision it earned | the object the POST returned |
+| settled with no reply sent (GitHub review-body summary; an acknowledgement with nothing to do) | `done` | the decision it earned | absent |
+| decided, but the reply was **withheld** (push skipped/failed, branch ahead of remote, or any of the aborted actions above) | `open` | the decision it earned | absent |
 
-**`thread_mark` is a REQUIRED field on every `done` entry** — the id of the reply just posted, or
-`null` for a row that is threadless. It is what stops the re-open loop, and both
-ways of not supplying an id break it: **omit** the key on a threaded row and it keeps its pre-reply
-mark; write an explicit **`null`** on a threaded row and the mark is cleared to "nothing accounted
-for". Either way the reply you just posted reads as a thread advance, `reconcile` re-opens the
-finding next round, and it re-triages and re-replies forever. `null` is for threadless rows only —
-a GitHub review-body summary (`kind == "summary"`), never a GitLab general discussion: that is also
-`kind == "summary"` but carries a real thread, so it gets a real mark like any other row.
-
-**`flow-review-ledger record` now rejects the whole batch** when a threaded row ends up `done`
-with **no** `thread_mark` at all — never set, or explicitly cleared to `null` — so a mistake here
-fails loudly instead of looping. The guard reads the row's value **after** the merge, not whether
-the entry supplied the key: omitting the key on a row that already carries a mark from an earlier
-round still passes — the row keeps that old mark, which is exactly the "omit" failure mode above —
-and only a row with no mark to fall back on trips it. A *stale* mark therefore cannot be detected
-either way it reaches the row — supplied outright, or left in place by omitting the key on a row
-that already had one — because the row's stored thread predates this round's reply, so there is
-nothing to check the id against. Supplying the id of the reply just posted stays this step's
-responsibility; the guard only catches a row with no mark at all, never a row whose mark is merely
-outdated.
+**Report the reply you posted.** `record` marks every stored reply as acted-on and appends the
+one you name under `reply`, so the round's own answer never reads as something new next round.
+You may omit it — `reconcile` recognises our own account and stamps the reply seen when the forge
+hands it back — but the row then carries no record of what we said, and a later round cannot quote
+it. `reply` is never `null`: it is not one of the clearable fields, and a null fails shape
+validation and rejects the whole batch. Omit the key instead.
 
 #### 5.8. Summary Report
 
@@ -1097,7 +1091,7 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 ### This Skill DOES:
 - Detect the platform (GitHub / GitLab), then the PR/MR from current branch or argument
 - Sync branch with remote
-- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces threads that advanced
+- Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces any thread holding a reply we have not acted on
 - **Record every decision back into the ledger** after replying, and report the PR's cumulative triage stats
 - Analyze the whole **working set** `reconcile` returned with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments

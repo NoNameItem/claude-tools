@@ -108,7 +108,11 @@ jobs:
 
       - name: Install ruff
         if: steps.check-python.outputs.has_python == 'true'
-        run: uv tool install ruff
+        # Pinned, and kept in lockstep with pyproject.toml's dev dependency and
+        # .pre-commit-config.yaml's rev. Unpinned, this installs the latest ruff, which
+        # reports rules that do not exist in the locked version — a CI failure no local
+        # run can reproduce.
+        run: uv tool install ruff==0.15.19
 
       # reviewdog turns every ruff finding into an inline review comment on the PR, which is what
       # makes plugin lint findings visible line by line and processable by flow:review-comments —

@@ -139,7 +139,8 @@ def is_bot(login: str) -> bool:
 
 
 def thread_reply(user: str, body: str, reply_id: object, created_at: object) -> dict:
-    """One thread reply. `id` lets reconcile compute `thread_mark`; the rest is display context."""
+    """One thread reply. `id` is how reconcile tells a reply it holds from one it does not, and
+    `created_at` is what orders the stored thread; the rest is display context."""
     return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": is_bot(user)}
 
 
@@ -387,10 +388,10 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
                 # `platform_state_of` maps this `None` to a definite `"live"` (not an inert
                 # "leave the status alone" — there is no third `apply_resolution`-style path
                 # left, see the ledger design doc's "What is removed"). The never-re-open
-                # guarantee for this row comes from a different mechanism: it is threadless, so
-                # `_ledger.last_reply_id` returns `None` for it, and `reopen_if_advanced`'s
-                # `id_advanced(current=None, mark=...)` is unconditionally False — our own
-                # `done` verdict is the row's only exit, exactly once.
+                # guarantee for this row comes from a different mechanism: it is threadless,
+                # so its stored thread stays empty, nothing in it can be unseen, and
+                # `reopen_if_unseen` never fires — our own `done` verdict is the row's only
+                # exit, exactly once.
                 "resolved": None,
                 "comment_id": None,
                 "discussion_id": None,
