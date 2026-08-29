@@ -398,6 +398,22 @@ class TestGoldenCards:
 
 
 class TestMergeMode:
+    @staticmethod
+    def _rows(thread, **row_fields):
+        row = {
+            "ref": "C1",
+            "kind": "inline",
+            "user": "a",
+            "path": "a.py",
+            "line": 5,
+            "body": "b",
+            "thread": thread,
+            "diff_hunk": None,
+            "snippet": None,
+        }
+        row.update(row_fields)
+        return {"77": row}
+
     def _files(self, tmp_path, rows, verdict, ref="C1"):
         ledger = {"schema": 1, "unit": {}, "round": 1, "next_ref": {"U": 1, "C": 2}, "rows": rows}
         (tmp_path / "pr-96.json").write_text(json.dumps(ledger))
@@ -515,45 +531,73 @@ class TestMergeMode:
         assert r.returncode == 1
 
     def test_the_card_marks_a_resurfaced_row(self, tmp_path):
-        rows = {
-            "77": {
-                "ref": "C1",
-                "kind": "inline",
-                "user": "a",
-                "path": "a.py",
-                "line": 5,
-                "body": "b",
-                "thread": [
-                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
-                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
-                ],
-                "thread_mark": 10,
-                "diff_hunk": None,
-                "snippet": None,
-            }
-        }
-        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        thread = [
+            {"user": "bob", "body": "r1", "id": 10, "created_at": None, "seen": True},
+            {"user": "bob", "body": "r2", "id": 11, "created_at": None, "seen": False},
+        ]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision="fix"),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
         assert r.returncode == 0, r.stderr
-        assert "**Resurfaced:**" in r.stdout
+        assert "**Resurfaced:** 1 new reply since our last action" in r.stdout
+        assert "> ↳ [new] **@bob:** r2" in r.stdout
+        assert "> ↳ **@bob:** r1" in r.stdout
+
+    def test_the_card_pluralises_the_count(self, tmp_path):
+        thread = [
+            {"user": "bob", "body": "r1", "id": 10, "created_at": None, "seen": False},
+            {"user": "bob", "body": "r2", "id": 11, "created_at": None, "seen": False},
+        ]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision="wont_fix"),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:** 2 new replies since our last action" in r.stdout
 
     def test_the_card_stays_quiet_for_a_row_that_did_not_resurface(self, tmp_path):
-        rows = {
-            "77": {
-                "ref": "C1",
-                "kind": "inline",
-                "user": "a",
-                "path": "a.py",
-                "line": 5,
-                "body": "b",
-                "thread": [
-                    {"user": "bob", "body": "r1", "id": 10, "created_at": None, "is_bot": False},
-                    {"user": "bob", "body": "r2", "id": 11, "created_at": None, "is_bot": False},
-                ],
-                "thread_mark": 11,
-                "diff_hunk": None,
-                "snippet": None,
-            }
-        }
-        r = self._files(tmp_path, rows, {"category": "doc", "thought": "t", "suggested": "fix"})
+        thread = [
+            {"user": "bob", "body": "r1", "id": 10, "created_at": None, "seen": True},
+            {"user": "bob", "body": "r2", "id": 11, "created_at": None, "seen": True},
+        ]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision="fix"),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
         assert r.returncode == 0, r.stderr
         assert "**Resurfaced:**" not in r.stdout
+        assert "[new]" not in r.stdout
+
+    def test_an_untriaged_row_gets_markers_but_no_resurfaced_line(self, tmp_path):
+        """Every reply on a first triage is unseen, and there was no last action for anything
+        to have appeared since — the line would claim one. The markers still read correctly:
+        all of this is new to us."""
+        thread = [
+            {"user": "bob", "body": "r1", "id": 10, "created_at": None, "seen": False},
+            {"user": "bob", "body": "r2", "id": 11, "created_at": None, "seen": False},
+        ]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision=None),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" not in r.stdout
+        assert r.stdout.count("[new]") == 2
+
+    def test_a_thread_without_bits_gets_no_markers_and_no_line(self, tmp_path):
+        """Collector-shaped replies carry no `seen` key at all. Marking them all new would put
+        the line on a card with no ledger behind it."""
+        thread = [{"user": "bob", "body": "r1", "id": 10, "created_at": None}]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision="fix"),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" not in r.stdout
+        assert "[new]" not in r.stdout

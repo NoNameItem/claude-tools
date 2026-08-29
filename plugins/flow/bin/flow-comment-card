@@ -96,7 +96,11 @@ def render_comment(card: dict) -> str:
     for reply in thread if isinstance(thread, list) else []:
         if not isinstance(reply, dict):
             continue
-        lines.extend(_blockquote("↳ ", reply.get("user", "?"), reply.get("body", "")))
+        # `[new]` marks a reply that appeared since our last action on this thread. Only a
+        # ledger row carries the bit at all, so a card rendered straight from collector output
+        # gets no markers rather than a full set of false ones — see `_ledger.is_unseen`.
+        marker = "↳ [new] " if _ledger.is_unseen(reply) else "↳ "
+        lines.extend(_blockquote(marker, reply.get("user", "?"), reply.get("body", "")))
     return "\n".join(lines)
 
 
@@ -133,20 +137,23 @@ def render_code(card: dict) -> str:
 
 def render_take(card: dict) -> str:
     """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields), plus a
-    '**Resurfaced:**' line when the row's thread advanced past the reply we last accounted for.
+    '**Resurfaced:**' line counting the replies that appeared since our last action.
 
-    `resurfaced` is computed here rather than read off a stored field — see `_ledger.resurfaced`
-    — so a normal card (thread unchanged, or no `--ledger` row behind it at all) gains no noise.
+    Suppressed while the row carries no `decision`: an untriaged row has every reply unseen and
+    there was no last action for anything to have appeared since — that is Phase 3's "a new
+    finding, analyse from scratch" shape. The per-reply `[new]` markers stay, because on a first
+    read "all of this is new to us" is true.
     """
     lines = []
     if card.get("thought"):
         lines.append(f"**Thought:** {card['thought']}")
     if card.get("suggested"):
         lines.append(f"**Suggested:** {card['suggested']}")
-    if _ledger.resurfaced(card):
+    fresh = _ledger.unseen(card) if card.get("decision") else []
+    if fresh:
+        noun = "reply" if len(fresh) == 1 else "replies"
         lines.append(
-            "**Resurfaced:** the thread advanced past the reply we last accounted for — "
-            "read the newest replies as what changed."
+            f"**Resurfaced:** {len(fresh)} new {noun} since our last action on this thread — read them as what changed."
         )
     return "\n".join(lines)
 
