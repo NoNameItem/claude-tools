@@ -840,6 +840,42 @@ class TestWaitForAnalysis:
         assert analyses == ANALYSES
         assert slept == [15.0, 15.0, 15.0]
 
+    def test_expect_project_keeps_polling_through_an_always_empty_history(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A brand-new project's first-ever analysis: without `expect_project`, an empty deep probe
+        # at tick 0 would end the wait on the spot (see `test_no_analyses_returns_immediately`).
+        # With `expect_project=True` that same empty probe must NOT be grounds to give up — the
+        # wait has to poll all the way to the ceiling like any other miss, sleeping between every
+        # tick but the last.
+        from .. import sonar_pr_status as mod
+
+        # tick0: empty page 1 -> one-shot probe, also empty (project_seen set regardless).
+        # ticks 1-40: empty page 1, no re-probe. Then the post-loop full re-fetch, also empty.
+        slept = self._responses(monkeypatch, [[]] * 43)
+        analyses, head = mod.wait_for_analysis(
+            "NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append, expect_project=True
+        )
+        assert head is None
+        assert analyses == []
+        assert slept == [15.0] * 40  # ceiling reached, not an instant bail
+
+    def test_expect_project_finds_the_first_analysis_after_a_few_ticks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The case the fix exists for: the project's genuine first analysis is still being indexed
+        # when the wait starts (empty page 1 AND empty deep probe at tick 0) but shows up a couple
+        # of ticks later. `expect_project=True` must keep polling past the empty probe and still
+        # find it, instead of reporting the project as absent from Sonar.
+        from .. import sonar_pr_status as mod
+
+        slept = self._responses(monkeypatch, [[], [], [], ANALYSES, ANALYSES])
+        analyses, head = mod.wait_for_analysis(
+            "NoNameItem_statuskit", "master", HEAD_SHA, None, sleep=slept.append, expect_project=True
+        )
+        assert head["revision"] == HEAD_SHA
+        assert head in analyses
+        assert analyses == ANALYSES
+        assert slept == [15.0, 15.0]
+
 
 class TestWaitForAnalysisPagination:
     """`fetch_analyses` calls inside `wait_for_analysis` at the `fetch_json` level.
@@ -1181,3 +1217,57 @@ class TestFetchAndDegrade:
 
         monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
         assert mod.fetch_json("https://sonarcloud.io/api/measures/component", None) is None
+
+
+class TestBranchModeRevisionWait:
+    def test_waits_for_the_revision_before_reading_measures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        seen: list[str] = []
+        expect_project_seen: list[bool] = []
+
+        def fake_wait(
+            project: str, branch: str, revision: str, token: str | None, sleep: object, expect_project: bool = False
+        ) -> tuple[list[dict], dict]:
+            seen.append(revision)
+            expect_project_seen.append(expect_project)
+            return [], {"key": "a1", "revision": revision}
+
+        monkeypatch.setattr(mod, "wait_for_analysis", fake_wait)
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        blocks = mod.build_branch_blocks("NoNameItem_statuskit", "master", None, revision="effda08")
+
+        assert seen == ["effda08"]
+        # A push's revision is a project the scanner just ran on (guarded by the workflow's
+        # `needs.python-ci.result == 'success'`), so the wait must treat an empty history as
+        # "not indexed yet", not "project absent" — see `wait_for_analysis`'s `expect_project`.
+        assert expect_project_seen == [True]
+        assert blocks[0]["title"].endswith("project state")
+
+    def test_without_a_revision_nothing_is_awaited(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from .. import sonar_pr_status as mod
+
+        def forbidden(*args: object, **kwargs: object) -> tuple[list[dict], None]:
+            pytest.fail("build_branch_blocks must not poll when no revision is given")
+
+        monkeypatch.setattr(mod, "wait_for_analysis", forbidden)
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        assert mod.build_branch_blocks("NoNameItem_statuskit", "master", None) != []
+
+    def test_a_missing_analysis_still_reports_the_branch(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from .. import sonar_pr_status as mod
+
+        monkeypatch.setattr(mod, "wait_for_analysis", lambda *args, **kwargs: ([], None))
+        monkeypatch.setattr(mod, "_fetch_measures", lambda *args, **kwargs: {"coverage": "93.4"})
+        monkeypatch.setattr(mod, "_fetch_severities", lambda *args, **kwargs: {})
+
+        blocks = mod.build_branch_blocks("NoNameItem_statuskit", "master", None, revision="deadbee")
+
+        assert blocks != []
+        assert "deadbee" in capsys.readouterr().err

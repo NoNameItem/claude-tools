@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      qualitygate-wait:
+        description: 'Block the job on the SonarCloud quality gate (true on PRs, false on push — see the release-gate design, D2)'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   lint:
@@ -265,9 +270,13 @@ jobs:
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Analysing as version $VERSION"
 
-      # `sonar.qualitygate.wait=true` makes this job the blocking Sonar verdict: the scanner
-      # polls until the Quality Gate is computed (~25 s) and exits non-zero on ERROR, which
-      # reddens `Python CI Gate`. Accepted cost: CI now depends on SonarCloud availability.
+      # `sonar.qualitygate.wait` makes this job the blocking Sonar verdict: the scanner polls until
+      # the Quality Gate is computed (~25 s) and exits non-zero on ERROR, which reddens
+      # `Python CI Gate`. Accepted cost: CI now depends on SonarCloud availability.
+      # `pr.yml` leaves it `true` — that is the merge gate. `push.yml` passes `false`: a push to
+      # master is a BRANCH analysis, where the gate's overall conditions are evaluated too, and
+      # failing the job for accumulated debt would punish master for exactly what the release-gate
+      # design permits there (D2). The overall verdict is enforced on the release PR instead.
       # Fork PRs are unaffected — this job is already skipped there (see the `if:` above).
       - uses: SonarSource/sonarqube-scan-action@v7.0.0
         env:
@@ -284,4 +293,4 @@ jobs:
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
             -Dsonar.coverage.exclusions=**/tests/**,**/conftest.py
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=${{ inputs.qualitygate-wait }}

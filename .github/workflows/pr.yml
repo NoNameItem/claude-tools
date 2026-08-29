@@ -326,6 +326,46 @@ jobs:
       plugins: ${{ toJson(fromJson(needs.detect.outputs.result).by_type.claude_code_plugin.unchanged) }}
       tooling-changed: true
 
+  # Accumulated debt is checked here and nowhere else: `python-ci` — and with it the scanner — is
+  # skipped for `release-please--*` branches, so SonarCloud never analyses a release PR. The check
+  # therefore reads master's own analysis, which is what the release is built from.
+  # Same-repo only, like every other secret-bearing job: the script reads SONAR_TOKEN, which GitHub
+  # withholds from fork-origin runs (a fork cannot author a release PR anyway).
+  # Unlike `notify-start`, this job runs on `edited`: it publishes into `Python CI Gate`, a
+  # required context, so must execute on every event that re-publishes that context. Skipping
+  # would let `python-ci-result` republish a green `Python CI Gate` for the same SHA and
+  # overwrite a failing Sonar verdict. Accepted cost: a title edit starts a second wait alongside
+  # the concurrent `synchronize` run; `concurrency.group` keeps them in separate queues.
+  release-sonar-gate:
+    name: Release Sonar Gate
+    needs: [validate-pr]
+    if: |
+      github.event_name == 'pull_request' &&
+      startsWith(github.event.pull_request.head.ref, 'release-please--') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    # Generous because the job may wait for a master scan that started moments earlier; the script
+    # gives up on its own after 10 minutes.
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The staleness check walks master's history between the analysed revision and the
+          # release base, so the full history is required.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check master's Sonar state
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 .github/scripts/sonar_release_gate.py \
+            --head-ref="$HEAD_REF" --base-sha="$BASE_SHA"
+
   # The Codex review gate, now a job of this run rather than a separate pull_request_target
   # workflow. That is the whole architecture: with both producers of required checks in one run,
   # `pr-summary` reaches its turn through `needs` and there is no second speaker to deduplicate
@@ -403,21 +443,28 @@ jobs:
   # jobs publish an unambiguous, always-present context for the ruleset to require.
   python-ci-result:
     name: Python CI Gate
-    needs: [python-ci]
+    needs: [python-ci, release-sonar-gate]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Check result
         env:
           RESULT: ${{ needs.python-ci.result }}
+          RELEASE_GATE: ${{ needs.release-sonar-gate.result }}
         run: |
           echo "Python CI result: $RESULT"
+          echo "Release Sonar Gate result: $RELEASE_GATE"
           # Anything but success/skipped is red — including `cancelled`, so a cancelled run
           # can never read as a passing gate (that would bypass the merge gate entirely).
-          case "$RESULT" in
-            success|skipped) exit 0 ;;
-            *) exit 1 ;;
-          esac
+          # `release-sonar-gate` joins this context rather than becoming a required check of its
+          # own: the ruleset then needs no new context, and the two are never both meaningful in
+          # one run (a release PR skips `python-ci`, a feature PR skips the release gate).
+          for result in "$RESULT" "$RELEASE_GATE"; do
+            case "$result" in
+              success|skipped) ;;
+              *) exit 1 ;;
+            esac
+          done
 
   claude-code-plugin-ci-result:
     name: Claude Code Plugin CI Gate
