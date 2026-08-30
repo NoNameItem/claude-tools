@@ -104,7 +104,7 @@ quote-style = "double"
 "packages/statuskit/src/statuskit/__init__.py" = ["PLC0415"]  # Lazy imports for faster CLI startup
 
 [tool.pytest.ini_options]
-testpaths = ["packages/*/tests"]
+testpaths = ["packages/*/tests", "plugins/*/bin/tests", ".github/scripts/tests"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
 ]

@@ -142,6 +142,11 @@ The pre-commit hooks will then verify:
 3. `single-package-commit` — validates commit scope
 4. `beads` — syncs beads state
 
+**Tests** cover three suites — `packages/*/tests`, `plugins/*/bin/tests` and
+`.github/scripts/tests` — all of them in `testpaths`, so a bare `uv run pytest` from the repo root
+runs every one. A run that reports only the `packages/` count means it was scoped to a subdirectory,
+not that the other suites passed.
+
 **Type checking** (required for packages before every commit):
 
 ```bash
