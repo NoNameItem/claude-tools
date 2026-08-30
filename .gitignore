@@ -16,6 +16,10 @@ uv.lock
 # pytest
 .pytest_cache/
 
+# coverage (pytest --cov artifacts; CI uploads its own copies)
+.coverage
+coverage.xml
+
 # ruff
 .ruff_cache/
 

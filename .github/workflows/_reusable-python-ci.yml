@@ -195,8 +195,11 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
+      # The explicit `tests` path keeps this per-package job scoped: the repo-root
+      # testpaths also covers plugins/ and .github/scripts/, and pytest resolves its
+      # rootdir (and testpaths) to the repo root even when run from the package dir.
       - name: Run tests
-        run: uv run pytest --cov=src --cov-report=xml --junitxml=pytest-results.xml
+        run: uv run pytest tests --cov=src --cov-report=xml --junitxml=pytest-results.xml
         working-directory: ${{ matrix.path }}
 
       - name: Get minimum Python version
