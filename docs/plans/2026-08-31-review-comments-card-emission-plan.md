@@ -4,7 +4,7 @@
 
 **Goal:** Make the Phase 4.2 card of `flow:review-comments` impossible to silently omit, and bound an oversized `diff_hunk` in the helper so the skill never has to decide how much of it to show.
 
-**Architecture:** Two independent changes. (1) `flow-comment-card` caps a long `diff_hunk` at render time — the `@@` header, a `… N lines omitted …` marker, and the last `MAX_HUNK_BODY_LINES` lines, because a GitHub `diff_hunk` always ends at the commented line; the ledger and the Phase 3 subagents keep seeing the full hunk. (2) `SKILL.md` Phase 4.2 states the per-card reply as a two-part **contract** (card stdout verbatim, then the decision prompt) rather than as a reminder, with Red Flags / Common Rationalizations rows as secondary defence.
+**Architecture:** Two independent changes. (1) `flow-comment-card` caps a long `diff_hunk` at render time — the `@@` header, a `… N lines omitted …` marker, and the last `MAX_HUNK_BODY_LINES` lines, because a GitHub `diff_hunk` always ends at the commented line. Verified against the code: GitLab rows carry `diff_hunk: None` (the collector attaches a bounded `snippet` instead), so the cap only ever touches GitHub hunks; and Phase 3 reads single-row extracts from `flow-review-ledger get`, never the card, so analysis keeps the full hunk. (2) `SKILL.md` Phase 4.2 states the per-card reply as a two-part **contract** (card stdout verbatim, then the decision prompt) rather than as a reminder, with Red Flags / Common Rationalizations rows as secondary defence.
 
 **Tech Stack:** Python 3.9-compatible stdlib helpers in `plugins/flow/bin/`, pytest (`plugins/flow/bin/tests/`), ruff, ty, markdown skill documents.
 
@@ -206,13 +206,20 @@ from pathlib import Path
 
 fix = Path(sys.argv[1])
 hunk = "\n".join(["@@ -0,0 +1,444 @@"] + [f"+    line {i} of the new file" for i in range(444)])
+# `rows` is a DICT keyed by thread key — `_ledger.find_row_by_ref` iterates `rows.values()`,
+# and `_structure_is_sound` rejects a list, which would degrade the file to an empty ledger and
+# make the helper exit 1 with "ref 'C1' not found".
 ledger = {
-    "pr": 113,
-    "rows": [
-        {
+    "schema": 1,
+    "unit": {"platform": "github", "repo": "NoNameItem/claude-tools", "number": 113},
+    "round": 1,
+    "next_ref": {"U": 1, "C": 2},
+    "rows": {
+        "comment:1": {
             "ref": "C1",
             "kind": "inline",
             "user": "coderabbitai",
+            "is_bot": True,
             "body": "This helper reads the file twice; hoist the read out of the loop.",
             "path": "plugins/flow/bin/flow-review-collect",
             "line": 444,
@@ -221,8 +228,9 @@ ledger = {
             "diff_hunk": hunk,
             "snippet": None,
             "thread": [],
+            "status": "open",
         }
-    ],
+    },
 }
 (fix / "ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
 (fix / "verdict-C1.json").write_text(
