@@ -460,10 +460,20 @@ the `diff_hunk` shows). Both arguments are **file paths**, so no reviewer `body`
    the last line of the take;
 2. the decision prompt below.
 
+**Verbatim means the helper's own characters, in the helper's own language:** no translation, no
+re-wording, no re-ordering, no re-formatting — including when the surrounding conversation is in
+another language. The reviewer's comment quoted inside the card is evidence to preserve, not text
+to localize.
+
 Nothing goes between them, and nothing replaces part 1. Running the helper is not showing the
 card: a Bash tool result is visible to **you**, and the user reads only your reply. If the
 helper printed a card and your reply does not carry it, the card was never shown — that is the
 PR #113 failure this contract exists to prevent.
+
+**This contract has no exceptions — none of these lift it:** the user says they already read the
+file or the PR; the user asks you to go faster; the session is long and context is short; this is
+the last comment in the round, or the only one left. Every ref gets both parts, every time —
+nothing about the user's pace or the round's position changes what the reply contains.
 
 Part 1 is copied whole at any size. `flow-comment-card` already caps an oversized `diff_hunk`
 itself — it keeps the `@@` header, prints a `… N lines omitted …` marker, and shows the last 40
@@ -1141,6 +1151,10 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll reply on GitLab using the comment id" → the row's `thread_id` IS the discussion id on GitLab; a reply is a new note in that discussion, never addressed to a comment id.
 - "The card is in the tool output, the user can see it" → They cannot. The user reads your reply, never a tool result. Copy the helper's stdout into the reply, in full.
 - "This hunk is hundreds of lines, I'll show just the relevant part" → `flow-comment-card` already capped it. Emit exactly what it printed.
+- "The user said they already read this in the PR, they don't need the card" → What they read on the platform isn't what the reply contract requires. Emit the card anyway.
+- "The user asked me to go faster, I'll skip to the recommendation" → Go faster elsewhere. The two parts don't get lighter under time pressure.
+- "Long session, context is short, I'll shortcut this one" → Context pressure doesn't shrink the contract. Emit both parts.
+- "This is the last comment, I'll wrap it up quickly" → Position in the round changes nothing. Same two parts as C1.
 - "I'll wrap the card in a ``` fence so it's clearly a card" → NO. The card already contains ```-fences; wrap it and the highlighting, diff colors, and blockquotes stop rendering. Emit it UNWRAPPED.
 - "The comment text is enough, skip the code block" → The card MUST carry the anchored code (`diff_hunk` or reconstructed `snippet`); showing the code in the terminal is the whole point.
 - "I'll truncate the long comment on the card" → Show the FULL body. Only the TOC brief is truncated.
@@ -1178,6 +1192,10 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Apply fixes then show the card" | Show the card FIRST. The user triages each comment before any change. |
 | "I ran the helper, so the card is shown" | Running it rendered the card for YOU. The user sees only your reply — copy stdout into it verbatim, every line. |
 | "The hunk is huge, I'll trim it to the relevant lines" | The helper caps oversized hunks itself (header + `… N lines omitted …` + last 40 lines). Trimming further only removes what the user was meant to see. |
+| "User already read this in the PR, skip the card" | The reply contract has no exception for what the user says they already saw. Emit the card. |
+| "User asked to go faster, just give the recommendation" | Faster means terser prose around the card, not a missing card. Both parts, every time. |
+| "Session's long, context is short, shortcut this one" | Context pressure doesn't shrink the contract — emit both parts regardless. |
+| "Last comment in the round, wrap it up" | The round's position changes nothing. Same two parts as the first comment. |
 | "Wrap the card in a fence for clarity" | The card contains its own ```-fences; wrapping kills the highlighting and blockquotes. Emit it UNWRAPPED (opposite of `flow-task-card`). |
 | "Show the comment text, skip the code" | Every card carries the anchored code (`diff_hunk`/`snippet`). Seeing the code in the terminal is the point. |
 | "Truncate the long comment" | Show the FULL body on the card; only the TOC brief is truncated. |
