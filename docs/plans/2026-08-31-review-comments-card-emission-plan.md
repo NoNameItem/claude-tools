@@ -250,7 +250,10 @@ PY
 Verify the helper renders a capped card against it before testing any agent:
 
 ```bash
-flow-comment-card --ledger "$FIX/ledger.json" --ref C1 --verdict "$FIX/verdict-C1.json" | head -8
+# NOT the bare `flow-comment-card`: PATH resolves to the INSTALLED plugin release, which still
+# takes `--meta` and rejects `--ledger`. The pressure test must exercise the worktree helper.
+uv run python plugins/flow/bin/flow-comment-card \
+    --ledger "$FIX/ledger.json" --ref C1 --verdict "$FIX/verdict-C1.json" | head -8
 ```
 
 Expected: the header line, the blockquote, then the `@@` header, the `… 404 lines omitted …` marker and the tail.
