@@ -454,6 +454,22 @@ snippet↔diff_hunk override (a collector-attached `snippet` — present exactly
 the `diff_hunk` shows). Both arguments are **file paths**, so no reviewer `body`/`thread` and no LLM
 `thought` is ever assembled into a shell command (untrusted-data rule).
 
+**The reply that carries this card has exactly two parts, in this order:**
+
+1. the helper's stdout, copied **verbatim** — every line it printed, from the `### ` header to
+   the last line of the take;
+2. the decision prompt below.
+
+Nothing goes between them, and nothing replaces part 1. Running the helper is not showing the
+card: a Bash tool result is visible to **you**, and the user reads only your reply. If the
+helper printed a card and your reply does not carry it, the card was never shown — that is the
+PR #113 failure this contract exists to prevent.
+
+Part 1 is copied whole at any size. `flow-comment-card` already caps an oversized `diff_hunk`
+itself — it keeps the `@@` header, prints a `… N lines omitted …` marker, and shows the last 40
+lines, where the comment anchors — so its stdout is always the whole card. You never shorten,
+window, or summarize it.
+
 **⚠️ NO OUTER FENCE — emit the card UNWRAPPED.** `flow-comment-card` output already *contains*
 ```` ```diff ````/```` ```lang ```` fences and markdown blockquotes. Print its output **directly
 into your reply, with no surrounding ```` ``` ```` fence.** Wrapping it in an outer fence turns
@@ -1123,6 +1139,8 @@ If you're thinking any of these, STOP and follow the workflow:
 - "It's probably GitHub, I'll skip platform detection" → Run Phase 0 first. Never assume.
 - "gh works everywhere" → `gh` only talks to GitHub hosts; a GitLab remote needs `glab`.
 - "I'll reply on GitLab using the comment id" → the row's `thread_id` IS the discussion id on GitLab; a reply is a new note in that discussion, never addressed to a comment id.
+- "The card is in the tool output, the user can see it" → They cannot. The user reads your reply, never a tool result. Copy the helper's stdout into the reply, in full.
+- "This hunk is hundreds of lines, I'll show just the relevant part" → `flow-comment-card` already capped it. Emit exactly what it printed.
 - "I'll wrap the card in a ``` fence so it's clearly a card" → NO. The card already contains ```-fences; wrap it and the highlighting, diff colors, and blockquotes stop rendering. Emit it UNWRAPPED.
 - "The comment text is enough, skip the code block" → The card MUST carry the anchored code (`diff_hunk` or reconstructed `snippet`); showing the code in the terminal is the whole point.
 - "I'll truncate the long comment on the card" → Show the FULL body. Only the TOC brief is truncated.
@@ -1158,6 +1176,8 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Nitpick is obviously correct" | Nitpicks deserve skepticism. Evaluate if change genuinely improves code. |
 | "Skip subagents for small PRs" | Subagents keep context clean. Always use them for file reads and analysis. |
 | "Apply fixes then show the card" | Show the card FIRST. The user triages each comment before any change. |
+| "I ran the helper, so the card is shown" | Running it rendered the card for YOU. The user sees only your reply — copy stdout into it verbatim, every line. |
+| "The hunk is huge, I'll trim it to the relevant lines" | The helper caps oversized hunks itself (header + `… N lines omitted …` + last 40 lines). Trimming further only removes what the user was meant to see. |
 | "Wrap the card in a fence for clarity" | The card contains its own ```-fences; wrapping kills the highlighting and blockquotes. Emit it UNWRAPPED (opposite of `flow-task-card`). |
 | "Show the comment text, skip the code" | Every card carries the anchored code (`diff_hunk`/`snippet`). Seeing the code in the terminal is the point. |
 | "Truncate the long comment" | Show the FULL body on the card; only the TOC brief is truncated. |
