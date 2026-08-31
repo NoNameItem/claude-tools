@@ -458,7 +458,8 @@ the `diff_hunk` shows). Both arguments are **file paths**, so no reviewer `body`
 
 1. the helper's stdout, copied **verbatim** — every line it printed, from the `### ` header to
    the last line of the take;
-2. the decision prompt below.
+2. the decision prompt below — including the `agree_unclear` fix options inline, when the
+   verdict is ambiguous.
 
 **Verbatim means the helper's own characters, in the helper's own language:** no translation, no
 re-wording, no re-ordering, no re-formatting — including when the surrounding conversation is in

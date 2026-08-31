@@ -259,6 +259,19 @@ def test_review_comments_reads_rows_not_the_collector_document() -> None:
     assert not re.search(r"from\s+the\s+collector\s+output\s+at", text)
 
 
+def test_review_comments_card_reply_is_a_two_part_contract() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    phase_4_2 = text.split("#### 4.2. One card at a time", 1)[1].split("#### 5.1. Fix", 1)[0]
+    # Whitespace-tolerant: the prose wraps across lines, so a literal substring
+    # spanning a line break would not match.
+    assert re.search(r"exactly\s+two\s+parts", phase_4_2)
+    assert re.search(r"no\s+exceptions", phase_4_2)
+    # The Red Flags / Common Rationalizations rows that back this contract must
+    # still be there — this is the PR #113 regression class the contract guards.
+    assert re.search(r"card\s+is\s+in\s+the\s+tool\s+output", text)
+    assert re.search(r"trim\s+it\s+to\s+the\s+relevant\s+lines", text)
+
+
 def test_review_comments_branches_on_kind_not_the_summary_sentinel() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "`kind`" in text

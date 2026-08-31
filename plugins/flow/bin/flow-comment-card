@@ -125,8 +125,11 @@ def _fence(content: str) -> str:
 def cap_diff_hunk(diff_hunk: str) -> str:
     """Return the hunk with its body capped to the last MAX_HUNK_BODY_LINES lines.
 
-    The `@@` header (when present) is kept as the coordinate anchor, followed by a marker
-    line naming how many lines were dropped. A hunk at or below the cap is returned unchanged.
+    The `@@` header (when present) is kept as the hunk's original coordinate header, followed
+    by a marker line naming how many lines were dropped. On a multi-`@@` hunk that header
+    describes the whole original hunk, not the visible window the cap leaves behind — a later
+    `@@` line can end up dropped or sitting right under the marker. A hunk at or below the cap
+    is returned unchanged.
     """
     lines = diff_hunk.split("\n")
     header = []
