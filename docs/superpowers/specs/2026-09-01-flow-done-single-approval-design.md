@@ -351,10 +351,15 @@ working copy, so acceptance is a manual checklist run after the release:
 4. repository without remotes → scenario without PR, remote-branch and ledger items, mergedness
    determined via `merge-tree`;
 5. parent epic with all children closed → line in "Не буду", epic still open;
-6. `flow:done` run from `master` → header says mergedness was not checked, task closes and syncs,
-   branch/worktree/ledger rows are named refusals;
+6. `flow:done` run from `master` (branch does not belong to the task) → header says mergedness was
+   not checked, task closes and syncs, worktree/branch/ledger rows are named refusals;
 7. merged branch whose PR is still `OPEN` → the remote branch stays, with the reason named, and the
-   PR is still open afterwards.
+   PR is still open afterwards;
+8. non-epic container parent whose only remaining open child is the task being closed → the parent
+   appears under "Сделаю", and after the run both the task and the parent are closed while the epic
+   above them is not. This is the one automatic action the design introduces on a task other than
+   the one being closed, and cases 1–5 never exercise it: their parent was an epic every time.
 
-Cases 1–3, 5 and 6 run on this repository on the next task after the release; case 4 on the user's
-local-only repository; case 7 on the next branch whose content lands through another PR.
+Cases 1–3 and 5–6 run on this repository on the next task after the release; case 4 on the user's
+local-only repository; case 7 on the next branch whose content lands through another PR; case 8 on
+the next task that sits under a non-epic parent.
