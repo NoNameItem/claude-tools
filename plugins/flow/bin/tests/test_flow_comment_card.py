@@ -34,6 +34,7 @@ render_code = _mod.render_code
 render_take = _mod.render_take
 render_card = _mod.render_card
 _fence = _mod._fence
+cap_diff_hunk = _mod.cap_diff_hunk
 
 
 def _run(stdin: str):
@@ -207,6 +208,64 @@ class TestRenderCode:
         card = {"snippet": {"text": "````"}}
         result = render_code(card)
         assert result == "`````\n````\n`````"
+
+    def test_hunk_shorter_than_the_cap_is_untouched(self):
+        hunk = "@@ -1,3 +1,3 @@\n-old\n+new"
+        assert render_code({"diff_hunk": hunk}) == f"```diff\n{hunk}\n```"
+
+    def test_render_code_caps_the_hunk_it_fences(self):
+        hunk = "\n".join(["@@ -1,50 +1,50 @@", *[f"+line {i}" for i in range(50)]])
+        rendered = render_code({"diff_hunk": hunk})
+        assert "lines omitted" in rendered
+        assert "+line 0" not in rendered
+        assert "+line 49" in rendered
+
+    def test_backtick_run_in_the_discarded_head_does_not_widen_the_fence(self):
+        # `render_code` must cap the hunk BEFORE computing the fence (the plan is explicit:
+        # "the fence is computed from what is actually printed"). A 4-backtick run that only
+        # survives in the head the cap discards must not widen the fence past 3 backticks —
+        # that would happen if `_fence` ran on the raw hunk before `cap_diff_hunk` trimmed it.
+        head = ["+````", "+head 1", "+head 2", "+head 3"]
+        tail = [f"+line {i}" for i in range(40)]
+        hunk = "\n".join(["@@ -1,44 +1,44 @@", *head, *tail])
+        capped = cap_diff_hunk(hunk)
+        assert "````" not in capped  # sanity: the backtick run really is discarded
+        assert render_code({"diff_hunk": hunk}) == f"```diff\n{capped}\n```"
+
+    def test_snippet_is_never_capped(self):
+        text = "\n".join(f"line {i}" for i in range(60))
+        rendered = render_code({"diff_hunk": None, "snippet": {"lang": "python", "text": text}})
+        assert "lines omitted" not in rendered
+        assert "line 0" in rendered
+        assert "line 59" in rendered
+
+
+class TestCapDiffHunk:
+    def test_hunk_exactly_at_the_cap_is_untouched(self):
+        body = [f"+line {i}" for i in range(40)]
+        hunk = "\n".join(["@@ -1,40 +1,40 @@", *body])
+        assert cap_diff_hunk(hunk) == hunk
+
+    def test_long_hunk_keeps_header_marker_and_tail(self):
+        body = [f"+line {i}" for i in range(44)]
+        hunk = "\n".join(["@@ -1,44 +1,44 @@", *body])
+        capped = cap_diff_hunk(hunk).split("\n")
+        assert capped[0] == "@@ -1,44 +1,44 @@"
+        assert capped[1] == (
+            "… 4 lines omitted — hunk capped to the last 40 lines (the comment anchors to the last line) …"
+        )
+        assert capped[2] == "+line 4"  # the first four body lines are gone
+        assert capped[-1] == "+line 43"  # the anchored line survives
+        assert len(capped) == 42  # header + marker + 40 body lines
+
+    def test_long_hunk_without_a_header_still_caps(self):
+        body = [f"+line {i}" for i in range(41)]
+        capped = cap_diff_hunk("\n".join(body)).split("\n")
+        assert capped[0] == (
+            "… 1 line omitted — hunk capped to the last 40 lines (the comment anchors to the last line) …"
+        )
+        assert capped[-1] == "+line 40"
+        assert len(capped) == 41  # marker + 40 body lines
 
 
 class TestFence:

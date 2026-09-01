@@ -31,6 +31,12 @@ CATEGORY_EMOJI = {
 }
 FALLBACK_EMOJI = "⚪"
 
+# A GitHub `diff_hunk` can be the entire new file (444 lines on PR #113). The comment always
+# anchors to the LAST line of the hunk, so the tail is the part worth showing: cap the body and
+# say how much was dropped. Display-only — the ledger row and the Phase 3 subagents keep the
+# full hunk.
+MAX_HUNK_BODY_LINES = 40
+
 
 def category_emoji(category: str | None) -> str:
     """Return the header emoji for a category (⚪ for unknown/None/empty)."""
@@ -116,14 +122,42 @@ def _fence(content: str) -> str:
     return "`" * max(3, longest + 1)
 
 
+def cap_diff_hunk(diff_hunk: str) -> str:
+    """Return the hunk with its body capped to the last MAX_HUNK_BODY_LINES lines.
+
+    The `@@` header (when present) is kept as the hunk's original coordinate header, followed
+    by a marker line naming how many lines were dropped. On a multi-`@@` hunk that header
+    describes the whole original hunk, not the visible window the cap leaves behind — a later
+    `@@` line can end up dropped or sitting right under the marker. A hunk at or below the cap
+    is returned unchanged.
+    """
+    lines = diff_hunk.split("\n")
+    header = []
+    body = lines
+    if lines and lines[0].startswith("@@"):
+        header = [lines[0]]
+        body = lines[1:]
+    if len(body) <= MAX_HUNK_BODY_LINES:
+        return diff_hunk
+    omitted = len(body) - MAX_HUNK_BODY_LINES
+    noun = "line" if omitted == 1 else "lines"
+    marker = (
+        f"… {omitted} {noun} omitted — hunk capped to the last {MAX_HUNK_BODY_LINES} lines "
+        "(the comment anchors to the last line) …"
+    )
+    return "\n".join([*header, marker, *body[-MAX_HUNK_BODY_LINES:]])
+
+
 def render_code(card: dict) -> str:
-    """diff_hunk as a fenced ```diff block; else snippet as a fenced ```{lang} block; else ''.
+    """diff_hunk (capped to its last MAX_HUNK_BODY_LINES lines) as a fenced ```diff block;
+    else snippet as a fenced ```{lang} block; else ''.
 
     The fence is widened past any backtick run inside the content (CommonMark rule)
     so a literal ``` in the diff/snippet text can't prematurely close the fence.
     """
     diff_hunk = card.get("diff_hunk")
     if diff_hunk:
+        diff_hunk = cap_diff_hunk(diff_hunk)
         fence = _fence(diff_hunk)
         return f"{fence}diff\n{diff_hunk}\n{fence}"
     snippet = card.get("snippet")
