@@ -1,6 +1,6 @@
 ---
 name: done
-description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
+description: Complete and verify a beads task — collect branch, task, parent, plan, and cleanup state, present one scenario for a single approval, then close the task, clean up the plan, close eligible parents, and sync. Use when work is finished and verified and you want to close out the task.
 allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
@@ -95,11 +95,20 @@ is safe.
    session, so the task is already known. Verify it against the branch before using it.
 2. **The branch** — after a `/clear`: match the task id in the branch name against the `Git:` lines
    of candidate tasks (`bd show`), as `flow:continue` does.
-3. **`flow-find-leaf`** — last resort only, when neither of the above resolves.
+3. **`flow-find-leaf`** — last resort only, when neither of the above resolves:
+   ```bash
+   bd graph --all --json | flow-find-leaf
+   ```
+   It prints in_progress leaf tasks as a numbered list grouped by assignee (mine → Unassigned →
+   others), numbered continuously across groups; empty output means none exist (see Edge Cases,
+   "No In-Progress Tasks"). **Exactly one line → resolves silently, same as the other two
+   sources.** Two or more → reproduce its output verbatim and ask which number, before printing
+   the scenario.
 
-If context and branch disagree, show both and ask **before** printing the scenario. This is the
-only question about task identity the skill may ask. Never resolve the task by eyeballing
-`bd list --status=in_progress`.
+Two situations may require a question about task identity, both **before** printing the scenario:
+context and branch disagreeing (show both, ask which), and `flow-find-leaf` returning more than one
+candidate (show its list, ask which). These are the only questions the skill may ask about task
+identity. Never resolve the task by eyeballing `bd list --status=in_progress`.
 
 **Branch match:** does `CURRENT_BRANCH` actually belong to the resolved task?
 
@@ -131,8 +140,9 @@ each ancestor.
   never offered for deletion, whichever directory they live in.
 
 Filter results by filename containing "impl" or "plan" (case-insensitive) and semantically
-matching the task title. Multiple candidates or no candidates are both facts to carry into the
-scenario, not something to ask about here.
+matching the task title. No candidates: nothing to carry forward. **More than one candidate:**
+also not something to ask about here — carry the full list into the scenario, where step 3
+defaults to touching none of them (see step 3's defaults table).
 
 **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 **Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"`.
@@ -192,7 +202,7 @@ question. Numbering is continuous across both lists so a correction can be short
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do | always |
-| Plan file | delete | a plan was found |
+| Plan file | delete; **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, and the branch matches the task |
 | Local branch | delete, `-D` under squash | mergedness confirmed, and the branch matches the task |
 | Remote branch | delete | remote mode, branch exists, and the branch matches the task |
@@ -202,6 +212,11 @@ question. Numbering is continuous across both lists so a correction can be short
 | `flow-sync push` | do | always |
 
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
+
+**Several plan candidates get no default deletion.** When step 1's search returns more than one
+matching file, the scenario's plan row lists every candidate and defaults to touching none of
+them — filed under "Не буду" with the candidate list as the reason. Deleting the wrong plan file
+is not recoverable from the summary; the user names the right one as a correction.
 
 **The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on
 purpose after a merge — for history, or to re-read what happened in review — so its survival must
@@ -603,6 +618,17 @@ right:
 claude-tools-elf.9 (по её Git: записи).
 
 Какую задачу закрываем — elf.6 или elf.9?
+```
+
+### Plan File Linked but Already Gone
+
+The `Plan:` line points to a file that no longer exists on disk. The deletion is a no-op — there is
+nothing to `rm` — but the stale `Plan:` link is still removed, and this appears in the summary
+rather than as a question:
+
+```
+Выполнено:
+  2. ✓ ссылка Plan: удалена (файл уже отсутствовал на диске)
 ```
 
 ### Several `Git:` Lines on One Task
