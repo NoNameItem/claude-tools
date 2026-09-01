@@ -415,4 +415,4 @@ are never auto-resolved, so they are structurally safe.
   contains the token `AskUserQuestion`.
 - To disable the harness auto-continue on your machine: `/config` or `CLAUDE_AFK_TIMEOUT_MS`.
 
-See `claude-tools-6q4` and `docs/plans/2026-07-04-flow-remove-askuserquestion-design.md`.
+See `claude-tools-6q4` and `docs/superpowers/specs/2026-07-04-flow-remove-askuserquestion-design.md`.

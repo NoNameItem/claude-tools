@@ -10,7 +10,7 @@ reviews:
   high_level_summary_in_walkthrough: true
   collapse_walkthrough: false
   path_filters:
-    - "!docs/plans/**"
+    - "!docs/**"
     - "!.beads/**"
     - "!**/*.lock"
   auto_review:

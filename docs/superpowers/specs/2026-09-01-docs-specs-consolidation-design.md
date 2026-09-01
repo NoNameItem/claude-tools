@@ -86,4 +86,4 @@ reads a real path under `docs/` (`test_flow_skill_contracts.py:228`) points at a
 - `git status` shows 37 renames, 4 deletions, 3 modifications, 1 addition.
 - `grep -rn "docs/plans"` hits only `plugins/flow/` (D5) and this document.
 - Re-running the beads scan reports 0 issues with `docs/plans/` paths.
-- `ls docs` shows only `superpowers/` and the untracked `bd-0.47-to-1.0.5-migration.md`.
+- `docs/plans/` is gone; `docs/` keeps `superpowers/` alongside its pre-existing root files.
