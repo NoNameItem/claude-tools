@@ -1,31 +1,32 @@
 ---
 name: done
 description: Complete and verify a beads task — confirm the git branch, close the task, clean up the local implementation plan, recursively offer to close parents, then sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
 ---
 
 # Flow: Done
 
 ## Overview
 
-**Core principle:** Ask before cascading.
+**Core principle:** Decide everything up front, show it once, approve it once.
 
-This skill handles task completion: close task, clean up plan files, check parents recursively, sync. Always asks before closing parent tasks - even when "obviously" all children are closed.
+This skill collects every fact about the task, the branch, its parents, its plan, and its cleanup
+targets before printing anything, then presents one scenario — what it will do and what it will
+deliberately leave undone — for a single approval. Nothing executes before that approval, and a
+correction reprints the whole scenario rather than being applied silently.
 
 ## Quick Reference
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. **Branch Check** | Validate git branch + PR | Feature + no PR → stop; Feature + PR → ask |
-| 2. Find Task | Get in_progress leaf | Ask if multiple |
-| 3. Close | `bd close {task-id}` | Use bd, not SQL |
-| 4. **Plan Cleanup** | Find and remove plan file | Ask: delete / archive / keep |
-| 5. **Check Parent** | Recursive parent check | With confirmation |
-| 6. **Ask** | Before closing parent | Even if "obvious" |
-| 7. **Sync** | `flow-sync push` | Always, at end |
-| 8. **Cleanup** | Delete branch/worktree | Only if branch matches task; ask first |
+| 1. **Collect state** | Branch, mergedness, task, parents, plan, worktree, ledger | One pass, no questions, no side effects |
+| 2. **Safety check: is the work merged?** | Compare trees with `git merge-tree` | Not merged → stop, point to `finishing-a-development-branch` |
+| 3. **Scenario and the single question** | Print Сделаю / Не буду and ask once | Everything the run will do is in this one block |
+| 4. **Handle the answer** | Approve / correct / refuse | Correction reprints the full scenario and asks again |
+| 5. **Execute** | Fixed order: beads, plan, sync, git, ledger | Errors don't block; each becomes a summary line |
+| 6. **Summary** | Report the actual outcome per item | Names every divergence from the approved scenario |
 
-**Key behavior:** Always ask before closing parents. Always check PR on feature branches. Always clean up plan files. Always run flow-sync push. Offer cleanup after sync.
+**Key behavior:** One scenario covers everything — parent closing, the plan's fate, branch/worktree/remote deletion, the ledger. Epics are never closed by default. `flow-sync push` always runs. Mergedness, not PR existence, is the safety-check signal.
 
 ## Workflow
 
@@ -290,502 +291,341 @@ summary is obliged to show where the promise was not kept.
 ## Scope Boundaries
 
 ### This Skill DOES:
-✅ Check git branch
-✅ Find in_progress leaf task
+✅ Collect all state — branch, mergedness, task, parents, plan, worktree, ledger — before deciding anything
+✅ Determine mergedness through git (`git merge-tree`), not PR existence
+✅ Find in_progress leaf task (session context → branch → `flow-find-leaf`)
 ✅ Close task with bd close
 ✅ Find plan file (linked in description OR untracked in `docs/plans/` / `docs/superpowers/plans/`)
-✅ Ask user: delete / archive / keep plan file
 ✅ Remove `Plan:` link from description after delete/archive
-✅ Check parents recursively
-✅ Ask before closing each parent
+✅ Check parents recursively; close non-epic containers whose children are all closed
+✅ Print one scenario — Сделаю / Не буду — and ask the single question
+✅ Execute the scenario after one approval
 ✅ Run flow-sync push at end
-✅ Offer to clean up branch and worktree (Step 8)
-✅ Purge the PR's persistent review ledger during cleanup (Step 8)
-✅ Delete local branch, remote branch, worktree (after confirmation)
+✅ Purge the PR's persistent review ledger when the scenario says so
+✅ Delete local branch, remote branch, worktree when the scenario says so
 ✅ Switch to default branch and pull after cleanup
 
 ### This Skill Does NOT:
-❌ Git operations unrelated to cleanup (commit, push, merge, etc.)
+❌ Git operations unrelated to cleanup (commit, push, merge, etc.) — including committing the plan file's own deletion/move; the branch cleanup step (or the user's next workflow) handles git state
 ❌ Create branches
 ❌ Start next task (use flow:start)
 ❌ Update PRs or issues
 ❌ Run tests or builds
-❌ Auto-close parents without asking
-❌ Auto-proceed on feature branches without asking
-❌ Force-delete without confirmation
+❌ Ask per action — everything is decided once, in the scenario
+❌ Close epics by default — they go in "Не буду"; the user closes them explicitly
+❌ Invoke `gh` without a remote — local-only mode has no platform to check
 ❌ Search for branches beyond the current one
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
 
-**Scope note:** On feature branches without PR, this skill STOPS and refers to finishing-a-development-branch. On feature branches WITH PR, it asks user before proceeding. Cleanup (Step 8) is non-blocking and only applies when the current branch matches the closed task.
+**Scope note:** The safety check (step 2) stops when the branch's tree doesn't match the base's,
+regardless of PR state, and points to `superpowers:finishing-a-development-branch`. Cleanup
+(worktree, local branch, remote branch, ledger) lives inside the single scenario (step 3) and
+applies only when the branch matches the closed task; it is non-blocking.
 
 ## Red Flags - STOP
 
 If you're thinking any of these, STOP and follow the workflow:
 
-- "All children closed → close parent"
-- "Branch check unnecessary"
-- "flow-sync push is obvious (skip it)"
-- "Use SQL for efficiency"
-- "Parent obviously should close"
-- "Being helpful by auto-closing cascade"
-- "Feature branch → always block"
-- "PR exists → auto-proceed"
-- "Cleanup is obvious, just delete everything"
-- "Skip cleanup, user can do it manually"
-- "Branch doesn't match but I'll clean up anyway"
-- "Force-delete is fine, PR was merged"
-- "Plan cleanup is not part of the workflow"
-- "No Plan: link → no plan to clean up"
-- "Auto-delete the plan, user obviously doesn't need it"
-- "Plan file is outside my scope"
+- "The PR is merged, I'll just close the task and skip the scenario" → The scenario is how the user
+  approves everything at once. Skipping it means acting without approval, not saving a step.
+- "There's no PR, so the work isn't finished" → A PR is not the signal. Compare the trees. A
+  repository without remotes has no PR by construction and can still be fully merged.
+- "All children are closed, so the epic is done too" → Epics keep gaining children. They go in
+  "Не буду"; the user closes them explicitly.
+- "The user says it's already merged and there's no remote anyway — I'll take their word for it" →
+  Never substitute a verbal claim for the check. `git merge-tree` works with or without a remote;
+  run it.
+- "The PR is OPEN, but the branch matches the task, so the bundled cleanup line covers deleting it
+  anyway" → Mergedness gates the whole run, not just the ledger. Not merged means STOP at step 2 —
+  no scenario gets printed at all.
+- "This failure isn't one the skill names by example, but 'errors don't block' covers it anyway" →
+  It does, explicitly, for any git or tooling failure encountered in step 5 — that's stated outright,
+  not something to infer by analogy from a shorter list.
+- "flow-sync push obviously runs, I don't need to put it in the scenario" → Obvious steps are
+  exactly the ones a scenario exists to make visible. It's always the last numbered line.
+- "Branch doesn't match the task, but I'll clean up anyway" → A mismatched branch's resources go
+  into "Не буду" with a named reason, never into "Сделаю".
+- "They answered yes with a change — that's approval enough, apply it and finish" → A correction is
+  not an approval. Reprint the whole scenario and ask again.
 
-**All of these mean: Follow workflow. Check branch AND PR. Ask before proceeding. Always check for plan files (linked AND unlinked). Run flow-sync push. Offer cleanup only if branch matches task.**
+**All of these mean: collect state first, let git decide mergedness, print exactly one scenario, get one approval, and reprint on any correction.**
 
 ## Common Rationalizations
 
 | Excuse | Reality |
 |--------|---------|
-| "All children closed → close parent" | Ask first. User might add more children or want to review. |
-| "Branch check unnecessary" | Feature branch needs different workflow. Always check. |
-| "flow-sync push is obvious" | Obvious steps get skipped. Make it explicit. |
-| "Use SQL for efficiency" | bd close has logging, events, validation. Use it. |
-| "Parent obviously should close" | Obvious to you ≠ user wants it. Ask. |
-| "Being helpful by auto-closing" | Asking IS being helpful. Assuming isn't. |
-| "Feature branch → always block" | Check for PR first. If PR exists, ask user. |
-| "PR exists → auto-proceed" | Still ask user. PR exists ≠ user wants to close here. |
-| "Cleanup is obvious, just delete" | Ask first. User might want to keep the branch. |
-| "Skip cleanup, not my job" | Step 8 is part of the workflow. Offer it. |
-| "Plan cleanup is not part of completing" | Step 4 IS part of the workflow. Plan files are task artifacts. |
-| "No Plan: link → skip plan search" | Always search `docs/plans/` and `docs/superpowers/plans/` for untracked files too. Plans aren't always linked. |
-| "Auto-delete the plan, it's obvious" | Always ask. User might want to archive or keep for reference. |
-| "Plan file is outside my scope" | Plan files are task artifacts. Cleaning them up IS in scope (Step 4). |
-| "Branch doesn't match, clean up anyway" | Only clean up if branch contains the closed task's ID. |
-| "Force-delete, PR was merged" | Use safe delete (`-d`) first. Only offer `-D` if `-d` fails AND PR is MERGED. |
+| "The PR is merged, I'll skip the scenario and just close things" | The scenario is how the user approves everything at once — it isn't an extra step to route around. |
+| "There's no PR, so the work isn't finished" | A PR is not the signal. Compare the trees (`git merge-tree`). A repository without remotes has no PR by construction and can still be fully merged. |
+| "All children closed → the epic is done too" | Epics keep gaining children. They go in "Не буду"; the user closes them explicitly. |
+| "They said yes with a change, I'll just apply it" | Reprint the scenario and ask again. The second confirmation is the guarantee the correction was understood. |
+| "The user says it's already merged, take their word for it" | Nothing in the skill accepts a verbal assertion as evidence. `git merge-tree` works without a remote — run it. |
+| "PR is OPEN, but cleanup was already bundled into one yes" | Mergedness, not PR state, gates cleanup. An unmerged branch never reaches step 3 at all. |
+| "flow-sync push is obvious, it doesn't need a line" | Obvious steps are exactly what the scenario exists to make explicit. It's in every scenario, always. |
+| "Use SQL directly for efficiency" | `bd close` has logging, events, and validation. Use it. |
+| "Branch doesn't match, clean up anyway" | Only clean up when the branch matches the task. A mismatched resource is a named refusal, not silent cleanup. |
+| "No Plan: link → skip the plan search" | Always search `docs/plans/` and `docs/superpowers/plans/` for untracked files too — plans aren't always linked. |
+| "This specific failure isn't listed, but 'non-blocking' covers it" | It's explicit: any git or tooling failure during execution is non-blocking, not just the ones named as examples. |
 
 ## Examples
 
-### ❌ BAD: Auto-close parent
-
-```
-User: "Task done, flow:done"
-Agent: [Closes task]
-       [Checks parent, sees all children closed]
-       [Automatically closes parent without asking]
-       Done!
-```
-
-**Problems:**
-- Didn't check branch
-- Auto-closed parent without asking
-- Didn't run flow-sync push
-
-### ✅ GOOD: Ask before closing parent
-
-```
-User: "Task done, flow:done"
-Agent: [Checks branch: master, OK to proceed]
-       [Closes task claude-tools-abc.3]
-
-       Parent task claude-tools-abc now has all children closed.
-
-       Close it too? (yes/no)
-
-User: yes
-Agent: [Closes parent]
-       [Runs flow-sync push]
-
-       ✓ Closed claude-tools-abc.3
-       ✓ Closed claude-tools-abc (parent)
-       ✓ Synced with remote
-
-       Done.
-```
-
-**Correct because:**
-- Checked branch first
-- Asked before closing parent
-- Ran flow-sync push
-- Clear confirmation
-
-### ❌ BAD: Auto-delete plan without asking
-
-```
-User: "flow:done"
-Agent: [Closes task]
-       [Sees Plan: link in description]
-       [Deletes plan file automatically]
-       [Removes Plan: link from description]
-       Done!
-```
-
-**Problems:**
-- Didn't ask user what to do with plan
-- No archive option offered
-- Violated consultation principle
-
-### ❌ BAD: Ignores untracked plan file
-
-```
-User: "flow:done"
-Agent: [Closes task]
-       [No Plan: link in description → skips plan cleanup entirely]
-       [Doesn't check docs/plans/ or docs/superpowers/plans/ for untracked files]
-       Done!
-```
-
-**Problem:** Plan file exists as untracked in `docs/superpowers/plans/` but agent only checked description.
-
-### ✅ GOOD: Plan cleanup with linked plan
-
-```
-User: "flow:done"
-Agent: [Checks branch: master, OK]
-       [Closes task claude-tools-abc]
-
-       Plan file found: `docs/superpowers/plans/2026-02-06-abc-impl-plan.md`
-
-       What to do with it?
-       1. Delete
-       2. Archive (move to docs/archive/)
-       3. Keep as is
-
-User: 2
-Agent: [Moves to docs/archive/]
-       [Removes Plan: link from description]
-       [Checks parent, has open children]
-       [Runs flow-sync push]
-
-       ✓ Closed claude-tools-abc
-       ✓ Plan archived to docs/archive/
-       ✓ Synced with remote
-
-       Done.
-```
-
-**Correct because:**
-- Found plan via description link
-- Asked user before acting
-- Offered all three options
-- Updated description after archive
-
-### ✅ GOOD: Plan cleanup with unlinked plan
-
-```
-User: "flow:done"
-Agent: [Checks branch: master, OK]
-       [Closes task claude-tools-xyz "Quota module"]
-       [No Plan: link in description]
-       [Checks docs/plans/ and docs/superpowers/plans/ for untracked files]
-       [Finds: quota-module-impl-plan.md (untracked, matches task title)]
-
-       Plan file found: `docs/superpowers/plans/quota-module-impl-plan.md`
-
-       What to do with it?
-       1. Delete
-       2. Archive (move to docs/archive/)
-       3. Keep as is
-
-User: 1
-Agent: [Deletes file]
-       [Checks parent, has open children]
-       [Runs flow-sync push]
-
-       ✓ Closed claude-tools-xyz
-       ✓ Plan deleted
-       ✓ Synced with remote
-
-       Done.
-```
-
-**Correct because:**
-- No link in description but still searched docs/plans/ and docs/superpowers/plans/
-- Found untracked file matching task title
-- Asked user before deleting
-- No description update needed (wasn't linked)
-
-### ❌ BAD: Feature branch proceed without checking PR
-
-```
-User: "Done with this feature, flow:done"
-Agent: [On feature/add-auth branch]
-       [Closes task without checking for PR]
-```
-
-**Problem:** Proceeded on feature branch without checking PR status.
-
-### ✅ GOOD: Feature branch with no PR
-
-```
-User: "Done with this feature, flow:done"
-Agent: [Checks branch: feature/add-auth]
-       [Checks PR: no PR exists]
-
-       You're on feature branch `feature/add-auth` with no PR.
-
-       Use `superpowers:finishing-a-development-branch` to properly
-       complete this work (handles merge/PR/cleanup and task closure together).
-```
-
-**Correct because:**
-- Checked branch
-- Checked PR status
-- Stopped when no PR exists
-- Suggested correct workflow
-
-### ✅ GOOD: Feature branch with PR exists
+### ✅ GOOD: Full scenario approved
 
 ```
 User: "PR merged, flow:done"
-Agent: [Checks branch: feature/add-auth]
-       [Checks PR: exists, merged]
+Agent: [Step 0: flow-require-bd OK]
+       [Step 1: collects branch, mergedness via git merge-tree, task, parents, plan, worktree,
+        remote branch, ledger — no output yet]
+       [Step 2: branch matches the task and is merged into origin/master — continue silently]
 
-       You're on feature branch `feature/add-auth`.
+       Задача claude-tools-elf.59 — flow:done: сократить число подтверждений
+       Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (squash, PR #138 MERGED)
 
-       PR exists: https://github.com/org/repo/pull/123 (state: MERGED)
+       Сделаю:
+         1. закрою задачу claude-tools-elf.59
+         2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
+         3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
+         4. удалю локальную ветку (через -D: squash-мердж, -d откажет)
+         5. удалю ветку на origin
+         6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
+         7. синхронизирую beads (flow-sync push)
 
-       Proceed to close task on this branch? (yes/no)
+       Не буду:
+         8. закрывать эпик claude-tools-elf — все дети закрыты, но эпики пополняются
 
-User: yes
-Agent: [Continues to step 2, finds task, closes it]
-       [Runs flow-sync push]
+       Выполнять? («да», или скажи, что изменить)
 
-       ✓ Closed claude-tools-xyz
-       ✓ Synced with remote
+User: да
+Agent: [Step 5: executes 1-7 in fixed order — beads, plan, sync, git, ledger]
 
-       Done.
+       Выполнено:
+         1. ✓ задача claude-tools-elf.59 закрыта
+         2. ✓ план удалён
+         3. ✓ worktree удалён
+         4. ✓ локальная ветка удалена
+         5. ✓ ветка на origin удалена
+         6. ✓ ledger PR #138 удалён
+         7. ✓ beads синхронизированы
+
+       Готово.
 ```
 
 **Correct because:**
-- Checked branch
-- Checked PR status
-- Asked user before proceeding
-- User confirmed, so continued workflow
-- Did not assume - asked first
+- All state was collected silently before anything was printed
+- One block covers every action, including the deliberate epic refusal
+- The single question was asked once and answered once
+- The summary reports the actual outcome of every scenario item
 
-### ✅ GOOD: Cleanup after task close
-
-```
-User: "PR merged, flow:done"
-Agent: [Checks branch: feature/claude-tools-elf.6-delete-branches-worktrees]
-       [Checks PR: exists, merged]
-       [Asks user, user says yes]
-       [Closes task claude-tools-elf.6]
-       [Checks parent: has open children, skip]
-       [Runs flow-sync push]
-
-       You are on branch `feature/claude-tools-elf.6-delete-branches-worktrees`.
-
-       Delete branch and associated resources?
-         - Worktree: .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
-         - Local branch: feature/claude-tools-elf.6-delete-branches-worktrees
-         - Remote branch: origin/feature/claude-tools-elf.6-delete-branches-worktrees
-         - Review ledger for PR #123
-
-       (yes/no)
-
-User: yes
-Agent: [cd to main repo root]
-       [git worktree remove .worktrees/feature-...]
-       [git checkout master]
-       [git pull]
-       [git branch -d feature/claude-tools-elf.6-...]
-       [git push origin --delete feature/claude-tools-elf.6-...]
-       [PR state is MERGED → flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"]
-
-       ✓ Worktree removed
-       ✓ Switched to master
-       ✓ Local branch deleted
-       ✓ Remote branch deleted
-       ✓ Review ledger purged
-
-       Done.
-```
-
-**Correct because:**
-- Checked branch matches task ID
-- Listed all cleanup targets
-- Asked before deleting
-- Executed in correct order (worktree → checkout → delete → purge ledger, and the purge fired because the PR is MERGED — not because the branch happened to be gone)
-
-### ❌ BAD: Auto-cleanup without asking
-
-```
-Agent: [Closes task]
-       [Runs flow-sync push]
-       [Immediately deletes branch and worktree]
-```
-
-**Problem:** Didn't ask before cleanup. User might want to keep the branch.
-
-### ✅ GOOD: Branch doesn't match — skip cleanup silently
-
-```
-Agent: [On master branch]
-       [Closes task claude-tools-elf.6]
-       [Runs flow-sync push]
-
-       ✓ Closed claude-tools-elf.6
-       ✓ Synced with remote
-
-       Done.
-```
-
-**Correct because:** Branch "master" doesn't contain task ID "elf.6", so cleanup is silently skipped.
-
-### ❌ BAD: Skip flow-sync push
+### ✅ GOOD: Correction reprints the whole scenario
 
 ```
 User: "flow:done"
-Agent: [Closes task]
-       [Asks about parent, closes]
-       Done!
-```
+Agent: [collects state, safety check passes]
 
-**Problem:** Skipped flow-sync push at end.
+       Задача claude-tools-elf.6 — удалить ветки и worktree
+       Ветка  feature/claude-tools-elf.6-delete-branches-worktrees → влита в origin/master (PR #123 MERGED)
 
-### ✅ GOOD: Always flow-sync push
+       Сделаю:
+         1. закрою задачу claude-tools-elf.6
+         2. удалю worktree .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
+         3. удалю локальную ветку
+         4. удалю ветку на origin
+         5. удалю review ledger PR #123 (PR смержен, ревью закрыто)
+         6. синхронизирую beads (flow-sync push)
 
-```
-User: "flow:done"
-Agent: [Checks branch]
-       [Closes task]
-       [Asks about parent, closes if yes]
-       [Runs flow-sync push]
+       Выполнять? («да», или скажи, что изменить)
 
-       ✓ Synced with remote
+User: да, но локальную ветку оставь
+Agent: [applies the correction, reprints the whole scenario with continuous numbering, asks again
+        — nothing has executed yet]
 
-       Done.
+       Задача claude-tools-elf.6 — удалить ветки и worktree
+       Ветка  feature/claude-tools-elf.6-delete-branches-worktrees → влита в origin/master (PR #123 MERGED)
+
+       Сделаю:
+         1. закрою задачу claude-tools-elf.6
+         2. удалю worktree .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
+         3. удалю ветку на origin
+         4. синхронизирую beads (flow-sync push)
+
+       Не буду:
+         5. удалять локальную ветку — оставлена по вашей просьбе
+
+       Выполнять? («да», или скажи, что изменить)
+
+User: да
+Agent: [Step 5: executes the corrected scenario]
+
+       Выполнено:
+         1. ✓ задача claude-tools-elf.6 закрыта
+         2. ✓ worktree удалён
+         3. ✓ ветка на origin удалена
+         4. ✓ beads синхронизированы
+
+       Готово.
 ```
 
 **Correct because:**
-- flow-sync push always run at end
-- Explicit confirmation
+- The correction was applied, not just acknowledged
+- The whole scenario was reprinted with continuous numbering, not shown as a diff
+- A second question followed — the correction still needed its own approval
+- Execution only started after the second "да"
+
+### ✅ GOOD: Local-only repository — no PR lines
+
+```
+User: "flow:done"
+Agent: [Step 1: git remote is empty → local-only mode; gh is never invoked; base is the first
+        existing of master/main; mergedness comes from git merge-tree alone]
+
+       Задача claude-tools-5vg.3 — офлайн-скрипт импорта
+       Ветка  feature/claude-tools-5vg.3-import-script → влита в master (локальный репозиторий, PR/remote нет)
+
+       Сделаю:
+         1. закрою задачу claude-tools-5vg.3
+         2. удалю план docs/plans/2026-08-20-import-script-plan.md
+         3. удалю локальную ветку
+         4. синхронизирую beads (flow-sync push)
+
+       Выполнять? («да», или скажи, что изменить)
+
+User: да
+Agent: [executes — there are no remote-branch or ledger lines to run]
+
+       Выполнено:
+         1. ✓ задача claude-tools-5vg.3 закрыта
+         2. ✓ план удалён
+         3. ✓ локальная ветка удалена
+         4. ✓ beads синхронизированы
+
+       Готово.
+```
+
+**Correct because:**
+- No `gh pr view` call happened — the repository has no remote
+- Mergedness came from comparing trees against the local base, not from a PR
+- The scenario has no remote-branch or ledger lines because those facts are absent from the
+  environment, not because they went unasked
+
+### ✅ GOOD: Safety check stops an unmerged branch
+
+```
+User: "flow:done"
+Agent: [Step 1: collects state; mergedness check finds the branch's tree differs from
+        origin/master's]
+       [Step 2: branch matches the task and is NOT merged — STOP before printing any scenario]
+
+       Branch `feature/claude-tools-test.1-sample` has not been merged into `origin/master`.
+
+       Use `superpowers:finishing-a-development-branch` to properly complete this work (handles
+       merge/PR/cleanup and task closure together).
+```
+
+**Correct because:**
+- The stop is based on comparing trees, not on PR state — an OPEN or even absent PR would have
+  stopped the run the same way
+- Nothing is closed, deleted, or synced before the stop
+- No scenario is printed — printing one would imply something is already waiting for approval
 
 ## Edge Cases
 
-### Multiple In-Progress Tasks
-
-```
-Found 2 in_progress leaf tasks:
-1. claude-tools-abc: Feature X
-2. claude-tools-def: Feature Y
-
-Which task is complete? (enter 1 or 2, or task ID)
-```
-
-### No In-Progress Tasks
-
-```
-No in_progress leaf tasks found.
-
-Check task status with:
-  bd list --status=in_progress
-```
-
-### Plan File Linked but Already Deleted
-
-```
-Task description has Plan: docs/superpowers/plans/old-plan.md
-File does not exist on disk.
-
-Plan file referenced in description not found: docs/superpowers/plans/old-plan.md
-(already deleted or moved)
-
-Removing stale Plan: link from description.
-```
-
-### Multiple Untracked Plan Files Match
-
-```
-Found multiple plan file candidates in docs/plans/ or docs/superpowers/plans/:
-1. quota-module-impl-plan.md (untracked)
-2. quota-implementation-plan.md (untracked)
-
-Which file is the implementation plan for this task? (1, 2, or "none")
-```
-
-### Deep Hierarchy (3 levels)
-
-```
-Closed claude-tools-abc.2.1
-
-Parent claude-tools-abc.2 now has all children closed.
-Close it too? (yes/no)
-
-[User: yes]
-
-Closed claude-tools-abc.2
-
-Parent claude-tools-abc now has all children closed.
-Close it too? (yes/no)
-
-[User: yes]
-
-Closed claude-tools-abc
-
-No more parents. Running flow-sync push...
-```
-
-### Parent Has Open Sibling
-
-```
-Closed claude-tools-abc.1
-
-Parent claude-tools-abc still has open children:
-- claude-tools-abc.2 (open)
-
-Not asking to close parent (has open children).
-
-Running flow-sync push...
-```
-
-### Cleanup: Worktree Remove Fails
+### Worktree Remove Fails
 
 ```
 git worktree remove .worktrees/feature-claude-tools-abc-login
 Error: '.worktrees/feature-claude-tools-abc-login' contains modified or
 untracked files, use --force to delete.
-
-⚠️ Worktree has uncommitted changes. You can:
-  - git worktree remove --force .worktrees/feature-...
-  - Or clean up manually later.
-
-Continuing with branch deletion...
 ```
 
-### Cleanup: Remote Branch Already Deleted
+Non-blocking, and coupled: since we're still checked out there, the local branch delete is skipped
+too. Both show up as summary lines, not a question:
+
+```
+Выполнено:
+  3. ✗ worktree не удалён: содержит незакоммиченные изменения
+  4. — локальная ветка не удалена (worktree занят)
+
+Осталось вручную: git worktree remove --force .worktrees/feature-claude-tools-abc-login
+```
+
+### Remote Branch Already Deleted
 
 ```
 git push origin --delete feature/claude-tools-abc-login
 error: unable to delete 'feature/claude-tools-abc-login': remote ref does not exist
-
-Remote branch already deleted (possibly by GitHub auto-delete on PR merge).
-Continuing...
 ```
 
-### Cleanup: Branch Delete Refuses (Unmerged)
+Non-blocking — GitHub's auto-delete-on-merge likely already removed it. One summary line, no
+question:
 
 ```
-git branch -d feature/claude-tools-abc-login
-error: The branch 'feature/claude-tools-abc-login' is not fully merged.
-
-⚠️ Branch has unmerged changes.
-PR state is MERGED — safe to force-delete.
-
-Force-delete with `git branch -D`? (yes/no)
+Выполнено:
+  5. ✓ ветка на origin удалена (уже была удалена — вероятно, автоматически при мердже)
 ```
+
+### No In-Progress Tasks
+
+`flow-find-leaf` is the last-resort task resolver in step 1 — it only runs when neither session
+context nor the branch identifies a task. If it finds nothing either, there is no task to build a
+scenario for:
+
+```
+Не найдено ни одной задачи in_progress.
+
+Проверьте статус: bd list --status=in_progress
+```
+
+### Git Older Than 2.38
+
+`git merge-tree --write-tree` is unavailable, so step 1 cannot compute mergedness on its own. This
+is the one case, besides task-identity conflicts, where the skill asks a direct question before the
+scenario:
+
+```
+`git merge-tree --write-tree` недоступен (нужен git >= 2.38) — не могу сам проверить, влита ли
+ветка `feature/claude-tools-abc-login` в `origin/master`.
+
+Подтвердите, что работа влита в базовую ветку? (yes/no)
+```
+
+Never fall back to `git branch --merged` here — it reports false after a squash merge, which is
+exactly the case this check exists for.
+
+### Session Context and Branch Disagree About the Task
+
+Session context says the task is `claude-tools-elf.6`, but `CURRENT_BRANCH`'s `Git:` line matches
+`claude-tools-elf.9` instead. Both are shown and the user is asked before anything else — the only
+question about task identity the skill may ask, because the rest of the run depends on getting it
+right:
+
+```
+Контекст сессии указывает на claude-tools-elf.6, а текущая ветка соответствует задаче
+claude-tools-elf.9 (по её Git: записи).
+
+Какую задачу закрываем — elf.6 или elf.9?
+```
+
+### Several `Git:` Lines on One Task
+
+A task recorded more than one branch (`flow:start` step 8.1's `--append`, for a parallel workstream
+in another project or PR). The scenario is built for `CURRENT_BRANCH` only, as today
+(`claude-tools-elf.51`) — the task's other recorded branches are neither compared nor touched.
 
 ## The Bottom Line
 
 Always follow the workflow.
 
-**Check branch FIRST.** Feature branch + no PR → stop. Feature branch + PR → ask user.
+**Collect before deciding.** Branch, mergedness, task, parents, plan, worktree, and ledger are all
+gathered in one pass, before anything is printed or decided.
 
-**Ask before closing parents.** Even when "obviously" all children closed.
+**The safety check is mergedness, not a PR.** `git merge-tree` compares trees. A PR's existence or
+state settles nothing about whether the branch actually reached the base.
 
-**Run flow-sync push ALWAYS.** At end, no exceptions.
+**One scenario, one approval.** Everything the run will do, and everything it deliberately won't,
+is in that one block. A correction reprints it whole and asks again — nothing executes on a partial
+answer.
 
-**Offer cleanup.** If branch matches task, show what will be deleted and ask. Non-blocking — failure doesn't undo the close.
+**The summary must show divergences.** The approval was given once, in advance, to a list — the
+summary is obliged to report every item that didn't go as promised.
 
 Obvious logic requires MORE structure, not less.
