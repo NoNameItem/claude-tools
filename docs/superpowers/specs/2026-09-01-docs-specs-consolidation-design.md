@@ -43,11 +43,16 @@ cosmetic consistency at the cost of rewriting a path in git history.
 Their content stays recoverable from git history; keeping them tracked contradicts the policy
 `.gitignore` already states for the current layout.
 
-**D3. Beads: spec links are rewritten, dead plan links are removed.** For the 37 affected issues:
-the 29 paths pointing at specs that move get `docs/plans/` → `docs/superpowers/specs/`; lines of
-the form `Plan: docs/plans/<file>` are deleted for the 18 files that do not exist (16 already
-deleted before this task, 2 deleted by it). A dangling link is noise in a record whose whole
-purpose is to be readable later.
+**D3. Beads: spec links are rewritten, dead links are removed.** Across the affected issues, 36
+paths pointing at specs that move get `docs/plans/` → `docs/superpowers/specs/`, and 16 link lines
+whose target exists nowhere are deleted — 15 `Plan:` lines plus one `Design:` line in
+`claude-tools-6hl`, a closed test artifact of flow debugging. A dangling link is noise in a record
+whose whole purpose is to be readable later.
+
+One exception: `claude-tools-elf.59` is `in_progress` and its
+`Plan: docs/plans/2026-09-01-flow-done-single-approval-plan.md` resolves to a live untracked file in
+that task's own worktree. Existence is checked relative to *this* worktree, which would have
+misread it as dead. The line stays; that task's `flow:done` disposes of the file.
 
 Prose mentions of the `docs/plans/` directory (in `claude-tools-0fu` and `claude-tools-elf.11`) are
 edited by hand — dropping a whole line there would break the sentence around it.
