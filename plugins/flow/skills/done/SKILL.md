@@ -54,10 +54,14 @@ git remote   # empty → local-only mode; any output → remote mode
 **Base branch and mergedness.** This is the safety check's criterion (step 2), so get it right:
 
 ```bash
-# remote mode: fetch first, compare against the remote base
-git fetch --quiet
-BASE=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/||')
-# local-only mode: first existing of master, main
+if [ -n "$(git remote)" ]; then
+  # remote mode: fetch first, compare against the remote base
+  git fetch --quiet
+  BASE=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/||')
+else
+  # local-only mode: first existing of master, main
+  BASE=$(git show-ref --verify --quiet refs/heads/master && echo master || echo main)
+fi
 MERGED_TREE=$(git merge-tree --write-tree "$BASE" "$CURRENT_BRANCH")
 BASE_TREE=$(git rev-parse "$BASE^{tree}")
 # equal → the branch adds nothing to the base → merged (survives squash and rebase)
@@ -96,6 +100,18 @@ If context and branch disagree, show both and ask **before** printing the scenar
 only question about task identity the skill may ask. Never resolve the task by eyeballing
 `bd list --status=in_progress`.
 
+**Branch match:** does `CURRENT_BRANCH` actually belong to the resolved task?
+
+```bash
+flow-current-task {task-id} || echo "BRANCH_MISMATCH"
+```
+
+Run this check regardless of how the task was resolved above — including when it came from
+`flow-find-leaf`, the last-resort case, which has had no chance yet to be checked against the
+branch at all. This fact gates every deletion candidate below (worktree, local branch, remote
+branch, ledger) in step 3; it never gates task closure, the parent chain, the plan, or the sync —
+those apply to the task regardless of which branch we happen to be on.
+
 **Parent chain:** `bd show {task-id}` upwards — id, type (`epic` or not), open-children count for
 each ancestor.
 
@@ -124,7 +140,13 @@ memory, stored under the OS cache dir, never in the repo.
 
 ### 2. Safety check: is the work merged?
 
-**If step 1 found the branch not merged into the base:**
+**If step 1 found `BRANCH_MISMATCH`** (the current branch is not the resolved task's branch — e.g.
+a generic branch like `master`, or an unrelated feature branch): the mergedness check describes
+that branch's relationship to the base, not this task's, so it says nothing safety-relevant here —
+skip it. Continue to step 3 without asking anything: the scenario will still close the task and
+sync, but every branch/worktree/remote/ledger candidate is refused, not offered (see step 3).
+
+**If the branch matches the task and step 1 found it not merged into the base:**
 
 **STOP** and inform the user:
 
@@ -138,7 +160,7 @@ Exit. Do not continue the workflow — nothing is closed, nothing is deleted, no
 the user directly to confirm the branch is merged before continuing. Do not silently treat an
 unconfirmable state as merged, and do not fall back to `git branch --merged`.
 
-**If the branch is merged:** continue silently to step 3. No output yet.
+**If the branch matches the task and is merged:** continue silently to step 3. No output yet.
 
 ### 3. Scenario and the single question
 
@@ -170,15 +192,27 @@ question. Numbering is continuous across both lists so a correction can be short
 |---|---|---|
 | Close the task | do | always |
 | Plan file | delete | a plan was found |
-| Worktree | delete | we are in a worktree |
-| Local branch | delete, `-D` under squash | mergedness confirmed |
-| Remote branch | delete | remote mode, branch exists |
-| Ledger | purge when `MERGED`; leave when `CLOSED` or `OPEN` | PR known, ledger exists |
+| Worktree | delete | we are in a worktree, and the branch matches the task |
+| Local branch | delete, `-D` under squash | mergedness confirmed, and the branch matches the task |
+| Remote branch | delete | remote mode, branch exists, and the branch matches the task |
+| Ledger | purge when `MERGED`; leave when `CLOSED` or `OPEN` | PR known, ledger exists, and the branch matches the task |
 | Container parent | close | all children closed, type ≠ `epic` |
 | Epic parent | do not close | all children closed, type `epic` |
 | `flow-sync push` | do | always |
 
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
+
+**The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on
+purpose after a merge — for history, or to re-read what happened in review — so its survival must
+not keep a settled PR's ledger alive forever; conversely a successful `git branch -d` says nothing
+about whether the PR is still taking review. Only `MERGED` purges; `CLOSED` and `OPEN` leave it,
+because a closed PR can still be reopened and a still-open one is still taking review.
+
+**When step 1 found `BRANCH_MISMATCH`:** the four branch-gated rows above never move to "Сделаю",
+regardless of what exists. Each one that actually exists (a worktree we happen to be sitting in, a
+local or remote branch, a ledger) appears instead under "Не буду" with the reason "ветка не
+относится к задаче {task-id}" — a real resource that could be mistaken for deletable is a
+deliberate refusal, not something to omit silently.
 
 **Mandatory sweep.** The nine rows above are a checklist. Each must either appear as a numbered
 line or be omitted for an explicitly named reason. A skipped row is now a silent action or a silent
@@ -209,8 +243,11 @@ Fixed order — beads before git, ledger last:
 
 1. `bd close {task-id}`
 2. Container parents, bottom-up (never the epic — see step 3)
-3. Plan: `rm` (or `mv` to `docs/archive/`) + `flow-link-doc {task-id} Plan ""` — only when the task
-   description held the `Plan:` link that is now being removed
+3. Plan: `rm` (or `mv` to `docs/archive/`) whenever the scenario lists the plan for deletion — this
+   fires regardless of which source found the file (linked or untracked). Then, **only if** the
+   task description held a `Plan:` line, `flow-link-doc {task-id} Plan ""` to remove the now-stale
+   link. A plan found only as an untracked file (Source B in step 1) never had a link to remove, so
+   the second half never fires for it.
 4. `flow-sync push`
 5. Leave the worktree → `git worktree remove <path>` → `git checkout <base>` → `git pull` →
    `git branch -d|-D <branch>` (`-D` only when the scenario said so, i.e. mergedness was confirmed
