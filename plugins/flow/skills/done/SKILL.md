@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — collect branch, task, parent, plan, and cleanup state, present one scenario for a single approval, then close the task, clean up the plan, close eligible parents, and sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(rm:*) Bash(mv:*) Bash(mkdir:*)
 ---
 
 # Flow: Done
@@ -19,7 +19,7 @@ correction reprints the whole scenario rather than being applied silently.
 
 | Step | Action | Key Point |
 |------|--------|-----------|
-| 1. **Collect state** | Branch, mergedness, task, parents, plan, worktree, ledger | One pass, no questions, no side effects |
+| 1. **Collect state** | Branch, mergedness, task, parents, plan, worktree, ledger | One pass, no questions; the only write is `git fetch` |
 | 2. **Safety check: is the work merged?** | Compare trees with `git merge-tree` | Not merged → stop, point to `finishing-a-development-branch` |
 | 3. **Scenario and the single question** | Print Сделаю / Не буду and ask once | Everything the run will do is in this one block |
 | 4. **Handle the answer** | Approve / correct / refuse | Correction reprints the full scenario and asks again |
@@ -42,8 +42,9 @@ If this exits non-zero, **STOP**: print its stderr message and run no further co
 
 ### 1. Collect state
 
-One pass, no questions, no side effects. Gather every fact step 3's scenario needs before printing
-anything.
+One pass, no questions. The only external effect is the `git fetch` below, which updates
+remote-tracking refs and nothing else — no working tree, no branch, no task is touched here. Gather
+every fact step 3's scenario needs before printing anything.
 
 **Branch and repository mode:**
 
@@ -52,33 +53,61 @@ CURRENT_BRANCH=$(git branch --show-current)
 git remote   # empty → local-only mode; any output → remote mode
 ```
 
-**Base branch and mergedness.** This is the safety check's criterion (step 2), so get it right:
+**Base branch and mergedness.** This is the safety check's criterion (step 2), so get it right.
+The block below produces **two distinct values, never interchangeable**:
+
+- `BASE_REF` — the **comparison base** (`origin/master` in remote mode), used by `merge-tree`,
+  `rev-parse` and `rev-list`;
+- `BASE_LOCAL` — the **checkout target** (`master`), the local branch name step 5 checks out.
+
+Checking out `BASE_REF` detaches HEAD and makes the following `git pull` fail with "You are not
+currently on a branch"; comparing against `BASE_LOCAL` in remote mode compares against a possibly
+stale local ref. Keep them apart.
 
 ```bash
 if [ -n "$(git remote)" ]; then
   # remote mode: fetch first, compare against the remote base
   git fetch --quiet
-  BASE=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's|refs/remotes/||')
+  REMOTE=$(git remote | head -1)   # usually origin — never assume the name
+  # first of: the remote's HEAD symref, then master, then main
+  BASE_LOCAL=$(git symbolic-ref --quiet "refs/remotes/$REMOTE/HEAD" | sed "s|refs/remotes/$REMOTE/||")
+  if [ -z "$BASE_LOCAL" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/master"; then BASE_LOCAL=master; fi
+  if [ -z "$BASE_LOCAL" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/main"; then BASE_LOCAL=main; fi
+  BASE_REF="$REMOTE/$BASE_LOCAL"
 else
-  # local-only mode: first existing of master, main
-  BASE=$(git show-ref --verify --quiet refs/heads/master && echo master || echo main)
+  # local-only mode: same fallback chain over local heads
+  BASE_LOCAL=""
+  if git show-ref --verify --quiet refs/heads/master; then BASE_LOCAL=master; fi
+  if [ -z "$BASE_LOCAL" ] && git show-ref --verify --quiet refs/heads/main; then BASE_LOCAL=main; fi
+  BASE_REF="$BASE_LOCAL"
 fi
-MERGED_TREE=$(git merge-tree --write-tree "$BASE" "$CURRENT_BRANCH")
-BASE_TREE=$(git rev-parse "$BASE^{tree}")
+[ -n "$BASE_LOCAL" ] || echo "NO_BASE"
+
+MERGED_TREE=$(git merge-tree --write-tree "$BASE_REF" "$CURRENT_BRANCH")
+BASE_TREE=$(git rev-parse "$BASE_REF^{tree}")
 # equal → the branch adds nothing to the base → merged (survives squash and rebase)
+OWN_COMMITS=$(git rev-list --count "$BASE_REF..$CURRENT_BRANCH")
+# 0 → the branch carries no commits of its own — which is NOT the same as merged
 ```
 
-Two rules go with it:
+Four rules go with it:
 - **The base comes from the remote, after a fetch** — never from a local `master`/`main` that may
   lag behind (no `git pull` since the PR merged). A stale local base makes the criterion lie and
   the safety check evict the user for no reason.
-- **`gh` is not invoked at all when `git remote` is empty.** In local-only mode there is no
-  platform to ask; its absence is not "no PR" and is not grounds to stop.
+- **`git symbolic-ref` is only the first candidate, not the answer.** `refs/remotes/<remote>/HEAD`
+  is frequently absent or not a symbolic ref (`fatal: ref refs/remotes/origin/HEAD is not a
+  symbolic ref`), and the remote is not always called `origin`. Hence the explicit fallback chain
+  and the `git remote` lookup above.
+- **No base means STOP** (`NO_BASE`, handled in step 2). An empty base would make `merge-tree`
+  error out and every guard below it meaningless — and those guards are what stand between the run
+  and irreversible deletions. Never improvise a base, and never proceed without one.
+- **`MERGED_TREE == BASE_TREE` alone does not mean "merged".** A branch that never committed
+  anything satisfies it too — `OWN_COMMITS` is what tells the two apart (step 2).
 
 `git merge-tree --write-tree` requires git >= 2.38. If it is unavailable, say so, print the branch
-and the base you could not compare, and ask the user to confirm the work is merged. **Never fall
-back to `git branch --merged`** — it reports false after a squash merge, which is exactly the case
-this check exists for.
+and the base you could not compare, and ask the user to confirm the work is merged — step 2 defines
+what each answer permits. **Never fall back to `git branch --merged`** — it reports false after a
+squash merge, which is exactly the case this check exists for.
 
 **PR state** (remote mode only, no `gh` call in local-only mode):
 
@@ -99,9 +128,11 @@ is safe.
    ```bash
    bd graph --all --json | flow-find-leaf
    ```
-   It prints in_progress leaf tasks as a numbered list grouped by assignee (mine → Unassigned →
-   others, each group under its own header line), numbered continuously across groups; empty
-   output means none exist (see Edge Cases, "No In-Progress Tasks"). **Exactly one numbered
+   Invoked without `--all`, as above, it prints only **my** and **unassigned** in_progress leaf
+   tasks — two groups, `Мои задачи ({actor}):` and `Unassigned:`, each under its own header line,
+   numbered continuously across both. (Other users' tasks appear only under `--all`, or when no
+   identity can be resolved at all, in which case the helper falls back to showing everyone.)
+   Empty output means none exist (see Edge Cases, "No In-Progress Tasks"). **Exactly one numbered
    candidate → resolves silently, same as the other two sources.** Two or more → reproduce its
    output verbatim and ask which number, before printing the scenario.
 
@@ -122,8 +153,12 @@ branch at all. This fact gates every deletion candidate below (worktree, local b
 branch, ledger) in step 3; it never gates task closure, the parent chain, the plan, or the sync —
 those apply to the task regardless of which branch we happen to be on.
 
-**Parent chain:** `bd show {task-id}` upwards — id, type (`epic` or not), open-children count for
-each ancestor.
+**Parent chain:** `bd show {task-id}` upwards — id, type (`epic` or not), and open-children count
+for each ancestor. **Count the children this run will close as already closed:** exclude the task
+being closed, and exclude every lower ancestor this same scenario already lists for closing. The
+counts must describe the state step 5 acts in (the task is closed at 5.1, parents at 5.2), not the
+state at collection time — counted literally, a parent whose last open child is the very task being
+closed could never qualify, and the container-parent row would never fire at all.
 
 **Plan file.** Two sources, check in order:
 
@@ -145,17 +180,37 @@ also not something to ask about here — carry the full list into the scenario, 
 defaults to touching none of them (see step 3's defaults table).
 
 **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
-**Remote branch:** `git branch -r | grep "$CURRENT_BRANCH"`.
+**Remote branch:** `git branch -r --list "$REMOTE/$CURRENT_BRANCH"` — non-empty means it exists.
+Match the full ref, never `git branch -r | grep "$CURRENT_BRANCH"`: an unanchored grep reports
+`feature/x` as present because `origin/feature/x-2` exists.
 **Ledger:** present when a `PR_NUMBER` was captured above — the PR's `flow:review-comments`
 memory, stored under the OS cache dir, never in the repo.
 
 ### 2. Safety check: is the work merged?
 
+Exactly one of the cases below applies. Each says both what happens to the run and what the
+resulting mergedness verdict is — **confirmed**, **unconfirmed**, or **not applicable** — because
+step 3 gates every deletion on that verdict.
+
+**If step 1 printed `NO_BASE`** (no remote HEAD symref, no `master`, no `main`): **STOP**. There is
+nothing to compare against, and this comparison guards every deletion the run could make.
+
+> "Не смог определить базовую ветку: ни HEAD-симссылки у remote `{remote}`, ни `master`, ни `main`.
+>
+> Без базы проверка влитости невозможна, а на ней держатся все удаления — ничего не делаю. Скажите,
+> какая ветка базовая (или создайте `refs/remotes/{remote}/HEAD`), и запустите `/flow:done` снова."
+
+Exit. Nothing is closed, deleted, or synced. Never guess a base to get past this.
+
 **If step 1 found `BRANCH_MISMATCH`** (the current branch is not the resolved task's branch — e.g.
 a generic branch like `master`, or an unrelated feature branch): the mergedness check describes
 that branch's relationship to the base, not this task's, so it says nothing safety-relevant here —
-skip it. Continue to step 3 without asking anything: the scenario will still close the task and
-sync, but every branch/worktree/remote/ledger candidate is refused, not offered (see step 3).
+**whatever step 1's comparison returned is discarded** (verdict: not applicable; never report it as
+one). Continue to step 3 without asking anything: the
+scenario still closes the task and syncs — the work may well have landed by another route, and
+refusing here would make the skill unusable from `master` — but every branch/worktree/remote/ledger
+candidate is refused, not offered (see step 3), and the header states outright that mergedness was
+not checked.
 
 **If the branch matches the task and step 1 found it not merged into the base:**
 
@@ -167,11 +222,29 @@ sync, but every branch/worktree/remote/ledger candidate is refused, not offered 
 
 Exit. Do not continue the workflow — nothing is closed, nothing is deleted, nothing is synced.
 
-**If the git-version guard from step 1 fired** (no `git merge-tree --write-tree` available), ask
-the user directly to confirm the branch is merged before continuing. Do not silently treat an
-unconfirmable state as merged, and do not fall back to `git branch --merged`.
+**If the branch matches the task and `OWN_COMMITS` is 0** — the trees are equal only because the
+branch carries no commits of its own (a branch `flow:start` created whose work was never
+committed). This is **not** merged: verdict **unconfirmed**. Do not stop — the work may have been
+committed elsewhere — but the header says so plainly, the task closes and beads sync, and every
+deletion row goes to "Не буду" with that reason. This matters most for the worktree: it may hold
+the only copy of uncommitted work, and `git worktree remove` refusing is not a safety design.
 
-**If the branch matches the task and is merged:** continue silently to step 3. No output yet.
+**If the git-version guard from step 1 fired** (no `git merge-tree --write-tree` available), ask
+the user directly to confirm the branch is merged, and wait for the answer:
+
+- **"да" / "yes"** → continue to step 3 with mergedness **unconfirmed**. A verbal claim permits
+  closing the task, closing eligible parents, handling the plan and running `flow-sync push` —
+  none of which destroys anything — but **it never counts as the check**: every branch, worktree
+  and remote deletion goes to "Не буду" with the reason "влитость не подтверждена (нет
+  `git merge-tree`)".
+- **"нет" / anything not an affirmative** → treat it exactly like a failed safety check: **STOP**
+  with the same message as the not-merged case above, and exit.
+
+Do not silently treat an unconfirmable state as merged, and do not fall back to
+`git branch --merged`.
+
+**If the branch matches the task, is merged, and `OWN_COMMITS` > 0:** verdict **confirmed** —
+continue silently to step 3. No output yet.
 
 ### 3. Scenario and the single question
 
@@ -197,26 +270,56 @@ question. Numbering is continuous across both lists so a correction can be short
 Выполнять? («да», или скажи, что изменить)
 ```
 
+**The header's second line states exactly what is known about the branch** — it never claims a
+check that did not run:
+
+| Situation | Second header line |
+|---|---|
+| Merged, remote mode | `Ветка  feature/… → влита в origin/master (squash, PR #138 MERGED)` |
+| Merged, local-only | `Ветка  feature/… → влита в master (локальный репозиторий, PR/remote нет)` |
+| `BRANCH_MISMATCH` | `Ветка  master — не относится к задаче {task-id}; влитость не проверялась` |
+| git < 2.38, user answered "да" | `Ветка  feature/… — влитость не подтверждена (нет git merge-tree, подтверждена на словах)` |
+| `OWN_COMMITS` == 0 | `Ветка  feature/… — нет собственных коммитов относительно origin/master; влитость не подтверждена` |
+
 **Defaults for the nine checklist rows:**
 
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do | always |
 | Plan file | delete; **none** when several candidates match | a plan was found |
-| Worktree | delete | we are in a worktree, and the branch matches the task |
+| Worktree | delete | we are in a worktree, the branch matches the task, and mergedness is confirmed |
 | Local branch | delete, `-D` under squash | mergedness confirmed, and the branch matches the task |
-| Remote branch | delete | remote mode, branch exists, and the branch matches the task |
+| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, and `PR_STATE` is not `OPEN` |
 | Ledger | purge when `MERGED`; leave when `CLOSED` or `OPEN` | PR known, ledger exists, and the branch matches the task |
-| Container parent | close | all children closed, type ≠ `epic` |
-| Epic parent | do not close | all children closed, type `epic` |
+| Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
+| Epic parent | do not close | same condition, type `epic` |
 | `flow-sync push` | do | always |
 
+Three gates guard the deletion rows, and each has its own named refusal in "Не буду": the branch
+belongs to the task (step 1's `flow-current-task` check), mergedness is **confirmed** (step 2's
+verdict — "unconfirmed" refuses just as firmly as "not merged" would have stopped), and, for the
+remote branch alone, the PR is not `OPEN`.
+
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
+
+**Open-children counts already include this run's closures.** Step 1 counted them that way, so a
+container parent whose last open child is the task being closed appears under "Сделаю" with the
+reason spelled out — `закрою родителя claude-tools-elf — других открытых детей нет (эта задача
+закрывается здесь же)`. Step 5 closes the task first and re-reads the parent immediately before
+closing it, so the promise and the action are evaluated against the same state.
 
 **Several plan candidates get no default deletion.** When step 1's search returns more than one
 matching file, the scenario's plan row lists every candidate and defaults to touching none of
 them — filed under "Не буду" with the candidate list as the reason. Deleting the wrong plan file
 is not recoverable from the summary; the user names the right one as a correction.
+
+**The remote branch is gated on the PR's state too.** A branch tree can equal the base while its
+PR is still `OPEN` — the content landed through another PR, a cherry-pick or a rebase. On GitHub,
+`git push origin --delete <branch>` **closes that PR**: an irreversible external action that the
+line "удалю ветку на origin" does not announce and the single approval was never asked about. So
+with an `OPEN` PR the remote-branch row goes to "Не буду" with the reason named — `не буду удалять
+ветку на origin — PR #{n} открыт, удаление ветки его закроет`. The two rules about the same PR
+point the same way: an `OPEN` PR keeps both its ledger and its branch.
 
 **The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on
 purpose after a merge — for history, or to re-read what happened in review — so its survival must
@@ -234,9 +337,13 @@ deliberate refusal, not something to omit silently.
 line or be omitted for an explicitly named reason. A skipped row is now a silent action or a silent
 omission — not merely an unasked question.
 
-**"Не буду" lists only deliberate refusals** — the epic, the ledger of a live PR, the branch when
-mergedness is unconfirmed. What is simply absent from the environment (no remote, no plan, not in a
-worktree) is not printed at all: the scenario states decisions, not an inventory.
+**"Не буду" lists only deliberate refusals.** The full set: the epic; the ledger of a `CLOSED` or
+`OPEN` PR; the remote branch when its PR is `OPEN`; every branch-gated row (worktree, local branch,
+remote branch, ledger) when `BRANCH_MISMATCH` was found, each with the reason "ветка не относится к
+задаче {task-id}"; every deletion row when mergedness is unconfirmed (git < 2.38 answered "да", or
+`OWN_COMMITS` == 0), with that reason; and the plan when several candidates match. What is simply
+absent from the environment (no remote, no plan, not in a worktree) is not printed at all: the
+scenario states decisions, not an inventory.
 
 ### 4. Handle the answer
 
@@ -258,16 +365,23 @@ show that the correction was understood.
 Fixed order — beads before git, ledger last:
 
 1. `bd close {task-id}`
-2. Container parents, bottom-up (never the epic — see step 3)
-3. Plan: `rm` (or `mv` to `docs/archive/`) whenever the scenario lists the plan for deletion — this
+2. Container parents, bottom-up (never the epic — see step 3). Re-read `bd show {parent-id}`
+   immediately before each `bd close`: the task is now actually closed, so the count the scenario
+   promised is the count that must be observed here. If a child was opened in the meantime, leave
+   the parent open and say so in the summary rather than closing it anyway.
+3. Plan: `rm` (or, when the scenario says archive, `mkdir -p docs/archive/` then `mv` into it)
+   whenever the scenario lists the plan for deletion — this
    fires regardless of which source found the file (linked or untracked). Then, **only if** the
    task description held a `Plan:` line, `flow-link-doc {task-id} Plan ""` to remove the now-stale
    link. A plan found only as an untracked file (Source B in step 1) never had a link to remove, so
    the second half never fires for it.
 4. `flow-sync push`
-5. Leave the worktree → `git worktree remove <path>` → `git checkout <base>` → `git pull` →
-   `git branch -d|-D <branch>` (`-D` only when the scenario said so, i.e. mergedness was confirmed
-   under squash) → `git push origin --delete <branch>` (if the remote branch exists)
+5. Leave the worktree → `git worktree remove <path>` → `git checkout "$BASE_LOCAL"` →
+   `git pull` → `git branch -d|-D <branch>` (`-D` only when the scenario said so, i.e. mergedness
+   was confirmed under squash) → `git push origin --delete <branch>` (only when the scenario listed
+   the remote branch — remote branch exists and its PR is not `OPEN`).
+   **Check out `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD and the
+   `git pull` right after it fails with "You are not currently on a branch".
 6. `flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"` — only when the scenario listed
    the ledger for purging (`MERGED`); a `CLOSED` or `OPEN` PR's ledger is left alone, per step 3
 
@@ -318,7 +432,7 @@ summary is obliged to show where the promise was not kept.
 ✅ Run flow-sync push at end
 ✅ Purge the PR's persistent review ledger when the scenario says so
 ✅ Delete local branch, remote branch, worktree when the scenario says so
-✅ Switch to default branch and pull after cleanup
+✅ Switch to the local default branch and pull after cleanup
 
 ### This Skill Does NOT:
 ❌ Git operations unrelated to cleanup (commit, push, merge, etc.) — including committing the plan file's own deletion/move; the branch cleanup step (or the user's next workflow) handles git state
@@ -330,13 +444,17 @@ summary is obliged to show where the promise was not kept.
 ❌ Close epics by default — they go in "Не буду"; the user closes them explicitly
 ❌ Invoke `gh` without a remote — local-only mode has no platform to check
 ❌ Search for branches beyond the current one
+❌ Delete anything when mergedness is unconfirmed — a verbal "да" and a branch with no commits of its own both refuse every deletion
+❌ Delete the remote branch while its PR is `OPEN` — that would close the PR
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
 
-**Scope note:** The safety check (step 2) stops when the branch's tree doesn't match the base's,
-regardless of PR state, and points to `superpowers:finishing-a-development-branch`. Cleanup
-(worktree, local branch, remote branch, ledger) lives inside the single scenario (step 3) and
-applies only when the branch matches the closed task; it is non-blocking.
+**Scope note:** The safety check (step 2) stops when no base can be determined, and when the
+branch belongs to the task but its tree doesn't match the base's — regardless of PR state — and
+points to `superpowers:finishing-a-development-branch`. Cleanup (worktree, local branch, remote
+branch, ledger) lives inside the single scenario (step 3) and applies only when the branch matches
+the closed task **and** mergedness is confirmed; the remote branch additionally requires that the
+PR is not `OPEN`. Cleanup is non-blocking.
 
 ## Red Flags - STOP
 
@@ -352,8 +470,15 @@ If you're thinking any of these, STOP and follow the workflow:
   Never substitute a verbal claim for the check. `git merge-tree` works with or without a remote;
   run it.
 - "The PR is OPEN, but the branch matches the task, so the bundled cleanup line covers deleting it
-  anyway" → Mergedness gates the whole run, not just the ledger. Not merged means STOP at step 2 —
-  no scenario gets printed at all.
+  anyway" → No. When the branch belongs to the task, an unmerged branch stops the run at step 2 and
+  no scenario is printed at all; and even a merged branch with an `OPEN` PR keeps its remote branch
+  and its ledger — deleting the branch on origin closes the PR.
+- "The branch isn't the task's, but the comparison says merged, so cleanup is fine" → Under
+  `BRANCH_MISMATCH` that result is discarded — the verdict is "not applicable". The header says
+  mergedness was not checked, the task still closes, and every deletion is a named refusal.
+- "The user confirmed the merge because git is too old — that's mergedness confirmed" → It is not.
+  That "да" permits closing, the plan, parents and the sync; it never permits deleting a branch, a
+  worktree or a remote branch.
 - "This failure isn't one the skill names by example, but 'errors don't block' covers it anyway" →
   It does, explicitly, for any git or tooling failure encountered in step 5 — that's stated outright,
   not something to infer by analogy from a shorter list.
@@ -375,7 +500,9 @@ If you're thinking any of these, STOP and follow the workflow:
 | "All children closed → the epic is done too" | Epics keep gaining children. They go in "Не буду"; the user closes them explicitly. |
 | "They said yes with a change, I'll just apply it" | Reprint the scenario and ask again. The second confirmation is the guarantee the correction was understood. |
 | "The user says it's already merged, take their word for it" | Nothing in the skill accepts a verbal assertion as evidence. `git merge-tree` works without a remote — run it. |
-| "PR is OPEN, but cleanup was already bundled into one yes" | Mergedness, not PR state, gates cleanup. An unmerged branch never reaches step 3 at all. |
+| "PR is OPEN, but cleanup was already bundled into one yes" | An unmerged branch of this task never reaches step 3 at all. And an `OPEN` PR keeps both its ledger and its remote branch — `git push origin --delete` would close the PR. |
+| "Branch isn't the task's, so let me at least check whether it's merged" | The check is not run in that case, the header says mergedness was not checked, and every deletion is a named refusal. |
+| "Git is too old, but the user said it's merged — good enough to delete the branch" | It is good enough to close, sync and handle the plan; never to delete anything. |
 | "flow-sync push is obvious, it doesn't need a line" | Obvious steps are exactly what the scenario exists to make explicit. It's in every scenario, always. |
 | "Use SQL directly for efficiency" | `bd close` has logging, events, and validation. Use it. |
 | "Branch doesn't match, clean up anyway" | Only clean up when the branch matches the task. A mismatched resource is a named refusal, not silent cleanup. |
@@ -603,8 +730,74 @@ scenario:
 Подтвердите, что работа влита в базовую ветку? (yes/no)
 ```
 
+Both answers are defined (step 2). **"yes"** → the run continues with mergedness **unconfirmed**:
+the task closes, parents and the plan are handled, `flow-sync push` runs, and every deletion row
+appears under "Не буду":
+
+```
+Ветка  feature/claude-tools-abc-login — влитость не подтверждена (нет git merge-tree, подтверждена на словах)
+
+Сделаю:
+  1. закрою задачу claude-tools-abc
+  2. синхронизирую beads (flow-sync push)
+
+Не буду:
+  3. удалять worktree, локальную и удалённую ветки — влитость не подтверждена, проверить нечем
+```
+
+**"no"** (or any non-affirmative answer) → identical to a failed safety check: the not-merged
+message, and exit without closing, deleting or syncing anything.
+
 Never fall back to `git branch --merged` here — it reports false after a squash merge, which is
 exactly the case this check exists for.
+
+### Branch Has No Commits of Its Own
+
+`flow:start` created `feature/claude-tools-abc-login`, but nothing was ever committed on it. The
+tree comparison passes — the branch really does add nothing to the base — while `OWN_COMMITS` is 0.
+That is "empty", not "merged", and the worktree may hold the only copy of the work:
+
+```
+Ветка  feature/claude-tools-abc-login — нет собственных коммитов относительно origin/master; влитость не подтверждена
+
+Сделаю:
+  1. закрою задачу claude-tools-abc
+  2. синхронизирую beads (flow-sync push)
+
+Не буду:
+  3. удалять worktree и ветки — у ветки нет своих коммитов, влитость не подтверждена
+```
+
+### Branch Does Not Belong to the Task
+
+`flow:done` was run from `master` (or from another task's branch). Mergedness is not checked at all
+— that branch's relationship to the base says nothing about this task — and every branch-gated
+resource that actually exists is refused by name:
+
+```
+Задача claude-tools-elf.59 — flow:done: сократить число подтверждений
+Ветка  master — не относится к задаче claude-tools-elf.59; влитость не проверялась
+
+Сделаю:
+  1. закрою задачу claude-tools-elf.59
+  2. синхронизирую beads (flow-sync push)
+
+Не буду:
+  3. трогать ветку и ledger — ветка не относится к задаче claude-tools-elf.59
+```
+
+### No Base Branch Can Be Determined
+
+The remote has no `HEAD` symref and neither `master` nor `main` exists (or, in local-only mode,
+neither local branch exists). The mergedness criterion is what guards every deletion, so the run
+does not start:
+
+```
+Не смог определить базовую ветку: ни HEAD-симссылки у remote `origin`, ни `master`, ни `main`.
+
+Без базы проверка влитости невозможна, а на ней держатся все удаления — ничего не делаю. Скажите,
+какая ветка базовая (или создайте `refs/remotes/origin/HEAD`), и запустите `/flow:done` снова.
+```
 
 ### Session Context and Branch Disagree About the Task
 
