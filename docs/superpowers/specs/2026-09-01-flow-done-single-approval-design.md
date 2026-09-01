@@ -139,7 +139,8 @@ no PR-related lines.
 `flow:start`/`flow:continue` in the same session, so the agent already knows the task; then the
 branch (after a `/clear`), matching the task id in the branch name against the `Git:` lines; then
 `flow-find-leaf` as the last resort. If context and branch disagree, both are shown and the user is
-asked **before** the scenario — the only case where a question about the task arises at all.
+asked **before** the scenario; the same applies when `flow-find-leaf` itself returns more than one
+candidate. These are the only two cases where a question about the task arises at all.
 
 ### D3. Scenario format and defaults (step 3)
 

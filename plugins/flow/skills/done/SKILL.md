@@ -100,10 +100,10 @@ is safe.
    bd graph --all --json | flow-find-leaf
    ```
    It prints in_progress leaf tasks as a numbered list grouped by assignee (mine → Unassigned →
-   others), numbered continuously across groups; empty output means none exist (see Edge Cases,
-   "No In-Progress Tasks"). **Exactly one line → resolves silently, same as the other two
-   sources.** Two or more → reproduce its output verbatim and ask which number, before printing
-   the scenario.
+   others, each group under its own header line), numbered continuously across groups; empty
+   output means none exist (see Edge Cases, "No In-Progress Tasks"). **Exactly one numbered
+   candidate → resolves silently, same as the other two sources.** Two or more → reproduce its
+   output verbatim and ask which number, before printing the scenario.
 
 Two situations may require a question about task identity, both **before** printing the scenario:
 context and branch disagreeing (show both, ask which), and `flow-find-leaf` returning more than one
@@ -609,9 +609,9 @@ exactly the case this check exists for.
 ### Session Context and Branch Disagree About the Task
 
 Session context says the task is `claude-tools-elf.6`, but `CURRENT_BRANCH`'s `Git:` line matches
-`claude-tools-elf.9` instead. Both are shown and the user is asked before anything else — the only
-question about task identity the skill may ask, because the rest of the run depends on getting it
-right:
+`claude-tools-elf.9` instead. Both are shown and the user is asked before anything else — one of the
+two permitted questions about task identity (the other being `flow-find-leaf` returning several
+candidates, step 1), because the rest of the run depends on getting it right:
 
 ```
 Контекст сессии указывает на claude-tools-elf.6, а текущая ветка соответствует задаче
