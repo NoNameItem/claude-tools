@@ -166,7 +166,7 @@ With superpowers, the typical chain looks like this:
 3. `/flow:decompose` reads `Design:`, opens the doc, creates subtasks
 4. `/superpowers:writing-plans` writes an **implementation plan** — step-by-step commits, files to change, tests to add
 5. `/flow:after-plan` finds it and saves `Plan:` to the task
-6. `/flow:done` reads `Plan:`, offers to delete or archive the file
+6. `/flow:done` includes plan deletion in its scenario — default is delete, part of the single approval
 
 If you edit task descriptions manually, keep these lines intact.
 
@@ -338,9 +338,9 @@ When to use: during tech debt review or after SonarCloud analysis flags new issu
 
 #### `/flow:done`
 
-Completes the current task. Checks git branch and PR status, closes the task, offers to clean up plan files (delete/archive/keep), recursively checks if parent tasks can be closed too, runs flow-sync push, and offers to delete the feature branch and worktree. If you're on a feature branch without a PR, stops and suggests creating one first.
+Collects branch, task, mergedness, plan, parents, and cleanup state, then presents one scenario showing everything it will and won't do. Asks once for approval, then executes: closes the task, handles plan cleanup (default: delete), closes eligible parent tasks, syncs, and cleans up branch and worktree. Works in repositories with or without remotes — mergedness is determined by comparing trees with `git merge-tree`, not by PR existence.
 
-When to use: when implementation is complete, PR is merged, and you're ready to close the task.
+When to use: when implementation is complete, work is merged or rebased to the base branch, and you're ready to close the task.
 
 ```bash
 /flow:done
