@@ -309,45 +309,48 @@ manual step is registering the pending publisher on PyPI for the new package nam
 
 ## Decomposition
 
-Each child issue runs the usual cycle: brainstorm → design doc → plan → implementation.
+Each child issue runs the usual cycle: brainstorm → design doc → plan → implementation. Issues are
+`claude-tools-144.1` … `claude-tools-144.14`; the blocking edges below are recorded in beads.
 
-**MVP**
+**MVP** — labelled `mvp`, priority P2.
 
-1. **Package skeleton and repository wiring.** The workspace member, the entry point, an empty
-   Textual application, the test directory and the import-boundary test — plus
+1. **Package skeleton and repository wiring** (`.1`, chore). The workspace member, the entry point,
+   an empty Textual application, the test directory and the import-boundary test — plus
    `sonar-project.properties` and the SonarCloud project, `AGENTS.md`, the release-please entry, the
    label and the commit-scope rule. Kept as one issue: a skeleton without green CI proves nothing,
    and the wiring has nothing to attach to without the skeleton. Blocks everything.
-2. **Domain model and projections.** Types, the `parent-child` forest, the dependency DAG, the
-   column projection, ghost ancestors, filters and search. Settles the concrete column list.
-   Depends on 1.
-3. **Data layer.** The port, the adapter choice (bd CLI / SQL / hybrid — the epic's deferred
+2. **Domain model and projections** (`.2`). Types, the `parent-child` forest, the dependency DAG,
+   the column projection, ghost ancestors, filters and search. Settles the concrete column list.
+   Blocked by 1.
+3. **Data layer** (`.3`). The port, the adapter choice (bd CLI / SQL / hybrid — the epic's deferred
    decision), the first working adapter, `FakeRepository`, contract tests. Includes checking the
-   read-only risk above. Depends on 1; takes its types from 2.
-4. **Source registry.** The source model, source-to-project resolution, deduplication, the config
-   file, the sources screen. Depends on 1 and 3.
-5. **Board screen.** Columns, trees, clickable ghosts, the navigation stack, `refresh` preserving
-   position. The largest MVP issue. Depends on 2, 3, 4.
-6. **Project switcher.** The overlay, search, per-project load state, remembering the last focused
-   project. Depends on 5.
-7. **Issue card.** The full view, the lazy `IssueDetail`, navigation along relations. Depends on 3
-   and 5.
+   read-only risk above. Blocked by 1; takes its types from 2.
+4. **Source registry** (`.4`). The source model, source-to-project resolution, deduplication, the
+   config file, the sources screen. Blocked by 1 and 3.
+5. **Board screen** (`.5`). Columns, trees, clickable ghosts, the navigation stack, `refresh`
+   preserving position. The largest MVP issue. Blocked by 2, 3 and 4.
+6. **Project switcher** (`.6`). The overlay, search, per-project load state, remembering the last
+   focused project. Blocked by 5.
+7. **Issue card** (`.7`). The full view, the lazy `IssueDetail`, navigation along relations. Blocked
+   by 3 and 5.
+8. **First release and publication** (`.8`, chore). `README.md`, registering the pending publisher
+   on PyPI, the first release-please and `publish.yml` run, and verifying that `beadboard`
+   installed from PyPI works on a clean machine. Blocked by 6 and 7 — the release waits for the
+   whole MVP, not only for the issue card.
 
-Order: 1 → (2, 3) → 4 → 5 → (6, 7).
+Order: 1 → (2, 3) → 4 → 5 → (6, 7) → 8.
 
-8. **First release and publication.** Runs once MVP is complete: `README.md`, registering the
-   pending publisher on PyPI, the first release-please and `publish.yml` run, and verifying that
-   `beadboard` installed from PyPI works on a clean machine. Depends on 7.
+**After MVP** — every issue below is blocked by 8.
 
-**After MVP**
-
-9. **Summary page.** Its own investigation: whether it is needed, what belongs on it, whether it is
-   the entry point. May end in a decision not to build it.
-10. **Auto-refresh.** Fingerprint polling, reloading only changed snapshots.
-11. **Increment C — creating issues.**
-12. **Increment A — state operations.**
-13. **Increment B — field editing.**
-14. **Increment D — relations and re-parenting.**
+9. **Summary page** (`.9`, P3). Decide whether a cross-project summary is needed, what belongs on
+    it, and whether it is the entry point. The outcome is either the page itself — built within
+    this issue — or a recorded decision not to build it.
+10. **Auto-refresh** (`.10`, P4). Fingerprint polling, reloading only changed snapshots, preserving
+    cursor position and expanded nodes.
+11. **Increment C — creating issues** (`.11`, P2).
+12. **Increment A — state operations** (`.12`, P2).
+13. **Increment B — field editing** (`.13`, P4).
+14. **Increment D — relations and re-parenting** (`.14`, P4).
 
 ## Open questions
 
