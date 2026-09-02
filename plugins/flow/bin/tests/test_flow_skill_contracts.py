@@ -456,20 +456,37 @@ def test_done_purges_the_ledger_only_once_the_pr_is_terminal() -> None:
     re-reading the review), which would strand a settled ledger forever, and a branch deleted while
     the PR is still open would license purging live memory, after which the next
     `flow:review-comments` re-imports every settled finding and can duplicate replies and follow-up
-    tasks. Step 1 therefore has to capture `.state`, and Step 8 has to gate on it."""
+    tasks.
+
+    Since the single-approval rewrite (`docs/superpowers/specs/2026-09-01-flow-done-single-approval-design.md`)
+    the skill no longer asks per action, so the earlier shape of this contract — a `CLOSED` PR must
+    ASK before purging — no longer has a question to attach to. What replaced it is strictly safer:
+    only `MERGED` purges, and a `CLOSED` PR's ledger is left alone by default rather than destroyed
+    on a "yes". A `CLOSED` PR is REOPENABLE, and a reopened one re-imports every settled finding
+    without its decisions or follow-up ids, so the property this test defends is unchanged: the
+    ledger of a PR whose review can still resume is never destroyed unattended.
+    """
     text = (FLOW_ROOT / "skills" / "done" / "SKILL.md").read_text()
-    assert "PR_STATE" in text, "Step 1 must capture the PR state the purge gate reads"
+    assert "PR_STATE" in text, "the skill must capture the PR state the purge gate reads"
     assert "skip the purge" in text, "the purge must be skipped while the PR is still open"
-    # A CLOSED PR is REOPENABLE, so purging it is an irreversible choice made on the user's behalf:
-    # a reopened PR re-imports every settled finding without its decisions or follow-up ids. Only
-    # `MERGED` may purge unattended; `CLOSED` must ask. A gate that lumps the two together (the
-    # first shape of this fix) silently destroys the ledger of a PR whose review can still resume.
-    step_8 = text.split("8. **Purge the PR's review ledger**", 1)[1].split("**Error handling:**", 1)[0]
-    assert "**`MERGED`** → purge" in step_8, "a merged PR purges unattended"
-    assert re.search(r"\*\*`CLOSED`\*\*\s*→\s*\*\*ask\*\*", step_8), "a closed PR must ask before purging"
-    assert "(yes/no)" in step_8, "the CLOSED prompt must be plain text"
-    assert "reopen" in step_8, "the prompt must say why: a closed PR can be reopened"
-    assert "never on branch deletion" in text or "never branch deletion" in text, (
+
+    # The purge is one item of the execution order; read from the command to the end of its item.
+    purge = section(text, 'flow-review-ledger purge --url "$PR_URL"', "\n\nBeads precede git")
+    assert "MERGED" in purge, "the purge item must name the state that licenses it"
+    assert re.search(r"`CLOSED`\s*(or|and)\s*`OPEN`", purge), (
+        "the purge item must say a CLOSED or OPEN PR's ledger is left alone"
+    )
+
+    # The defaults table is the operational half of the scenario: an agent acts on the row, so the
+    # row itself — not only the prose — has to carry the gate.
+    row = next(line for line in text.splitlines() if line.startswith("| Ledger |"))
+    assert "purge when `MERGED`" in row, "the Ledger row must purge only on MERGED"
+    assert "leave when `CLOSED` or `OPEN`" in row, "the Ledger row must leave CLOSED and OPEN alone"
+    assert "mergedness is confirmed" in row, (
+        "the irreversible purge must not be reachable while mergedness is unconfirmed"
+    )
+
+    assert "never branch deletion" in text or "never on branch deletion" in text, (
         "the gate must be stated as PR state, not branch deletion"
     )
     assert "only if step 6 actually deleted the local branch" not in text, "the branch-delete gate must be gone"

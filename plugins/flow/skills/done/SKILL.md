@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — collect branch, task, parent, plan, and cleanup state, present one scenario for a single approval, then close the task, clean up the plan, close eligible parents, and sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(rm:*) Bash(mv:*) Bash(mkdir:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(rm:*) Bash(mv:*) Bash(mkdir:*)
 ---
 
 # Flow: Done
@@ -376,8 +376,9 @@ point the same way: an `OPEN` PR keeps both its ledger and its branch.
 **The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on
 purpose after a merge — for history, or to re-read what happened in review — so its survival must
 not keep a settled PR's ledger alive forever; conversely a successful `git branch -d` says nothing
-about whether the PR is still taking review. Only `MERGED` purges; `CLOSED` and `OPEN` leave it,
-because a closed PR can still be reopened and a still-open one is still taking review.
+about whether the PR is still taking review. Only `MERGED` purges; on `CLOSED` and `OPEN`
+skip the purge, because a closed PR can still be reopened and a still-open one is still taking
+review.
 
 **When step 1 found `BRANCH_MISMATCH`:** the four branch-gated rows above never move to "Сделаю",
 regardless of what exists. Each one that actually exists (a worktree we happen to be sitting in, a
@@ -578,7 +579,7 @@ If you're thinking any of these, STOP and follow the workflow:
 
 ```
 User: "PR merged, flow:done"
-Agent: [Step 0: flow-require-bd OK]
+Agent: [Step 0: bd version guard passed]
        [Step 1: collects branch, mergedness via git merge-tree, task, parents, plan, worktree,
         remote branch, ledger — no output yet]
        [Step 2: branch matches the task and is merged into origin/master — continue silently]
