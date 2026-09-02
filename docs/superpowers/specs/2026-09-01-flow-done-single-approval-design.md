@@ -80,16 +80,53 @@ says so, prints the branch and base it could not compare, and asks the user to c
 is merged before building the scenario. **The answer is defined in both directions.** "Yes" leaves
 mergedness **unconfirmed**: it permits closing the task, closing eligible parents, handling the
 plan and running `flow-sync push` — none of which destroys anything — but never counts as the
-check, so every branch, worktree and remote deletion goes to "Не буду" with that reason. "No" (or
-any non-affirmative answer) behaves exactly like a failed safety check: report and exit, nothing
-closed, deleted or synced. It does not silently fall back to `git branch --merged`, which is wrong
-under squash merge precisely when it matters.
+check, so the four branch-gated rows (worktree, local branch, remote branch, ledger) go to
+"Не буду" with that reason. The plan is deliberately not among them: it belongs to the task, not to
+the branch. "No" (or any non-affirmative answer) behaves exactly like a failed safety check: report
+and exit, nothing closed, deleted or synced. It does not silently fall back to
+`git branch --merged`, which is wrong under squash merge precisely when it matters.
 
-The same "unconfirmed" verdict covers a second case the tree comparison alone cannot see: a branch
-that carries **no commits of its own** (`git rev-list --count <base>..<branch>` == 0) also satisfies
-`merge-tree == base^{tree}` — a `flow:start` branch whose work was never committed looks exactly
-like a merged one. That is not merged: the run continues (close, parents, plan, sync) but refuses
-every deletion, because the worktree may hold the only copy of the work.
+### What the tree comparison does *not* distinguish, and why it need not
+
+A branch that carries **no commits of its own** also satisfies `merge-tree == base^{tree}`: a
+`flow:start` branch whose work was never committed looks exactly like a merged one. It cannot be
+told apart, and it does not need to be.
+
+It cannot: such a branch's tip is the base's tip as of creation — an ancestor of the base — which
+is precisely the shape of a **fast-forward** merge and of a **merge-commit** merge. Same graph, so
+no query separates them. Verified on git 2.47 against throwaway repositories (2026-09-01):
+
+| Model | `merge-tree` vs base tree | `rev-list --count base..branch` |
+|---|---|---|
+| merge commit (`git merge --no-ff`) | equal | 0 |
+| fast-forward merge | equal | 0 |
+| squash merge | equal | 1 |
+| branch never committed on | equal | 0 |
+
+Keying anything on that count therefore misclassifies **every** merge-commit and fast-forward
+merge as "not merged" — i.e. the criterion would work only in squash-merging repositories, while
+this skill is explicitly general (see Out of scope: GitLab and other platforms).
+
+It need not: a ref reachable from the base can be deleted without losing a commit, by construction.
+Measured on the same models — `git rev-list --all --count` before and after `git branch -D` is
+unchanged in all three zero-count shapes. So the branch rows carry no risk here at all.
+
+The risk that motivated the question is real but lives elsewhere: **uncommitted content in the
+working copy**, which only the worktree row can destroy. Its signal is direct —
+`git status --porcelain --untracked-files=all` (`=all` because plain `git status` collapses a
+brand-new directory to `dir/`, hiding an untracked file inside it). Empty → nothing to lose;
+non-empty → the worktree row is refused by name, and with it the local branch, since HEAD is still
+there. `git worktree remove` refusing on a dirty tree is a second line of defence behind that
+check, not the design.
+
+The scenario's own plan file is subtracted from that measurement: it is named in the scenario,
+approved by the same answer, and deleted in D5's step 3 before the worktree is touched in step 5.
+Otherwise an untracked plan in a non-gitignored plan directory would dirty every working copy by
+itself and refuse the cleanup it belongs to. (In a repository that gitignores its plan directory
+the question does not arise — `git status --porcelain` does not report ignored files, while the
+plan search deliberately does, `--others` without `--exclude-standard`.) If the plan row is refused
+because several candidates matched, those candidates count as content again: nothing is deleting
+them.
 
 ## Design
 
@@ -129,6 +166,7 @@ D2.1, which updates remote-tracking refs and nothing else:
 | Parent chain | `bd show` upwards: id, type (`epic` or not), open-children count |
 | Plan file | `Plan:` line in the description, else `git ls-files --others --modified` over the plan directories |
 | Worktree | `flow-in-worktree` |
+| Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it |
 | Remote branch | `git branch -r` |
 | Ledger | present when a `PR_NUMBER` was obtained |
 
@@ -146,7 +184,7 @@ symbolic ref`), and the remote is not always named `origin` — hence the `git r
 `merge-tree` error out, and that comparison is what guards every deletion.
 
 Comparison base and checkout target are kept as separate values. `BASE_REF` (`origin/master`) goes
-to `merge-tree`, `rev-parse` and `rev-list`; `BASE_LOCAL` (`master`) is what step 5 checks out —
+to `merge-tree` and `rev-parse`; `BASE_LOCAL` (`master`) is what step 5 checks out —
 `git checkout origin/master` detaches HEAD and the `git pull` after it fails with "You are not
 currently on a branch".
 
@@ -161,7 +199,9 @@ no PR-related lines.
 **D2.4. No base branch is a stop, not an improvisation.** When neither the HEAD symref nor
 `master`/`main` resolves, the skill says which candidates it tried, changes nothing, and asks the
 user to name the base. Guessing one would silently re-point the criterion that gates every
-deletion.
+deletion. The comparison block is guarded by that resolution and does not run without a base, so
+the user sees that message alone — not two `fatal:` lines from `merge-tree` and `rev-parse` against
+an empty ref, printed before it.
 
 **D2.5. Parent open-children counts are taken as of the moment they will be acted on.** The chain is
 collected in step 1, but the task closes in step 5.1 and parents at 5.2 — so a count excludes the
@@ -207,29 +247,40 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 |---|---|---|
 | Close the task | do | always |
 | Plan file | **delete**; **none** when several candidates match | a plan was found |
-| Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed |
-| Local branch | delete, `-D` under squash | mergedness confirmed, branch matches the task |
+| Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
+| Local branch | delete, `-D` under squash | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR not `OPEN` |
-| Ledger | purge when `MERGED`; **leave** when `CLOSED` or `OPEN` | PR known, ledger exists, branch matches the task |
+| Ledger | purge when `MERGED`; **leave** when `CLOSED` or `OPEN` | PR known, ledger exists, branch matches the task, mergedness confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
 | Epic parent | **do not close** | same condition, type `epic` |
 | `flow-sync push` | do | always |
 
-Three gates guard the deletion rows, each with its own named refusal in "Не буду":
+Four gates guard the four branch-gated rows — worktree, local branch, remote branch, ledger — each
+with its own named refusal in "Не буду". The plan row is **not** among them: the plan belongs to
+the task, not to the branch, so it is handled whenever the task closes, including under an
+unconfirmed verdict. Wherever this document refuses "every deletion" for an unconfirmed verdict, it
+means those four rows.
 
 - **the branch belongs to the task** (`flow-current-task <id>`). Otherwise mergedness is not checked
   at all — that branch's relationship to the base says nothing about this task — the header states
   that plainly, and worktree, local branch, remote branch and ledger all move to "Не буду" with the
   reason "ветка не относится к задаче". The task itself still closes and beads still sync: the work
   may have landed by another route, and refusing would make the skill unusable from `master`.
-- **mergedness is confirmed** — an unconfirmed verdict (old git plus a verbal "да", or a branch with
-  no commits of its own) refuses every deletion just as firmly as "not merged" would have stopped
-  the run.
+- **mergedness is confirmed** — an unconfirmed verdict (old git plus a verbal "да") refuses those
+  four rows just as firmly as "not merged" would have stopped the run. Nothing else downgrades the
+  verdict: once the trees are equal, a branch with no commits of its own is confirmed like any
+  other, because its ref is reachable from the base and deleting it loses no commit.
 - **the PR is not `OPEN`**, for the remote branch alone. A branch tree can equal the base while its
   PR is still open (content landed via another PR, a cherry-pick, a rebase), and
   `git push origin --delete` then **closes that PR** — an irreversible external action the line
   "удалю ветку на origin" does not announce. The two rules about the same PR must point the same
   way: an `OPEN` PR keeps both its ledger and its branch.
+- **the working copy is clean**, for the worktree alone —
+  `git status --porcelain --untracked-files=all` empty. This is the one row that can destroy
+  content existing nowhere else, and this is the direct measurement of whether such content exists.
+  A dirty working copy also takes the local-branch row with it: HEAD is still in that worktree, so
+  `git branch -d` cannot run, and the scenario must not promise what execution will skip (D5's
+  coupling, stated up front instead of discovered).
 
 **Several plan candidates get no default deletion.** The plan row then lists every candidate and
 defaults to touching none — filed under "Не буду" with the list as the reason. Deleting the wrong
@@ -247,8 +298,10 @@ be omitted for an explicitly named reason. A skipped row now means a silent acti
 omission, not merely an unasked question.
 
 **D3.2. "Не буду" lists only deliberate refusals** — the epic; the ledger of a `CLOSED` or `OPEN`
-PR; the remote branch when its PR is `OPEN`; every branch-gated row when the branch does not belong
-to the task; every deletion when mergedness is unconfirmed; the plan when several candidates match.
+PR; the remote branch when its PR is `OPEN`; the four branch-gated rows (worktree, local branch,
+remote branch, ledger) when the branch does not belong to the task, and those same four when
+mergedness is unconfirmed — the plan in neither case, its fate follows the task; the worktree when
+the working copy is dirty, and the local branch with it; the plan when several candidates match.
 What is simply absent from the environment (no remote, no plan, not in a worktree) is not printed at
 all: the scenario states decisions, not an inventory.
 
