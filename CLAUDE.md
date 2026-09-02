@@ -68,7 +68,7 @@ claude-tools/
 │       │   ├── core/           # Config, loading, models
 │       │   └── modules/        # Statusline modules
 │       └── tests/
-└── docs/plans/                 # Design documents
+└── docs/superpowers/specs/     # Design documents (specs)
 ```
 
 ## Statuskit
