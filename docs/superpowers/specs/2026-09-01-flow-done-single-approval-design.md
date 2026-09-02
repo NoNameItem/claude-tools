@@ -323,7 +323,10 @@ plan file is not recoverable from the summary; the user names the right one as a
 
 **A tracked plan is not deleted by default**, clean or modified. A `Plan:` link can point at a committed
 file, and the `--others --modified` search surfaces committed files too once they are edited.
-`rm`/`mv` on any of them dirties the working tree in the same run that then calls
+A `Plan:` link may also point at a file already deleted from the working copy: `git ls-files` reads
+the index, so it still reports tracked, but there is nothing to delete and only the stale link is
+removed (D5's step 3). `rm`/`mv` on a tracked file that is present dirties the working tree in the
+same run that then calls
 `git worktree remove` — which refuses on a dirty tree, since the skill never passes `--force` — and
 removing it for real would cost a PR, a merge and another `flow:done` run for content that is in
 history either way. Modification does not weaken that: a modified tracked plan is just as committed,

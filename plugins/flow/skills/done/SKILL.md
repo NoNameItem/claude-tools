@@ -259,15 +259,23 @@ closed could never qualify, and the container-parent row would never fire at all
   tracked ones; which of them may actually be deleted is settled by the tracked check below, not by
   the search.
 
-**A tracked plan is never deleted.** A `Plan:` link (Source A) may point at a committed file, and
-Source B surfaces committed files too once they are modified. The question is only whether git
-tracks the file:
+**A tracked plan is not deleted by default.** A `Plan:` link (Source A) may point at a committed
+file, and Source B surfaces committed files too once they are modified. Two facts decide the row —
+whether git tracks the file, and whether it is still on disk:
 
 ```bash
 git ls-files --error-unmatch -- "$PLAN" >/dev/null 2>&1 && PLAN_TRACKED=yes
+test -e "$PLAN" || PLAN_GONE=yes   # tracked in the index, already deleted from the working copy
 ```
 
-`PLAN_TRACKED=yes` → the plan stays in git, and its row goes to "Не буду" (step 3). Two reasons,
+**`git ls-files` reads the index, not the disk:** a file whose deletion is not committed yet still
+reports as tracked. `PLAN_GONE=yes` is therefore not the tracked case at all — there is nothing to
+`rm`, and the stale `Plan:` link **is** removed, exactly as the edge case "Plan File Linked but
+Already Gone" says. Never print "план закоммичен" over a file that is not there, and never leave the
+task pointing at a file that no longer exists.
+
+`PLAN_TRACKED=yes` with the file present → the plan stays in git, and its row goes to "Не буду"
+(step 3). Two reasons,
 both concrete: `rm`/`mv` on a tracked file dirties the working tree immediately before
 `git worktree remove`, which then refuses (this skill never passes `--force`); and the content is in
 history anyway, so a real removal buys nothing and still costs its own commit, PR, merge and
@@ -534,7 +542,9 @@ Fixed order — beads before git, ledger last:
    whenever the scenario lists the plan for deletion — this
    fires regardless of which source found the file (linked or untracked). A plan git tracks — clean
    or modified — was filed under "Не буду" in step 3 and is left alone, unless a correction moved
-   that row into "Сделаю"; then it is deleted like any other approved item. Then, **only if** the
+   that row into "Сделаю"; then it is deleted like any other approved item. A plan already gone from
+   the working copy has nothing to delete, tracked or not — only its link is cleared. Then,
+   **only if** the
    task description held a `Plan:` line, `flow-link-doc {task-id} Plan ""` to remove the now-stale
    link. A plan found only as an untracked file (Source B in step 1) never had a link to remove, so
    the second half never fires for it.
@@ -1110,7 +1120,8 @@ The plan is tracked by git — whether it is clean or carries local edits. It is
 a real removal would cost a PR, a merge and another `flow:done` for a file whose content is in
 history regardless. Local modifications change nothing: a modified tracked plan is just as
 committed, and `rm` leaves the same `D` entry. The `Plan:` link stays too: it still points at a file
-that exists. Only untracked plans are deleted on the default path — a correction can still move
+that exists — a plan already deleted from the working copy is not this case, and its stale link is
+removed as usual. Only untracked plans are deleted on the default path — a correction can still move
 this row into "Сделаю", at the cost of a dirty tree and, with it, the worktree row.
 
 ### `bd close` Failed
@@ -1123,12 +1134,19 @@ the ledger are unaffected — they depend on the branch, not on the task:
 ```
 Выполнено:
   1. ✗ задача claude-tools-elf.59 не закрыта: bd close failed (database is locked)
-  2. — родитель claude-tools-elf не закрыт (задача не закрылась)
-  3. — план не тронут (задача не закрылась)
-  4. ✓ beads синхронизированы
-  5. ✓ worktree удалён, локальная ветка удалена
+  2. — план не тронут (задача не закрылась)
+  3. ✓ worktree удалён
+  4. ✓ локальная ветка удалена
+  5. ✓ ветка на origin удалена
   6. ✓ ledger PR #138 удалён
+  7. ✓ beads синхронизированы
+  8. — родитель claude-tools-elf не закрыт (задача не закрылась)
 ```
+
+The numbering follows the **scenario**, not step 5's execution order: the parent was line 8 of the
+approved block, so it keeps that number here even though execution reached it second. One summary
+line per scenario item, never two merged into one — that is what lets the user check promised
+against done on the same number.
 
 ### `flow-sync push` Reported a Problem on stderr
 
@@ -1162,7 +1180,9 @@ claude-tools-elf.9 (по её Git: записи).
 
 The `Plan:` line points to a file that no longer exists on disk. The deletion is a no-op — there is
 nothing to `rm` — but the stale `Plan:` link is still removed, and this appears in the summary
-rather than as a question:
+rather than as a question. This holds whether or not git still tracks the file: `git ls-files` reads
+the index, so an uncommitted deletion still reports as tracked, and that is **not** the
+"план закоммичен" refusal (step 1).
 
 ```
 Выполнено:
