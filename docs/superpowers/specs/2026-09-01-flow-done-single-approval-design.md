@@ -124,9 +124,9 @@ approved by the same answer, and deleted in D5's step 3 before the worktree is t
 Otherwise an untracked plan in a non-gitignored plan directory would dirty every working copy by
 itself and refuse the cleanup it belongs to. (In a repository that gitignores its plan directory
 the question does not arise — `git status --porcelain` does not report ignored files, while the
-plan search deliberately does, `--others` without `--exclude-standard`.) If the plan row is refused
-because several candidates matched, those candidates count as content again: nothing is deleting
-them.
+plan search deliberately does, `--others` without `--exclude-standard`.) If the plan row is refused —
+several candidates matched, or git tracks the file — those files count as content again: nothing is
+deleting them.
 
 ## Design
 
@@ -278,7 +278,7 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do | always |
-| Plan file | **delete** when untracked or modified; **leave in git** when tracked and clean; **none** when several candidates match | a plan was found |
+| Plan file | **delete** when untracked; **leave in git** when tracked, clean or modified; **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
 | Local branch | delete, `-D` under squash | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR state known and not `OPEN` |
@@ -319,12 +319,15 @@ means those four rows.
 defaults to touching none — filed under "Не буду" with the list as the reason. Deleting the wrong
 plan file is not recoverable from the summary; the user names the right one as a correction.
 
-**A tracked, clean plan is never deleted.** The untracked/modified search cannot produce one, but a
-`Plan:` link can point at a committed file. `rm`/`mv` on it dirties the working tree in the same run
-that then calls `git worktree remove` — which refuses on a dirty tree, since the skill never passes
-`--force` — and removing it for real would cost a PR, a merge and another `flow:done` run for one
-file. Its row goes to "Не буду" with that reason; `rm`/`mv` applies only to untracked or modified
-plans.
+**A tracked plan is never deleted**, clean or modified. A `Plan:` link can point at a committed
+file, and the `--others --modified` search surfaces committed files too once they are edited.
+`rm`/`mv` on any of them dirties the working tree in the same run that then calls
+`git worktree remove` — which refuses on a dirty tree, since the skill never passes `--force` — and
+removing it for real would cost a PR, a merge and another `flow:done` run for content that is in
+history either way. Modification does not weaken that: a modified tracked plan is just as committed,
+and `rm` leaves the same `D` entry. Its row goes to "Не буду" with that reason; `rm`/`mv` applies
+**only to untracked** plan files. A refused plan then counts as working-copy content again for the
+worktree row, like any other uncommitted change.
 
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
 This is the **default, not a prohibition**: the user knows whether their epic is done, so a
@@ -345,7 +348,7 @@ or its state is `UNKNOWN`; the four branch-gated rows (worktree, local branch,
 remote branch, ledger) when the branch does not belong to the task, and those same four when
 mergedness is unconfirmed — the plan in neither case, its fate follows the task; the worktree when
 the working copy is dirty, and the local branch with it; the plan when several candidates match, and
-the plan when it is tracked and clean.
+the plan when git tracks it.
 What is simply absent from the environment (no remote, no plan, not in a worktree) is not printed at
 all: the scenario states decisions, not an inventory.
 
@@ -371,8 +374,8 @@ Fixed order — beads first, git second:
 
 1. `bd close <task-id>`
 2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3)
-3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — untracked or modified
-   plans only; a tracked, clean one stays in git (D3)
+3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — **untracked** plans only;
+   a tracked one, clean or modified, stays in git (D3)
 4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
    dolt commit/pull/push failed, reporting the problem only on stderr
    (`plugins/flow/AGENTS.md`, "flow-sync is best-effort"), so a clean exit does not by itself

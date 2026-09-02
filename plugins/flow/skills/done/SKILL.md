@@ -183,8 +183,10 @@ Seven rules go with it:
   plan — do not count. They are named in the scenario and covered by the same single approval, and
   step 5 deletes the plan before it touches the worktree. Without this, an untracked plan in a
   non-gitignored `docs/plans/` would make the working copy dirty all by itself and refuse the
-  cleanup it is part of. When the plan row is *refused* (several candidates), those candidates
-  count as dirt again — nothing is going to delete them.
+  cleanup it is part of. When the plan row is *refused* — several candidates matched, or git tracks
+  the file — those files count as dirt again, because nothing is going to delete them. A modified
+  tracked plan is exactly that case: it is refused, so it keeps the worktree row out of "Сделаю"
+  like any other uncommitted change.
 
 `git merge-tree --write-tree` requires git >= 2.38. If it is unavailable, say so, print the branch
 and the base you could not compare, and ask the user to confirm the work is merged — step 2 defines
@@ -242,25 +244,25 @@ closed could never qualify, and the container-parent row would never fire at all
   git ls-files --others --modified -- 'docs/plans/' 'docs/superpowers/plans/'
   ```
   Do **not** add `--exclude-standard`. In repos that gitignore the plans directory, untracked plan
-  files would otherwise be hidden. Safety here comes from git itself: `--others --modified`
-  surfaces only untracked or unstaged files, never clean committed ones — so committed plans are
-  never offered for deletion, whichever directory they live in.
+  files would otherwise be hidden. `--others --modified` surfaces untracked files and modified
+  tracked ones; which of them may actually be deleted is settled by the tracked check below, not by
+  the search.
 
-**A tracked, clean plan is never deleted.** Source B cannot produce one by construction, but Source
-A can: a `Plan:` link may point at a file that is committed and unmodified. Check it before
-deciding the row:
+**A tracked plan is never deleted.** A `Plan:` link (Source A) may point at a committed file, and
+Source B surfaces committed files too once they are modified. The question is only whether git
+tracks the file:
 
 ```bash
 git ls-files --error-unmatch -- "$PLAN" >/dev/null 2>&1 && PLAN_TRACKED=yes
-git status --porcelain -- "$PLAN"   # empty for a tracked file with no local changes
 ```
 
-`PLAN_TRACKED=yes` **and** an empty `git status` → the plan stays in git, and its row goes to
-"Не буду" (step 3). Two reasons, both concrete: `rm`/`mv` on a committed file dirties the working
-tree immediately before `git worktree remove`, which then refuses (this skill never passes
-`--force`); and removing it for real would need its own commit, PR, merge and `flow:done` run — a
-whole cycle to delete one plan file. `rm`/`mv` therefore applies only to plans that are **untracked
-or modified**.
+`PLAN_TRACKED=yes` → the plan stays in git, and its row goes to "Не буду" (step 3). Two reasons,
+both concrete: `rm`/`mv` on a tracked file dirties the working tree immediately before
+`git worktree remove`, which then refuses (this skill never passes `--force`); and the content is in
+history anyway, so a real removal buys nothing and still costs its own commit, PR, merge and
+`flow:done` run. Local modifications change none of that — a modified tracked plan is just as
+committed, and deleting it leaves the same `D` entry in `git status`. `rm`/`mv` therefore applies
+**only to untracked** plan files.
 
 Filter results by filename containing "impl" or "plan" (case-insensitive) and semantically
 matching the task title. No candidates: nothing to carry forward. **More than one candidate:**
@@ -375,7 +377,7 @@ check that did not run:
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do | always |
-| Plan file | delete when untracked or modified; **leave in git** when tracked and clean; **none** when several candidates match | a plan was found |
+| Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, the branch matches the task, mergedness is confirmed, and `WORKTREE_DIRTY` is empty |
 | Local branch | delete, `-D` under squash | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, and `PR_STATE` is known and not `OPEN` (`UNKNOWN` refuses like `OPEN`) |
@@ -394,13 +396,14 @@ empty, for the worktree. **The plan row is not among them** — see below.
 **The plan's fate does not depend on mergedness.** The plan belongs to the task, not to the
 branch: it is deleted or archived whenever the task closes, including under an unconfirmed
 verdict. Two things change its default, neither of them mergedness: several candidates matched
-(below), or the file is tracked and clean (step 1). So wherever this skill refuses "every deletion"
+(below), or the file is tracked (step 1). So wherever this skill refuses "every deletion"
 for an unconfirmed verdict, it means those four rows and not the plan.
 
-**A tracked, clean plan stays in git.** Its row goes to "Не буду" with the reason `план
-закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`/`mv` would dirty the tree right
-before `git worktree remove` refuses on it, and a real removal costs a whole PR → merge →
-`flow:done` cycle for one file. An untracked or modified plan is deleted (or archived) as before.
+**A tracked plan stays in git**, whether or not it has local modifications. Its row goes to
+"Не буду" with the reason `план закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`/`mv`
+would dirty the tree right before `git worktree remove` refuses on it, and a real removal costs a
+whole PR → merge → `flow:done` cycle for a file whose content is in history either way. Only an
+untracked plan is deleted (or archived).
 
 **Branch rows are never gated on the commit graph beyond the tree comparison.** Once
 `MERGED_TREE == BASE_TREE`, the branch's tip is reachable from the base, so deleting the local or
@@ -480,8 +483,8 @@ remote branch, ledger) when `BRANCH_MISMATCH` was found, each with the reason "�
 задаче {task-id}"; those same four rows (worktree, local branch, remote branch, ledger) when
 mergedness is unconfirmed — git < 2.38 answered "да" — with that reason, the plan **not** being one
 of them; the worktree when the working copy is dirty, and with it the local branch, since we are
-still standing on that branch; the plan when several candidates match; and the plan when it is
-tracked and clean. What is simply
+still standing on that branch; the plan when several candidates match; and the plan when git tracks
+it. What is simply
 absent from the environment (no remote, no plan, not in a worktree) is not printed at all: the
 scenario states decisions, not an inventory.
 
@@ -513,8 +516,8 @@ Fixed order — beads before git, ledger last:
 3. Plan: `rm` (or, when the scenario says archive, `mkdir -p docs/archive/` then `mv` into it)
    whenever the scenario lists the plan for deletion — this
    fires regardless of which source found the file (linked or untracked), and **only** for a plan
-   that is untracked or modified: a tracked, clean plan was filed under "Не буду" in step 3 and is
-   left in git. Then, **only if** the
+   git does not track: a tracked one — clean or modified — was filed under "Не буду" in step 3 and
+   is left in git. Then, **only if** the
    task description held a `Plan:` line, `flow-link-doc {task-id} Plan ""` to remove the now-stale
    link. A plan found only as an untracked file (Source B in step 1) never had a link to remove, so
    the second half never fires for it.
@@ -619,7 +622,7 @@ as silent absences.
 ❌ Delete the worktree, the local branch, the remote branch or the ledger when mergedness is unconfirmed — a verbal "да" on a too-old git is not the check; the plan is not on that list, it follows the task
 ❌ Remove a worktree holding uncommitted or untracked content — that is `git status --porcelain`, never a commit count
 ❌ Delete the remote branch while its PR is `OPEN`, or while its state is unknown because the `gh` lookup failed — either could close a live PR
-❌ Delete a plan file that is tracked and clean — it stays in git; only untracked or modified plans are removed
+❌ Delete a plan file that git tracks, modified or not — it stays in git; only untracked plans are removed
 ❌ Close container parents or touch the plan after a failed `bd close` — both assume the task is closed
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
@@ -630,8 +633,8 @@ points to `superpowers:finishing-a-development-branch`. Cleanup (worktree, local
 branch, ledger) lives inside the single scenario (step 3) and applies only when the branch matches
 the closed task **and** mergedness is confirmed; the remote branch additionally requires that the
 PR's state is known and not `OPEN`, and the worktree that its working copy is clean. The plan is
-outside this set — it belongs to the task and is handled whenever the task closes, unless the file
-is tracked and clean, in which case it stays in git. Cleanup is non-blocking; the one thing that
+outside this set — it belongs to the task and is handled whenever the task closes, unless git tracks
+the file, in which case it stays in git. Cleanup is non-blocking; the one thing that
 does block is a failed `bd close`, which skips the parent and plan items that assume it succeeded.
 
 ## Red Flags - STOP
@@ -681,9 +684,9 @@ If you're thinking any of these, STOP and follow the workflow:
   first, not the repository default. A subtask branch merged into its feature branch is merged;
   comparing it against the default branch would refuse every stacked task until the whole feature
   lands.
-- "The plan is committed, but the scenario deletes plans — `rm` it" → Not a tracked, clean one. It
-  stays in git: the deletion would dirty the tree just before `git worktree remove`, and removing it
-  for real needs its own PR.
+- "The plan is committed, but the scenario deletes plans — `rm` it" → Not one git tracks, modified
+  or not. It stays in git: the deletion would dirty the tree just before `git worktree remove`, and
+  removing it for real needs its own PR for content that is already in history.
 - "`bd close` failed, but errors don't block — close the parent anyway" → The parent qualifies only
   because its last open child just closed. If it didn't, items 2 and 3 are skipped, each with its
   own summary line. Git cleanup still runs.
@@ -709,7 +712,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "flow-sync push returned 0, print ✓" | It is best-effort: 0 on a failed push too, with the reason on stderr. The summary line reports the stderr, not the exit code. |
 | "gh failed, treat it as no PR" | A failed lookup is `UNKNOWN`, not `NO_PR`. It refuses the remote-branch deletion exactly as `OPEN` does. |
 | "The repo's default branch is the base" | Only when nothing better resolves. The PR's own target comes first — that is what makes stacked subtask branches closable. |
-| "A plan is a plan, delete it" | A tracked, clean plan stays in git. `rm` on it dirties the tree right before `git worktree remove` and needs its own PR to land. |
+| "A plan is a plan, delete it" | A tracked plan stays in git — modified counts as tracked. `rm` on it dirties the tree right before `git worktree remove` and needs its own PR to land. |
 | "bd close failed, but the rest is independent" | Parents and the plan are not: both assume the task closed. They are skipped with named summary lines; git cleanup is unaffected. |
 | "Use SQL directly for efficiency" | `bd close` has logging, events, and validation. Use it. |
 | "Branch doesn't match, clean up anyway" | Only clean up when the branch matches the task. A mismatched resource is a named refusal, not silent cleanup. |
@@ -761,6 +764,7 @@ Agent: [Step 5: executes 1-7 in fixed order — beads, plan, sync, git, ledger]
 
 **Correct because:**
 - All state was collected silently before anything was printed
+- The plan is deleted because git does not track it — a tracked one would be a refusal instead
 - One block covers every action, including the deliberate epic refusal
 - The single question was asked once and answered once
 - The summary reports the actual outcome of every scenario item
@@ -1076,7 +1080,7 @@ empty base.
 
 ### The Plan File Is Committed
 
-The `Plan:` link points at a file that is tracked and has no local changes. It is **not** deleted:
+The plan is tracked by git — whether it is clean or carries local edits. It is **not** deleted:
 
 ```
 Не буду:
@@ -1084,10 +1088,12 @@ The `Plan:` link points at a file that is tracked and has no local changes. It i
      удалять его надо отдельным PR, а не здесь
 ```
 
-`rm` on a committed file would dirty the working tree in the same run that then calls
+`rm` on a tracked file would dirty the working tree in the same run that then calls
 `git worktree remove` — which refuses on a dirty tree, since this skill never passes `--force` — and
-a real removal would cost a PR, a merge and another `flow:done` for one file. The `Plan:` link stays
-too: it still points at a file that exists. Untracked and modified plans are deleted as usual.
+a real removal would cost a PR, a merge and another `flow:done` for a file whose content is in
+history regardless. Local modifications change nothing: a modified tracked plan is just as
+committed, and `rm` leaves the same `D` entry. The `Plan:` link stays too: it still points at a file
+that exists. Only untracked plans are deleted.
 
 ### `bd close` Failed
 
