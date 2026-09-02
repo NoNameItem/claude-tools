@@ -412,7 +412,16 @@ working copy, so acceptance is a manual checklist run after the release:
    appears under "Сделаю", and after the run both the task and the parent are closed while the epic
    above them is not. This is the one automatic action the design introduces on a task other than
    the one being closed, and cases 1–5 never exercise it: their parent was an epic every time.
+9. branch that reached the base through a **merge commit** rather than a squash (equally: a
+   fast-forward) → mergedness confirmed from the trees alone, and the worktree, both branches and
+   the ledger appear under "Сделаю" rather than as refusals. No squash-merging fixture can see this
+   path: there the branch's own commits are ancestors of the base, so any criterion that counts
+   them calls a merged branch unmerged and the cleanup half of the run dies while cases 1–8 all
+   still pass — which is exactly how the `rev-list --count` defect survived the first eight.
 
 Cases 1–3 and 5–6 run on this repository on the next task after the release; case 4 on the user's
 local-only repository; case 7 on the next branch whose content lands through another PR; case 8 on
-the next task that sits under a non-epic parent.
+the next task that sits under a non-epic parent. Case 9 has no home among these: this repository
+squash-merges only (CONTRIBUTING.md, "Merge Strategy"), so it runs on the first non-squash
+repository `flow:done` is used in, and until one turns up the only evidence for that path is the
+plumbing measurement in "What the tree comparison does *not* distinguish" above.
