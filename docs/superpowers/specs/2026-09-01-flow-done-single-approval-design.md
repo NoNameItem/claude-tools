@@ -159,9 +159,9 @@ D2.1, which updates remote-tracking refs and nothing else:
 |---|---|
 | Current branch | `git branch --show-current` |
 | Repository mode | `git remote` — empty → local-only, else remote mode |
-| Base branch | first that resolves: `git symbolic-ref --quiet refs/remotes/<remote>/HEAD`, then `<remote>/master`, then `<remote>/main`; local-only: first existing of local `master`, `main`. Yields two values — `BASE_REF` (`origin/master`, the comparison base) and `BASE_LOCAL` (`master`, the checkout target). None resolves → the run stops (D2.4) |
+| Base branch | first that resolves: the PR/MR's own target (`gh pr view --json baseRefName`), then `git symbolic-ref --quiet refs/remotes/<remote>/HEAD` (restored with `git remote set-head <remote> --auto` when missing), then the branch's upstream when it is not the branch itself, then `<remote>/master`, then `<remote>/main`; local-only: first existing of local `master`, `main`. Yields two values — `BASE_REF` (`origin/master`, the comparison base) and `BASE_LOCAL` (`master`, the checkout target). None resolves → the run stops (D2.4) |
 | **Mergedness** | `git merge-tree --write-tree <base> <branch>` == `git rev-parse <base>^{tree}` |
-| PR state | `gh pr view --json state,url,number` — remote mode only |
+| PR state | `gh pr view --json state,url,number,baseRefName` — remote mode only; a failed lookup is `UNKNOWN`, not "no PR" (D2.6) |
 | Task | session context → branch → `flow-find-leaf` |
 | Parent chain | `bd show` upwards: id, type (`epic` or not), open-children count |
 | Plan file | `Plan:` line in the description, else `git ls-files --others --modified` over the plan directories |
@@ -172,16 +172,38 @@ D2.1, which updates remote-tracking refs and nothing else:
 
 Three decisions differ from today's behaviour:
 
-**D2.1. The base comes from the remote, not from the local ref.** Comparing against a local
-`master` that lags (no `git pull` since the PR merged) makes the criterion report "not merged" and
-the safety check evict the user for no reason. In remote mode: `git fetch` first, base is
-`<remote>/<default>`. In local-only mode the local branch is the only option.
+**D2.1. The base is the PR's own target first, and comes from the remote, not from the local ref.**
+Comparing against a local `master` that lags (no `git pull` since the PR merged) makes the criterion
+report "not merged" and the safety check evict the user for no reason. In remote mode: `git fetch`
+first, then the chain below. In local-only mode the local branch is the only option.
 
-`git symbolic-ref refs/remotes/origin/HEAD` is only the **first candidate**: that ref is frequently
-absent or not a symbolic ref (this repository: `fatal: ref refs/remotes/origin/HEAD is not a
-symbolic ref`), and the remote is not always named `origin` — hence the `git remote` lookup and the
-`master` → `main` fallback chain. **If nothing resolves, the run stops** (D2.4); an empty base makes
-`merge-tree` error out, and that comparison is what guards every deletion.
+The chain, first hit wins:
+
+1. **the PR/MR's own target** — `gh pr view --json baseRefName` (GitLab:
+   `glab mr view <iid> --output json --jq .target_branch`);
+2. `git symbolic-ref --quiet refs/remotes/<remote>/HEAD`, restoring the symref with
+   `git remote set-head <remote> --auto` when it is missing;
+3. the branch's own upstream (`git rev-parse --abbrev-ref @{upstream}`), **only** when it names
+   something other than the current branch — normally it names the branch itself, and a branch
+   compared with itself is "merged" unconditionally;
+4. `<remote>/master`, then `<remote>/main`.
+
+Candidates 1–3 are validated against `refs/remotes/<remote>/<name>` before use, so a target that no
+longer exists falls through instead of making `merge-tree` fatal.
+
+**The PR target leads because of stacked branches.** A subtask branch is opened against its
+**feature** branch; measured against the repository's default branch it reads "not merged" until the
+whole feature lands, so the safety check would refuse to close exactly the tasks that get closed
+most often — a regression against the old skill, which only checked that a PR existed. The PR target
+is the precise answer to "where was this work supposed to land": the feature branch for a subtask,
+the default branch for a feature.
+
+`git symbolic-ref refs/remotes/origin/HEAD` is only the **second candidate**: that ref is frequently
+absent or not a symbolic ref (this repository has none at all:
+`fatal: ref refs/remotes/origin/HEAD is not a symbolic ref`), the default branch may carry **any**
+name, and the remote is not always named `origin` — hence the `git remote` lookup, the `set-head`
+restore, and the `master` → `main` tail. **If nothing resolves, the run stops** (D2.4); an empty base
+makes `merge-tree` error out, and that comparison is what guards every deletion.
 
 Comparison base and checkout target are kept as separate values. `BASE_REF` (`origin/master`) goes
 to `merge-tree` and `rev-parse`; `BASE_LOCAL` (`master`) is what step 5 checks out —
@@ -196,9 +218,19 @@ ledger. Side effect: the skill becomes usable in a repository without remotes (F
 as "no PR", i.e. as grounds for exit. Now the absence of a platform simply means the scenario has
 no PR-related lines.
 
-**D2.4. No base branch is a stop, not an improvisation.** When neither the HEAD symref nor
-`master`/`main` resolves, the skill says which candidates it tried, changes nothing, and asks the
-user to name the base. Guessing one would silently re-point the criterion that gates every
+**D2.6. A failed `gh` lookup is `UNKNOWN`, never "no PR".** `gh pr view` exits non-zero both when no
+PR exists and when the call fails (auth, rate limit, a TLS timeout), so `|| echo NO_PR` reads a
+network blip as "no PR" — and an unset `PR_STATE` then trivially satisfies the remote-branch row's
+"not `OPEN`", licensing a `git push <remote> --delete` that closes a live PR. The two are separated
+by a second call: `gh pr list` exits 0 and prints `[]` when the platform was reached and this branch
+has no PR, non-zero when the lookup itself failed. `UNKNOWN` refuses the remote-branch row exactly as
+`OPEN` does (D3), and falls through to D2.1's next base candidate rather than yielding an empty base.
+The ledger needs no extra rule: it purges on `MERGED` alone.
+
+**D2.4. No base branch is a stop, not an improvisation.** When no candidate of D2.1's chain
+resolves — no PR target, no HEAD symref even after `set-head --auto`, no distinct upstream, no
+`master`/`main` — the skill says which candidates it tried, changes nothing, and asks the user to
+name the base. Guessing one would silently re-point the criterion that gates every
 deletion. The comparison block is guarded by that resolution and does not run without a base, so
 the user sees that message alone — not two `fatal:` lines from `merge-tree` and `rev-parse` against
 an empty ref, printed before it.
@@ -246,13 +278,13 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do | always |
-| Plan file | **delete**; **none** when several candidates match | a plan was found |
+| Plan file | **delete** when untracked or modified; **leave in git** when tracked and clean; **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
 | Local branch | delete, `-D` under squash | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
-| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR not `OPEN` |
+| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR state known and not `OPEN` |
 | Ledger | purge when `MERGED`; **leave** when `CLOSED` or `OPEN` | PR known, ledger exists, branch matches the task, mergedness confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
-| Epic parent | **do not close** | same condition, type `epic` |
+| Epic parent | **do not close** — default, overridable by a correction | same condition, type `epic` |
 | `flow-sync push` | do | always |
 
 Four gates guard the four branch-gated rows — worktree, local branch, remote branch, ledger — each
@@ -270,11 +302,12 @@ means those four rows.
   four rows just as firmly as "not merged" would have stopped the run. Nothing else downgrades the
   verdict: once the trees are equal, a branch with no commits of its own is confirmed like any
   other, because its ref is reachable from the base and deleting it loses no commit.
-- **the PR is not `OPEN`**, for the remote branch alone. A branch tree can equal the base while its
-  PR is still open (content landed via another PR, a cherry-pick, a rebase), and
-  `git push origin --delete` then **closes that PR** — an irreversible external action the line
-  "удалю ветку на origin" does not announce. The two rules about the same PR must point the same
-  way: an `OPEN` PR keeps both its ledger and its branch.
+- **the PR's state is known and not `OPEN`**, for the remote branch alone. A branch tree can equal
+  the base while its PR is still open (content landed via another PR, a cherry-pick, a rebase), and
+  `git push <remote> --delete` then **closes that PR** — an irreversible external action the line
+  "удалю ветку на origin" does not announce. `UNKNOWN` (D2.6) refuses the row the same way and for
+  the same reason: what cannot be ruled out may be a live PR. The two rules about the same PR must
+  point the same way: an `OPEN` PR keeps both its ledger and its branch.
 - **the working copy is clean**, for the worktree alone —
   `git status --porcelain --untracked-files=all` empty. This is the one row that can destroy
   content existing nowhere else, and this is the direct measurement of whether such content exists.
@@ -286,8 +319,17 @@ means those four rows.
 defaults to touching none — filed under "Не буду" with the list as the reason. Deleting the wrong
 plan file is not recoverable from the summary; the user names the right one as a correction.
 
+**A tracked, clean plan is never deleted.** The untracked/modified search cannot produce one, but a
+`Plan:` link can point at a committed file. `rm`/`mv` on it dirties the working tree in the same run
+that then calls `git worktree remove` — which refuses on a dirty tree, since the skill never passes
+`--force` — and removing it for real would cost a PR, a merge and another `flow:done` run for one
+file. Its row goes to "Не буду" with that reason; `rm`/`mv` applies only to untracked or modified
+plans.
+
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
-The cost of the opposite error is on record: `claude-tools-5dl.9` was closed while `.9.2` and `.9.3`
+This is the **default, not a prohibition**: the user knows whether their epic is done, so a
+correction ("закрой и эпик") moves that row into "Сделаю" and D5's step 2 then closes it. What the
+default prevents is the skill closing an epic **on its own**. The cost of that error is on record: `claude-tools-5dl.9` was closed while `.9.2` and `.9.3`
 were still open, and `bd graph` then dropped the edge to the epic and surfaced both children as
 separate roots — the damage was noticed only through a visibly broken task tree.
 
@@ -297,11 +339,13 @@ Two rules replace the tests this text-only approach cannot have:
 be omitted for an explicitly named reason. A skipped row now means a silent action or a silent
 omission, not merely an unasked question.
 
-**D3.2. "Не буду" lists only deliberate refusals** — the epic; the ledger of a `CLOSED` or `OPEN`
-PR; the remote branch when its PR is `OPEN`; the four branch-gated rows (worktree, local branch,
+**D3.2. "Не буду" lists only deliberate refusals** — the epic, unless a correction moved it into
+"Сделаю"; the ledger of a `CLOSED`, `OPEN` or `UNKNOWN` PR; the remote branch when its PR is `OPEN`
+or its state is `UNKNOWN`; the four branch-gated rows (worktree, local branch,
 remote branch, ledger) when the branch does not belong to the task, and those same four when
 mergedness is unconfirmed — the plan in neither case, its fate follows the task; the worktree when
-the working copy is dirty, and the local branch with it; the plan when several candidates match.
+the working copy is dirty, and the local branch with it; the plan when several candidates match, and
+the plan when it is tracked and clean.
 What is simply absent from the environment (no remote, no plan, not in a worktree) is not printed at
 all: the scenario states decisions, not an inventory.
 
@@ -326,12 +370,20 @@ confirmation exists to guarantee the correction was understood — a diff does n
 Fixed order — beads first, git second:
 
 1. `bd close <task-id>`
-2. container parents, bottom-up
-3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""`
-4. `flow-sync push`
-5. leave the worktree → `git worktree remove` → `git checkout <BASE_LOCAL>` (the local branch
-   name — checking out `BASE_REF`/`origin/master` detaches HEAD and breaks the pull) → `git pull` →
-   `git branch -d|-D` → `git push origin --delete` (only when the scenario listed it)
+2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3)
+3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — untracked or modified
+   plans only; a tracked, clean one stays in git (D3)
+4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
+   dolt commit/pull/push failed, reporting the problem only on stderr
+   (`plugins/flow/AGENTS.md`, "flow-sync is best-effort"), so a clean exit does not by itself
+   confirm the sync succeeded. The summary line reports what stderr said, not the exit code. Still
+   non-blocking.
+5. `cd` to the main repo root (leaving the worktree — removing the one you stand in makes every
+   later command fail) → `git worktree remove` → `git checkout <BASE_LOCAL>` (the local branch
+   name — checking out `BASE_REF`/`origin/master` detaches HEAD and breaks the pull) → `git pull`
+   **in remote mode only** (a local-only repository has nothing to pull from) →
+   `git branch -d|-D` → `git push <remote> --delete` (only when the scenario listed it; `<remote>`
+   is the detected remote, not a hard-coded `origin`)
 6. `flow-review-ledger purge`
 7. summary
 
@@ -342,6 +394,14 @@ after branch deletion is confirmed: `purge` is irreversible and keeps no backup.
 Execution errors do not block. Each failed item produces a line in the summary and the rest
 continues. One coupling: if `git worktree remove` fails, deleting the local branch is skipped (we
 are still on it) — also a summary line.
+
+**One carve-out: a failed item 1 stops the beads half.** Items 2 and 3 both act on the premise that
+the task is closed — a container parent qualifies only because its last open child just closed, and
+the plan is deleted because the work it planned is done. If `bd close` failed, that premise is false,
+so items 2 and 3 are **skipped**, each with its own summary line naming the reason. Git cleanup
+(item 5) and the ledger (item 6) are unaffected: they turn on the branch's state, not the task's, and
+stay independent and non-blocking. Item 4 still runs — syncing whatever beads state exists costs
+nothing.
 
 The summary lists the scenario items with their actual outcome and names divergences explicitly:
 
@@ -371,7 +431,8 @@ throughout and would otherwise contradict the body of the skill.
 ## Out of scope
 
 - **GitLab (`glab`)** — `claude-tools-elf.50`. Generalising the criterion to git removes the false
-  exit on GitLab repositories, but no MR-specific lines appear.
+  exit on GitLab repositories, and D2.1 names the `glab` equivalent of the base lookup, but no
+  MR-specific scenario lines (state, ledger, remote-branch gating) appear.
 - **Tasks with several `Git:` branches** — `claude-tools-elf.51`. The scenario is built for the
   current branch, as today.
 - **Configurable defaults** (e.g. always keep plans) — the `delete` default plus a one-phrase
@@ -418,10 +479,19 @@ working copy, so acceptance is a manual checklist run after the release:
    path: there the branch's own commits are ancestors of the base, so any criterion that counts
    them calls a merged branch unmerged and the cleanup half of the run dies while cases 1–8 all
    still pass — which is exactly how the `rev-list --count` defect survived the first eight.
+10. **stacked branch**: a subtask branch whose PR targeted its **feature** branch, merged there
+    while the feature branch itself is still open and unmerged into the repository's default branch
+    → the base is the PR's target (D2.1), mergedness is confirmed against it, the full cleanup
+    scenario is offered, and `git checkout <BASE_LOCAL>` afterwards lands on the feature branch, not
+    on `master`. Measured against the repository base instead, this branch reads "not merged" and
+    the run stops at step 2 — refusing the single most common shape of task this skill closes.
 
 Cases 1–3 and 5–6 run on this repository on the next task after the release; case 4 on the user's
 local-only repository; case 7 on the next branch whose content lands through another PR; case 8 on
-the next task that sits under a non-epic parent. Case 9 has no home among these: this repository
-squash-merges only (CONTRIBUTING.md, "Merge Strategy"), so it runs on the first non-squash
-repository `flow:done` is used in, and until one turns up the only evidence for that path is the
-plumbing measurement in "What the tree comparison does *not* distinguish" above.
+the next task that sits under a non-epic parent; case 10 on the next decomposed task whose subtask
+branch targets its parent's feature branch — this repository does stack that way, so it needs no
+special fixture. Case 9 has no home among these: this repository squash-merges only
+(CONTRIBUTING.md, "Merge Strategy"), so it runs on the first non-squash repository `flow:done` is
+used in, and until one turns up the only evidence for that path is the plumbing measurement in
+"What the tree comparison does *not* distinguish" above. Every case above is assigned exactly
+once.
