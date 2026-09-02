@@ -188,8 +188,10 @@ The chain, first hit wins:
    compared with itself is "merged" unconditionally;
 4. `<remote>/master`, then `<remote>/main`.
 
-Candidates 1–3 are validated against `refs/remotes/<remote>/<name>` before use, so a target that no
-longer exists falls through instead of making `merge-tree` fatal.
+Each candidate is validated against `refs/remotes/<remote>/<name>` **where it is chosen**, and one
+the remote does not have falls through to the **next candidate** — not to `master`/`main` and not to
+`NO_BASE`. Validating once at the end of the chain would make a deleted PR target, or a dangling HEAD
+symref, stop the run in any repository whose default branch is named something else.
 
 **The PR target leads because of stacked branches.** A subtask branch is opened against its
 **feature** branch; measured against the repository's default branch it reads "not merged" until the
@@ -319,7 +321,7 @@ means those four rows.
 defaults to touching none — filed under "Не буду" with the list as the reason. Deleting the wrong
 plan file is not recoverable from the summary; the user names the right one as a correction.
 
-**A tracked plan is never deleted**, clean or modified. A `Plan:` link can point at a committed
+**A tracked plan is not deleted by default**, clean or modified. A `Plan:` link can point at a committed
 file, and the `--others --modified` search surfaces committed files too once they are edited.
 `rm`/`mv` on any of them dirties the working tree in the same run that then calls
 `git worktree remove` — which refuses on a dirty tree, since the skill never passes `--force` — and
@@ -327,7 +329,9 @@ removing it for real would cost a PR, a merge and another `flow:done` run for co
 history either way. Modification does not weaken that: a modified tracked plan is just as committed,
 and `rm` leaves the same `D` entry. Its row goes to "Не буду" with that reason; `rm`/`mv` applies
 **only to untracked** plan files. A refused plan then counts as working-copy content again for the
-worktree row, like any other uncommitted change.
+worktree row, like any other uncommitted change. Like the epic, this is a **default, not a
+prohibition**: a correction moves the row into "Сделаю" and D5's step 3 then deletes the file, at the
+cost of a dirty tree and, through it, the worktree row.
 
 Epics are excluded from automatic closing because they are long-lived and keep gaining children.
 This is the **default, not a prohibition**: the user knows whether their epic is done, so a
@@ -374,8 +378,9 @@ Fixed order — beads first, git second:
 
 1. `bd close <task-id>`
 2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3)
-3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — **untracked** plans only;
-   a tracked one, clean or modified, stays in git (D3)
+3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — **untracked** plans by
+   default; a tracked one, clean or modified, stays in git unless a correction moved its row into
+   "Сделаю" (D3)
 4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
    dolt commit/pull/push failed, reporting the problem only on stderr
    (`plugins/flow/AGENTS.md`, "flow-sync is best-effort"), so a clean exit does not by itself

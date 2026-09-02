@@ -101,22 +101,27 @@ if [ -n "$(git remote)" ]; then
   git fetch --quiet
   REMOTE=$(git remote | head -1)   # usually origin — never assume the name
   BASE_LOCAL=""
+  # every candidate must name a branch the remote actually has; one that does not
+  # falls through to the NEXT candidate, never straight to master/main
   # 1. the PR/MR's own target branch — where this work was supposed to land
-  if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "null" ]; then BASE_LOCAL="$PR_BASE"; fi
+  if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "null" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/$PR_BASE"; then
+    BASE_LOCAL="$PR_BASE"
+  fi
   # 2. the remote's HEAD symref, restored from the server when it is missing
   if [ -z "$BASE_LOCAL" ]; then
     git symbolic-ref --quiet "refs/remotes/$REMOTE/HEAD" >/dev/null || git remote set-head "$REMOTE" --auto >/dev/null 2>&1
     symref=$(git symbolic-ref --quiet "refs/remotes/$REMOTE/HEAD")
-    BASE_LOCAL="${symref#refs/remotes/$REMOTE/}"
+    candidate="${symref#refs/remotes/$REMOTE/}"
+    if [ -n "$candidate" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/$candidate"; then BASE_LOCAL="$candidate"; fi
   fi
   # 3. this branch's own upstream — but never the branch itself
   if [ -z "$BASE_LOCAL" ]; then
     upstream=$(git rev-parse --abbrev-ref "@{upstream}" 2>/dev/null)
-    upstream="${upstream#$REMOTE/}"
-    if [ -n "$upstream" ] && [ "$upstream" != "$CURRENT_BRANCH" ]; then BASE_LOCAL="$upstream"; fi
+    candidate="${upstream#$REMOTE/}"
+    if [ -n "$candidate" ] && [ "$candidate" != "$CURRENT_BRANCH" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/$candidate"; then
+      BASE_LOCAL="$candidate"
+    fi
   fi
-  # candidates 1-3 name a branch; drop one the remote does not actually have
-  if [ -n "$BASE_LOCAL" ] && ! git show-ref --verify --quiet "refs/remotes/$REMOTE/$BASE_LOCAL"; then BASE_LOCAL=""; fi
   # 4. the conventional names, in order
   if [ -z "$BASE_LOCAL" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/master"; then BASE_LOCAL=master; fi
   if [ -z "$BASE_LOCAL" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/main"; then BASE_LOCAL=main; fi
@@ -140,7 +145,13 @@ else
 fi
 ```
 
-Seven rules go with it:
+Eight rules go with it:
+- **Each candidate is validated where it is chosen, and a bad one falls through to the next.** A
+  candidate is accepted only if `refs/remotes/$REMOTE/<name>` exists; otherwise the chain continues
+  with the following candidate, never straight to `master`/`main` and never to `NO_BASE`. A target
+  branch deleted after its own merge, or a dangling HEAD symref, must not shadow a perfectly good
+  later candidate — in a repository whose default branch is neither `master` nor `main`, validating
+  once at the end of the chain turns either of those into `NO_BASE` and stops the run for nothing.
 - **The base comes from the remote, after a fetch** — never from a local `master`/`main` that may
   lag behind (no `git pull` since the PR merged). A stale local base makes the criterion lie and
   the safety check evict the user for no reason.
@@ -403,7 +414,13 @@ for an unconfirmed verdict, it means those four rows and not the plan.
 "Не буду" with the reason `план закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`/`mv`
 would dirty the tree right before `git worktree remove` refuses on it, and a real removal costs a
 whole PR → merge → `flow:done` cycle for a file whose content is in history either way. Only an
-untracked plan is deleted (or archived).
+untracked plan is deleted (or archived) by default.
+
+Like the epic, this is a **default, not a prohibition**: a correction can move the row into
+"Сделаю", and then step 5 deletes the file — the user may well intend to commit that deletion
+themselves. Say what it costs when reprinting the scenario: the working copy goes dirty, so the
+worktree row (and the local branch with it) will very likely end up as a failure line in the
+summary.
 
 **Branch rows are never gated on the commit graph beyond the tree comparison.** Once
 `MERGED_TREE == BASE_TREE`, the branch's tip is reachable from the base, so deleting the local or
@@ -515,9 +532,9 @@ Fixed order — beads before git, ledger last:
    meantime, leave the parent open and say so in the summary rather than closing it anyway.
 3. Plan: `rm` (or, when the scenario says archive, `mkdir -p docs/archive/` then `mv` into it)
    whenever the scenario lists the plan for deletion — this
-   fires regardless of which source found the file (linked or untracked), and **only** for a plan
-   git does not track: a tracked one — clean or modified — was filed under "Не буду" in step 3 and
-   is left in git. Then, **only if** the
+   fires regardless of which source found the file (linked or untracked). A plan git tracks — clean
+   or modified — was filed under "Не буду" in step 3 and is left alone, unless a correction moved
+   that row into "Сделаю"; then it is deleted like any other approved item. Then, **only if** the
    task description held a `Plan:` line, `flow-link-doc {task-id} Plan ""` to remove the now-stale
    link. A plan found only as an untracked file (Source B in step 1) never had a link to remove, so
    the second half never fires for it.
@@ -622,7 +639,7 @@ as silent absences.
 ❌ Delete the worktree, the local branch, the remote branch or the ledger when mergedness is unconfirmed — a verbal "да" on a too-old git is not the check; the plan is not on that list, it follows the task
 ❌ Remove a worktree holding uncommitted or untracked content — that is `git status --porcelain`, never a commit count
 ❌ Delete the remote branch while its PR is `OPEN`, or while its state is unknown because the `gh` lookup failed — either could close a live PR
-❌ Delete a plan file that git tracks, modified or not — it stays in git; only untracked plans are removed
+❌ Delete a plan file that git tracks, modified or not, by default — it stays in git unless a correction says otherwise; only untracked plans are removed on the default path
 ❌ Close container parents or touch the plan after a failed `bd close` — both assume the task is closed
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
@@ -1093,7 +1110,8 @@ The plan is tracked by git — whether it is clean or carries local edits. It is
 a real removal would cost a PR, a merge and another `flow:done` for a file whose content is in
 history regardless. Local modifications change nothing: a modified tracked plan is just as
 committed, and `rm` leaves the same `D` entry. The `Plan:` link stays too: it still points at a file
-that exists. Only untracked plans are deleted.
+that exists. Only untracked plans are deleted on the default path — a correction can still move
+this row into "Сделаю", at the cost of a dirty tree and, with it, the worktree row.
 
 ### `bd close` Failed
 
@@ -1105,7 +1123,7 @@ the ledger are unaffected — they depend on the branch, not on the task:
 ```
 Выполнено:
   1. ✗ задача claude-tools-elf.59 не закрыта: bd close failed (database is locked)
-  2. — родитель claude-tools-elf.59 не закрыт (задача не закрылась)
+  2. — родитель claude-tools-elf не закрыт (задача не закрылась)
   3. — план не тронут (задача не закрылась)
   4. ✓ beads синхронизированы
   5. ✓ worktree удалён, локальная ветка удалена
