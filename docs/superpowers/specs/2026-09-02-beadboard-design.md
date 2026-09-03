@@ -236,6 +236,29 @@ to click: there is always a way back out of the graph.
 Screens do not reach into sources, do not compute projections, and do not know about adapters. A
 screen receives a finished layout and emits intents ("open issue", "switch project", "refresh").
 
+## Design artefacts for screens
+
+Screens are designed in two stages, and the artefact differs by stage.
+
+**Structure first, in text or on a canvas.** Before any widget exists the questions are how many
+columns fit, where ghosts sit, how dense a card is, and what a narrow terminal drops. ASCII
+wireframes in the issue's own design doc answer them; when several variants need comparing side by
+side, a Claude Design canvas does. An artboard imitating a terminal is bound by explicit
+constraints, because HTML affords what a terminal cannot: a fixed cell grid, a monospace face,
+colours only from Textual's theme tokens, borders only from Textual's border types, no radii,
+shadows or gradients, and text only at integer cell positions. Without them a canvas produces a
+layout nobody can build — and unlike a web mockup, the mismatch is not a wrong token but an
+impossible one.
+
+**Acceptance runs against real renders.** `App.save_screenshot()` writes an SVG of the actual
+Textual render. Those SVGs, committed next to the spec, are what a finished screen is checked
+against, in both themes. For a terminal UI the real renderer is cheaper to run than to imitate, and
+the artefact is code, which cannot quietly drift from the implementation.
+
+A screen issue's design therefore links its SVGs (or its canvas) from its *Mockups* section, and
+its translation contract names Textual widgets — `Header`, `Footer`, `Tree`, `DataTable`, `Static`,
+`Rule` — saying which widget renders each block, and for each hand-built block why no widget fit.
+
 ## Repository layer
 
 ### The port
