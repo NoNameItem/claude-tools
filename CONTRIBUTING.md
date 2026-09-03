@@ -403,8 +403,11 @@ classifiers = [
 4. `packages/<name>/sonar-project.properties`: rule mutes only, each with a written reason.
 5. GitHub: create the PR label `<name>` (`gh label create <name> --color <hex>`).
 6. `.coderabbit.yaml`: a `path_instructions` entry for `packages/<name>/**`.
-7. `CLAUDE.md` and this file: the commit-scope and label tables, plus the project trees.
-8. PyPI: register a pending publisher (owner `NoNameItem`, repository `claude-tools`, workflow
+7. `packages/<name>/AGENTS.md`: an architecture summary plus review guidelines for the subtree,
+   modelled on `packages/statuskit/AGENTS.md`. Add `packages/<name>/` to the root `AGENTS.md`'s
+   enumeration of nested `AGENTS.md` files.
+8. `CLAUDE.md` and this file: the commit-scope and label tables, plus the project trees.
+9. PyPI: register a pending publisher (owner `NoNameItem`, repository `claude-tools`, workflow
    `publish.yml`, environment `pypi`) — it reserves the name before the first release.
 
 Nothing else needs touching: the CI matrices, the lint/test/Sonar jobs, `sonar.projectKey`, `ty`,
