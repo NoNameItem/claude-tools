@@ -180,6 +180,11 @@ Comparing against a local `master` that lags (no `git pull` since the PR merged)
 report "not merged" and the safety check evict the user for no reason. In remote mode: `git fetch`
 first, then the chain below. In local-only mode the local branch is the only option.
 
+The remote is resolved **before** the fetch and named in it — `git fetch "$REMOTE"`. A bare
+`git fetch` takes the current branch's upstream remote and falls back to `origin`, so a repository
+whose only remote carries another name fetches nothing, or fails, and every comparison below then
+runs on stale remote-tracking refs. The same rule governs the `git pull` in D5's item 5.
+
 The chain, first hit wins:
 
 1. **the PR/MR's own target** — `gh pr view --json baseRefName` (GitLab:
@@ -261,6 +266,15 @@ not applicable and every worktree/local branch/remote branch/ledger row is refus
 a base would have been, so neither of the two things a base is for (establishing mergedness; giving
 step 5 somewhere to check out) applies, and the base question would be pointless. Only once the
 branch is confirmed to match the task does `NO_BASE` reach this question at all.
+
+The answer is bound to a variable and referenced quoted, but **that is legibility, not the
+untrusted-data rule.** The value is typed by the person who started the run, in their own terminal,
+against their own repository — there is no second party, and an answer containing `$(...)` is that
+person running a command on themselves. The rule that governs reviewer text, PR-author-controlled
+branch names and `bd` content elsewhere in flow does not extend here; a review finding that calls
+this an injection site is declining the threat model, not the quoting. What the quoting buys is the
+ordinary case: a branch legitimately named with a `$` expands to nothing and the run reports the
+wrong ref as missing.
 
 When no candidate of D2.1's chain
 resolves — no PR target, no HEAD symref even after `set-head --auto`, no distinct upstream, no
@@ -489,6 +503,13 @@ Fixed order — beads first, git second:
 
 1. `bd close <task-id>` — only when the scenario lists it under "Сделаю" (D2.7/D3): the default,
    unless the task itself still has `in_progress` children and no correction moved the row back.
+   Re-reads `bd show <task-id>` immediately before the close, for the same reason item 2 re-reads
+   each parent and item 5 re-validates the branch state: the children were counted before the
+   approval, and another session can start one while the scenario waits. A child that is
+   `in_progress` now leaves the task open, and so does a re-read that fails — an unverifiable
+   premise is refused rather than assumed — with the summary naming which of the two occurred.
+   A correction that knowingly moved the row into "Сделаю" over known `in_progress` children still
+   stands; the re-read then only reports.
    When left in "Не буду", items 2 and 3 do not run either, each with its own "не тронуто" line —
    the same downstream effect as a failed close below, but a decision made before execution starts,
    not a failure.
@@ -536,8 +557,11 @@ Fixed order — beads first, git second:
    Only then: `cd` to the main repo root (leaving the worktree — removing the one you stand in makes
    every later command fail) → `git worktree remove` (skipped above if the local tip moved) →
    `git checkout <BASE_LOCAL>` (the local branch name — checking out `BASE_REF`/`origin/master`
-   detaches HEAD and breaks the pull). `git pull` (**in remote mode only** — a local-only repository
-   has nothing to pull from) and `git branch -D` (skipped above if the local tip moved; otherwise only
+   detaches HEAD and breaks the pull). `git pull --ff-only "$REMOTE" "$BASE_LOCAL"` (**in remote mode
+   only** — a local-only repository has nothing to pull from; the operands are named because
+   `BASE_LOCAL` is chosen from what the *remote* has and its local tracking configuration is never
+   inspected, and `--ff-only` turns a mismatch into a refusal instead of a merge commit on a branch
+   this run has no business writing to) and `git branch -D` (skipped above if the local tip moved; otherwise only
    when the scenario listed the local branch) **run only when the checkout succeeded** — see the
    second carve-out below. The remote branch, when the scenario listed it and the re-validation block
    above did not skip it, is deleted with a **lease** rather than a bare `--delete`, so the check and
@@ -560,10 +584,13 @@ Execution errors do not block. Each failed item produces a line in the summary a
 continues. One coupling: if `git worktree remove` fails, deleting the local branch is skipped (we
 are still on it) — also a summary line.
 
-**Two carve-outs. The first: a failed item 1 stops the beads half.** Items 2 and 3 both act on the
-premise that the task is closed — a container parent qualifies only because its last open child just
-closed, and the plan is deleted because the work it planned is done. If `bd close` failed, that
-premise is false, so items 2 and 3 are **skipped**, each with its own summary line naming the reason.
+**Two carve-outs. The first: item 1 not closing the task stops the beads half.** Items 2 and 3 both
+act on the premise that the task is closed — a container parent qualifies only because its last open
+child just closed, and the plan is deleted because the work it planned is done. Item 1 can leave that
+premise false in three ways, and all three **skip** items 2 and 3, each with its own summary line
+naming which one it was: the pre-close re-read showed a child that is `in_progress` now; the re-read
+itself failed, so eligibility could not be verified; or `bd close` ran and failed. The first two
+refuse the close outright — the command is not issued — rather than closing and reporting afterwards.
 Git cleanup (item 5) and the ledger (item 6) are unaffected: they turn on the branch's state, not the
 task's, and stay independent and non-blocking. Item 4 still runs — syncing whatever beads state
 exists costs nothing. Same downstream skip, different cause, when the scenario itself left item 1 in

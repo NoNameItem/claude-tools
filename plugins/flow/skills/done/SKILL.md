@@ -23,7 +23,7 @@ correction reprints the whole scenario rather than being applied silently.
 | 2. **Safety check: is the work merged?** | `PR_STATE == MERGED` confirms outright; else compare trees with `git merge-tree` | First match wins: `MERGED` confirms; else equal trees confirm silently; else `OPEN` stops, pointing to `finishing-a-development-branch`; else ask |
 | 3. **Scenario and the single question** | Print Сделаю / Не буду and ask once | Everything the run will do is in this one block |
 | 4. **Handle the answer** | Approve / correct / refuse | Correction reprints the full scenario and asks again |
-| 5. **Execute** | Fixed order: beads, plan, sync, git, ledger | Errors don't block, except a failed `bd close`, which skips parents and the plan; each becomes a summary line |
+| 5. **Execute** | Fixed order: beads, plan, sync, git, ledger | Errors don't block, except item 1 not closing the task — a child reopened, the re-read failed, or `bd close` failed — which skips parents and the plan; each becomes a summary line |
 | 6. **Summary** | Report the actual outcome per item | Names every divergence from the approved scenario |
 
 **Key behavior:** One scenario covers everything — parent closing, the plan's fate, branch/worktree/remote deletion, the ledger. Epics are not closed unless the user asks. `flow-sync push` always runs. Mergedness is decided by git — tree equality against the PR's own target branch — except when `PR_STATE == MERGED`, which settles it outright even over a stale tree mismatch; a live `OPEN` PR still stops the run.
@@ -97,9 +97,13 @@ stale local ref. Keep them apart.
 
 ```bash
 if [ -n "$(git remote)" ]; then
-  # remote mode: fetch first, compare against the remote base
-  git fetch --quiet
+  # remote mode: resolve the remote, fetch it, then compare against the remote base
   REMOTE=$(git remote | head -1)   # usually origin — never assume the name
+  # resolve REMOTE *before* fetching: a bare `git fetch` takes the current branch's
+  # upstream remote and falls back to `origin`, so in a repository whose only remote
+  # is named otherwise it fetches nothing, or fails outright — and every comparison
+  # below then runs on stale remote-tracking refs
+  git fetch --quiet "$REMOTE"
   BASE_LOCAL=""
   # every candidate must name a branch the remote actually has; one that does not
   # falls through to the NEXT candidate, never straight to master/main
@@ -427,6 +431,14 @@ Validate the answer before using it — it must resolve to a real ref:
 variable and reference it **quoted** everywhere; never paste it into a command unquoted — a branch
 name may contain shell metacharacters.
 
+**This is legibility, not the untrusted-data rule.** The answer is typed by the person who started
+this run, in their own terminal, against their own repository — there is no second party, and an
+answer containing `$(...)` is that person running a command on themselves, exactly as if they had
+typed it into the shell directly. The rule that governs reviewer text, PR-author-controlled branch
+names and `bd` content elsewhere in flow does not extend here, and a reviewer reading this section
+should not file it as an injection site. What quoting buys is the ordinary case: a branch legitimately
+named with a `$` in it expands to nothing and the run reports the wrong ref as missing.
+
 - **Valid answer** → set the base from it exactly as step 1 would have: `BASE_LOCAL` is the answer,
   and `BASE_REF` is `"$REMOTE/$BASE_LOCAL"` in remote mode, `"$BASE_LOCAL"` in local-only mode.
   Then resume step 1's mergedness comparison from `git merge-tree --write-tree` using this base, and
@@ -702,7 +714,17 @@ show that the correction was understood.
 Fixed order — beads before git, ledger last:
 
 1. `bd close {task-id}` — **only when the scenario lists it under "Сделаю"** (the default, unless
-   the task itself still has `in_progress` children and no correction moved the row back). When the
+   the task itself still has `in_progress` children and no correction moved the row back). **Re-read
+   `bd show {task-id}` immediately before the close**, exactly as item 2 does for each parent and
+   item 5 does for the branch state: the children the scenario counted were counted before the
+   approval, and another session can start one while the scenario waits. If the re-read shows a child
+   that is `in_progress` now, **do not run `bd close`** — leave the task open and say so in the
+   summary rather than closing it anyway. **A re-read that fails refuses the close the same way**: an
+   unverifiable premise is refused, not assumed. The summary names which of the two happened, and
+   items 2 and 3 are skipped along with it, since both act on the premise that this task closed.
+   A correction that explicitly moved the row into "Сделаю" despite known `in_progress` children is
+   the user overriding this rule knowingly, and it still stands: the re-read then only reports.
+   When the
    scenario left it in "Не буду", items 2 and 3 do not run either — a parent cannot close on a
    child that was never closed, and the plan is not deleted for work that is not done — and each
    gets its own "не тронуто" summary line, distinct from the failure case below.
@@ -777,7 +799,8 @@ Fixed order — beads before git, ledger last:
    `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD and the `git pull`
    right after it fails with "You are not currently on a branch".
 
-   `git pull` (**remote mode only** — a local-only repository has no upstream to pull from) and
+   `git pull --ff-only "$REMOTE" "$BASE_LOCAL"` (**remote mode only** — a local-only repository has
+   no upstream to pull from) and
    `git branch -D <branch>` (only when the scenario listed the local branch — mergedness confirmed,
    the branch matches the task, and re-validation did not skip it; and always `-D`, never `-d`: tree
    equality already proves the tip adds nothing to the base, and `-d` would refuse right after a
@@ -785,6 +808,13 @@ Fixed order — beads before git, ledger last:
    block", the same shape as item 1's `bd close` exception and detailed with it below. This is
    independent of the re-validation block above: either rule alone can skip the local branch, and
    both are checked.
+
+   **The pull names its operands and refuses to merge.** Step 1 chooses `BASE_LOCAL` by checking
+   that the *remote* has that branch; it never looks at the local branch's tracking configuration.
+   So a local branch of that name with no upstream, or one tracking a different remote, makes a bare
+   `git pull` either fail or merge some other ref into the base branch — a persistent branch this
+   run has no business writing to. Naming `"$REMOTE" "$BASE_LOCAL"` removes the guesswork, and
+   `--ff-only` turns the remaining bad case into a refusal instead of a merge commit.
 
    Delete the remote branch — when the scenario listed it and re-validation above did not skip
    it — with a **lease** rather than a bare `--delete`, so the check and the deletion are one atomic
@@ -811,11 +841,12 @@ the next item — this holds for **any** git or tooling failure encountered here
 skill happens to name, so no failure needs to match a specific description to count as
 non-blocking.
 
-**The first exception: a failed `bd close` (item 1) stops the beads half.** Items 2 and 3 both act on
+**The first exception: item 1 not closing the task stops the beads half.** Items 2 and 3 both act on
 the premise that the task is closed — a container parent qualifies only because its last open child
-just closed, and the plan is deleted because the work it planned is done. If item 1 failed, that
-premise is false, so items 2 and 3 are **skipped** and each gets its own summary line naming the
-reason. Git cleanup (item 5) and the ledger (item 6) are unaffected: they depend on the branch's
+just closed, and the plan is deleted because the work it planned is done. Item 1 can leave that
+premise false in three distinct ways, and all three skip items 2 and 3, each with its own summary
+line naming which one it was: the pre-close re-read showed a child that is `in_progress` now; the
+re-read itself failed, so eligibility could not be verified; or `bd close` ran and failed. Git cleanup (item 5) and the ledger (item 6) are unaffected: they depend on the branch's
 state, not on the task's, and stay independent and non-blocking. Item 4 still runs — syncing
 whatever beads state does exist costs nothing and loses nothing. This is a different situation from
 the scenario having left item 1 in "Не буду" over `in_progress` children (step 3): that is a decision
@@ -898,7 +929,7 @@ as silent absences.
 ❌ Remove a worktree holding uncommitted or untracked content — that is `git status --porcelain`, never a commit count
 ❌ Delete the remote branch while its PR is `OPEN`, or while its state is unknown because the `gh` lookup failed — either could close a live PR
 ❌ Delete a plan file that git tracks, modified or not, by default — it stays in git unless a correction says otherwise; only untracked plans are removed on the default path
-❌ Close container parents or touch the plan after a failed `bd close` — both assume the task is closed
+❌ Close container parents or touch the plan when item 1 did not close the task — whether a child was found `in_progress` at the re-read, the re-read failed, or `bd close` failed; all three leave the premise both items assume false
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
 
@@ -912,7 +943,8 @@ the closed task **and** mergedness is confirmed; the remote branch additionally 
 PR's state is known and not `OPEN`, and the worktree that its working copy is clean. The plan is
 outside this set — it belongs to the task and is handled whenever the task closes, unless git tracks
 the file, in which case it stays in git. Cleanup is non-blocking; the one thing that
-does block is a failed `bd close`, which skips the parent and plan items that assume it succeeded.
+does block is item 1 not closing the task — a child found `in_progress` at the pre-close re-read, a
+failed re-read, or a failed `bd close` — which skips the parent and plan items that assume it closed.
 
 ## Red Flags - STOP
 
@@ -1388,16 +1420,22 @@ that exists — a plan already deleted from the working copy is not this case, a
 removed as usual. Only untracked plans are deleted on the default path — a correction can still move
 this row into "Сделаю", at the cost of a dirty tree and, with it, the worktree row.
 
-### `bd close` Failed
+### The Task Did Not Close
 
-The task did not close — bd was locked by another writer, or the id no longer resolves. Items 2 and
-3 of step 5 are skipped: a container parent qualifies only because its last open child just closed,
+Three different causes, one downstream effect. The pre-close re-read showed a child that is
+`in_progress` now; or the re-read itself failed, leaving eligibility unverifiable; or `bd close` ran
+and failed — bd was locked by another writer, or the id no longer resolves. The summary line names
+which one, because the user's next move differs: a reopened child means the work genuinely is not
+done, a failed re-read means try again, a failed `bd close` means look at bd. Items 2 and
+3 of step 5 are skipped in all three cases: a container parent qualifies only because its last open child just closed,
 and the plan is deleted because the work it planned is done. Neither premise holds. Git cleanup and
 the ledger are unaffected — they depend on the branch, not on the task:
 
 ```
 Выполнено:
   1. ✗ задача claude-tools-elf.59 не закрыта: bd close failed (database is locked)
+     (варианты той же строки: «у задачи снова есть in_progress подзадача claude-tools-elf.59.2»,
+      «не удалось перечитать bd show claude-tools-elf.59 — право на закрытие не подтверждено»)
   2. — план не тронут (задача не закрылась)
   3. ✓ worktree удалён
   4. ✓ локальная ветка удалена
