@@ -403,6 +403,13 @@ start at `0.0.0`, see step 3 for why. Do not seed `CHANGELOG.md`; release-please
    manually (Administration → Analysis Method), or it collides with the CI analysis.
 8. Administration → General → Main branch: master
 
+**Токен.** Секрет репозитория `SONAR_TOKEN` должен быть **Global Analysis Token** (My Account →
+Security), а не project analysis token, выданный из карточки конкретного проекта. Project-scoped
+токен работает только для своего проекта, и на новом сканер падает ещё до анализа:
+`Failed to query JRE metadata: … HTTP 403 Forbidden. Please check … SONAR_TOKEN`. Права проекта
+при этом выглядят корректными, поэтому ошибку легко искать не там — так и вышло при добавлении
+`beadboard` (PR #141).
+
 ### 3. Wire the package into the repository
 
 1. Root `pyproject.toml`: `[tool.uv.sources] <name> = { workspace = true }` **and** `<name>` in
