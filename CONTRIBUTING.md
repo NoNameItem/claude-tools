@@ -117,6 +117,7 @@ PR должен иметь label соответствующий scope в заг�
 | Scope | Label | Описание |
 |-------|-------|----------|
 | `statuskit` | `statuskit` | Python statusline package |
+| `beadboard` | `beadboard` | Python TUI for beads |
 | `flow` | `flow` | Beads workflow plugin |
 | без scope | `repo` | Repository-level changes |
 
@@ -261,7 +262,8 @@ git push --force-with-lease
 ```
 claude-tools/
 ├── packages/           # Python пакеты (PyPI)
-│   └── statuskit/      # scope: statuskit
+│   ├── statuskit/      # scope: statuskit
+│   └── beadboard/      # scope: beadboard
 ├── plugins/            # Claude Code плагины
 │   └── flow/           # scope: flow
 ├── .github/            # CI/CD (без scope)
@@ -338,7 +340,8 @@ uv run ruff format .
 ### Type checking
 
 ```bash
-uv run ty check packages/statuskit
+uv run ty check
+# без пути — иначе тесты и соседние пакеты молча пропускаются
 ```
 
 ## Adding a New Python Package
@@ -379,10 +382,37 @@ classifiers = [
 3. Select `NoNameItem/claude-tools`
 4. Set project key: `NoNameItem_<package-name>` (e.g., `NoNameItem_statuskit`)
 5. Administration → New Code: Previous Version
-6. Administration → Quality Gate: Sonar way
-7. Administration → General → Main branch: master
+6. Administration → Quality Gate: **NoNameItem way** (the organisation default `Sonar way no coverage` is not used by any project here)
+7. Administration → Analysis Method: **verify Automatic Analysis is off** — the *Setup a
+   monorepo* flow in step 2 already sets `sonar.autoscan.enabled = false` (non-inherited) for you,
+   so this is a check, not an action. A project created through an ordinary (non-monorepo)
+   "Analyze new project" import does **not** get this for free and must have it turned off here
+   manually (Administration → Analysis Method), or it collides with the CI analysis.
+8. Administration → General → Main branch: master
 
-### 3. Verify CI
+### 3. Wire the package into the repository
+
+1. Root `pyproject.toml`: `[tool.uv.sources] <name> = { workspace = true }` **and** `<name>` in
+   the `dev` dependency group — without both, `uv sync` does not install the package and its
+   tests cannot import it. Run `uv sync`.
+2. `release-please-config.json`: an entry under `packages` (`release-type: python`,
+   `bump-minor-pre-major`, `prerelease`, `extra-label: "ci:full,<name>"`).
+3. `.release-please-manifest.json`: `"packages/<name>": "0.0.0"` — release-please treats the
+   value as the version *already released*, so `0.0.0` makes the first `feat:` release `0.1.0`.
+   Do not seed `CHANGELOG.md`; release-please writes it.
+4. `packages/<name>/sonar-project.properties`: rule mutes only, each with a written reason.
+5. GitHub: create the PR label `<name>` (`gh label create <name> --color <hex>`).
+6. `.coderabbit.yaml`: a `path_instructions` entry for `packages/<name>/**`.
+7. `CLAUDE.md` and this file: the commit-scope and label tables, plus the project trees.
+8. PyPI: register a pending publisher (owner `NoNameItem`, repository `claude-tools`, workflow
+   `publish.yml`, environment `pypi`) — it reserves the name before the first release.
+
+Nothing else needs touching: the CI matrices, the lint/test/Sonar jobs, `sonar.projectKey`, `ty`,
+pytest `testpaths` and commit-scope validation are all derived from `[tool.repo]` and from paths.
+The master ruleset requires the aggregate `Python CI Gate` context, so new per-project jobs need
+no ruleset change.
+
+### 4. Verify CI
 
 1. Create a PR with changes in your package
 2. Check that all jobs pass:
