@@ -31,9 +31,12 @@ def _module_name(path: Path) -> str:
     return ".".join(parts)
 
 
-def _imported_modules(tree: ast.Module, module: str) -> set[str]:
-    """Absolute names of everything `module` imports, relative imports resolved."""
-    package = module.rsplit(".", 1)[0] if "." in module else module
+def _imported_modules(tree: ast.Module, package: str) -> set[str]:
+    """Absolute names of everything a file in `package` imports, relative imports resolved.
+
+    `package` is the file's own dotted name when the file is an `__init__.py` (a package is
+    its own package), or its containing package's dotted name otherwise — see the call site.
+    """
     imported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -69,7 +72,10 @@ def test_layers_never_import_upwards():
         layer = _layer_of(module)
         if layer is None:
             continue
-        for imported in _imported_modules(ast.parse(path.read_text(encoding="utf-8")), module):
+        # A package's own `__init__.py` resolves relative imports against itself; an ordinary
+        # submodule resolves them against its containing package (everything but its own name).
+        package = module if path.name == "__init__.py" else module.rsplit(".", 1)[0]
+        for imported in _imported_modules(ast.parse(path.read_text(encoding="utf-8")), package):
             violations.extend(
                 f"{module} imports {imported}"
                 for banned in FORBIDDEN[layer]
@@ -77,3 +83,21 @@ def test_layers_never_import_upwards():
             )
 
     assert violations == []
+
+
+def test_imported_modules_resolves_relative_import_from_package_init():
+    """A package's own `__init__.py` is its own package: two levels up from `beadboard.model`
+    is `beadboard`, so `from ..ui import x` written there must resolve to `beadboard.ui`, not
+    to `.ui` (which is what stripping `beadboard.model` by one more segment produces)."""
+    tree = ast.parse("from ..ui import x\n")
+
+    assert _imported_modules(tree, "beadboard.model") == {"beadboard.ui"}
+
+
+def test_imported_modules_resolves_relative_import_from_submodule():
+    """The same relative import written in an ordinary submodule (package `beadboard.service`,
+    e.g. `beadboard/service/foo.py`) resolves identically, guarding the other half of the level
+    arithmetic that the package-init case above exercises."""
+    tree = ast.parse("from ..ui import x\n")
+
+    assert _imported_modules(tree, "beadboard.service") == {"beadboard.ui"}
