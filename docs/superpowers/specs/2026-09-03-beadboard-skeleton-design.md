@@ -23,8 +23,9 @@ something fails when it is violated.
 point; an empty Textual application that starts and quits; the five layer packages as empty
 modules; the test directory; the import-boundary test; `sonar-project.properties`; `AGENTS.md`; a
 minimal `README.md`; the release-please entry and manifest line; the `beadboard` PR label; the
-commit-scope rule in `CLAUDE.md` and `CONTRIBUTING.md`; two external registrations (the SonarCloud
-project, the PyPI pending publisher).
+CodeRabbit path instructions; the commit-scope rule in `CLAUDE.md` and `CONTRIBUTING.md`; two
+external registrations (the SonarCloud project with Automatic Analysis off, the PyPI pending
+publisher).
 
 **Out.** Domain types, projections, the repository port, adapters, the source registry, screens —
 issues `.2` to `.7`. Nothing in this issue talks to `bd` or to Dolt.
@@ -52,7 +53,8 @@ to do with Claude Code.
 **D3. Textual is pinned `>=8.2,<9`.** Textual makes breaking API changes across majors, and
 beadboard is an application rather than a library, so an upper bound constrains nobody downstream.
 This departs from `statuskit`, whose `termcolor` dependency is unpinned — a far more stable
-dependency.
+dependency. Checked 2026-09-03: the current release is 8.2.8, `requires-python >=3.9,<4`, with a
+3.14 classifier — the whole 3.11 – 3.14 test matrix is supported.
 
 **D4. The SonarCloud gate is `NoNameItem way` from the first analysis.** The organisation default
 is `Sonar way no coverage`, and `statuskit` is on `NoNameItem way`, which adds overall conditions:
@@ -71,7 +73,10 @@ application starts under a terminal, only that its parts are assembled correctly
 **D6. A minimal `README.md` ships now.** `pyproject.toml` declares `readme = "README.md"`, so the
 wheel does not build without it. The epic places the README in `.8`; what `.8` writes is the
 user-facing one — installation, usage, screenshots. This one says what the package is, that it is
-under development, and points at the epic design.
+under development, and points at the epic design. It opens with the CI badge
+(`badges-data/beadboard.json`), which `publish_badges.py` fills in automatically from the job
+names and which therefore works from the first push to master; the PyPI badges only resolve after
+the first release and belong to `.8`.
 
 **D7. Issue templates are deferred to `.8`.** `statuskit` and `flow` each have a bug and a feature
 template. They serve users filing issues, and beadboard has no users before its first release.
@@ -86,6 +91,32 @@ exists, `feat:` commits in issues `.2` to `.7` make release-please open release 
 beadboard. Nothing is published until such a pull request is merged, so the handling is to leave
 them open until `.8`. The alternative — adding the entry in `.8` — would leave the changelog for
 the whole MVP to be reconstructed retroactively.
+
+**D10. beadboard inherits statuskit's two Sonar rule mutes.** `python:S1192` (duplicated string
+literals, MAINTAINABILITY/HIGH — it blocks the merge under `NoNameItem way`) and `python:S107` (too
+many parameters, MEDIUM) are copied into beadboard's `sonar-project.properties` with the same
+written rationales. Neither argument is about statuskit: S1192 asks for a constant where the
+literal itself reads better, and S107 is the Sonar half of `PLR0913`, which the root
+`pyproject.toml` disables repository-wide. Muting them before the first violation costs nothing and
+keeps the tracker honest; a *third* mute still has to arrive with its own reason next to it.
+
+Checked on the statuskit project so that beadboard is not configured against a half-picture
+(2026-09-03): its Python quality profile is the built-in `Sonar way` (481 rules — the custom
+`python` profile in the organisation belongs to `read-comics`), and the only project-level setting
+that is not inherited is `sonar.autoscan.enabled = false`. That setting is the one manual step this
+design nearly missed — see *Manual external steps*.
+
+**D11. The manifest starts at `0.0.0`, so the MVP is released as `0.1.0`.** release-please reads
+the manifest as the version *already released* and computes the next one from the commits on top of
+it. statuskit was bootstrapped at `0.1.0` — a version that predated the tool, with a hand-written
+changelog — and its first automatic release was consequently `0.2.0`. Writing `0.1.0` here would
+ship the MVP as `0.2.0`. With `0.0.0` in the manifest and in `pyproject.toml`, `bump-minor-pre-major`
+on and `bump-patch-for-minor-pre-major` off, the first `feat:` bumps the minor: `0.0.0` → `0.1.0`,
+tag `beadboard-0.1.0`, GitHub release flagged pre-release, `publish.yml` to PyPI. Nothing seeds
+`CHANGELOG.md`; release-please writes it with that first release. Rejected: a `Release-As:` commit
+footer or a `release-as` config key, both of which need removing afterwards, and `initial-version`,
+which this repository has never exercised. Accepted cost: until the first release
+`sonar.projectVersion` reads `0.0.0` — cosmetic.
 
 ## Package layout
 
@@ -126,7 +157,7 @@ its job is to assemble them.
 | Field | Value | Why it matters |
 |---|---|---|
 | `name` | `beadboard` | D2 |
-| `version` | `0.1.0` | release-please owns it from here on |
+| `version` | `0.0.0` | nothing released yet; release-please owns it from here on (D11) |
 | `dependencies` | `textual>=8.2,<9` | D3 |
 | `[project.scripts]` | `beadboard = "beadboard.cli:main"` | the console script |
 | `classifiers` | Python 3.11 – 3.14 | **not decoration**: `detect_changes.py` reads the classifiers to build the test matrix |
@@ -184,12 +215,15 @@ and cannot drag the ratio down while they wait to be filled.
 | File | Change |
 |---|---|
 | `pyproject.toml` (root) | `[tool.uv.sources] beadboard = { workspace = true }` and `beadboard` in the dev group — without it `uv sync` does not install the package and the tests cannot import it |
-| `uv.lock` | regenerated |
+| `uv.lock` | regenerated locally, **not committed** — the lock is listed in `.gitignore` and is untracked; CI resolves from scratch on every `uv sync` |
 | `release-please-config.json` | a `packages/beadboard` entry: `release-type: python`, `package-name: beadboard`, `bump-minor-pre-major`, `prerelease`, `extra-label: "ci:full,beadboard"` |
-| `.release-please-manifest.json` | `"packages/beadboard": "0.1.0"` |
-| `packages/beadboard/sonar-project.properties` | scanner properties; the file must sit in the package because CI sets `projectBaseDir: packages/beadboard`. Starts with no rule mutes — statuskit's exist for reasons beadboard has not met yet |
+| `.release-please-manifest.json` | `"packages/beadboard": "0.0.0"` (D11) |
+| `packages/beadboard/sonar-project.properties` | scanner properties; the file must sit in the package because CI sets `projectBaseDir: packages/beadboard`. Carries statuskit's two rule mutes from the first analysis (D10) |
 | `packages/beadboard/AGENTS.md` | architecture summary and review rules for the subtree; the layering rule is the P1 item |
-| `CLAUDE.md`, `CONTRIBUTING.md` | `beadboard` in the commit-scope and PR-label tables |
+| `CLAUDE.md` | `beadboard` in the commit-scope and PR-label tables — and in the three places that table does not cover: the Overview ("two types of tools"), the terminology examples, and the Project Structure tree |
+| `CONTRIBUTING.md` | the same two tables, plus the "Adding a New Python Package" corrections below |
+| `AGENTS.md` (root) | `packages/beadboard/` added where it enumerates the nested `AGENTS.md` files |
+| `.coderabbit.yaml` | a `packages/beadboard/**` entry under `path_instructions`; statuskit has one, and without it the subtree is reviewed with no architectural context |
 | GitHub | the `beadboard` label, colour `#ff7f0e` — the next free colour in the palette `statuskit`/`flow`/`repo` already use |
 
 **What needs no change**, because it is derived from `[tool.repo]` and from paths: the CI matrices
@@ -198,9 +232,28 @@ which is templated as `NoNameItem_${{ matrix.project }}`; `ty` (`[tool.ty.src] i
 ["packages"]`); pytest `testpaths`; and commit-scope validation in `validate.py`, which discovers
 projects through `projects.py`.
 
-`CONTRIBUTING.md`'s "Adding a New Package" section is also corrected while we are in it: it tells
-the reader to set the quality gate to `Sonar way`, which no project in this organisation uses, and
-it does not mention the PyPI pending publisher at all.
+Five more were checked against the live repository and organisation rather than assumed, so the
+next project need not check them again: the master ruleset's required status checks (the required
+contexts are the aggregate `Python CI Gate` / `Claude Code Plugin CI Gate` jobs, never per-project
+ones); the Python quality profile (built-in `Sonar way`, no custom profile to attach); the new-code
+definition (statuskit carries no project-level override either, so beadboard inherits the same
+default); ruff `per-file-ignores` (the `**/tests/**` pattern already covers the new tests); and
+dependabot / CODEOWNERS, neither of which exists in this repository.
+
+`CONTRIBUTING.md`'s "Adding a New Python Package" section is also corrected while we are in it —
+followed literally today, it does not produce a working project:
+
+- it sets the quality gate to `Sonar way`, which no project in this organisation uses (D4);
+- it never mentions turning Automatic Analysis off — the one setting that actually breaks CI;
+- it stops at the package directory and SonarCloud: the root `pyproject.toml` wiring, the
+  release-please entry and its manifest line, the GitHub label and the CodeRabbit path
+  instructions are all absent;
+- it says nothing about the PyPI pending publisher;
+- its `uv run ty check packages/statuskit` contradicts `CLAUDE.md`, which requires `ty` to be run
+  without a path argument.
+
+Its step 3 stays as it is and is load-bearing for `.8`: master must carry a successful analysis
+before the first release is cut, or the release notification ships with no Sonar blocks at all.
 
 ## Manual external steps
 
@@ -209,8 +262,14 @@ Both must be done before this issue's pull request reaches CI — the `sonarclou
 
 1. **SonarCloud.** ✚ → *Analyze new project* → *Setup a monorepo* → `NoNameItem/claude-tools`, key
    `NoNameItem_beadboard`. The GitHub binding has no public API endpoint on SonarCloud
-   (`alm_settings/*` does not exist there), so this step cannot be scripted. Assigning the quality
-   gate afterwards can be: `api/qualitygates/select`.
+   (`alm_settings/*` does not exist there), so this step cannot be scripted. Two settings on the
+   new project then have to be changed, and both are scriptable:
+
+   - **Automatic Analysis off.** It is on for every new project and collides with the CI analysis.
+     The setting is per-project and is not inherited — statuskit carries
+     `sonar.autoscan.enabled = false`, which is its only non-inherited setting (D10).
+     `POST api/settings/set?component=NoNameItem_beadboard&key=sonar.autoscan.enabled&value=false`.
+   - **Quality gate `NoNameItem way`** (D4): `POST api/qualitygates/select`.
 2. **PyPI.** Pending publisher for project `beadboard`: owner `NoNameItem`, repository
    `claude-tools`, workflow `publish.yml`, environment `pypi`.
 
@@ -236,4 +295,5 @@ Both must be done before this issue's pull request reaches CI — the `sonarclou
   `test_import_boundaries.py`. Verified locally and reverted; this is what distinguishes a boundary
   test from a boundary comment.
 - In CI: `Lint (beadboard)`, `Test (beadboard, py3.11 … py3.14)` and `SonarCloud (beadboard)` green,
-  with the project on the `NoNameItem way` gate.
+  with the project on the `NoNameItem way` gate and the analysis arriving from the CI scanner —
+  SonarCloud shows no "Automatic Analysis" run for the project (D10, *Manual external steps*).
