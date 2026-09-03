@@ -13,12 +13,15 @@ git status, beads tasks, and quota tracking. Reads JSON from Claude Code's statu
 `/flow:after-design`, `/flow:after-plan`, `/flow:decompose`, `/flow:done`) that guide you through task selection, branch
 management, design linking, task decomposition, and completion workflow.
 
+**Beadboard** - Python package with a terminal UI (Textual) for beads: browse, navigate and
+monitor issues from the terminal. Read-only in its first version.
+
 ## Terminology
 
 | Term        | Meaning                                               | Location                  | Example         |
 |-------------|-------------------------------------------------------|---------------------------|-----------------|
-| **Project** | Generic term for any releasable unit in the monorepo  | `packages/` or `plugins/` | statuskit, flow |
-| **Package** | Python package with pyproject.toml, published to PyPI | `packages/`               | statuskit       |
+| **Project** | Generic term for any releasable unit in the monorepo  | `packages/` or `plugins/` | statuskit, beadboard, flow |
+| **Package** | Python package with pyproject.toml, published to PyPI | `packages/`               | statuskit, beadboard       |
 | **Plugin**  | Claude Code plugin with plugin.json                   | `plugins/`                | flow            |
 
 **In code and CI:**
@@ -34,6 +37,7 @@ management, design linking, task decomposition, and completion workflow.
 | Changes in                        | Title scope   | PR label    |
 |-----------------------------------|---------------|-------------|
 | `packages/statuskit/`             | `(statuskit)` | `statuskit` |
+| `packages/beadboard/`             | `(beadboard)` | `beadboard` |
 | `plugins/flow/`                   | `(flow)`      | `flow`      |
 | `.github/`, `docs/`, root configs | no scope      | `repo`      |
 
@@ -62,11 +66,20 @@ claude-tools/
 │       │   └── plugin.json
 │       └── skills/             # /flow:* skills (auto-surfaced as slash commands)
 ├── packages/
-│   └── statuskit/              # Python statusline package
+│   ├── statuskit/              # Python statusline package
+│   │   ├── pyproject.toml
+│   │   ├── src/statuskit/
+│   │   │   ├── core/           # Config, loading, models
+│   │   │   └── modules/        # Statusline modules
+│   │   └── tests/
+│   └── beadboard/              # Python TUI for beads
 │       ├── pyproject.toml
-│       ├── src/statuskit/
-│       │   ├── core/           # Config, loading, models
-│       │   └── modules/        # Statusline modules
+│       ├── src/beadboard/
+│       │   ├── model/          # Domain types
+│       │   ├── sources/        # Project registry
+│       │   ├── repository/     # Read access to one project
+│       │   ├── service/        # Orchestration
+│       │   └── ui/             # Textual application
 │       └── tests/
 └── docs/superpowers/specs/     # Design documents (specs)
 ```
