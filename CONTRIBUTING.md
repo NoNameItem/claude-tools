@@ -360,6 +360,11 @@ packages/
     └── tests/
 ```
 
+**`packages/<name>/tests/` must NOT have an `__init__.py`.** With pytest's default import mode, a
+`tests/__init__.py` turns the directory into a top-level package literally named `tests` — and two
+packages that both do this collide under that same name, so a bare root `uv run pytest` fails to
+collect one of them.
+
 **pyproject.toml must include classifiers:**
 ```toml
 [project]
