@@ -24,6 +24,14 @@
       "prerelease": true,
       "extra-label": "ci:full,statuskit"
     },
+    "packages/beadboard": {
+      "package-name": "beadboard",
+      "release-type": "python",
+      "changelog-path": "CHANGELOG.md",
+      "bump-minor-pre-major": true,
+      "prerelease": true,
+      "extra-label": "ci:full,beadboard"
+    },
     "plugins/flow": {
       "package-name": "flow",
       "release-type": "simple",
