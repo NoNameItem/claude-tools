@@ -107,7 +107,7 @@ dependency validation, auto-commit and remote sync all live in bd; writing aroun
 database silently. Reads may take a fast path; writes may not. This makes the deferred data-layer
 choice a question about reading only.
 
-**D8. Ports and adapters with a pure core.** The data layer is isolated from the UI by an explicit
+**D8. Ports and adapters with a pure core.** The repository layer is isolated from the UI by an explicit
 port, and the board's logic lives in pure functions rather than in widgets. See *Architecture*.
 
 **D9. The entry point is the project board.** A summary page across all projects is an open
@@ -122,27 +122,33 @@ switcher, one keystroke away.
 Dependencies point one way. There are no back edges.
 
 ```
-ui  ──►  service  ──►  data  ──►  sources
- │          │           │            │
- └──────────┴────►  model  ◄─────────┘
+ui  ──►  service  ──►  repository  ──►  model
+             │                            ▲
+             └────►  sources  ────────────┘
 ```
 
-The orchestration layer is called `service` rather than `app`: `beadboard.app` next to Textual's
-`App` reads as the same thing in every import, and the collision would have to be undone once the
-screens arrive.
+`ui`, `service`, `repository` and `sources` may all import `model`; nothing points the other way.
+`repository` does not import `sources`: a repository is handed the project it reads, and knowing
+how projects are discovered is `service`'s job.
+
+Two names earn their oddity. The orchestration layer is `service`, not `app`, because
+`beadboard.app` next to Textual's `App` reads as the same thing in every import. The storage layer
+is `repository`, not `data`, because `data` and `sources` sound like the same concern while holding
+different ones — `sources` knows which projects exist and where, `repository` knows how to read the
+issues of one of them.
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
 | `model` | Domain types and **pure functions**: the tree, the column projection, ghost ancestors, filters, search | Everything else. No I/O, no `textual`, no `bd` |
 | `sources` | The source registry, resolving a source into projects, deduplication | Issues, the board, the UI |
-| `data` | The `IssueRepository` port and its adapters; translating raw data into `model` types | The board, the screens, the registry |
+| `repository` | The `IssueRepository` port and its adapters; translating raw data into `model` types | The board, the screens, the registry |
 | `service` | Orchestration: snapshots and their cache, `refresh`, lazy detail fetch, per-source failure isolation, keeping work off the render thread | Widgets and keybindings |
 | `ui` | Screens, widgets, input, layout | How storage works or where the data came from |
 
 What this buys: the trickiest logic — which ghosts belong in the `in_progress` column for a given
-tree — is table-testable without a terminal and without a running Dolt; swapping the data adapter
-touches no file above `data`; and the write increments (C+A → B+D) land in `data` and `service` as
-port methods rather than accreting onto widgets.
+tree — is table-testable without a terminal and without a running Dolt; swapping the adapter
+touches no file above `repository`; and the write increments (C+A → B+D) land in `repository` and
+`service` as port methods rather than accreting onto widgets.
 
 ### Process model
 
@@ -152,8 +158,8 @@ background daemons: closing the app ends the process.
 
 ### Keeping the boundary
 
-"`model` and `data` do not import `textual`; `model` does not import `data`" is enforced by an
-import test, not by convention. A violation fails CI.
+"`model` and `repository` do not import `textual`; `model` does not import `repository`" is
+enforced by an import test, not by convention. A violation fails CI.
 
 ## Domain model and projections
 
@@ -230,7 +236,7 @@ to click: there is always a way back out of the graph.
 Screens do not reach into sources, do not compute projections, and do not know about adapters. A
 screen receives a finished layout and emits intents ("open issue", "switch project", "refresh").
 
-## Data layer
+## Repository layer
 
 ### The port
 
@@ -258,7 +264,7 @@ keep stable.
 **`FakeRepository`** — fixture data, for testing `service` and the UI without bd or Dolt.
 
 **Choosing the adapter is deferred to its own task**, as the epic records. The architecture only
-guarantees the choice costs one config key and no edits above `data`.
+guarantees the choice costs one config key and no edits above `repository`.
 
 ### Risk: server-only projects may be read-only
 
@@ -290,12 +296,12 @@ keep working. No source-side failure crashes the application.
 
 `packages/beadboard` joins the same uv workspace as `statuskit` and follows its conventions:
 `src/` layout, hatchling, `requires-python >= 3.11`, a `beadboard` entry point in
-`[project.scripts]`. Dependencies: `textual`, plus whatever the chosen data adapter needs (a MySQL
+`[project.scripts]`. Dependencies: `textual`, plus whatever the chosen adapter needs (a MySQL
 driver for the SQL adapter; nothing external for the bd CLI one). Tests live in
 `packages/beadboard/tests` and are picked up by the repo-wide `testpaths`.
 
 Configuration lives at `~/.config/beadboard/config.toml` (honouring `$XDG_CONFIG_HOME`): the source
-registry, the data adapter, the column set, the auto-refresh interval.
+registry, the repository adapter, the column set, the auto-refresh interval.
 
 **CI picks the package up on its own.** `detect_changes.py` builds its matrix from
 `[tool.repo.project-types.python].paths = ["packages"]`, so lint and tests need no workflow change.
@@ -326,7 +332,7 @@ Each child issue runs the usual cycle: brainstorm → design doc → plan → im
 2. **Domain model and projections** (`.2`). Types, the `parent-child` forest, the dependency DAG,
    the column projection, ghost ancestors, filters and search. Settles the concrete column list.
    Blocked by 1.
-3. **Data layer** (`.3`). The port, the adapter choice (bd CLI / SQL / hybrid — the epic's deferred
+3. **Repository layer** (`.3`). The port, the adapter choice (bd CLI / SQL / hybrid — the epic's deferred
    decision), the first working adapter, `FakeRepository`, contract tests. Includes checking the
    read-only risk above. Blocked by 1; takes its types from 2.
 4. **Source registry** (`.4`). The source model, source-to-project resolution, deduplication, the
