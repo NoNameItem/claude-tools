@@ -21,7 +21,7 @@ Five layers, each a package, in dependency order:
 `cli.py` is the composition root and the only module allowed to reach into any layer.
 
 The first working version is **read-only**; writing (claim/close/edit/create) belongs to later
-iterations. See `docs/superpowers/specs/2026-09-02-beadboard-design.md`.
+iterations.
 
 ## Review guidelines
 
