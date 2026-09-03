@@ -395,8 +395,10 @@ classifiers = [
 1. Root `pyproject.toml`: `[tool.uv.sources] <name> = { workspace = true }` **and** `<name>` in
    the `dev` dependency group — without both, `uv sync` does not install the package and its
    tests cannot import it. Run `uv sync`.
-2. `release-please-config.json`: an entry under `packages` (`release-type: python`,
-   `bump-minor-pre-major`, `prerelease`, `extra-label: "ci:full,<name>"`).
+2. `release-please-config.json`: an entry under `packages` (`package-name: "<name>"` — this is
+   what `${component}` in `pull-request-title-pattern` resolves to, `release-type: python`,
+   `changelog-path: "CHANGELOG.md"`, `bump-minor-pre-major`, `prerelease`,
+   `extra-label: "ci:full,<name>"`).
 3. `.release-please-manifest.json`: `"packages/<name>": "0.0.0"` — release-please treats the
    value as the version *already released*, so `0.0.0` makes the first `feat:` release `0.1.0`.
    Do not seed `CHANGELOG.md`; release-please writes it.
