@@ -6,8 +6,6 @@ across harnesses, and guard the Bash grant shape for the extracted flow-*
 helpers. `sonar-sync` is the sole named exception (not yet migrated).
 """
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
-
 from __future__ import annotations
 
 import json

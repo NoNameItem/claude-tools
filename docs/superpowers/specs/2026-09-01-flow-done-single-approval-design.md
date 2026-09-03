@@ -245,7 +245,11 @@ a four-case ladder evaluated top to bottom, first match wins:
 1. `PR_STATE == MERGED` → confirmed, regardless of what the tree comparison found. If the tree
    still differs (most often: commits pushed to the branch after the merge), the scenario header
    says so on its own line rather than silently hiding it or refusing.
-2. `MERGED_TREE == BASE_TREE` (case 1 did not match) → confirmed, as before.
+2. `MERGED_TREE == BASE_TREE` (case 1 did not match, and D2.1's fetch succeeded) → confirmed, as
+   before. A **failed fetch disqualifies this case and only this case**: the remote-tracking refs are
+   then whatever was cached, so tree equality vouches for a base that may be arbitrarily old, and the
+   run falls through to case 4 and asks, naming the failed fetch as the reason. Case 1 is unaffected —
+   `PR_STATE` comes from the platform, not from a remote-tracking ref.
 3. `PR_STATE == OPEN` (neither above matched) → not merged, STOP — a live PR means the work has not
    landed.
 4. Otherwise — `NO_PR`, `UNKNOWN`, a `CLOSED` PR whose tree did not match, or git < 2.38 — none of
@@ -264,8 +268,12 @@ no PR-related lines.
 PR exists and when the call fails (auth, rate limit, a TLS timeout), so `|| echo NO_PR` reads a
 network blip as "no PR" — and an unset `PR_STATE` then trivially satisfies the remote-branch row's
 "not `OPEN`", licensing a `git push <remote> --delete` that closes a live PR. The two are separated
-by a second call: `gh pr list` exits 0 and prints `[]` when the platform was reached and this branch
-has no PR, non-zero when the lookup itself failed. `UNKNOWN` refuses the remote-branch row exactly as
+by a second call — **whose output is read, not merely its exit status**. `gh pr list` exits 0 and
+prints `[]` when the platform was reached and this branch has no PR, non-zero when the lookup itself
+failed, and 0 with a live PR in it when `gh pr view` merely blipped; a status-only check collapses
+that third case into "no PR". So the list is scoped to the branch (`--head`) and parsed: empty →
+`NO_PR`, non-empty → that PR's own state (an `OPEN` entry outranking any closed or merged one for the
+same branch), non-zero exit → `UNKNOWN`. `UNKNOWN` refuses the remote-branch row exactly as
 `OPEN` does (D3), and falls through to D2.1's next base candidate rather than yielding an empty base.
 The ledger needs no extra rule: it purges on `MERGED` alone.
 
@@ -550,9 +558,17 @@ Fixed order — beads first, git second:
    resolves the wrong branch's PR, since HEAD has already moved. The block:
    - re-runs D2's two-call PR lookup, **naming the branch explicitly**
      (`gh pr view <branch> --json state,url,number,baseRefName`, falling back to
-     `gh pr list --head <branch> --state all --limit 1 --json number`), never the collapsed
+     `gh pr list --head <branch> --state all --limit 10 --json state,url,number,baseRefName`, whose
+     output is parsed rather than reduced to an exit status), never the collapsed
      `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
      meaning the task's branch partway through;
+   - re-reads the base as well, in remote mode: a fresh `git fetch <remote>`, then
+     `git rev-parse "<base-ref>^{tree}"` against the `BASE_TREE` D2 captured. `merge-tree` merges
+     *both* sides, so re-reading only the branch does not establish that the verdict still holds; a
+     base moved by a force-push (an emergency rollback done by reset rather than by a revert commit)
+     leaves the branch's own tips untouched and passes every other check. A base that moved, or a
+     re-fetch that failed, skips all four rows — unless `PR_STATE == MERGED`, which is case 1 of D2.2's
+     ladder and immune to the base moving;
    - re-reads the tips D2 captured — the local tip (`git rev-parse <branch>`) and, in remote mode,
      the remote tip (`git ls-remote --exit-code --heads <remote> <branch>`). The `--exit-code` form is
      required because empty output alone conflates "no such ref" with "the lookup failed": measured on
