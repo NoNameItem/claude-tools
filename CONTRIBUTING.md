@@ -354,7 +354,8 @@ When adding a new Python package to `packages/`, you need to configure SonarClou
 packages/
 └── new-package/
     ├── pyproject.toml      # With Python classifiers
-    ├── CHANGELOG.md
+    ├── README.md           # required: pyproject.toml declares readme = "README.md", the wheel
+    │                       # does not build without it
     ├── src/new_package/
     │   └── __init__.py
     └── tests/
@@ -363,13 +364,17 @@ packages/
 **`packages/<name>/tests/` must NOT have an `__init__.py`.** With pytest's default import mode, a
 `tests/__init__.py` turns the directory into a top-level package literally named `tests` — and two
 packages that both do this collide under that same name, so a bare root `uv run pytest` fails to
-collect one of them.
+collect one of them. `packages/statuskit/tests/__init__.py` still exists — it predates this rule
+and is grandfathered in, not a pattern to copy. Following the rule on a new package also requires
+the `INP001` per-file-ignore for `**/tests/**/*.py` in the root `pyproject.toml` (already present):
+without it, an `__init__.py`-less `tests/` directory is an "implicit namespace package" and lint
+fails red.
 
 **pyproject.toml must include classifiers:**
 ```toml
 [project]
 name = "claude-new-package"
-version = "0.1.0"
+version = "0.0.0"
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -377,6 +382,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 ```
+
+`version` here and the `.release-please-manifest.json` entry (step 3 below) must agree — both
+start at `0.0.0`, see step 3 for why. Do not seed `CHANGELOG.md`; release-please writes it.
 
 ### 2. Create SonarCloud Project
 
