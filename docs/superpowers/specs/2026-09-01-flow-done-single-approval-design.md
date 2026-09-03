@@ -170,6 +170,7 @@ D2.1, which updates remote-tracking refs and nothing else:
 | Worktree | `flow-in-worktree` |
 | Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it |
 | Remote branch | `git branch -r` |
+| Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --heads <remote> <branch>` (OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>`) — re-read in D5's re-validation, before either branch delete |
 | Ledger | present when a `PR_NUMBER` was obtained |
 
 Three decisions differ from today's behaviour:
@@ -251,7 +252,17 @@ has no PR, non-zero when the lookup itself failed. `UNKNOWN` refuses the remote-
 `OPEN` does (D3), and falls through to D2.1's next base candidate rather than yielding an empty base.
 The ledger needs no extra rule: it purges on `MERGED` alone.
 
-**D2.4. No base branch is a question, never a guess.** When no candidate of D2.1's chain
+**D2.4. No base branch is a question, never a guess — but only when the branch belongs to the
+task.** The step-2 cases are evaluated in order, first match decides, because more than one of step
+1's signals can hold at once: a local-only repo with a custom base plus a stale session context
+pointing at another branch produces both `NO_BASE` and a branch mismatch together. The branch-match
+check outranks `NO_BASE` and is evaluated first — when the branch is not the task's, mergedness is
+not applicable and every worktree/local branch/remote branch/ledger row is refused regardless of what
+a base would have been, so neither of the two things a base is for (establishing mergedness; giving
+step 5 somewhere to check out) applies, and the base question would be pointless. Only once the
+branch is confirmed to match the task does `NO_BASE` reach this question at all.
+
+When no candidate of D2.1's chain
 resolves — no PR target, no HEAD symref even after `set-head --auto`, no distinct upstream, no
 `master`/`main` — the skill says which candidates it tried and asks the user which branch is the
 base. Guessing one would silently re-point the criterion that gates every deletion; stopping outright
@@ -278,6 +289,14 @@ task being closed and every lower ancestor the same scenario lists for closing. 
 never qualify and the row would be dead; read loosely, the rule would be unstated. Step 5 re-reads
 `bd show <parent>` immediately before closing it, so the promise and the action see the same
 state.
+
+That re-read exists because the count from step 1 can go stale while the scenario sits waiting for
+approval or a correction — a child can be opened in that window. A re-read that cannot be
+performed at all (a transient store or CLI error, not a revealed child) is treated the same way as
+one that reveals a new child — the parent stays open — but for a different reason, and the summary
+must keep the two distinguishable: an unverified premise is refused rather than assumed, the same
+treatment D2.6 already gives an `UNKNOWN` PR lookup. This is not the ordinary "errors do not block"
+skip either; it is a refusal on a premise this run cannot confirm, not a failure the run shrugs off.
 
 **Task resolution order** (F1, F2): the session context first — `flow:done` normally follows
 `flow:start`/`flow:continue` in the same session, so the agent already knows the task; then the
@@ -309,6 +328,26 @@ disposable by construction — the plan files this very skill deletes live in a 
 and are meant to vanish with the worktree. So removal is gated on uncommitted or unmerged content
 only; ignored files never take part in the decision, and the alternative (collecting `--ignored`
 paths and refusing on them) was rejected because it would refuse the ordinary case every time.
+
+**D2.9. A task can stay open while its own branch's cleanup runs, and that combination is legitimate,
+not accidental — the branch/worktree/remote/ledger rows are never gated on the task's own closing
+row.** A task kept open by `in_progress` children whose **own** branch is confirmed merged is the
+normal decomposition case: an epic's design/decomposition branch is merged into the base, and the
+subtask branches are opened from that base. Its worktree and branches are then finished work, and
+cleaning them up is correct even though the task stays open. The opposite arrangement — a feature
+branch that subtask branches are stacked **on**, intended to land as one commit — is already held by
+mergedness itself and needs no extra gate: that branch is by construction not merged, so either its
+PR is `OPEN` (D2.2 case 3 stops the run) or the tree comparison does not match (case 4 asks). Opening
+the feature branch's PR against the base as soon as the branch exists is what makes this automatic.
+
+**Rejected alternative: gating the four cleanup rows on the task's own `in_progress`-children
+default (D2.7).** This was requested in review, on the reasoning that a task left open should not
+also have its branch resources torn down in the same run. Rejected because it would refuse the
+ordinary decomposition case above: an epic routinely stays open — indeed is *expected* to, since
+epics keep gaining children (D3) — while its own design/decomposition branch is fully merged and
+ready to have its worktree and branches cleaned up. Gating cleanup on the task's closing row would
+strand that branch's resources for as long as the epic has open children, which in practice is
+indefinitely.
 
 ### D3. Scenario format and defaults (step 3)
 
@@ -453,29 +492,64 @@ Fixed order — beads first, git second:
    When left in "Не буду", items 2 and 3 do not run either, each with its own "не тронуто" line —
    the same downstream effect as a failed close below, but a decision made before execution starts,
    not a failure.
-2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3)
-3. plan: `rm` + `flow-link-doc <task> Plan ""` — **untracked** plans by
-   default; a tracked one, clean or modified, stays in git unless a correction moved its row into
-   "Сделаю" (D3)
+2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3).
+   Re-reads `bd show <parent>` immediately before each close (D2.5); a re-read that fails outright
+   leaves the parent open exactly as a revealed child would, but the summary names the two causes
+   separately — the re-read failed, versus a child was opened
+3. plan: `rm` when the scenario lists it for deletion — **untracked** plans by default; a tracked
+   one, clean or modified, stays in git unless a correction moved its row into "Сделаю" (D3). The
+   link is cleared with `flow-link-doc <task> Plan ""` **only when the plan is actually gone from
+   the working copy after this item** — deleted just now, or already absent at collection time — and
+   only when the task description held a `Plan:` line to begin with; a tracked plan left in git on
+   the default path still points at a file that exists, so its link stays
 4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
    dolt commit/pull/push failed, reporting the problem only on stderr
    (`plugins/flow/AGENTS.md`, "flow-sync is best-effort"), so a clean exit does not by itself
    confirm the sync succeeded. The summary line reports what stderr said, not the exit code. Still
    non-blocking.
-5. `cd` to the main repo root (leaving the worktree — removing the one you stand in makes every
-   later command fail) → `git worktree remove` → `git checkout <BASE_LOCAL>` (the local branch
-   name — checking out `BASE_REF`/`origin/master` detaches HEAD and breaks the pull) → `git pull`
-   **in remote mode only** (a local-only repository has nothing to pull from) →
-   `git branch -D` → **immediately before** `git push <remote> --delete` (only when the scenario
-   listed it; `<remote>` is the detected remote, not a hard-coded `origin`), re-run the D2 PR
-   lookup — the same two-call form, never the collapsed `gh pr view || echo NO_PR` — and skip the
-   push when the fresh state is `OPEN` or the lookup fails (`UNKNOWN`), recording a failure line in
-   the summary naming the reason. This mirrors item 2's re-read of `bd show <parent-id>`: an
+5. **Opens with a single re-validation block**, run **before** the `cd`, the worktree removal, the
+   checkout and both deletions, while HEAD is still the task's branch. This replaces the earlier
+   design of re-checking "immediately before `git push <remote> --delete`": by that point item 5 had
+   already removed the worktree, checked out `BASE_LOCAL` and deleted the local branch — the *less*
+   recoverable actions of the two (a deleted remote branch can be restored by pushing the local one;
+   the reverse is not true once the local branch is gone) — and a bare `gh pr view` at that point
+   resolves the wrong branch's PR, since HEAD has already moved. The block:
+   - re-runs D2's two-call PR lookup, **naming the branch explicitly**
+     (`gh pr view <branch> --json state,url,number,baseRefName`, falling back to
+     `gh pr list --head <branch> --state all --limit 1 --json number`), never the collapsed
+     `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
+     meaning the task's branch partway through;
+   - re-reads the tips D2 captured — the local tip (`git rev-parse <branch>`) and, in remote mode,
+     the remote tip (`git ls-remote --heads <remote> <branch>`).
+
+   Its verdict gates **all four** destructive rows, not only the remote push: a fresh `PR_STATE ==
+   OPEN`, or a lookup failure (`UNKNOWN`), skips the remote branch and the ledger purge (item 6),
+   each with its own summary failure line; a tip that moved since D2 skips the branch it belongs to —
+   the local tip skips the local branch and the worktree, the remote tip skips the remote branch —
+   with a summary line naming the new commit, since mergedness was established against the old tip
+   and says nothing about the new one. This mirrors item 2's re-read of `bd show <parent-id>`: an
    irreversible action must not trust a snapshot taken before the approval and any corrections. The
    asymmetry with D2.6's `UNKNOWN` rule is deliberate: that rule guards a lookup that *failed at
    collection time*; this one guards a lookup that *succeeded and then went stale* — different
    failures, both refused.
-6. `flow-review-ledger purge`
+
+   Only then: `cd` to the main repo root (leaving the worktree — removing the one you stand in makes
+   every later command fail) → `git worktree remove` (skipped above if the local tip moved) →
+   `git checkout <BASE_LOCAL>` (the local branch name — checking out `BASE_REF`/`origin/master`
+   detaches HEAD and breaks the pull). `git pull` (**in remote mode only** — a local-only repository
+   has nothing to pull from) and `git branch -D` (skipped above if the local tip moved; otherwise only
+   when the scenario listed the local branch) **run only when the checkout succeeded** — see the
+   second carve-out below. The remote branch, when the scenario listed it and the re-validation block
+   above did not skip it, is deleted with a **lease** rather than a bare `--delete`, so the check and
+   the deletion are one atomic operation instead of a read followed by a write:
+   `git push --force-with-lease="refs/heads/<branch>:<remote-tip>" <remote> --delete <branch>`, where
+   `<remote-tip>` is the OID the re-validation block read. Verified on git 2.47: with a stale OID the
+   push is rejected with `! [rejected] (delete) -> <branch> (stale info)` and the ref survives; with
+   the current OID the ref is deleted. A lease rejection is a summary failure line like any other
+   refused deletion.
+6. `flow-review-ledger purge` — only when the scenario listed the ledger **and** item 5's
+   re-validation did not skip it (a fresh `OPEN`/`UNKNOWN` skips the purge along with the remote
+   branch)
 7. summary
 
 Beads precedes git for the same reason as today's steps 7 and 8: the git part can fail on a dirty
@@ -486,15 +560,26 @@ Execution errors do not block. Each failed item produces a line in the summary a
 continues. One coupling: if `git worktree remove` fails, deleting the local branch is skipped (we
 are still on it) — also a summary line.
 
-**One carve-out: a failed item 1 stops the beads half.** Items 2 and 3 both act on the premise that
-the task is closed — a container parent qualifies only because its last open child just closed, and
-the plan is deleted because the work it planned is done. If `bd close` failed, that premise is false,
-so items 2 and 3 are **skipped**, each with its own summary line naming the reason. Git cleanup
-(item 5) and the ledger (item 6) are unaffected: they turn on the branch's state, not the task's, and
-stay independent and non-blocking. Item 4 still runs — syncing whatever beads state exists costs
-nothing. Same downstream skip, different cause, when the scenario itself left item 1 in "Не буду"
-over `in_progress` children (D2.7): that is decided before execution starts, not a failure, but the
-premise items 2 and 3 depend on never becomes true either way.
+**Two carve-outs. The first: a failed item 1 stops the beads half.** Items 2 and 3 both act on the
+premise that the task is closed — a container parent qualifies only because its last open child just
+closed, and the plan is deleted because the work it planned is done. If `bd close` failed, that
+premise is false, so items 2 and 3 are **skipped**, each with its own summary line naming the reason.
+Git cleanup (item 5) and the ledger (item 6) are unaffected: they turn on the branch's state, not the
+task's, and stay independent and non-blocking. Item 4 still runs — syncing whatever beads state
+exists costs nothing. Same downstream skip, different cause, when the scenario itself left item 1 in
+"Не буду" over `in_progress` children (D2.7): that is decided before execution starts, not a failure,
+but the premise items 2 and 3 depend on never becomes true either way.
+
+**The second: a failed checkout (item 5) stops the pull and the local branch delete.** `git pull` and
+`git branch -D` both act on the premise that HEAD moved off the task's branch and onto `BASE_LOCAL` —
+the pull needs a real branch checked out to merge into, and deleting a branch that may still be
+checked out is refused by git anyway. If `git checkout <BASE_LOCAL>` fails (the base is checked out
+in another worktree, or the tree is dirty), that premise is false, so both are **skipped**, each with
+its own summary line naming the failed checkout. The worktree removal, the remote-branch delete and
+the ledger purge are unaffected — they do not depend on where HEAD ends up. This carve-out and item
+5's re-validation block are independent: either alone can skip the local branch, and a failed
+checkout still skips the pull and the local deletion even when the re-validation block found nothing
+wrong.
 
 The summary lists the scenario items with their actual outcome and names divergences explicitly:
 
