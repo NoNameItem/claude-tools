@@ -105,10 +105,13 @@ if [ -n "$(git remote)" ]; then
   # below then runs on stale remote-tracking refs
   git fetch --quiet "$REMOTE"
   BASE_LOCAL=""
-  # every candidate must name a branch the remote actually has; one that does not
-  # falls through to the NEXT candidate, never straight to master/main
+  # every candidate must name a branch the remote actually has, and must not be
+  # CURRENT_BRANCH itself — a base equal to the branch compares it with itself and
+  # reports "merged" unconditionally; one that fails either test falls through to
+  # the NEXT candidate, never straight to master/main
   # 1. the PR/MR's own target branch — where this work was supposed to land
-  if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "null" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/$PR_BASE"; then
+  if [ -n "$PR_BASE" ] && [ "$PR_BASE" != "null" ] && [ "$PR_BASE" != "$CURRENT_BRANCH" ] \
+     && git show-ref --verify --quiet "refs/remotes/$REMOTE/$PR_BASE"; then
     BASE_LOCAL="$PR_BASE"
   fi
   # 2. the remote's HEAD symref, restored from the server when it is missing
@@ -116,7 +119,8 @@ if [ -n "$(git remote)" ]; then
     git symbolic-ref --quiet "refs/remotes/$REMOTE/HEAD" >/dev/null || git remote set-head "$REMOTE" --auto >/dev/null 2>&1
     symref=$(git symbolic-ref --quiet "refs/remotes/$REMOTE/HEAD")
     candidate="${symref#refs/remotes/$REMOTE/}"
-    if [ -n "$candidate" ] && git show-ref --verify --quiet "refs/remotes/$REMOTE/$candidate"; then BASE_LOCAL="$candidate"; fi
+    if [ -n "$candidate" ] && [ "$candidate" != "$CURRENT_BRANCH" ] \
+       && git show-ref --verify --quiet "refs/remotes/$REMOTE/$candidate"; then BASE_LOCAL="$candidate"; fi
   fi
   # 3. this branch's own upstream — but never the branch itself
   if [ -z "$BASE_LOCAL" ]; then
@@ -173,10 +177,19 @@ Nine rules go with it:
   name, and the remote is not always called `origin`. `git remote set-head "$REMOTE" --auto` asks
   the server which branch is default and restores the symref, so it is tried before giving up on
   it; the `master` → `main` pair is a last-ditch convention, not the definition of a base.
-- **The branch's own upstream is a candidate only when it is not the branch itself.**
-  `git rev-parse --abbrev-ref "@{upstream}"` usually returns `$REMOTE/$CURRENT_BRANCH` — using that
-  as the base would compare the branch with itself and report "merged" unconditionally. It is
-  useful only where the upstream was deliberately pointed at another branch, hence the guard.
+- **No source of a base may hand back the branch itself.** A base equal to `CURRENT_BRANCH` makes
+  `merge-tree` compare the branch with itself, report "merged" unconditionally, and hand the run a
+  confirmed verdict for work that landed nowhere — so the guard belongs on **every** source, not on
+  the one where it is most obvious. The upstream is that obvious one: `git rev-parse --abbrev-ref
+  "@{upstream}"` usually returns `$REMOTE/$CURRENT_BRANCH`, and it is useful only where the upstream
+  was deliberately pointed elsewhere. The other two are reachable too. The remote's HEAD symref names
+  the task branch whenever the remote's default *is* that branch — the ordinary state of a repository
+  whose remote holds one branch, with no one having reconfigured anything. And a PR's target can
+  carry the same *name* as the current branch when the PR comes from a fork: the head is
+  `fork:branch`, the base is the upstream's branch of that name, and in the fork
+  `refs/remotes/$REMOTE/<base>` resolves back to our own. The conventional `master`/`main` candidate
+  needs no guard: a task branch named `master` is a branch mismatch, and step 2 refuses every
+  branch row there regardless.
 - **No base asks the user, and STOPs only if that goes nowhere** (`NO_BASE`, handled in step 2). An
   empty base would make `merge-tree` error out and every guard below it meaningless — and those
   guards are what stand between the run and irreversible deletions. Never improvise a base: step 2
@@ -359,8 +372,18 @@ Match the full ref, never `git branch -r | grep "$CURRENT_BRANCH"`: an unanchore
 ```bash
 LOCAL_TIP=$(git rev-parse "$CURRENT_BRANCH")
 # remote mode only:
-REMOTE_TIP=$(git ls-remote --heads "$REMOTE" "$CURRENT_BRANCH" | cut -f1)
+# capture ls-remote's own status, not a pipeline's last command: `$?` after
+# `ls-remote | cut` is cut's status and reads 0 even when the lookup failed
+REMOTE_TIP_RAW=$(git ls-remote --exit-code --heads "$REMOTE" "$CURRENT_BRANCH")
+REMOTE_TIP_STATUS=$?   # 0 found · 2 no such ref · anything else: the lookup itself failed
+REMOTE_TIP=$(echo "$REMOTE_TIP_RAW" | cut -f1)
 ```
+A `REMOTE_TIP_STATUS` of **2** means the remote branch does not exist — the remote-branch row simply
+never appears (the `git branch -r --list` check above already agrees). Anything **other than 0 or 2**
+means the lookup failed, so this run has no remote tip at all: carry that status into step 5, whose
+re-validation reports it as a failed lookup rather than as a moved tip, and never as a completed
+cleanup. Without it an unreadable capture would leave `REMOTE_TIP` empty and masquerade as a tip that
+moved, naming a commit that never existed.
 `git ls-remote` prints `<oid>\t<ref>`, so the `cut -f1` is what pulls the OID out — the raw line is
 neither a comparable value nor a usable lease.
 **Ledger:** present when a `PR_NUMBER` was captured above — the PR's `flow:review-comments`
@@ -425,7 +448,11 @@ the base is wanted only as a checkout target:
 > "Влитость подтверждена состоянием PR, но без базовой ветки некуда переключиться, чтобы удалить
 > worktree и локальную ветку. Какая ветка базовая?"
 
-Validate the answer before using it — it must resolve to a real ref:
+Validate the answer before using it — it must resolve to a real ref **and must not be
+`CURRENT_BRANCH`**, which is the same guard the inferred candidates carry in step 1 and fails the
+same way: a base equal to the branch reports "merged" unconditionally. An answer naming the current
+branch — a name copied out of the prompt without thinking, most likely — is rejected like any other
+unusable answer, saying why, and the question is asked once more.
 `git show-ref --verify --quiet "refs/remotes/$REMOTE/<answer>"` in remote mode, or
 `git show-ref --verify --quiet "refs/heads/<answer>"` in local-only mode. Bind the answer to a shell
 variable and reference it **quoted** everywhere; never paste it into a command unquoted — a branch
@@ -773,8 +800,10 @@ Fixed order — beads before git, ledger last:
      `gh pr view` run after that point would resolve the wrong branch's PR, or, in worktree mode
      after the `cd`, the main repo root's own checked-out branch, a different branch again.
    - Re-read the tips step 1 captured, against `LOCAL_TIP` and, in remote mode, `REMOTE_TIP`: the
-     local tip, `git rev-parse "$CURRENT_BRANCH"`, and, in remote mode, the remote tip,
-     `git ls-remote --heads "$REMOTE" "$CURRENT_BRANCH"`.
+     local tip, `git rev-parse "$CURRENT_BRANCH"`, and, in remote mode, the remote tip, with the
+     **same `--exit-code` form step 1 used** — `git ls-remote --exit-code --heads "$REMOTE"
+     "$CURRENT_BRANCH"` — capturing its status before any pipe, since `$?` after `ls-remote | cut`
+     is `cut`'s status and reads 0 even when the lookup failed.
    - The verdict gates **all four** destructive rows — worktree, local branch, remote branch,
      ledger — not only the remote push:
      - fresh `PR_STATE == OPEN`, or the lookup fails (`UNKNOWN`) → the remote branch and the ledger
@@ -784,10 +813,19 @@ Fixed order — beads before git, ledger last:
      - the local tip no longer matches `LOCAL_TIP` → the local branch and the worktree are skipped,
        with a summary line naming the new commit. Mergedness was established against the old tip and
        says nothing about the new one.
-     - the remote-tip re-read comes back **empty** → this is not a moved tip, it is the remote branch
-       already being gone — GitHub's auto-delete-on-merge is the ordinary cause (see "Remote Branch
-       Already Deleted" below). There is no new commit to name, so the push is skipped and recorded as
-       that same ordinary, non-blocking "already deleted" line, never as a failure.
+     - the remote-tip re-read **exits 2** (no such ref) → this is not a moved tip, it is the remote
+       branch already being gone — GitHub's auto-delete-on-merge is the ordinary cause (see "Remote
+       Branch Already Deleted" below). There is no new commit to name, so the push is skipped and
+       recorded as that same ordinary, non-blocking "already deleted" line, never as a failure.
+     - the remote-tip re-read **fails any other way** (exit 128 and friends — no network, no auth, the
+       remote gone) → the branch's state is unknown, not absent. Empty output alone cannot tell the two
+       apart, which is why the `--exit-code` form is required: measured on git 2.47, an absent ref
+       exits **2**, a found one **0**, and an unreachable remote **128**, while all three print nothing
+       usable to stdout. Treat it exactly like the failed PR lookup above — skip the remote branch
+       **and** the ledger purge, each with a summary failure line naming the failed lookup. A
+       re-validation the run could not perform is a reason to refuse, never a licence to record the
+       cleanup as done; step 1's capture is subject to the same rule, and a `REMOTE_TIP_STATUS` that
+       was neither 0 nor 2 means there is no lease value to push with either.
      - the remote-tip re-read resolves to a **different OID** than `REMOTE_TIP` → this is the moved-tip
        case: the remote branch is skipped, with a summary line naming the new commit, exactly like a
        moved local tip.
@@ -1253,7 +1291,8 @@ out there, the local branch delete is skipped too. Both show up as summary lines
 ### Remote Branch Already Deleted
 
 Since step 5's re-validation block re-reads the remote tip before touching anything, an **empty**
-`git ls-remote` there already catches the common case — the push is skipped outright and recorded
+`git ls-remote --exit-code` there already catches the common case — **exit 2**, not empty output,
+which no longer distinguishes anything on its own — so the push is skipped outright and recorded
 here, without ever running (see step 5, item 5). What follows is now the narrow race left over: the
 ref existed at that re-read and vanished before the push landed.
 

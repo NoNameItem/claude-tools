@@ -160,7 +160,7 @@ D2.1, which updates remote-tracking refs and nothing else:
 |---|---|
 | Current branch | `git branch --show-current` |
 | Repository mode | `git remote` — empty → local-only, else remote mode |
-| Base branch | first that resolves: the PR/MR's own target (`gh pr view --json baseRefName`), then `git symbolic-ref --quiet refs/remotes/<remote>/HEAD` (restored with `git remote set-head <remote> --auto` when missing), then the branch's upstream when it is not the branch itself, then `<remote>/master`, then `<remote>/main`; local-only: first existing of local `master`, `main`. Yields two values — `BASE_REF` (`origin/master`, the comparison base) and `BASE_LOCAL` (`master`, the checkout target). None resolves → the run stops (D2.4) |
+| Base branch | first that resolves **and is not `CURRENT_BRANCH`**: the PR/MR's own target (`gh pr view --json baseRefName`), then `git symbolic-ref --quiet refs/remotes/<remote>/HEAD` (restored with `git remote set-head <remote> --auto` when missing), then the branch's upstream, then `<remote>/master`, then `<remote>/main`; local-only: first existing of local `master`, `main`. Yields two values — `BASE_REF` (`origin/master`, the comparison base) and `BASE_LOCAL` (`master`, the checkout target). None resolves → the run stops (D2.4) |
 | **Mergedness** | `git merge-tree --write-tree <base> <branch>` == `git rev-parse <base>^{tree}`, unless `PR_STATE == MERGED` (D2.2), which confirms outright regardless |
 | PR state | `gh pr view --json state,url,number,baseRefName` — remote mode only; a failed lookup is `UNKNOWN`, not "no PR" (D2.6) |
 | Task | session context → branch → `flow-find-leaf` |
@@ -170,7 +170,7 @@ D2.1, which updates remote-tracking refs and nothing else:
 | Worktree | `flow-in-worktree` |
 | Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it |
 | Remote branch | `git branch -r` |
-| Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --heads <remote> <branch>` (OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>`) — re-read in D5's re-validation, before either branch delete |
+| Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --exit-code --heads <remote> <branch>`, capturing its status **before** any pipe (`$?` after `ls-remote \| cut` is `cut`'s) and the OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>` — re-read in D5's re-validation, before either branch delete |
 | Ledger | present when a `PR_NUMBER` was obtained |
 
 Three decisions differ from today's behaviour:
@@ -185,16 +185,17 @@ The remote is resolved **before** the fetch and named in it — `git fetch "$REM
 whose only remote carries another name fetches nothing, or fails, and every comparison below then
 runs on stale remote-tracking refs. The same rule governs the `git pull` in D5's item 5.
 
-The chain, first hit wins:
+The chain, first hit wins — and **no candidate may name the current branch**, for the reason given
+below the list; one that does falls through like a candidate the remote does not have:
 
 1. **the PR/MR's own target** — `gh pr view --json baseRefName` (GitLab:
    `glab mr view <iid> --output json --jq .target_branch`);
 2. `git symbolic-ref --quiet refs/remotes/<remote>/HEAD`, restoring the symref with
    `git remote set-head <remote> --auto` when it is missing;
-3. the branch's own upstream (`git rev-parse --abbrev-ref @{upstream}`), **only** when it names
-   something other than the current branch — normally it names the branch itself, and a branch
-   compared with itself is "merged" unconditionally;
-4. `<remote>/master`, then `<remote>/main`.
+3. the branch's own upstream (`git rev-parse --abbrev-ref @{upstream}`) — where the guard matters
+   most, since the upstream normally names the branch itself;
+4. `<remote>/master`, then `<remote>/main` — the one candidate that needs no guard, since a task
+   branch of that name is a branch mismatch and D2.4 refuses every branch row there anyway.
 
 Each candidate is validated against `refs/remotes/<remote>/<name>` **where it is chosen**, and one
 the remote does not have falls through to the **next candidate** — not to `master`/`main` and not to
@@ -207,6 +208,17 @@ whole feature lands, so the safety check would refuse to close exactly the tasks
 most often — a regression against the old skill, which only checked that a PR existed. The PR target
 is the precise answer to "where was this work supposed to land": the feature branch for a subtask,
 the default branch for a feature.
+
+**No candidate may be `CURRENT_BRANCH` itself.** A base equal to the branch makes `merge-tree`
+compare it with itself and report "merged" unconditionally — a confirmed verdict for work that
+landed nowhere, and with it the branch deletions. The guard is easiest to see on the upstream, which
+usually *is* `<remote>/<branch>`, but the other inferred candidates reach the same place: the
+remote's HEAD symref names the task branch whenever the remote's default is that branch — the
+ordinary state of a repository whose remote holds one branch — and a PR's target carries the same
+name as the current branch when the PR comes from a fork, where `refs/remotes/<remote>/<base>`
+resolves back to our own branch. The conventional `master`/`main` tail needs no guard: a task branch
+of that name is a branch mismatch, and D2.4 refuses every branch row there anyway. The same
+condition applies to the answer D2.4 collects.
 
 `git symbolic-ref refs/remotes/origin/HEAD` is only the **second candidate**: that ref is frequently
 absent or not a symbolic ref (this repository has none at all:
@@ -287,7 +299,8 @@ The answer is validated before use — it must resolve to a real ref (`git show-
 `refs/remotes/<remote>/<answer>` in remote mode, `refs/heads/<answer>` locally) and is referenced
 quoted everywhere, since a branch name may carry shell metacharacters. A valid answer sets the base
 and the run resumes the comparison from `merge-tree` as if D2.1 had resolved it; an answer naming no
-ref is asked once more; a second failure, or a refusal, stops the run with nothing closed, deleted or
+ref — or naming `CURRENT_BRANCH`, which fails the same self-comparison way D2.1's candidates do —
+is asked once more; a second failure, or a refusal, stops the run with nothing closed, deleted or
 synced. Asking is a pre-scenario clarification, like the two task-identity questions and D2.2's
 case-4 mergedness question — it does not weaken "one scenario, one approval", which is about the
 scenario itself.
@@ -541,7 +554,12 @@ Fixed order — beads first, git second:
      `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
      meaning the task's branch partway through;
    - re-reads the tips D2 captured — the local tip (`git rev-parse <branch>`) and, in remote mode,
-     the remote tip (`git ls-remote --heads <remote> <branch>`).
+     the remote tip (`git ls-remote --exit-code --heads <remote> <branch>`). The `--exit-code` form is
+     required because empty output alone conflates "no such ref" with "the lookup failed": measured on
+     git 2.47, an absent ref exits **2**, a found one **0**, an unreachable remote **128**, and all
+     three print nothing usable. Exit 2 is the ordinary already-deleted case; any other failure means
+     the branch's state is unknown and is treated like a failed PR lookup — the remote branch and the
+     ledger purge are both skipped with a failure line, never recorded as cleanup done.
 
    Its verdict gates **all four** destructive rows, not only the remote push: a fresh `PR_STATE ==
    OPEN`, or a lookup failure (`UNKNOWN`), skips the remote branch and the ledger purge (item 6),
