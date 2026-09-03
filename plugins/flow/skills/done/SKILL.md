@@ -20,13 +20,13 @@ correction reprints the whole scenario rather than being applied silently.
 | Step | Action | Key Point |
 |------|--------|-----------|
 | 1. **Collect state** | Branch, mergedness, task, parents, plan, worktree, ledger | One pass, no questions; the only writes are `git fetch` and restoring the remote's HEAD symref |
-| 2. **Safety check: is the work merged?** | Compare trees with `git merge-tree` | Not merged → stop, point to `finishing-a-development-branch` |
+| 2. **Safety check: is the work merged?** | `PR_STATE == MERGED` confirms outright; else compare trees with `git merge-tree` | First match wins: `MERGED` confirms; else equal trees confirm silently; else `OPEN` stops, pointing to `finishing-a-development-branch`; else ask |
 | 3. **Scenario and the single question** | Print Сделаю / Не буду and ask once | Everything the run will do is in this one block |
 | 4. **Handle the answer** | Approve / correct / refuse | Correction reprints the full scenario and asks again |
 | 5. **Execute** | Fixed order: beads, plan, sync, git, ledger | Errors don't block, except a failed `bd close`, which skips parents and the plan; each becomes a summary line |
 | 6. **Summary** | Report the actual outcome per item | Names every divergence from the approved scenario |
 
-**Key behavior:** One scenario covers everything — parent closing, the plan's fate, branch/worktree/remote deletion, the ledger. Epics are not closed unless the user asks. `flow-sync push` always runs. Mergedness against the PR's own target branch, not PR existence, is the safety-check signal.
+**Key behavior:** One scenario covers everything — parent closing, the plan's fate, branch/worktree/remote deletion, the ledger. Epics are not closed unless the user asks. `flow-sync push` always runs. Mergedness is decided by git — tree equality against the PR's own target branch — except when `PR_STATE == MERGED`, which settles it outright even over a stale tree mismatch; a live `OPEN` PR still stops the run.
 
 ## Workflow
 
@@ -139,13 +139,14 @@ if [ -z "$BASE_LOCAL" ]; then
 else
   MERGED_TREE=$(git merge-tree --write-tree "$BASE_REF" "$CURRENT_BRANCH")
   BASE_TREE=$(git rev-parse "$BASE_REF^{tree}")
-  # equal → the branch adds nothing to the base → merged (survives squash and rebase)
+  # equal → the branch adds nothing to the base → merged (survives squash and rebase,
+  # but decays once the base edits the same lines — step 2 checks PR_STATE first)
   WORKTREE_DIRTY=$(git status --porcelain --untracked-files=all)
   # non-empty → the working copy holds content that exists nowhere else (gates the worktree row)
 fi
 ```
 
-Eight rules go with it:
+Nine rules go with it:
 - **Each candidate is validated where it is chosen, and a bad one falls through to the next.** A
   candidate is accepted only if `refs/remotes/$REMOTE/<name>` exists; otherwise the chain continues
   with the following candidate, never straight to `master`/`main` and never to `NO_BASE`. A target
@@ -187,6 +188,15 @@ Eight rules go with it:
   states). They do not need separating: a ref reachable from the base can be deleted without
   losing a commit, by construction. What *can* be lost is uncommitted content in the working copy,
   and `WORKTREE_DIRTY` measures exactly that.
+- **The tree comparison is the *local* signal; `PR_STATE == MERGED` outranks it.**
+  `git merge-tree --write-tree` performs a real three-way merge against the base **as it stands
+  now**, not as it stood when the branch actually merged, so its report decays. Measured on git
+  2.47: right after a squash merge, `MERGED_TREE == BASE_TREE`; once the base later edits the same
+  lines the branch touched, `git merge-tree` exits 1 with `CONFLICT (content)` and a differing tree;
+  once the base deletes a file the branch touched, `CONFLICT (modify/delete)`, same — both read as
+  "not merged" even though the branch did merge. `PR_STATE` records a fact about the past and does
+  not decay this way, so step 2's ladder checks it first and lets a `MERGED` state override a stale
+  tree mismatch.
 - **`WORKTREE_DIRTY` gates the worktree row** — directly, and the local-branch row through it,
   because HEAD stays in a worktree that is not removed (step 3). It is the direct signal for the
   only irreversible loss this skill can cause on its own: removing a working copy that holds the
@@ -199,7 +209,11 @@ Eight rules go with it:
   cleanup it is part of. When the plan row is *refused* — several candidates matched, or git tracks
   the file — those files count as dirt again, because nothing is going to delete them. A modified
   tracked plan is exactly that case: it is refused, so it keeps the worktree row out of "Сделаю"
-  like any other uncommitted change.
+  like any other uncommitted change. `--untracked-files=all` still does not surface **gitignored**
+  files — it expands untracked directories, not ignore rules. That is deliberate, not an oversight:
+  a gitignored file is disposable by construction (the plan files themselves live in a gitignored
+  directory and are meant to vanish with the worktree), so removal is blocked only by uncommitted
+  or unmerged content, never by ignored files.
 
 `git merge-tree --write-tree` requires git >= 2.38. If it is unavailable, say so, print the branch
 and the base you could not compare, and ask the user to confirm the work is merged — step 2 defines
@@ -235,6 +249,12 @@ before the scenario is printed, and it does not weaken "one scenario, one approv
 itself still gets exactly one approval; this is a clarification the run needs before it can even be
 assembled.
 
+A fourth exists for the same reason, about mergedness itself: when the branch matches the task and
+none of `PR_STATE == MERGED`, `MERGED_TREE == BASE_TREE` or `PR_STATE == OPEN` settles it (step 2's
+ladder, case 4), the run asks the user to confirm the branch is merged before it can proceed. Like
+the other three, it is resolved before the scenario is printed and does not weaken "one scenario,
+one approval" — the answer only feeds the verdict the scenario is built from.
+
 **Branch match:** does `CURRENT_BRANCH` actually belong to the resolved task?
 
 ```bash
@@ -249,10 +269,29 @@ those apply to the task regardless of which branch we happen to be on.
 
 **Parent chain:** `bd show {task-id}` upwards — id, type (`epic` or not), and open-children count
 for each ancestor. **Count the children this run will close as already closed:** exclude the task
-being closed, and exclude every lower ancestor this same scenario already lists for closing. The
+being closed — but **only when its own closing row actually lands in "Сделаю"**; a task whose row
+defaulted to "Не буду" because it still has in_progress children (see "Task status and children"
+below) is *not* closing, so it counts as an open child for its parent's tally. Excluding it anyway
+would print a parent under "Сделаю" whose premise — that its last open child closes here — is
+already known to be false at collection time. Also exclude every lower ancestor this same scenario
+already lists for closing. The
 counts must describe the state step 5 acts in (the task is closed at 5.1, parents at 5.2), not the
 state at collection time — counted literally, a parent whose last open child is the very task being
 closed could never qualify, and the container-parent row would never fire at all.
+
+**Task status and children.** The same `bd show {task-id}` call already issued above for the
+parent chain also carries the task's own `status` and its children — read both, no extra
+round-trip, for **every** resolution source (session context, the branch, or `flow-find-leaf`
+alike), not only the last resort. Two things follow, expressed as scenario state rather than a
+stop:
+
+- **The task has children that are `in_progress`** → the "Close the task" row goes to "Не буду",
+  with the reason naming them, e.g. `не буду закрывать claude-tools-elf.59 — есть незакрытые
+  подзадачи (elf.59.2, elf.59.3)`. Like the epic row, this is a **default, not a prohibition**: a
+  correction can move it back into "Сделаю", because the user may know better.
+- **The task itself is not `in_progress`** (already closed, or still open and not yet started) →
+  do not refuse anything; state the fact in the scenario header next to the task, so it is visible
+  before the single approval.
 
 **Plan file.** Two sources, check in order:
 
@@ -312,10 +351,23 @@ step 3 gates the worktree, the local branch, the remote branch and the ledger on
 plan is **not** gated on it — the plan belongs to the task, not to the branch (step 3).
 
 **If step 1 printed `NO_BASE`** (no PR target, no remote HEAD symref even after
-`git remote set-head --auto`, no distinct upstream, no `master`, no `main`): there is nothing to
-compare against, and this comparison guards every deletion the run could make. The chain exhausted
+`git remote set-head --auto`, no distinct upstream, no `master`, no `main`): the chain exhausted
 what it can infer, but the user knows the answer — so ask, in plain text, which branch is the base,
-and wait for it. Plain text, never a structured dialog: a structured dialog auto-submits its pre-selected
+and wait for it.
+
+**Separate the two things a base is for**, because `PR_STATE` can settle one of them on its own:
+
+- *Establishing mergedness.* Case 1 of the ladder below confirms on `PR_STATE == MERGED` alone,
+  with no comparison and therefore no base. So when the PR is `MERGED`, the missing base does **not**
+  leave mergedness unknown, and the message must not claim it does.
+- *Having somewhere to stand in step 5.* `git worktree remove` and `git branch -D` both need the run
+  to check out something other than the branch being deleted, and `BASE_LOCAL` is that target. This
+  need is real regardless of `PR_STATE`, which is why the question is still asked.
+
+Word the question for whichever of the two applies. If the user declines to name a base while
+`PR_STATE == MERGED`, do not stop: mergedness stands, so the task, the parents, the plan and the
+sync proceed, and only the rows that need a checkout target — the worktree and the local branch —
+go to "Не буду" with that reason. A refusal stops the run only when mergedness is also unsettled. Plain text, never a structured dialog: a structured dialog auto-submits its pre-selected
 option after the AFK timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s; `claude-tools-6q4`), and a base
 question is exactly the kind of answer that must not be guessed by a timeout.
 
@@ -323,6 +375,12 @@ question is exactly the kind of answer that must not be guessed by a timeout.
 > ветки, ни `master`, ни `main`.
 >
 > Без базы проверка влитости невозможна, а на ней держатся все удаления. Какая ветка базовая?"
+
+When `PR_STATE == MERGED`, replace the second line — влитость уже подтверждена состоянием PR, and
+the base is wanted only as a checkout target:
+
+> "Влитость подтверждена состоянием PR, но без базовой ветки некуда переключиться, чтобы удалить
+> worktree и локальную ветку. Какая ветка базовая?"
 
 Validate the answer before using it — it must resolve to a real ref:
 `git show-ref --verify --quiet "refs/remotes/$REMOTE/<answer>"` in remote mode, or
@@ -350,38 +408,81 @@ refusing here would make the skill unusable from `master` — but every branch/w
 candidate is refused, not offered (see step 3), and the header states outright that mergedness was
 not checked.
 
-**If the branch matches the task and step 1 found it not merged into the base:**
+**If the branch matches the task:** the tree comparison alone is not the final word — `git
+merge-tree` re-runs against the base **as it stands now**, and once the base has moved over the
+same lines the branch touched, an already-merged branch reads as a conflict (see the "Nine rules"
+above). `PR_STATE` records a fact about the past and does not decay that way. Apply this four-case
+ladder, evaluated top to bottom — the **first** case that matches decides the verdict:
 
-**STOP** and inform the user:
+1. **`PR_STATE == MERGED`** → verdict **confirmed**, no matter what the tree comparison found. The
+   platform is asserting a historical fact — this branch was merged into the PR's target — and that
+   target is the first base candidate step 1 resolves, so it is normally the very base being
+   compared against. No git arithmetic overrides it. When the PR's target no longer resolves on the
+   remote (deleted after the merge), step 1 falls through to a later candidate and the comparison
+   then runs against a substitute base — this case still confirms off `PR_STATE` alone, which needs
+   no base at all, but the tree-mismatch note below may then reflect that substitution rather than
+   anything about the branch.
 
-> "Branch `{branch-name}` has not been merged into `{base}`.
->
-> Use `superpowers:finishing-a-development-branch` to properly complete this work (handles merge/PR/cleanup and task closure together)."
+   **If additionally `MERGED_TREE != BASE_TREE`** (when a tree comparison ran at all — under the
+   git-version guard there is nothing to compare, and this note does not apply): the branch has
+   content the base does not, most often commits pushed after the merge. Do not refuse — the
+   verdict stays confirmed — but the scenario header must say so, on its own line:
 
-Exit. Do not continue the workflow — nothing is closed, nothing is deleted, nothing is synced.
+   > Внимание: PR смержен, но в ветке есть изменения, которых нет в базе
 
-**If the git-version guard from step 1 fired** (no `git merge-tree --write-tree` available), ask
-the user directly to confirm the branch is merged, and wait for the answer:
+   so the user sees it before the single approval. This is surfaced, not refused: PR state is a
+   fact about the past, tree equality is a fact about now, and the two disagreeing is information
+   the user needs, not a reason to strand the run.
 
-- **"да" / "yes"** → continue to step 3 with mergedness **unconfirmed**. A verbal claim permits
-  closing the task, closing eligible parents, handling the plan and running `flow-sync push` —
-  none of which destroys anything — but **it never counts as the check**: the worktree, the local
-  branch, the remote branch and the ledger all go to "Не буду" with the reason "влитость не
-  подтверждена (нет `git merge-tree`)". The plan is deliberately not in that list: its fate
-  follows the task, not the branch.
-- **"нет" / anything not an affirmative** → treat it exactly like a failed safety check: **STOP**
-  with the same message as the not-merged case above, and exit.
+2. **`MERGED_TREE == BASE_TREE`** (and case 1 did not already match) → verdict **confirmed** —
+   continue silently to step 3. No output yet.
 
-Do not silently treat an unconfirmable state as merged, and do not fall back to
-`git branch --merged`.
+   A branch that never committed anything lands in this case too, and that is correct: its tip is
+   reachable from the base, so deleting its refs cannot lose a commit. Whatever such a branch was
+   for may still be sitting uncommitted in the working copy — that is a separate risk, carried by
+   the worktree row alone and guarded by `WORKTREE_DIRTY` in step 3, never by a mergedness verdict.
 
-**If the branch matches the task and step 1 found `MERGED_TREE == BASE_TREE`:** verdict
-**confirmed** — continue silently to step 3. No output yet.
+3. **`PR_STATE == OPEN`** (and neither case above matched) → verdict **not merged** — **STOP** and
+   inform the user:
 
-A branch that never committed anything lands in this case too, and that is correct: its tip is
-reachable from the base, so deleting its refs cannot lose a commit. Whatever such a branch was for
-may still be sitting uncommitted in the working copy — that is a separate risk, carried by the
-worktree row alone and guarded by `WORKTREE_DIRTY` in step 3, never by a mergedness verdict.
+   > "Branch `{branch-name}` has not been merged into `{base}`.
+   >
+   > Use `superpowers:finishing-a-development-branch` to properly complete this work (handles merge/PR/cleanup and task closure together)."
+
+   Exit. Do not continue the workflow — nothing is closed, nothing is deleted, nothing is synced. A
+   live PR means the work has not landed; asking the user to override that would be wrong.
+
+4. **Otherwise** — `PR_STATE` is `NO_PR`, `UNKNOWN`, a `CLOSED` PR whose tree did not match, or the
+   git-version guard from step 1 fired (no `git merge-tree --write-tree` available): none of the
+   signals confirm or refute the merge. This is the single "cannot confirm from the signals"
+   branch — the git-version guard used to be handled as a case of its own; it is now just one of
+   the reasons this case fires. Ask the user directly to confirm the branch is merged, in **plain
+   text**, and wait for the answer:
+
+   > "Не могу подтвердить влитость ветки `{branch-name}` в `{base}` по имеющимся сигналам ({reason:
+   > нет `git merge-tree`, PR не смержен по данным платформы, состояние PR не удалось выяснить, или
+   > сравнение с базой неоднозначно}). Подтвердите, что работа влита? (yes/no)"
+
+   Plain text, never a structured dialog: a structured dialog auto-submits its pre-selected option
+   after the AFK timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s; `claude-tools-6q4`), and this is
+   exactly the kind of answer that must not be guessed by a timeout, same as the base question
+   above.
+
+   - **"да" / "yes"** → continue to step 3 with mergedness **unconfirmed**. A verbal claim permits
+     closing the task, closing eligible parents, handling the plan and running `flow-sync push` —
+     none of which destroys anything — but **it never counts as the check**: the worktree, the
+     local branch, the remote branch and the ledger all go to "Не буду", with a reason that names
+     the actual cause rather than a fixed phrase — "влитость не подтверждена (нет `git
+     merge-tree`)" when the guard fired, "влитость не подтверждена (сравнение с базой
+     неоднозначно — база сместилась)" when a tree comparison ran but conflicted or otherwise
+     disagreed with the platform, and the equivalent naming `NO_PR`/`UNKNOWN`/`CLOSED` when that is
+     why case 4 fired instead. The plan is deliberately not in that list: its fate follows the
+     task, not the branch.
+   - **"нет" / anything not an affirmative** → treat it exactly like a failed safety check: **STOP**
+     with the same message as case 3 above, and exit.
+
+   Do not silently treat an unconfirmable state as merged, and do not fall back to
+   `git branch --merged`.
 
 ### 3. Scenario and the single question
 
@@ -414,14 +515,15 @@ check that did not run:
 |---|---|
 | Merged, remote mode | `Ветка  feature/… → влита в origin/master (PR #138 MERGED)` |
 | Merged, local-only | `Ветка  feature/… → влита в master (локальный репозиторий, PR/remote нет)` |
+| `PR_STATE == MERGED` but `MERGED_TREE != BASE_TREE` (case 1's second line) | `Ветка  feature/… → влита в origin/master (PR #138 MERGED)` then, on its own line, `Внимание: PR смержен, но в ветке есть изменения, которых нет в базе` |
 | `BRANCH_MISMATCH` | `Ветка  master — не относится к задаче {task-id}; влитость не проверялась` |
-| git < 2.38, user answered "да" | `Ветка  feature/… — влитость не подтверждена (нет git merge-tree, подтверждена на словах)` |
+| Case 4, user answered "да" (git < 2.38, one of several causes) | `Ветка  feature/… — влитость не подтверждена (нет git merge-tree, подтверждена на словах)` |
 
 **Defaults for the nine checklist rows:**
 
 | Item | Default | Appears when |
 |---|---|---|
-| Close the task | do | always |
+| Close the task | do — **Не буду**, default only, when the task still has `in_progress` children | always |
 | Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, the branch matches the task, mergedness is confirmed, and `WORKTREE_DIRTY` is empty |
 | Local branch | delete, always `-D` | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
@@ -430,6 +532,13 @@ check that did not run:
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
 | Epic parent | do not close — default only, overridable by a correction | same condition, type `epic` |
 | `flow-sync push` | do | always |
+
+**The task's own children gate its own closing row**, read from the same `bd show {task-id}` call
+step 1 already makes for the parent chain. In_progress children mean the task is not actually done
+yet, so its row goes to "Не буду" with the reason naming them — a **default, not a prohibition**,
+exactly like the epic row: a correction can move it back into "Сделаю". A task that is not itself
+`in_progress` (already closed, or never started) is not refused on that account; the fact appears
+in the scenario header instead, next to the task.
 
 Four gates guard the four branch-gated rows (worktree, local branch, remote branch, ledger), and
 each has its own named refusal in "Не буду". Two apply to all four: the branch belongs to the task
@@ -529,12 +638,15 @@ deliberate refusal, not something to omit silently.
 line or be omitted for an explicitly named reason. A skipped row is now a silent action or a silent
 omission — not merely an unasked question.
 
-**"Не буду" lists only deliberate refusals.** The full set: the epic (unless a correction moved it
+**"Не буду" lists only deliberate refusals.** The full set: the task itself, when it still has
+`in_progress` children (unless a correction moved it into "Сделаю"); the epic (unless a correction moved it
 into "Сделаю"); the ledger of a `CLOSED`, `OPEN` or `UNKNOWN` PR; the remote branch when its PR is
 `OPEN` or its state is `UNKNOWN`; every branch-gated row (worktree, local branch,
 remote branch, ledger) when `BRANCH_MISMATCH` was found, each with the reason "ветка не относится к
 задаче {task-id}"; those same four rows (worktree, local branch, remote branch, ledger) when
-mergedness is unconfirmed — git < 2.38 answered "да" — with that reason, the plan **not** being one
+mergedness is unconfirmed — step 2's ladder reached case 4 and the user answered "да" (no `git
+merge-tree`, an inconclusive comparison, `NO_PR`, `UNKNOWN`, or a `CLOSED` PR whose tree did not
+match) — with that reason, the plan **not** being one
 of them; the worktree when the working copy is dirty, and with it the local branch, since we are
 still standing on that branch; the plan when several candidates match; and the plan when git tracks
 it. What is simply
@@ -560,7 +672,11 @@ show that the correction was understood.
 
 Fixed order — beads before git, ledger last:
 
-1. `bd close {task-id}`
+1. `bd close {task-id}` — **only when the scenario lists it under "Сделаю"** (the default, unless
+   the task itself still has `in_progress` children and no correction moved the row back). When the
+   scenario left it in "Не буду", items 2 and 3 do not run either — a parent cannot close on a
+   child that was never closed, and the plan is not deleted for work that is not done — and each
+   gets its own "не тронуто" summary line, distinct from the failure case below.
 2. Container parents, bottom-up — and the epic **only** when the approved scenario listed it under
    "Сделаю" (a correction put it there; step 3's default leaves it open). Re-read
    `bd show {parent-id}` immediately before each `bd close`: the task is now actually closed, so the
@@ -588,9 +704,21 @@ Fixed order — beads before git, ledger last:
    command would fail on every such cleanup) → `git branch -D <branch>` (only when the scenario
    listed the local branch — mergedness is confirmed and the branch matches the task; and always
    `-D`, never `-d`: tree equality already proves the tip adds nothing to the base, and `-d` would
-   refuse right after a squash merge) → `git push "$REMOTE" --delete <branch>` (only when the scenario
-   listed the remote branch — it exists, and its PR state is known and not `OPEN`). Use `$REMOTE`
-   from step 1 at every push site: the remote is not always called `origin`.
+   refuse right after a squash merge) → **immediately before** `git push "$REMOTE" --delete <branch>`
+   (only when the scenario listed the remote branch — it exists, and its PR state was known and not
+   `OPEN` at collection time), re-run step 1's PR lookup — the same two-call form
+   (`gh pr view --json state,url,number,baseRefName`, falling back to
+   `gh pr list --state all --limit 1 --json number`), never the collapsed `gh pr view || echo NO_PR`,
+   so a lookup that fails now is still distinguished from "no PR" rather than misread as one. If the
+   fresh state is `OPEN` — the branch's PR was opened or reopened while the scenario awaited
+   approval or corrections — or the fresh lookup fails (`UNKNOWN`), **skip the push** and record a
+   failure line in the summary (step 6) naming the reason: the scenario promised the deletion and
+   this did not deliver it. Otherwise push the delete. This mirrors item 2's re-read of
+   `bd show {parent-id}` immediately before each `bd close`: an irreversible action must not trust a
+   snapshot taken before the approval and any corrections. The asymmetry with step 1's `UNKNOWN`
+   rule is deliberate, not redundant: that rule guards a lookup that *failed at collection time*;
+   this one guards a lookup that *succeeded and then went stale* — different failures, both
+   refused. Use `$REMOTE` from step 1 at every push site: the remote is not always called `origin`.
    **Check out `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD and the
    `git pull` right after it fails with "You are not currently on a branch".
 6. `flow-review-ledger purge --url "$PR_URL" --number "$PR_NUMBER"` — only when the scenario listed
@@ -612,7 +740,10 @@ closed, and the plan is deleted because the work it planned is done. If item 1 f
 is false, so items 2 and 3 are **skipped** and each gets its own summary line naming the reason.
 Git cleanup (item 5) and the ledger (item 6) are unaffected: they depend on the branch's state, not
 on the task's, and stay independent and non-blocking. Item 4 still runs — syncing whatever beads
-state does exist costs nothing and loses nothing.
+state does exist costs nothing and loses nothing. This is a different situation from the scenario
+having left item 1 in "Не буду" over `in_progress` children (step 3): that is a decision made
+before execution starts, not a failure, but it skips items 2 and 3 for the identical reason — the
+premise they need never became true.
 
 **One coupling:** if `git worktree remove` fails, deleting the local branch is skipped (we are
 still on it) — a summary line, not a silent omission.
@@ -652,9 +783,9 @@ as silent absences.
 
 ### This Skill DOES:
 ✅ Collect all state — branch, mergedness, task, parents, plan, worktree, ledger — before deciding anything
-✅ Determine mergedness through git (`git merge-tree`), not PR existence
+✅ Determine mergedness through git (`git merge-tree`) by default, with a `MERGED` `PR_STATE` overriding a stale tree mismatch and an `OPEN` one stopping the run — not mere PR existence
 ✅ Find in_progress leaf task (session context → branch → `flow-find-leaf`)
-✅ Close task with bd close
+✅ Close task with bd close, unless the task itself still has `in_progress` children (default refusal, overridable by a correction)
 ✅ Find plan file (linked in description OR untracked in `docs/plans/` / `docs/superpowers/plans/`)
 ✅ Remove `Plan:` link from description after delete
 ✅ Check parents recursively; close non-epic containers whose children are all closed
@@ -673,9 +804,10 @@ as silent absences.
 ❌ Run tests or builds
 ❌ Ask per action — everything is decided once, in the scenario
 ❌ Close epics by default — they go in "Не буду" unless the user asks for it in a correction
+❌ Close the task itself by default when it still has `in_progress` children — that row goes in "Не буду" with the reason named, unless a correction says otherwise
 ❌ Invoke `gh` without a remote — local-only mode has no platform to check
 ❌ Search for branches beyond the current one
-❌ Delete the worktree, the local branch, the remote branch or the ledger when mergedness is unconfirmed — a verbal "да" on a too-old git is not the check; the plan is not on that list, it follows the task
+❌ Delete the worktree, the local branch, the remote branch or the ledger when mergedness is unconfirmed — a verbal "да" answered to step 2's case 4 (no `git merge-tree`, an inconclusive comparison, `NO_PR`, `UNKNOWN`, or a `CLOSED` PR whose tree did not match) is not the check; the plan is not on that list, it follows the task
 ❌ Remove a worktree holding uncommitted or untracked content — that is `git status --porcelain`, never a commit count
 ❌ Delete the remote branch while its PR is `OPEN`, or while its state is unknown because the `gh` lookup failed — either could close a live PR
 ❌ Delete a plan file that git tracks, modified or not, by default — it stays in git unless a correction says otherwise; only untracked plans are removed on the default path
@@ -684,8 +816,10 @@ as silent absences.
 ❌ Block task closure if cleanup fails
 
 **Scope note:** The safety check (step 2) stops when no base can be determined, and when the
-branch belongs to the task but its tree doesn't match the base's — regardless of PR state — and
-points to `superpowers:finishing-a-development-branch`. Cleanup (worktree, local branch, remote
+branch belongs to the task, its tree doesn't match the base's, and `PR_STATE == OPEN`. A `MERGED`
+PR_STATE overrides a tree mismatch instead of stopping; any other state (`NO_PR`, `UNKNOWN`, a
+`CLOSED` PR whose tree didn't match, or no tree comparison at all) asks the user rather than
+stopping outright. A hard stop points to `superpowers:finishing-a-development-branch`. Cleanup (worktree, local branch, remote
 branch, ledger) lives inside the single scenario (step 3) and applies only when the branch matches
 the closed task **and** mergedness is confirmed; the remote branch additionally requires that the
 PR's state is known and not `OPEN`, and the worktree that its working copy is clean. The plan is
@@ -955,8 +1089,9 @@ Agent: [Step 1: gh pr view returns state MERGED and baseRefName feature/claude-t
 ```
 User: "flow:done"
 Agent: [Step 1: collects state; mergedness check finds the branch's tree differs from
-        origin/master's]
-       [Step 2: branch matches the task and is NOT merged — STOP before printing any scenario]
+        origin/master's; gh pr view reports the PR is still OPEN]
+       [Step 2: branch matches the task; the ladder's case 1 and case 2 don't match, case 3 does
+        (`PR_STATE == OPEN`) — STOP before printing any scenario]
 
        Branch `feature/claude-tools-test.1-sample` has not been merged into `origin/master`.
 
@@ -965,8 +1100,10 @@ Agent: [Step 1: collects state; mergedness check finds the branch's tree differs
 ```
 
 **Correct because:**
-- The stop is based on comparing trees, not on PR state — an OPEN or even absent PR would have
-  stopped the run the same way
+- `PR_STATE == OPEN` is what forces the unconditional stop — a live PR means the work has not
+  landed. A `NO_PR`, `UNKNOWN`, or `CLOSED`-but-mismatched branch would instead ask the user to
+  confirm the merge (case 4) rather than stop outright, and a `MERGED` PR would confirm regardless
+  of what the tree comparison found (case 1)
 - Nothing is closed, deleted, or synced before the stop
 - No scenario is printed — printing one would imply something is already waiting for approval
 
