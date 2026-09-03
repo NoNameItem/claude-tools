@@ -1,7 +1,7 @@
 ---
 name: done
 description: Complete and verify a beads task — collect branch, task, parent, plan, and cleanup state, present one scenario for a single approval, then close the task, clean up the plan, close eligible parents, and sync. Use when work is finished and verified and you want to close out the task.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(rm:*) Bash(mv:*) Bash(mkdir:*)
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(gh:*) Bash(flow-current-task) Bash(flow-current-task:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Bash(rm:*)
 ---
 
 # Flow: Done
@@ -172,11 +172,13 @@ Eight rules go with it:
   `git rev-parse --abbrev-ref "@{upstream}"` usually returns `$REMOTE/$CURRENT_BRANCH` — using that
   as the base would compare the branch with itself and report "merged" unconditionally. It is
   useful only where the upstream was deliberately pointed at another branch, hence the guard.
-- **No base means STOP** (`NO_BASE`, handled in step 2). An empty base would make `merge-tree`
-  error out and every guard below it meaningless — and those guards are what stand between the run
-  and irreversible deletions. Never improvise a base, and never proceed without one. Hence the
-  `if`: with no base the comparison block does not run at all, so the user sees the step 2 message
-  and not two `fatal:` lines from `merge-tree` and `rev-parse` against an empty ref.
+- **No base asks the user, and STOPs only if that goes nowhere** (`NO_BASE`, handled in step 2). An
+  empty base would make `merge-tree` error out and every guard below it meaningless — and those
+  guards are what stand between the run and irreversible deletions. Never improvise a base: step 2
+  asks which branch is the base, validates the answer against a real ref, and only STOPs when no
+  usable answer comes back. Hence the `if`: with no base the comparison block does not run at all,
+  so the user sees step 2's question (or, failing that, its STOP message) and not two `fatal:` lines
+  from `merge-tree` and `rev-parse` against an empty ref.
 - **A branch that never committed anything satisfies `MERGED_TREE == BASE_TREE` too, and no git
   command tells the two apart.** Such a branch's tip *is* the base's tip as of creation — an
   ancestor of the base, exactly like a fast-forward merge or a merge-commit merge. These are the
@@ -225,6 +227,13 @@ Two situations may require a question about task identity, both **before** print
 context and branch disagreeing (show both, ask which), and `flow-find-leaf` returning more than one
 candidate (show its list, ask which). These are the only questions the skill may ask about task
 identity. Never resolve the task by eyeballing `bd list --status=in_progress`.
+
+A third pre-scenario question exists alongside these two, about the base branch rather than task
+identity: when step 1 finds no base at all, step 2 asks which branch is the base before it can
+proceed (see "If step 1 printed `NO_BASE`" below). Like the other two, it is asked and resolved
+before the scenario is printed, and it does not weaken "one scenario, one approval" — the scenario
+itself still gets exactly one approval; this is a clarification the run needs before it can even be
+assembled.
 
 **Branch match:** does `CURRENT_BRANCH` actually belong to the resolved task?
 
@@ -276,11 +285,11 @@ task pointing at a file that no longer exists.
 
 `PLAN_TRACKED=yes` with the file present → the plan stays in git, and its row goes to "Не буду"
 (step 3). Two reasons,
-both concrete: `rm`/`mv` on a tracked file dirties the working tree immediately before
+both concrete: `rm` on a tracked file dirties the working tree immediately before
 `git worktree remove`, which then refuses (this skill never passes `--force`); and the content is in
 history anyway, so a real removal buys nothing and still costs its own commit, PR, merge and
 `flow:done` run. Local modifications change none of that — a modified tracked plan is just as
-committed, and deleting it leaves the same `D` entry in `git status`. `rm`/`mv` therefore applies
+committed, and deleting it leaves the same `D` entry in `git status`. `rm` therefore applies
 **only to untracked** plan files.
 
 Filter results by filename containing "impl" or "plan" (case-insensitive) and semantically
@@ -303,16 +312,33 @@ step 3 gates the worktree, the local branch, the remote branch and the ledger on
 plan is **not** gated on it — the plan belongs to the task, not to the branch (step 3).
 
 **If step 1 printed `NO_BASE`** (no PR target, no remote HEAD symref even after
-`git remote set-head --auto`, no distinct upstream, no `master`, no `main`): **STOP**. There is
-nothing to compare against, and this comparison guards every deletion the run could make.
+`git remote set-head --auto`, no distinct upstream, no `master`, no `main`): there is nothing to
+compare against, and this comparison guards every deletion the run could make. The chain exhausted
+what it can infer, but the user knows the answer — so ask, in plain text, which branch is the base,
+and wait for it. Plain text, never a structured dialog: a structured dialog auto-submits its pre-selected
+option after the AFK timeout (`CLAUDE_AFK_TIMEOUT_MS`, default 60s; `claude-tools-6q4`), and a base
+question is exactly the kind of answer that must not be guessed by a timeout.
 
 > "Не смог определить базовую ветку: ни цели PR, ни HEAD-симссылки у remote `{remote}`, ни upstream
 > ветки, ни `master`, ни `main`.
 >
-> Без базы проверка влитости невозможна, а на ней держатся все удаления — ничего не делаю. Скажите,
-> какая ветка базовая (или создайте `refs/remotes/{remote}/HEAD`), и запустите `/flow:done` снова."
+> Без базы проверка влитости невозможна, а на ней держатся все удаления. Какая ветка базовая?"
 
-Exit. Nothing is closed, deleted, or synced. Never guess a base to get past this.
+Validate the answer before using it — it must resolve to a real ref:
+`git show-ref --verify --quiet "refs/remotes/$REMOTE/<answer>"` in remote mode, or
+`git show-ref --verify --quiet "refs/heads/<answer>"` in local-only mode. Bind the answer to a shell
+variable and reference it **quoted** everywhere; never paste it into a command unquoted — a branch
+name may contain shell metacharacters.
+
+- **Valid answer** → set the base from it exactly as step 1 would have: `BASE_LOCAL` is the answer,
+  and `BASE_REF` is `"$REMOTE/$BASE_LOCAL"` in remote mode, `"$BASE_LOCAL"` in local-only mode.
+  Then resume step 1's mergedness comparison from `git merge-tree --write-tree` using this base, and
+  continue into this step's normal case analysis below exactly as if step 1 had resolved the base on
+  its own. The rest of the run proceeds unchanged from there.
+- **The answer names no existing ref** → say so, and ask once more.
+- **Still nothing usable** (the user declines, or the second answer resolves nothing either) →
+  **STOP**, exactly as before: nothing is closed, deleted, or synced. Never guess a base to get past
+  this.
 
 **If step 1 found `BRANCH_MISMATCH`** (the current branch is not the resolved task's branch — e.g.
 a generic branch like `master`, or an unrelated feature branch): the mergedness check describes
@@ -364,13 +390,13 @@ question. Numbering is continuous across both lists so a correction can be short
 
 ```
 Задача claude-tools-elf.59 — flow:done: сократить число подтверждений
-Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (squash, PR #138 MERGED)
+Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (PR #138 MERGED)
 
 Сделаю:
   1. закрою задачу claude-tools-elf.59
   2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
   3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
-  4. удалю локальную ветку (через -D: squash-мердж, -d откажет)
+  4. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
   5. удалю ветку на origin
   6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
   7. синхронизирую beads (flow-sync push)
@@ -386,7 +412,7 @@ check that did not run:
 
 | Situation | Second header line |
 |---|---|
-| Merged, remote mode | `Ветка  feature/… → влита в origin/master (squash, PR #138 MERGED)` |
+| Merged, remote mode | `Ветка  feature/… → влита в origin/master (PR #138 MERGED)` |
 | Merged, local-only | `Ветка  feature/… → влита в master (локальный репозиторий, PR/remote нет)` |
 | `BRANCH_MISMATCH` | `Ветка  master — не относится к задаче {task-id}; влитость не проверялась` |
 | git < 2.38, user answered "да" | `Ветка  feature/… — влитость не подтверждена (нет git merge-tree, подтверждена на словах)` |
@@ -398,7 +424,7 @@ check that did not run:
 | Close the task | do | always |
 | Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, the branch matches the task, mergedness is confirmed, and `WORKTREE_DIRTY` is empty |
-| Local branch | delete, `-D` under squash | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
+| Local branch | delete, always `-D` | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, and `PR_STATE` is known and not `OPEN` (`UNKNOWN` refuses like `OPEN`) |
 | Ledger | purge when `MERGED`; leave when `CLOSED` or `OPEN` | PR known, ledger exists, the branch matches the task, and mergedness is confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
@@ -413,16 +439,16 @@ row each: the PR's state is known and not `OPEN`, for the remote branch; and `WO
 empty, for the worktree. **The plan row is not among them** — see below.
 
 **The plan's fate does not depend on mergedness.** The plan belongs to the task, not to the
-branch: it is deleted or archived whenever the task closes, including under an unconfirmed
+branch: it is deleted whenever the task closes, including under an unconfirmed
 verdict. Two things change its default, neither of them mergedness: several candidates matched
 (below), or the file is tracked (step 1). So wherever this skill refuses "every deletion"
 for an unconfirmed verdict, it means those four rows and not the plan.
 
 **A tracked plan stays in git**, whether or not it has local modifications. Its row goes to
-"Не буду" with the reason `план закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`/`mv`
+"Не буду" with the reason `план закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`
 would dirty the tree right before `git worktree remove` refuses on it, and a real removal costs a
 whole PR → merge → `flow:done` cycle for a file whose content is in history either way. Only an
-untracked plan is deleted (or archived) by default.
+untracked plan is deleted by default.
 
 Like the epic, this is a **default, not a prohibition**: a correction can move the row into
 "Сделаю", and then step 5 deletes the file — the user may well intend to commit that deletion
@@ -445,7 +471,9 @@ reason `в рабочей копии есть незакоммиченные и�
 is deleting does not count as such content (step 1), so a repository that keeps plans untracked in
 a non-ignored directory still gets its worktree cleaned up. That `git worktree remove`
 also refuses on a dirty tree (Edge Cases) is a second line of defence behind this check, not the
-design — the skill never passes `--force`.
+design — the skill never passes `--force`. The same restraint applies to what the summary
+*recommends*: it never suggests discarding content the approval did not cover, so a manual
+remediation always inspects and preserves before it names `--force`.
 
 **A refused worktree takes the local branch with it.** When we are sitting in the worktree and it
 is not being removed, HEAD is still on the branch and `git branch -d` cannot run — step 5 already
@@ -538,8 +566,7 @@ Fixed order — beads before git, ledger last:
    `bd show {parent-id}` immediately before each `bd close`: the task is now actually closed, so the
    count the scenario promised is the count that must be observed here. If a child was opened in the
    meantime, leave the parent open and say so in the summary rather than closing it anyway.
-3. Plan: `rm` (or, when the scenario says archive, `mkdir -p docs/archive/` then `mv` into it)
-   whenever the scenario lists the plan for deletion — this
+3. Plan: `rm` whenever the scenario lists the plan for deletion — this
    fires regardless of which source found the file (linked or untracked). A plan git tracks — clean
    or modified — was filed under "Не буду" in step 3 and is left alone, unless a correction moved
    that row into "Сделаю"; then it is deleted like any other approved item. A plan already gone from
@@ -558,9 +585,10 @@ Fixed order — beads before git, ledger last:
    are standing in makes every command after it fail. Then:
    `git worktree remove <path>` → `git checkout "$BASE_LOCAL"` →
    `git pull` (**remote mode only** — a local-only repository has no upstream to pull from and the
-   command would fail on every such cleanup) → `git branch -d|-D <branch>` (`-D` only when the
-   scenario said so, i.e. mergedness
-   was confirmed under squash) → `git push "$REMOTE" --delete <branch>` (only when the scenario
+   command would fail on every such cleanup) → `git branch -D <branch>` (only when the scenario
+   listed the local branch — mergedness is confirmed and the branch matches the task; and always
+   `-D`, never `-d`: tree equality already proves the tip adds nothing to the base, and `-d` would
+   refuse right after a squash merge) → `git push "$REMOTE" --delete <branch>` (only when the scenario
    listed the remote branch — it exists, and its PR state is known and not `OPEN`). Use `$REMOTE`
    from step 1 at every push site: the remote is not always called `origin`.
    **Check out `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD and the
@@ -603,7 +631,8 @@ List the scenario items with their actual outcome, and name every divergence exp
   6. ✓ ledger PR #138 удалён
   7. ✓ beads синхронизированы
 
-Осталось вручную: git worktree remove --force .worktrees/feature-claude-tools-elf.59-flow-done
+Осталось вручную: посмотрите git status в .worktrees/feature-claude-tools-elf.59-flow-done,
+закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/feature-claude-tools-elf.59-flow-done
 ```
 
 The approval was given once and in advance — to a list, not to each action as it happened — so the
@@ -627,7 +656,7 @@ as silent absences.
 ✅ Find in_progress leaf task (session context → branch → `flow-find-leaf`)
 ✅ Close task with bd close
 ✅ Find plan file (linked in description OR untracked in `docs/plans/` / `docs/superpowers/plans/`)
-✅ Remove `Plan:` link from description after delete/archive
+✅ Remove `Plan:` link from description after delete
 ✅ Check parents recursively; close non-epic containers whose children are all closed
 ✅ Print one scenario — Сделаю / Не буду — and ask the single question
 ✅ Execute the scenario after one approval
@@ -758,13 +787,13 @@ Agent: [Step 0: bd version guard passed]
        [Step 2: branch matches the task and is merged into origin/master — continue silently]
 
        Задача claude-tools-elf.59 — flow:done: сократить число подтверждений
-       Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (squash, PR #138 MERGED)
+       Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (PR #138 MERGED)
 
        Сделаю:
          1. закрою задачу claude-tools-elf.59
          2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
          3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
-         4. удалю локальную ветку (через -D: squash-мердж, -d откажет)
+         4. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
          5. удалю ветку на origin
          6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
          7. синхронизирую beads (flow-sync push)
@@ -902,7 +931,7 @@ Agent: [Step 1: gh pr view returns state MERGED and baseRefName feature/claude-t
        Сделаю:
          1. закрою задачу claude-tools-elf.59.4
          2. удалю worktree .worktrees/feature-claude-tools-elf.59.4-base
-         3. удалю локальную ветку (через -D: squash-мердж, -d откажет)
+         3. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
          4. удалю ветку на origin
          5. удалю review ledger PR #142 (PR смержен, ревью закрыто)
          6. синхронизирую beads (flow-sync push)
@@ -961,7 +990,8 @@ out there, the local branch delete is skipped too. Both show up as summary lines
   3. ✗ worktree не удалён: содержит незакоммиченные изменения
   4. — локальная ветка не удалена (worktree занят)
 
-Осталось вручную: git worktree remove --force .worktrees/feature-claude-tools-abc-login
+Осталось вручную: посмотрите git status в .worktrees/feature-claude-tools-abc-login,
+закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/feature-claude-tools-abc-login
 ```
 
 ### Remote Branch Already Deleted
@@ -1036,7 +1066,7 @@ the only copy, so that row is refused, and the local branch with it (HEAD is sti
 
 ```
 Задача claude-tools-abc — вход по паролю
-Ветка  feature/claude-tools-abc-login → влита в origin/master (squash, PR #141 MERGED)
+Ветка  feature/claude-tools-abc-login → влита в origin/master (PR #141 MERGED)
 
 Сделаю:
   1. закрою задачу claude-tools-abc
@@ -1078,15 +1108,19 @@ resource that actually exists is refused by name:
 
 The remote has no `HEAD` symref and neither `master` nor `main` exists (or, in local-only mode,
 neither local branch exists). The mergedness criterion is what guards every deletion, so the run
-does not start:
+asks which branch is the base before it can start:
 
 ```
 Не смог определить базовую ветку: ни цели PR, ни HEAD-симссылки у remote `origin`, ни upstream
 ветки, ни `master`, ни `main`.
 
-Без базы проверка влитости невозможна, а на ней держатся все удаления — ничего не делаю. Скажите,
-какая ветка базовая (или создайте `refs/remotes/origin/HEAD`), и запустите `/flow:done` снова.
+Без базы проверка влитости невозможна, а на ней держатся все удаления. Какая ветка базовая?
 ```
+
+A valid answer (checked against a real ref) resumes step 1's mergedness comparison with it and the
+run continues into step 2's normal case analysis, unchanged from there. An answer naming no ref
+gets one more try; if that also resolves nothing, the run **STOPs** exactly as before — nothing
+closed, deleted, or synced.
 
 ### The `gh` Lookup Failed
 

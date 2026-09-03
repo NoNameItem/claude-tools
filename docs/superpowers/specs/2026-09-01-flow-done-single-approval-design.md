@@ -21,7 +21,7 @@ confirmations that do carry a choice.
 | 1 | Step 1, l. 66–79 | "PR exists: {url} (state: {state}). Proceed to close task on this branch?" | feature branch + PR exists — **any state** | always |
 | 2 | Step 2, l. 92 / 712 | "Which task is complete?" | more than one in_progress leaf | never in practice (see below) |
 | 3 | Step 4.1, l. 137 / 741 | "Which file is the implementation plan?" | several plan candidates | rare |
-| 4 | Step 4.2, l. 143–152 | "Plan file found. Delete / Archive / Keep" | plan found | when a plan exists |
+| 4 | Step 4.2, l. 143–152 | "Plan file found. Delete / Keep" | plan found | when a plan exists |
 | 5 | Steps 5–6, l. 180–230 | "Parent {id} now has all children closed. Close it too?" | parent has no open children — **recursively** | 0–N times |
 | 6 | Step 8.3, l. 262–278 | "Delete branch and associated resources?" | branch matches task | always |
 | 7 | Step 8.4 item 8, l. 300–308 | "PR #{n} is CLOSED... Delete the ledger?" | `PR_STATE=CLOSED` + ledger exists | rare |
@@ -145,7 +145,8 @@ Steps 1–8 are replaced by six:
 | 6 | **Summary** — what was done, what failed | no |
 
 Every confirmation that used to interrupt the run — parent closing, the plan's fate, branch and
-worktree deletion, the ledger, `-D` under squash — becomes a line of the scenario with a default.
+worktree deletion, the ledger, the local branch's delete flag — becomes a line of the scenario
+with a default.
 
 The safety check of step 2 is kept deliberately: it is not ritual. Only its criterion changes, from
 "a PR exists" to "the work reached the base branch" (F3).
@@ -229,13 +230,24 @@ has no PR, non-zero when the lookup itself failed. `UNKNOWN` refuses the remote-
 `OPEN` does (D3), and falls through to D2.1's next base candidate rather than yielding an empty base.
 The ledger needs no extra rule: it purges on `MERGED` alone.
 
-**D2.4. No base branch is a stop, not an improvisation.** When no candidate of D2.1's chain
+**D2.4. No base branch is a question, never a guess.** When no candidate of D2.1's chain
 resolves — no PR target, no HEAD symref even after `set-head --auto`, no distinct upstream, no
-`master`/`main` — the skill says which candidates it tried, changes nothing, and asks the user to
-name the base. Guessing one would silently re-point the criterion that gates every
-deletion. The comparison block is guarded by that resolution and does not run without a base, so
-the user sees that message alone — not two `fatal:` lines from `merge-tree` and `rev-parse` against
-an empty ref, printed before it.
+`master`/`main` — the skill says which candidates it tried and asks the user which branch is the
+base. Guessing one would silently re-point the criterion that gates every deletion; stopping outright
+would strand a whole class of repository, since D2.1's chain can only infer conventional names and a
+local-only repo whose base is `trunk` or `develop` would never get past this point.
+
+The answer is validated before use — it must resolve to a real ref (`git show-ref --verify` against
+`refs/remotes/<remote>/<answer>` in remote mode, `refs/heads/<answer>` locally) and is referenced
+quoted everywhere, since a branch name may carry shell metacharacters. A valid answer sets the base
+and the run resumes the comparison from `merge-tree` as if D2.1 had resolved it; an answer naming no
+ref is asked once more; a second failure, or a refusal, stops the run with nothing closed, deleted or
+synced. Asking is a pre-scenario clarification, like the two task-identity questions — it does not
+weaken "one scenario, one approval", which is about the scenario itself.
+
+The comparison block is guarded by that resolution and does not run without a base, so the user sees
+the question alone — not two `fatal:` lines from `merge-tree` and `rev-parse` against an empty ref,
+printed before it.
 
 **D2.5. Parent open-children counts are taken as of the moment they will be acted on.** The chain is
 collected in step 1, but the task closes in step 5.1 and parents at 5.2 — so a count excludes the
@@ -260,13 +272,13 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 
 ```
 Задача claude-tools-elf.59 — flow:done: сократить число подтверждений
-Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (squash, PR #138 MERGED)
+Ветка  feature/claude-tools-elf.59-flow-done → влита в origin/master (PR #138 MERGED)
 
 Сделаю:
   1. закрою задачу claude-tools-elf.59
   2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
   3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
-  4. удалю локальную ветку (через -D: squash-мердж, -d откажет)
+  4. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
   5. удалю ветку на origin
   6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
   7. синхронизирую beads (flow-sync push)
@@ -282,7 +294,7 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 | Close the task | do | always |
 | Plan file | **delete** when untracked; **leave in git** when tracked, clean or modified; **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
-| Local branch | delete, `-D` under squash | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
+| Local branch | delete, always `-D` | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR state known and not `OPEN` |
 | Ledger | purge when `MERGED`; **leave** when `CLOSED` or `OPEN` | PR known, ledger exists, branch matches the task, mergedness confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
@@ -325,12 +337,12 @@ plan file is not recoverable from the summary; the user names the right one as a
 file, and the `--others --modified` search surfaces committed files too once they are edited.
 A `Plan:` link may also point at a file already deleted from the working copy: `git ls-files` reads
 the index, so it still reports tracked, but there is nothing to delete and only the stale link is
-removed (D5's step 3). `rm`/`mv` on a tracked file that is present dirties the working tree in the
+removed (D5's step 3). `rm` on a tracked file that is present dirties the working tree in the
 same run that then calls
 `git worktree remove` — which refuses on a dirty tree, since the skill never passes `--force` — and
 removing it for real would cost a PR, a merge and another `flow:done` run for content that is in
 history either way. Modification does not weaken that: a modified tracked plan is just as committed,
-and `rm` leaves the same `D` entry. Its row goes to "Не буду" with that reason; `rm`/`mv` applies
+and `rm` leaves the same `D` entry. Its row goes to "Не буду" with that reason; `rm` applies
 **only to untracked** plan files. A refused plan then counts as working-copy content again for the
 worktree row, like any other uncommitted change. Like the epic, this is a **default, not a
 prohibition**: a correction moves the row into "Сделаю" and D5's step 3 then deletes the file, at the
@@ -359,8 +371,11 @@ the plan when git tracks it.
 What is simply absent from the environment (no remote, no plan, not in a worktree) is not printed at
 all: the scenario states decisions, not an inventory.
 
-`-D` is no longer a second question after `-d` refuses. The merge strategy is known in advance, so
-the scenario says up front which flag will be used and why.
+`-D` is no longer a second question after `-d` refuses. Nor is the flag conditioned on the merge
+form: step 1 establishes mergedness by tree equality, and no git command tells a squash merge from a
+fast-forward or a merge commit at that point (D2.2). Tree equality alone already proves the tip adds
+nothing to the base, so the branch is deleted with `-D` unconditionally — and the scenario says so up
+front, rather than claiming a merge strategy nothing determined.
 
 ### D4. Handling the answer (step 4)
 
@@ -381,7 +396,7 @@ Fixed order — beads first, git second:
 
 1. `bd close <task-id>`
 2. container parents, bottom-up — and the epic only when the approved scenario listed it (D3)
-3. plan: `rm` (or `mv` to the archive) + `flow-link-doc <task> Plan ""` — **untracked** plans by
+3. plan: `rm` + `flow-link-doc <task> Plan ""` — **untracked** plans by
    default; a tracked one, clean or modified, stays in git unless a correction moved its row into
    "Сделаю" (D3)
 4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
@@ -393,7 +408,7 @@ Fixed order — beads first, git second:
    later command fail) → `git worktree remove` → `git checkout <BASE_LOCAL>` (the local branch
    name — checking out `BASE_REF`/`origin/master` detaches HEAD and breaks the pull) → `git pull`
    **in remote mode only** (a local-only repository has nothing to pull from) →
-   `git branch -d|-D` → `git push <remote> --delete` (only when the scenario listed it; `<remote>`
+   `git branch -D` → `git push <remote> --delete` (only when the scenario listed it; `<remote>`
    is the detected remote, not a hard-coded `origin`)
 6. `flow-review-ledger purge`
 7. summary
