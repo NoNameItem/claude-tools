@@ -122,23 +122,27 @@ switcher, one keystroke away.
 Dependencies point one way. There are no back edges.
 
 ```
-ui  ──►  app  ──►  data  ──►  sources
- │        │         │            │
- └────────┴────►  model  ◄───────┘
+ui  ──►  service  ──►  data  ──►  sources
+ │          │           │            │
+ └──────────┴────►  model  ◄─────────┘
 ```
+
+The orchestration layer is called `service` rather than `app`: `beadboard.app` next to Textual's
+`App` reads as the same thing in every import, and the collision would have to be undone once the
+screens arrive.
 
 | Module | Owns | Knows nothing about |
 |---|---|---|
 | `model` | Domain types and **pure functions**: the tree, the column projection, ghost ancestors, filters, search | Everything else. No I/O, no `textual`, no `bd` |
 | `sources` | The source registry, resolving a source into projects, deduplication | Issues, the board, the UI |
 | `data` | The `IssueRepository` port and its adapters; translating raw data into `model` types | The board, the screens, the registry |
-| `app` | Orchestration: snapshots and their cache, `refresh`, lazy detail fetch, per-source failure isolation, keeping work off the render thread | Widgets and keybindings |
+| `service` | Orchestration: snapshots and their cache, `refresh`, lazy detail fetch, per-source failure isolation, keeping work off the render thread | Widgets and keybindings |
 | `ui` | Screens, widgets, input, layout | How storage works or where the data came from |
 
 What this buys: the trickiest logic — which ghosts belong in the `in_progress` column for a given
 tree — is table-testable without a terminal and without a running Dolt; swapping the data adapter
-touches no file above `data`; and the write increments (C+A → B+D) land in `data` and `app` as port
-methods rather than accreting onto widgets.
+touches no file above `data`; and the write increments (C+A → B+D) land in `data` and `service` as
+port methods rather than accreting onto widgets.
 
 ### Process model
 
@@ -230,7 +234,7 @@ screen receives a finished layout and emits intents ("open issue", "switch proje
 
 ### The port
 
-`IssueRepository` is everything `app` knows about storage. Reads:
+`IssueRepository` is everything `service` knows about storage. Reads:
 
 - **`resolve()`** — project identity and availability (id, prefix, name).
 - **`list_issues(scope)`** — the light projection for the snapshot, including the ancestry of
@@ -251,7 +255,7 @@ exist on disk.
 cross-project, needs no repository path. Depends on bd's internal schema, which nobody promises to
 keep stable.
 
-**`FakeRepository`** — fixture data, for testing `app` and the UI without bd or Dolt.
+**`FakeRepository`** — fixture data, for testing `service` and the UI without bd or Dolt.
 
 **Choosing the adapter is deferred to its own task**, as the epic records. The architecture only
 guarantees the choice costs one config key and no edits above `data`.
