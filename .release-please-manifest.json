@@ -1,4 +1,5 @@
 {
   "packages/statuskit": "0.5.1",
+  "packages/beadboard": "0.0.0",
   "plugins/flow": "3.1.0"
 }

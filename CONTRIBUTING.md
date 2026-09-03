@@ -117,6 +117,7 @@ PR должен иметь label соответствующий scope в заг�
 | Scope | Label | Описание |
 |-------|-------|----------|
 | `statuskit` | `statuskit` | Python statusline package |
+| `beadboard` | `beadboard` | Python TUI for beads |
 | `flow` | `flow` | Beads workflow plugin |
 | без scope | `repo` | Repository-level changes |
 
@@ -261,7 +262,8 @@ git push --force-with-lease
 ```
 claude-tools/
 ├── packages/           # Python пакеты (PyPI)
-│   └── statuskit/      # scope: statuskit
+│   ├── statuskit/      # scope: statuskit
+│   └── beadboard/      # scope: beadboard
 ├── plugins/            # Claude Code плагины
 │   └── flow/           # scope: flow
 ├── .github/            # CI/CD (без scope)
@@ -338,7 +340,8 @@ uv run ruff format .
 ### Type checking
 
 ```bash
-uv run ty check packages/statuskit
+uv run ty check
+# без пути — иначе тесты и соседние пакеты молча пропускаются
 ```
 
 ## Adding a New Python Package
@@ -351,17 +354,27 @@ When adding a new Python package to `packages/`, you need to configure SonarClou
 packages/
 └── new-package/
     ├── pyproject.toml      # With Python classifiers
-    ├── CHANGELOG.md
+    ├── README.md           # required: pyproject.toml declares readme = "README.md", the wheel
+    │                       # does not build without it
     ├── src/new_package/
     │   └── __init__.py
     └── tests/
 ```
 
+**`packages/<name>/tests/` must NOT have an `__init__.py`.** With pytest's default import mode, a
+`tests/__init__.py` turns the directory into a top-level package literally named `tests` — and two
+packages that both do this collide under that same name, so a bare root `uv run pytest` fails to
+collect one of them. `packages/statuskit/tests/__init__.py` still exists — it predates this rule
+and is grandfathered in, not a pattern to copy. Following the rule on a new package also requires
+the `INP001` per-file-ignore for `**/tests/**/*.py` in the root `pyproject.toml` (already present):
+without it, an `__init__.py`-less `tests/` directory is an "implicit namespace package" and lint
+fails red.
+
 **pyproject.toml must include classifiers:**
 ```toml
 [project]
 name = "claude-new-package"
-version = "0.1.0"
+version = "0.0.0"
 classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -369,6 +382,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
 ]
 ```
+
+`version` here and the `.release-please-manifest.json` entry (step 3 below) must agree — both
+start at `0.0.0`, see step 3 for why. Do not seed `CHANGELOG.md`; release-please writes it.
 
 ### 2. Create SonarCloud Project
 
@@ -379,10 +395,49 @@ classifiers = [
 3. Select `NoNameItem/claude-tools`
 4. Set project key: `NoNameItem_<package-name>` (e.g., `NoNameItem_statuskit`)
 5. Administration → New Code: Previous Version
-6. Administration → Quality Gate: Sonar way
-7. Administration → General → Main branch: master
+6. Administration → Quality Gate: **NoNameItem way** (the organisation default `Sonar way no coverage` is not used by any project here)
+7. Administration → Analysis Method: **verify Automatic Analysis is off** — the *Setup a
+   monorepo* flow in step 2 already sets `sonar.autoscan.enabled = false` (non-inherited) for you,
+   so this is a check, not an action. A project created through an ordinary (non-monorepo)
+   "Analyze new project" import does **not** get this for free and must have it turned off here
+   manually (Administration → Analysis Method), or it collides with the CI analysis.
+8. Administration → General → Main branch: master
 
-### 3. Verify CI
+**Токен.** Секрет репозитория `SONAR_TOKEN` должен быть **Global Analysis Token** (My Account →
+Security), а не project analysis token, выданный из карточки конкретного проекта. Project-scoped
+токен работает только для своего проекта, и на новом сканер падает ещё до анализа:
+`Failed to query JRE metadata: … HTTP 403 Forbidden. Please check … SONAR_TOKEN`. Права проекта
+при этом выглядят корректными, поэтому ошибку легко искать не там — так и вышло при добавлении
+`beadboard` (PR #141).
+
+### 3. Wire the package into the repository
+
+1. Root `pyproject.toml`: `[tool.uv.sources] <name> = { workspace = true }` **and** `<name>` in
+   the `dev` dependency group — without both, `uv sync` does not install the package and its
+   tests cannot import it. Run `uv sync`.
+2. `release-please-config.json`: an entry under `packages` (`package-name: "<name>"` — this is
+   what `${component}` in `pull-request-title-pattern` resolves to, `release-type: python`,
+   `changelog-path: "CHANGELOG.md"`, `bump-minor-pre-major`, `prerelease`,
+   `extra-label: "ci:full,<name>"`).
+3. `.release-please-manifest.json`: `"packages/<name>": "0.0.0"` — release-please treats the
+   value as the version *already released*, so `0.0.0` makes the first `feat:` release `0.1.0`.
+   Do not seed `CHANGELOG.md`; release-please writes it.
+4. `packages/<name>/sonar-project.properties`: rule mutes only, each with a written reason.
+5. GitHub: create the PR label `<name>` (`gh label create <name> --color <hex>`).
+6. `.coderabbit.yaml`: a `path_instructions` entry for `packages/<name>/**`.
+7. `packages/<name>/AGENTS.md`: an architecture summary plus review guidelines for the subtree,
+   modelled on `packages/statuskit/AGENTS.md`. Add `packages/<name>/` to the root `AGENTS.md`'s
+   enumeration of nested `AGENTS.md` files.
+8. `CLAUDE.md` and this file: the commit-scope and label tables, plus the project trees.
+9. PyPI: register a pending publisher (owner `NoNameItem`, repository `claude-tools`, workflow
+   `publish.yml`, environment `pypi`) — it reserves the name before the first release.
+
+Nothing else needs touching: the CI matrices, the lint/test/Sonar jobs, `sonar.projectKey`, `ty`,
+pytest `testpaths` and commit-scope validation are all derived from `[tool.repo]` and from paths.
+The master ruleset requires the aggregate `Python CI Gate` context, so new per-project jobs need
+no ruleset change.
+
+### 4. Verify CI
 
 1. Create a PR with changes in your package
 2. Check that all jobs pass:

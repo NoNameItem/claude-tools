@@ -45,7 +45,7 @@ bd dolt push          # Push task changes to the remote
 
 For automated PR review (e.g. Codex). Focus on what CI does NOT catch — logic, security,
 design. CI already enforces conventional-commit scope, `ruff` lint/format, and `ty`
-type-checking; do not re-report those. Nested `AGENTS.md` (e.g. `packages/statuskit/`,
+type-checking; do not re-report those. Nested `AGENTS.md` (e.g. `packages/statuskit/`, `packages/beadboard/`,
 `plugins/flow/`) adds rules for its subtree.
 
 **Secrets (P0).** Never accept a credential in a diff — `.beads-credential-key` especially.
