@@ -9,6 +9,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 claude-statuskit = { workspace = true }
+beadboard = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -18,6 +19,7 @@ dev = [
     "ruff==0.15.19",
     "ty==0.0.52",
     "claude-statuskit",
+    "beadboard",
 ]
 
 [tool.ruff]
