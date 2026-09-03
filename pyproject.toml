@@ -99,6 +99,9 @@ quote-style = "double"
     "ARG",      # unused arguments (fixtures)
     "SLF001",   # private member access
     "PLC0415",  # late imports - common test isolation pattern
+    "INP001",   # implicit namespace package - test dirs are intentionally not importable packages: two
+                # packages whose tests/ both carry __init__.py collide on the top-level `tests` module
+                # name and break the root `pytest` run (see CONTRIBUTING.md "Adding a New Python Package")
 ]
 "plugins/flow/bin/flow-*" = ["S603", "S607", "INP001"]  # CLI helpers: call git/bd, standalone scripts
 "plugins/flow/bin/_*.py" = ["S603", "S607", "INP001"]  # shared CLI modules: call git/gh/glab, standalone

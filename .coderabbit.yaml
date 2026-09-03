@@ -58,7 +58,8 @@ reviews:
     - path: "packages/beadboard/**"
       instructions: |
         Python terminal UI (Textual) for beads. Layered: model, sources, repository, service, ui —
-        a layer must not import a layer above it, and only `ui` may import textual.
+        a layer must not import a layer above it, and only `ui` may import textual
+        (`cli.py`, the composition root, is exempt).
         Check that bd/Dolt access stays behind the repository port and that screens receive data
         rather than fetching it.
     - path: "plugins/**/skills/**"

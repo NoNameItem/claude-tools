@@ -59,7 +59,7 @@ def _layer_of(module: str) -> str | None:
 
 def test_rule_table_covers_every_layer_package():
     """Renaming or adding a layer package must fail here, not go unnoticed."""
-    packages = {path.parent.name for path in SRC.rglob("__init__.py") if path.parent != SRC}
+    packages = {path.parent.name for path in SRC.glob("*/__init__.py")}
 
     assert packages == set(FORBIDDEN)
 

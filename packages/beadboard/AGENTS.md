@@ -31,9 +31,10 @@ These apply on top of the root `AGENTS.md` review guidelines, for changes under
 **Layering (P1).** A layer may import only the layers below it: `model` imports nothing;
 `sources` and `repository` are siblings on `model` and may not import each other; `service`
 may import `model`, `sources`, `repository`; `ui` may import anything, and only `ui` may
-import `textual`. The rule is enforced by `tests/test_import_boundaries.py` against the
-`FORBIDDEN` table — a change that edits that table to make a new import legal is a design
-change and needs a reason in the pull request, not a green test.
+import `textual` (`cli.py`, the composition root, is exempt). The rule is enforced by
+`tests/test_import_boundaries.py` against the `FORBIDDEN` table — a change that edits that
+table to make a new import legal is a design change and needs a reason in the pull request,
+not a green test.
 
 **No `bd` calls outside `repository/` and `sources/` (P1).** Everything that shells out to `bd`
 or talks to Dolt lives behind the repository port; screens and services receive data, they do
