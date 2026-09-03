@@ -28,6 +28,36 @@ correction reprints the whole scenario rather than being applied silently.
 
 **Key behavior:** One scenario covers everything — parent closing, the plan's fate, branch/worktree/remote deletion, the ledger. Epics are not closed unless the user asks. `flow-sync push` always runs. Mergedness is decided by git — tree equality against the PR's own target branch — except when `PR_STATE == MERGED`, which settles it outright even over a stale tree mismatch; a live `OPEN` PR still stops the run.
 
+## Four rules the steps refer to
+
+These four decide most of what follows. They are stated once here; the steps name them instead of
+re-arguing them.
+
+**R1 · A premise the run cannot verify is refused, never assumed.** A lookup, a re-read or a
+comparison that *fails* is not a quiet "no": an unreachable platform is not "no PR", a `bd show`
+that errors is not "no open children", an unreadable remote tip is not "the branch is gone". Every
+such failure refuses the action it was gating and names itself as the reason. This does not conflict
+with "errors do not block" (step 5) — that rule governs a failure that *ends* an action, which is
+reported and stepped over; R1 governs a failure that would let an action proceed on an unchecked
+premise.
+
+**R2 · An irreversible action re-checks its premise immediately before acting.** The scenario is
+built from a snapshot taken before the approval, and the approval takes as long as it takes: another
+session closes an issue, a collaborator pushes, a formatter rewrites a file. So `bd close`, the
+plan's `rm`, and every branch or worktree deletion re-read what licensed them at the moment they
+run, and skip themselves — with a summary line — when it no longer holds. R1 governs those re-reads
+too: one that fails refuses the action.
+
+**R3 · A default is not a prohibition.** Every row the scenario files under "Не буду" by default —
+an epic parent, a tracked plan, a task with open children, several plan candidates — moves into
+"Сделаю" on a correction, and step 5 then performs it like any other approved item. The skill's
+judgement is a starting point, not a veto.
+
+**R4 · Mergedness gates the branch, never the task.** Step 2's verdict gates exactly four rows:
+worktree, local branch, remote branch, ledger. Closing the task, closing parents, the plan's fate
+and `flow-sync push` belong to the task and proceed under an unconfirmed verdict too. Wherever this
+skill refuses "every deletion", it means those four rows and not the plan.
+
 ## Workflow
 
 Follow these steps **in order**. Do not skip steps.
@@ -90,17 +120,14 @@ fi
 decides whether purging it — and whether deleting the remote branch — is safe; `PR_BASE` is the
 first base candidate below.
 
-**A failed lookup is not "no PR".** `gh pr view` exits non-zero both when no PR exists and when the
-call fails, so the exit status alone cannot tell them apart, and `|| echo NO_PR` silently reads a
-network blip as "no PR". That mistake is not cosmetic: an unset `PR_STATE` trivially satisfies "not
-`OPEN`", and the run would then `git push "$REMOTE" --delete` a branch whose PR is live — which
-closes that PR. Hence the second call — and hence **reading what it returns**, not merely whether it
-succeeded. `gh pr list` exits 0 and prints `[]` when the platform was reached and there is no PR, and
-non-zero when the lookup failed; but it also exits 0 while printing a live PR, so a status-only check
-would label a branch whose `gh pr view` merely blipped as `NO_PR`. The list is therefore scoped to
-this branch with `--head` and parsed: empty → `NO_PR`, non-empty → the PR's own state, and a
-non-zero exit → `UNKNOWN`. `UNKNOWN` refuses the remote-branch row exactly as `OPEN` does (step 3),
-and falls through to the next base candidate below rather than yielding an empty base.
+**A failed lookup is not "no PR" (R1).** `gh pr view` exits non-zero both when no PR exists and
+when the call fails, so `|| echo NO_PR` reads a network blip as "no PR" — and an unset `PR_STATE`
+trivially satisfies "not `OPEN`", which would license `git push "$REMOTE" --delete` on a branch whose
+PR is live, closing it. Hence the second call, and hence reading what it *returns*: `gh pr list` also
+exits 0 while printing a live PR, so a status-only check would mislabel a blipped branch as `NO_PR`.
+Empty array → `NO_PR`, non-empty → that PR's own state, non-zero exit → `UNKNOWN`, which refuses the
+remote-branch row exactly as `OPEN` does (step 3) and falls through to the next base candidate rather
+than yielding an empty base.
 
 **Base branch and mergedness.** This is the safety check's criterion (step 2), so get it right.
 The block below produces **two distinct values, never interchangeable**:
@@ -121,8 +148,10 @@ if [ -n "$(git remote)" ]; then
   # upstream remote and falls back to `origin`, so in a repository whose only remote
   # is named otherwise it fetches nothing, or fails outright — and every comparison
   # below then runs on stale remote-tracking refs
-  git fetch --quiet "$REMOTE"
+  git fetch --prune --quiet "$REMOTE"
   FETCH_OK=$?   # non-zero → the remote-tracking refs below are whatever was already cached
+  # --prune: without it a candidate deleted on the remote keeps its refs/remotes ref,
+  # and the show-ref checks below accept a base that no longer exists
   BASE_LOCAL=""
   # every candidate must name a branch the remote actually has, and must not be
   # CURRENT_BRANCH itself — a base equal to the branch compares it with itself and
@@ -173,83 +202,28 @@ else
 fi
 ```
 
-Nine rules go with it:
-- **Each candidate is validated where it is chosen, and a bad one falls through to the next.** A
-  candidate is accepted only if `refs/remotes/$REMOTE/<name>` exists; otherwise the chain continues
-  with the following candidate, never straight to `master`/`main` and never to `NO_BASE`. A target
-  branch deleted after its own merge, or a dangling HEAD symref, must not shadow a perfectly good
-  later candidate — in a repository whose default branch is neither `master` nor `main`, validating
-  once at the end of the chain turns either of those into `NO_BASE` and stops the run for nothing.
-- **The base comes from the remote, after a fetch** — never from a local `master`/`main` that may
-  lag behind (no `git pull` since the PR merged). A stale local base makes the criterion lie and
-  the safety check evict the user for no reason.
-- **The PR's own target comes first, and the reason is stacked branches.** A subtask branch is
-  routinely opened against its **feature** branch, not against the repository's default branch;
-  compared against the default branch it reads "not merged" until the whole feature lands, and the
-  safety check would then refuse to close exactly the tasks that get closed most often. The PR/MR
-  target is the precise answer to "where was this work supposed to land": the feature branch for a
-  subtask, the default branch for a feature. On GitLab the same value is
-  `glab mr view <iid> --output json --jq .target_branch`.
-- **`git symbolic-ref` is only the second candidate, not the answer.** `refs/remotes/<remote>/HEAD`
-  is frequently absent or not a symbolic ref (`fatal: ref refs/remotes/origin/HEAD is not a
-  symbolic ref` — this repository has no such ref at all), the default branch may carry **any**
-  name, and the remote is not always called `origin`. `git remote set-head "$REMOTE" --auto` asks
-  the server which branch is default and restores the symref, so it is tried before giving up on
-  it; the `master` → `main` pair is a last-ditch convention, not the definition of a base.
-- **No source of a base may hand back the branch itself.** A base equal to `CURRENT_BRANCH` makes
-  `merge-tree` compare the branch with itself, report "merged" unconditionally, and hand the run a
-  confirmed verdict for work that landed nowhere — so the guard belongs on **every** source, not on
-  the one where it is most obvious. The upstream is that obvious one: `git rev-parse --abbrev-ref
-  "@{upstream}"` usually returns `$REMOTE/$CURRENT_BRANCH`, and it is useful only where the upstream
-  was deliberately pointed elsewhere. The other two are reachable too. The remote's HEAD symref names
-  the task branch whenever the remote's default *is* that branch — the ordinary state of a repository
-  whose remote holds one branch, with no one having reconfigured anything. And a PR's target can
-  carry the same *name* as the current branch when the PR comes from a fork: the head is
-  `fork:branch`, the base is the upstream's branch of that name, and in the fork
-  `refs/remotes/$REMOTE/<base>` resolves back to our own. The conventional `master`/`main` candidate
-  needs no guard: a task branch named `master` is a branch mismatch, and step 2 refuses every
-  branch row there regardless.
-- **No base asks the user, and STOPs only if that goes nowhere** (`NO_BASE`, handled in step 2). An
-  empty base would make `merge-tree` error out and every guard below it meaningless — and those
-  guards are what stand between the run and irreversible deletions. Never improvise a base: step 2
-  asks which branch is the base, validates the answer against a real ref, and only STOPs when no
-  usable answer comes back. Hence the `if`: with no base the comparison block does not run at all,
-  so the user sees step 2's question (or, failing that, its STOP message) and not two `fatal:` lines
-  from `merge-tree` and `rev-parse` against an empty ref.
-- **A branch that never committed anything satisfies `MERGED_TREE == BASE_TREE` too, and no git
-  command tells the two apart.** Such a branch's tip *is* the base's tip as of creation — an
-  ancestor of the base, exactly like a fast-forward merge or a merge-commit merge. These are the
-  same commit graph, so no counting or ancestry query separates them (`git rev-list --count`,
-  `git merge-base --is-ancestor`, `git for-each-ref --contains` all agree in every one of those
-  states). They do not need separating: a ref reachable from the base can be deleted without
-  losing a commit, by construction. What *can* be lost is uncommitted content in the working copy,
-  and `WORKTREE_DIRTY` measures exactly that.
-- **The tree comparison is the *local* signal; `PR_STATE == MERGED` outranks it.**
-  `git merge-tree --write-tree` performs a real three-way merge against the base **as it stands
-  now**, not as it stood when the branch actually merged, so its report decays. Measured on git
-  2.47: right after a squash merge, `MERGED_TREE == BASE_TREE`; once the base later edits the same
-  lines the branch touched, `git merge-tree` exits 1 with `CONFLICT (content)` and a differing tree;
-  once the base deletes a file the branch touched, `CONFLICT (modify/delete)`, same — both read as
-  "not merged" even though the branch did merge. `PR_STATE` records a fact about the past and does
-  not decay this way, so step 2's ladder checks it first and lets a `MERGED` state override a stale
-  tree mismatch.
-- **`WORKTREE_DIRTY` gates the worktree row** — directly, and the local-branch row through it,
-  because HEAD stays in a worktree that is not removed (step 3). It is the direct signal for the
-  only irreversible loss this skill can cause on its own: removing a working copy that holds the
-  sole copy of some work. `--untracked-files=all` is required — plain `git status` collapses a
-  brand-new directory to a single `dir/` entry, and an untracked note inside it must count as
-  content to lose. **One subtraction:** files the scenario itself lists for deletion — that is, the
-  plan — do not count. They are named in the scenario and covered by the same single approval, and
-  step 5 deletes the plan before it touches the worktree. Without this, an untracked plan in a
-  non-gitignored `docs/plans/` would make the working copy dirty all by itself and refuse the
-  cleanup it is part of. When the plan row is *refused* — several candidates matched, or git tracks
-  the file — those files count as dirt again, because nothing is going to delete them. A modified
-  tracked plan is exactly that case: it is refused, so it keeps the worktree row out of "Сделаю"
-  like any other uncommitted change. `--untracked-files=all` still does not surface **gitignored**
-  files — it expands untracked directories, not ignore rules. That is deliberate, not an oversight:
-  a gitignored file is disposable by construction (the plan files themselves live in a gitignored
-  directory and are meant to vanish with the worktree), so removal is blocked only by uncommitted
-  or unmerged content, never by ignored files.
+Nine rules go with it. Each is argued in "Why these checks" at the end of this file; the numbers
+below are the anchors.
+
+1. **Each candidate is validated where it is chosen**, and a bad one falls through to the *next*
+   candidate — never straight to `master`/`main`, and never to `NO_BASE`.
+2. **The base comes from the remote, after a fetch** — never a local `master`/`main` that may lag
+   behind.
+3. **The PR's own target comes first**, because a subtask branch is opened against its *feature*
+   branch. On GitLab the same value is `glab mr view <iid> --output json --jq .target_branch`.
+4. **`git symbolic-ref` is only the second candidate.** `refs/remotes/<remote>/HEAD` is frequently
+   absent, so `git remote set-head "$REMOTE" --auto` is tried before the chain gives up on it.
+5. **No source of a base may hand back the branch itself** — the guard belongs on every source, not
+   only on the upstream, where it is merely most obvious.
+6. **No base asks the user** (step 2) and STOPs only if that goes nowhere. The `if` exists so
+   `merge-tree` never runs against an empty ref.
+7. **A branch that never committed anything satisfies `MERGED_TREE == BASE_TREE` too**, and no git
+   command tells the two apart — nor needs to.
+8. **The tree comparison is the *local* signal; `PR_STATE == MERGED` outranks it**, because
+   `merge-tree` re-runs against the base as it stands *now* and its answer decays.
+9. **`WORKTREE_DIRTY` gates the worktree row**, and the local-branch row through it.
+   `--untracked-files=all` is required. The plan this same scenario deletes does not count as
+   content to lose; a *refused* plan row does.
 
 `git merge-tree --write-tree` requires git >= 2.38. If it is unavailable, say so, print the branch
 and the base you could not compare, and ask the user to confirm the work is merged — step 2 defines
@@ -273,23 +247,14 @@ squash merge, which is exactly the case this check exists for.
    candidate → resolves silently, same as the other two sources.** Two or more → reproduce its
    output verbatim and ask which number, before printing the scenario.
 
-Two situations may require a question about task identity, both **before** printing the scenario:
+**Exactly four questions may precede the scenario**, and no others. Two are about task identity:
 context and branch disagreeing (show both, ask which), and `flow-find-leaf` returning more than one
-candidate (show its list, ask which). These are the only questions the skill may ask about task
-identity. Never resolve the task by eyeballing `bd list --status=in_progress`.
-
-A third pre-scenario question exists alongside these two, about the base branch rather than task
-identity: when step 1 finds no base at all, step 2 asks which branch is the base before it can
-proceed (see "If step 1 printed `NO_BASE`" below). Like the other two, it is asked and resolved
-before the scenario is printed, and it does not weaken "one scenario, one approval" — the scenario
-itself still gets exactly one approval; this is a clarification the run needs before it can even be
-assembled.
-
-A fourth exists for the same reason, about mergedness itself: when the branch matches the task and
-none of `PR_STATE == MERGED`, `MERGED_TREE == BASE_TREE` or `PR_STATE == OPEN` settles it (step 2's
-ladder, case 4), the run asks the user to confirm the branch is merged before it can proceed. Like
-the other three, it is resolved before the scenario is printed and does not weaken "one scenario,
-one approval" — the answer only feeds the verdict the scenario is built from.
+candidate (show its list, ask which). Never resolve the task by eyeballing
+`bd list --status=in_progress`. The other two belong to step 2: which branch is the base, when step 1
+found none (`NO_BASE`), and whether the work is merged, when nothing settles it (ladder case 4). All
+four are asked and answered **before** the scenario is printed, so none of them weakens "one
+scenario, one approval" — they supply facts the scenario is assembled from, and the assembled
+scenario still gets exactly one approval.
 
 **Branch match:** does `CURRENT_BRANCH` actually belong to the resolved task?
 
@@ -297,48 +262,30 @@ one approval" — the answer only feeds the verdict the scenario is built from.
 flow-current-task {task-id} || echo "BRANCH_MISMATCH"
 ```
 
-Run this check regardless of how the task was resolved above — including when it came from
-`flow-find-leaf`, the last-resort case, which has had no chance yet to be checked against the
-branch at all. This fact gates every deletion candidate below (worktree, local branch, remote
-branch, ledger) in step 3; it never gates task closure, the parent chain, the plan, or the sync —
-those apply to the task regardless of which branch we happen to be on.
+Run this check regardless of how the task was resolved above — `flow-find-leaf`, the last resort,
+has had no chance yet to be checked against the branch at all. Like mergedness, this fact gates the
+four branch rows and nothing else (R4).
 
-**A task can stay open while its own branch's cleanup runs, and that combination is legitimate, not
-accidental.** A task kept open by `in_progress` children whose **own** branch is confirmed merged is
-the normal decomposition case: an epic's design/decomposition branch is merged into the base, and
-the subtask branches are opened from that base. Its worktree and branches are then finished work,
-and cleaning them up is correct even though the task stays open. The opposite arrangement — a
-feature branch that subtask branches are stacked **on**, intended to land as one commit — is already
-held by mergedness itself and needs no extra gate: that branch is by construction not merged, so
-either its PR is `OPEN` (step 2 case 3 stops the run) or the tree comparison does not match (case 4
-asks). Opening the feature branch's PR against the base as soon as the branch exists is what makes
-this automatic. The cleanup rows are therefore **not** gated on the task's own closing row.
+**The cleanup rows are not gated on the task's own closing row** (R4). A task kept open by
+`in_progress` children whose own branch is merged is the normal decomposition case, and its finished
+worktree and branches should still be cleaned up. The opposite arrangement — a feature branch the
+subtask branches are stacked *on* — needs no extra gate: it is by construction not merged, so either
+its PR is `OPEN` (step 2 case 3 stops the run) or the tree comparison does not match (case 4 asks).
 
 **Parent chain:** `bd show {task-id}` upwards — id, type (`epic` or not), and open-children count
-for each ancestor. **Count the children this run will close as already closed:** exclude the task
-being closed — but **only when its own closing row actually lands in "Сделаю"**; a task whose row
-defaulted to "Не буду" because it still has in_progress children (see "Task status and children"
-below) is *not* closing, so it counts as an open child for its parent's tally. Excluding it anyway
-would print a parent under "Сделаю" whose premise — that its last open child closes here — is
-already known to be false at collection time. Also exclude every lower ancestor this same scenario
-already lists for closing. The
-counts must describe the state step 5 acts in (the task is closed at 5.1, parents at 5.2), not the
-state at collection time — counted literally, a parent whose last open child is the very task being
-closed could never qualify, and the container-parent row would never fire at all.
+for each ancestor. **Count the children this run will close as already closed**, since the counts
+must describe the state step 5 acts in, not collection time: counted literally, a parent whose last
+open child is the very task being closed could never qualify and the container-parent row would
+never fire. So exclude every lower ancestor this scenario already lists for closing, and exclude the
+task itself — but **only when its own closing row actually lands in "Сделаю"**. A task whose row
+defaulted to "Не буду" is not closing, and counting it as closed would promise a parent closure whose
+premise is already known to be false.
 
-**Task status and children.** The same `bd show {task-id}` call already issued above for the
-parent chain also carries the task's own `status` and its children — read both, no extra
-round-trip, for **every** resolution source (session context, the branch, or `flow-find-leaf`
-alike), not only the last resort. Two things follow, expressed as scenario state rather than a
-stop:
-
-- **The task has children that are `in_progress`** → the "Close the task" row goes to "Не буду",
-  with the reason naming them, e.g. `не буду закрывать claude-tools-elf.59 — есть незакрытые
-  подзадачи (elf.59.2, elf.59.3)`. Like the epic row, this is a **default, not a prohibition**: a
-  correction can move it back into "Сделаю", because the user may know better.
-- **The task itself is not `in_progress`** (already closed, or still open and not yet started) →
-  do not refuse anything; state the fact in the scenario header next to the task, so it is visible
-  before the single approval.
+**Task status and children.** The same `bd show {task-id}` call carries the task's own `status` and
+children — read both, no extra round-trip, for **every** resolution source, not only the last
+resort. Step 3 turns them into scenario state: `in_progress` children send the "Close the task" row
+to "Не буду" naming them; a task that is not itself `in_progress` is not refused, its status goes in
+the header.
 
 **Plan file.** Two sources, check in order:
 
@@ -361,6 +308,7 @@ whether git tracks the file, and whether it is still on disk:
 ```bash
 git ls-files --error-unmatch -- "$PLAN" >/dev/null 2>&1 && PLAN_TRACKED=yes
 test -e "$PLAN" || PLAN_GONE=yes   # tracked in the index, already deleted from the working copy
+PLAN_HASH=$(git hash-object -- "$PLAN" 2>/dev/null)   # step 5 re-checks the file is still this one
 ```
 
 **`git ls-files` reads the index, not the disk:** a file whose deletion is not committed yet still
@@ -370,13 +318,8 @@ Already Gone" says. Never print "план закоммичен" over a file that
 task pointing at a file that no longer exists.
 
 `PLAN_TRACKED=yes` with the file present → the plan stays in git, and its row goes to "Не буду"
-(step 3). Two reasons,
-both concrete: `rm` on a tracked file dirties the working tree immediately before
-`git worktree remove`, which then refuses (this skill never passes `--force`); and the content is in
-history anyway, so a real removal buys nothing and still costs its own commit, PR, merge and
-`flow:done` run. Local modifications change none of that — a modified tracked plan is just as
-committed, and deleting it leaves the same `D` entry in `git status`. `rm` therefore applies
-**only to untracked** plan files.
+(step 3, R3). Local modifications change nothing: a modified tracked plan is just as committed. `rm`
+therefore applies **only to untracked** plan files — the reasoning is in "Why these checks".
 
 Filter results by filename containing "impl" or "plan" (case-insensitive) and semantically
 matching the task title. No candidates: nothing to carry forward. **More than one candidate:**
@@ -405,34 +348,38 @@ cleanup. Without it an unreadable capture would leave `REMOTE_TIP` empty and mas
 moved, naming a commit that never existed.
 `git ls-remote` prints `<oid>\t<ref>`, so the `cut -f1` is what pulls the OID out — the raw line is
 neither a comparable value nor a usable lease.
+
+**`REMOTE_TIP` must equal `LOCAL_TIP` for the remote-branch row to be offered at all.** Mergedness
+is established by comparing the base with the **local** branch; the remote tip is never passed to
+`merge-tree` and so is never examined by it. A remote branch that had already diverged before this
+run started — a collaborator pushed to it — is therefore unmerged content that the verdict says
+nothing about, and step 5's re-validation would not catch it either: that check only proves the tip
+has not moved *since collection*. Unequal tips send the row to "Не буду" (step 3).
+
+**Equality, not ancestry — and the over-refusal is deliberate.** A *local* tip ahead of the remote
+also fails this test, though deleting the remote ref would lose nothing there. That refusal is
+visible in the scenario and a correction moves it (R3), whereas an ancestry test would add a branch
+to distinguish the rarer case from the one that matters.
 **Ledger:** present when a `PR_NUMBER` was captured above — the PR's `flow:review-comments`
 memory, stored under the OS cache dir, never in the repo.
 
 ### 2. Safety check: is the work merged?
 
-The cases below are evaluated **in order, and the first match decides** — they are not a partition
-to pick from freely, because more than one of step 1's signals can hold at once (a local-only repo
-with a custom base, say, plus a stale session context pointing at another branch). Each case says
-both what happens to the run and what the resulting mergedness verdict is — **confirmed**,
-**unconfirmed**, or **not applicable** — because step 3 gates the worktree, the local branch, the
-remote branch and the ledger on that verdict. The plan is **not** gated on it — the plan belongs to
-the task, not to the branch (step 3).
+The cases below are evaluated **in order, and the first match decides** — not a partition to pick
+from freely, because more than one of step 1's signals can hold at once. Each case yields a
+mergedness verdict — **confirmed**, **unconfirmed** or **not applicable** — which gates exactly the
+four rows R4 names.
 
-**If step 1 found `BRANCH_MISMATCH`** (the current branch is not the resolved task's branch — e.g.
-a generic branch like `master`, or an unrelated feature branch): checked **first**, ahead of
-`NO_BASE` below, because it outranks it — `BRANCH_MISMATCH` and `NO_BASE` are independent signals
-from step 1 and a local-only repo with a custom base plus a stale session context pointing at
-another branch produces both at once. When the branch is not the task's, mergedness is not
-applicable and every worktree/local branch/remote branch/ledger candidate is refused regardless of
-what a base would have been — so neither of the two purposes a base serves applies here (nothing to
-establish, nothing to check out; see "Separate the two things a base is for" below). The base
-question is therefore skipped entirely, and the run continues to step 3 without asking anything: the
-mergedness check describes that branch's relationship to the base, not this task's, so it says
-nothing safety-relevant here — **whatever step 1's comparison returned is discarded** (verdict: not
-applicable; never report it as one). The scenario still closes the task and syncs — the work may
-well have landed by another route, and refusing here would make the skill unusable from `master` —
-but every branch/worktree/remote/ledger candidate is refused, not offered (see step 3), and the
-header states outright that mergedness was not checked.
+**If step 1 found `BRANCH_MISMATCH`** (the current branch is not the resolved task's branch — a
+generic branch like `master`, or an unrelated feature branch): checked **first**, ahead of `NO_BASE`,
+because the two are independent signals that can fire together and this one outranks. Mergedness is
+**not applicable** here — the comparison would describe that branch's relationship to the base, not
+this task's — so whatever step 1 computed is discarded and never reported as a verdict. No base
+question is asked, since neither purpose a base serves applies (nothing to establish, nothing to
+check out). The run continues to step 3 without asking anything: the task still closes and syncs,
+because the work may have landed by another route and refusing here would make the skill unusable
+from `master`; every branch/worktree/remote/ledger row is refused, and the header states outright
+that mergedness was not checked.
 
 **If step 1 printed `NO_BASE`** (reached only when the branch does match the task — `BRANCH_MISMATCH`
 above is checked first and, when it fires, makes this question moot): no PR target, no remote HEAD
@@ -477,13 +424,7 @@ unusable answer, saying why, and the question is asked once more.
 variable and reference it **quoted** everywhere; never paste it into a command unquoted — a branch
 name may contain shell metacharacters.
 
-**This is legibility, not the untrusted-data rule.** The answer is typed by the person who started
-this run, in their own terminal, against their own repository — there is no second party, and an
-answer containing `$(...)` is that person running a command on themselves, exactly as if they had
-typed it into the shell directly. The rule that governs reviewer text, PR-author-controlled branch
-names and `bd` content elsewhere in flow does not extend here, and a reviewer reading this section
-should not file it as an injection site. What quoting buys is the ordinary case: a branch legitimately
-named with a `$` in it expands to nothing and the run reports the wrong ref as missing.
+**The quoting here is legibility, not the untrusted-data rule** — see "Why these checks".
 
 - **Valid answer** → set the base from it exactly as step 1 would have: `BASE_LOCAL` is the answer,
   and `BASE_REF` is `"$REMOTE/$BASE_LOCAL"` in remote mode, `"$BASE_LOCAL"` in local-only mode.
@@ -628,62 +569,43 @@ check that did not run:
 | Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, the branch matches the task, mergedness is confirmed, and `WORKTREE_DIRTY` is empty |
 | Local branch | delete, always `-D` | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
-| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, and `PR_STATE` is known and not `OPEN` (`UNKNOWN` refuses like `OPEN`) |
+| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, `REMOTE_TIP == LOCAL_TIP`, and `PR_STATE` is known and not `OPEN` (`UNKNOWN` refuses like `OPEN`) |
 | Ledger | purge when `MERGED`; leave when `CLOSED` or `OPEN` | PR known, ledger exists, the branch matches the task, and mergedness is confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
 | Epic parent | do not close — default only, overridable by a correction | same condition, type `epic` |
 | `flow-sync push` | do | always |
 
-**The task's own children gate its own closing row**, read from the same `bd show {task-id}` call
-step 1 already makes for the parent chain. In_progress children mean the task is not actually done
-yet, so its row goes to "Не буду" with the reason naming them — a **default, not a prohibition**,
-exactly like the epic row: a correction can move it back into "Сделаю". A task that is not itself
-`in_progress` (already closed, or never started) is not refused on that account; the fact appears
-in the scenario header instead, next to the task.
+**The task's own children gate its own closing row** (R3), read from the same `bd show {task-id}`
+call step 1 already makes for the parent chain: `in_progress` children mean the task is not done, so
+its row goes to "Не буду" naming them. A task that is not itself `in_progress` (already closed, or
+never started) is not refused on that account — the fact goes in the scenario header instead.
 
-Four gates guard the four branch-gated rows (worktree, local branch, remote branch, ledger), and
+Five gates guard the four branch-gated rows (worktree, local branch, remote branch, ledger), and
 each has its own named refusal in "Не буду". Two apply to all four: the branch belongs to the task
 (step 1's `flow-current-task` check), and mergedness is **confirmed** (step 2's verdict —
-"unconfirmed" refuses just as firmly as "not merged" would have stopped). Two apply to a single
-row each: the PR's state is known and not `OPEN`, for the remote branch; and `WORKTREE_DIRTY` is
-empty, for the worktree. **The plan row is not among them** — see below.
+"unconfirmed" refuses just as firmly as "not merged" would have stopped). Three are row-specific —
+two of them on the remote branch, which is the row with the most ways to go wrong: its PR's state is
+known and not `OPEN`, and `REMOTE_TIP == LOCAL_TIP`; and `WORKTREE_DIRTY` is empty, for the
+worktree. **The plan row is not among them** — see below.
 
-**The plan's fate does not depend on mergedness.** The plan belongs to the task, not to the
-branch: it is deleted whenever the task closes, including under an unconfirmed
-verdict. Two things change its default, neither of them mergedness: several candidates matched
-(below), or the file is tracked (step 1). So wherever this skill refuses "every deletion"
-for an unconfirmed verdict, it means those four rows and not the plan.
+**Only two things change the plan's default, and mergedness is neither** (R4): several candidates
+matched (below), or git tracks the file (step 1).
 
-**A tracked plan stays in git**, whether or not it has local modifications. Its row goes to
-"Не буду" with the reason `план закоммичен — удалять его надо отдельным PR, а не здесь`. `rm`
-would dirty the tree right before `git worktree remove` refuses on it, and a real removal costs a
-whole PR → merge → `flow:done` cycle for a file whose content is in history either way. Only an
-untracked plan is deleted by default.
-
-Like the epic, this is a **default, not a prohibition**: a correction can move the row into
-"Сделаю", and then step 5 deletes the file — the user may well intend to commit that deletion
-themselves. Say what it costs when reprinting the scenario: the working copy goes dirty, so the
-worktree row (and the local branch with it) will very likely end up as a failure line in the
-summary.
+**A tracked plan stays in git**, modified or not, with the reason `план закоммичен — удалять его
+надо отдельным PR, а не здесь`. Like the epic row this is a default (R3), and a correction moving it
+into "Сделаю" has a cost worth stating on the reprint: the working copy goes dirty, so the worktree
+row — and the local branch with it — will very likely end up as a failure line in the summary.
 
 **Branch rows are never gated on the commit graph beyond the tree comparison.** Once
-`MERGED_TREE == BASE_TREE`, the branch's tip is reachable from the base, so deleting the local or
-remote ref loses no commit — this is equally true of a fast-forward merge, a merge-commit merge and
-a branch that never committed at all, which are the same graph (step 1). Counting
-`git rev-list --count "$BASE_REF..$CURRENT_BRANCH"` distinguishes none of them and must never
-refuse a row: doing so reports "влитость не подтверждена" on a demonstrably merged branch in every
-repository that does not squash-merge.
+`MERGED_TREE == BASE_TREE` the branch's tip is reachable from the base, so no commit can be lost;
+`git rev-list --count "$BASE_REF..$CURRENT_BRANCH"` must never refuse a row (see "Why these checks").
 
-**The worktree's gate is the working copy, not the commit graph.** The worktree row is the one row
-that can destroy content existing nowhere else, and `git status --porcelain --untracked-files=all`
-answers that directly: empty → nothing to lose; non-empty → the row goes to "Не буду" with the
-reason `в рабочей копии есть незакоммиченные изменения`, listing them. The plan this same scenario
-is deleting does not count as such content (step 1), so a repository that keeps plans untracked in
-a non-ignored directory still gets its worktree cleaned up. That `git worktree remove`
-also refuses on a dirty tree (Edge Cases) is a second line of defence behind this check, not the
-design — the skill never passes `--force`. The same restraint applies to what the summary
-*recommends*: it never suggests discarding content the approval did not cover, so a manual
-remediation always inspects and preserves before it names `--force`.
+**The worktree's gate is the working copy, not the commit graph.** It is the one row that can
+destroy content existing nowhere else, and `WORKTREE_DIRTY` answers that directly: empty → nothing
+to lose; non-empty → "Не буду" with the reason `в рабочей копии есть незакоммиченные изменения`,
+listing them. That `git worktree remove` also refuses on a dirty tree (Edge Cases) is a second line
+of defence, not the design — this skill never passes `--force`, and the summary never *recommends*
+discarding content the approval did not cover.
 
 **A refused worktree takes the local branch with it.** When we are sitting in the worktree and it
 is not being removed, HEAD is still on the branch and `git branch -d` cannot run — step 5 already
@@ -691,21 +613,17 @@ couples the two at execution time. The scenario must say so up front rather than
 deletion the run cannot perform: the local-branch row goes to "Не буду" with the reason naming the
 worktree.
 
-Epics are excluded from automatic closing because they are long-lived and keep gaining children.
-That is a **default, not a prohibition**: the user knows whether their epic is done, so a correction
-("закрой и эпик") moves the epic row into "Сделаю", and once the reprinted scenario is approved
-step 5.2 closes it like any other parent.
+**Epics are excluded from automatic closing** because they are long-lived and keep gaining
+children — a default (R3), and "закрой и эпик" moves the row into "Сделаю".
 
 **Open-children counts already include this run's closures.** Step 1 counted them that way, so a
 container parent whose last open child is the task being closed appears under "Сделаю" with the
 reason spelled out — `закрою родителя claude-tools-elf — других открытых детей нет (эта задача
-закрывается здесь же)`. Step 5 closes the task first and re-reads the parent immediately before
-closing it, so the promise and the action are evaluated against the same state.
+закрывается здесь же)`. Step 5 re-reads each parent before closing it (R2), so the promise and the
+action are evaluated against the same state.
 
-**Several plan candidates get no default deletion.** When step 1's search returns more than one
-matching file, the scenario's plan row lists every candidate and defaults to touching none of
-them — filed under "Не буду" with the candidate list as the reason. Deleting the wrong plan file
-is not recoverable from the summary; the user names the right one as a correction.
+**Several plan candidates get no default deletion** (R3): the row lists every candidate and touches
+none of them. Deleting the wrong plan file is not recoverable from the summary.
 
 **The remote branch is gated on the PR's state too.** A branch tree can equal the base while its
 PR is still `OPEN` — the content landed through another PR, a cherry-pick or a rebase. On GitHub,
@@ -715,19 +633,19 @@ with an `OPEN` PR the remote-branch row goes to "Не буду" with the reason 
 ветку на origin — PR #{n} открыт, удаление ветки его закроет`. The two rules about the same PR
 point the same way: an `OPEN` PR keeps both its ledger and its branch.
 
-**`UNKNOWN` refuses that row exactly as `OPEN` does.** When step 1 could not reach the platform, the
-skill does not know whether a live PR is attached to this branch, and the deletion that would close
-it is irreversible. An unknown state is therefore a refusal with its own reason — `не буду удалять
-ветку на origin — состояние PR не удалось выяснить ({причина}), удаление могло бы закрыть живой
-PR` — never a quiet pass through "not `OPEN`". The ledger row needs no extra rule: it purges on
-`MERGED` alone, and `UNKNOWN` is not `MERGED`.
+**A diverged remote tip refuses that row too.** When `REMOTE_TIP != LOCAL_TIP` the remote branch
+carries commits the mergedness check never saw (step 1), so the row goes to "Не буду" with the
+reason `не буду удалять ветку на origin — на ней есть коммиты, которых нет локально, влитость для
+них не проверялась`.
 
-**The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on
-purpose after a merge — for history, or to re-read what happened in review — so its survival must
-not keep a settled PR's ledger alive forever; conversely a successful `git branch -d` says nothing
-about whether the PR is still taking review. Only `MERGED` purges; on `CLOSED` and `OPEN`
-skip the purge, because a closed PR can still be reopened and a still-open one is still taking
-review.
+**`UNKNOWN` refuses that row exactly as `OPEN` does** (R1), with its own reason — `не буду удалять
+ветку на origin — состояние PR не удалось выяснить ({причина}), удаление могло бы закрыть живой PR` —
+never a quiet pass through "not `OPEN`". The ledger row needs no extra rule: it purges on `MERGED`
+alone, and `UNKNOWN` is not `MERGED`.
+
+**The ledger's gate is the PR's state, never branch deletion.** Only `MERGED` purges; on `CLOSED`
+and `OPEN` skip the purge — a closed PR can be reopened and an open one is still taking review, while
+branch survival says nothing about either (see "Why these checks").
 
 **When step 1 found `BRANCH_MISMATCH`:** the four branch-gated rows above never move to "Сделаю",
 regardless of what exists. Each one that actually exists (a worktree we happen to be sitting in, a
@@ -739,20 +657,21 @@ deliberate refusal, not something to omit silently.
 line or be omitted for an explicitly named reason. A skipped row is now a silent action or a silent
 omission — not merely an unasked question.
 
-**"Не буду" lists only deliberate refusals.** The full set: the task itself, when it still has
-`in_progress` children (unless a correction moved it into "Сделаю"); the epic (unless a correction moved it
-into "Сделаю"); the ledger of a `CLOSED`, `OPEN` or `UNKNOWN` PR; the remote branch when its PR is
-`OPEN` or its state is `UNKNOWN`; every branch-gated row (worktree, local branch,
-remote branch, ledger) when `BRANCH_MISMATCH` was found, each with the reason "ветка не относится к
-задаче {task-id}"; those same four rows (worktree, local branch, remote branch, ledger) when
-mergedness is unconfirmed — step 2's ladder reached case 4 and the user answered "да" (no `git
-merge-tree`, an inconclusive comparison, `NO_PR`, `UNKNOWN`, or a `CLOSED` PR whose tree did not
-match) — with that reason, the plan **not** being one
-of them; the worktree when the working copy is dirty, and with it the local branch, since we are
-still standing on that branch; the plan when several candidates match; and the plan when git tracks
-it. What is simply
-absent from the environment (no remote, no plan, not in a worktree) is not printed at all: the
-scenario states decisions, not an inventory.
+**"Не буду" lists only deliberate refusals**, each with its own reason. The full set:
+
+| Row(s) refused | Because |
+|---|---|
+| The task itself | it still has `in_progress` children (R3) |
+| The epic parent | epics are not closed automatically (R3) |
+| The plan | several candidates match, or git tracks it (R3) |
+| The remote branch | its PR is `OPEN` or `UNKNOWN`, or its tip differs from the local one |
+| The ledger | the PR is `CLOSED`, `OPEN` or `UNKNOWN` |
+| The worktree — and the local branch with it | the working copy is dirty |
+| All four branch-gated rows | `BRANCH_MISMATCH` — "ветка не относится к задаче {task-id}" |
+| All four branch-gated rows | mergedness unconfirmed — step 2's case 4, with the cause it named (R4: the plan is not among them) |
+
+What is simply **absent** from the environment (no remote, no plan, not in a worktree) is not
+printed at all: the scenario states decisions, not an inventory.
 
 ### 4. Handle the answer
 
@@ -773,35 +692,27 @@ show that the correction was understood.
 
 Fixed order — beads before git, ledger last:
 
-1. `bd close {task-id}` — **only when the scenario lists it under "Сделаю"** (the default, unless
-   the task itself still has `in_progress` children and no correction moved the row back). **Re-read
-   `bd show {task-id}` immediately before the close**, exactly as item 2 does for each parent and
-   item 5 does for the branch state: the children the scenario counted were counted before the
-   approval, and another session can start one while the scenario waits. If the re-read shows a child
-   that is `in_progress` now, **do not run `bd close`** — leave the task open and say so in the
-   summary rather than closing it anyway. **A re-read that fails refuses the close the same way**: an
-   unverifiable premise is refused, not assumed. The summary names which of the two happened, and
-   items 2 and 3 are skipped along with it, since both act on the premise that this task closed.
-   A correction that explicitly moved the row into "Сделаю" despite known `in_progress` children is
-   the user overriding this rule knowingly, and it still stands: the re-read then only reports.
-   When the
-   scenario left it in "Не буду", items 2 and 3 do not run either — a parent cannot close on a
-   child that was never closed, and the plan is not deleted for work that is not done — and each
-   gets its own "не тронуто" summary line, distinct from the failure case below.
+1. `bd close {task-id}` — **only when the scenario lists it under "Сделаю"**. **Re-read
+   `bd show {task-id}` immediately before the close** (R2): a child that is `in_progress` now means
+   **do not run `bd close`**, and a re-read that *fails* refuses it the same way (R1). The summary
+   names which of the two happened, and items 2 and 3 are skipped along with it, since both act on
+   the premise that this task closed. A correction that moved the row into "Сделаю" despite known
+   `in_progress` children is the user overriding this knowingly, and the rule still stands: the
+   re-read then only reports. When the scenario left the row in "Не буду", items 2 and 3 do not run
+   either, each with its own "не тронуто" summary line, distinct from the failure case below.
 2. Container parents, bottom-up — and the epic **only** when the approved scenario listed it under
-   "Сделаю" (a correction put it there; step 3's default leaves it open). Re-read
-   `bd show {parent-id}` immediately before each `bd close`: the task is now actually closed, so the
-   count the scenario promised is the count that must be observed here. If a child was opened in the
-   meantime, leave the parent open and say so in the summary rather than closing it anyway. **A
-   re-read that fails** (a transient store or CLI error, not a revealed child) is treated exactly the
-   same way — the parent is left open — but the summary must say *why* in a way that keeps the two
-   causes distinguishable: the eligibility re-read failed, not that a child was open. This is not an
-   ordinary non-blocking failure that "errors do not block" would wave through as a skip; it mirrors
-   the precedent below where an `UNKNOWN` PR lookup refuses the action rather than being treated as
-   success — a re-read this skill cannot complete is a reason to refuse, not to proceed on the
-   step-1 count.
+   "Сделаю" (R3). Re-read `bd show {parent-id}` immediately before each `bd close` (R2): the task is
+   now actually closed, so the count the scenario promised is the count that must be observed here. A
+   child opened in the meantime leaves the parent open; so does a re-read that fails (R1) — but the
+   summary must keep the two causes distinguishable, because "the eligibility re-read failed" and "a
+   child was open" call for different follow-ups.
 3. Plan: `rm` whenever the scenario lists the plan for deletion — this
-   fires regardless of which source found the file (linked or untracked). A plan git tracks — clean
+   fires regardless of which source found the file (linked or untracked). **Re-check both facts
+   step 1 captured immediately before the `rm`** — `git ls-files --error-unmatch` for tracked, and
+   `git hash-object` against `PLAN_HASH` for content. A file that became tracked, or whose content
+   changed while the scenario awaited approval, is left alone with a summary line naming which of
+   the two happened: an editor, a formatter or another session can write to a plan that is about to
+   be deleted, and `rm` would take that new content with it. A plan git tracks — clean
    or modified — was filed under "Не буду" in step 3 and is left alone, unless a correction moved
    that row into "Сделаю"; then it is deleted like any other approved item. A plan already gone from
    the working copy has nothing to delete, tracked or not. **The link is cleared only when the plan
@@ -819,11 +730,9 @@ Fixed order — beads before git, ledger last:
    So read the stderr, not the exit code, and let step 6's line say what it said. Still
    non-blocking — a failed sync never stops the rest.
 5. **Re-validate first, while HEAD is still the task's branch — before the `cd`, the worktree
-   removal, the checkout or either deletion.** An irreversible action must not trust a snapshot taken
-   before the approval and any corrections, mirroring item 2's re-read of `bd show {parent-id}`
-   immediately before each `bd close`. This is deliberately not redundant with step 1's `UNKNOWN`
-   rule: that rule guards a lookup that *failed at collection time*; this one guards a lookup that
-   *succeeded and then went stale* — different failures, both refused.
+   removal, the checkout or either deletion** (R2). This is not redundant with step 1's `UNKNOWN`
+   rule: that one guards a lookup that *failed at collection time*, this one a lookup that
+   *succeeded and then went stale*. Different failures, both refused.
    - Re-run step 1's two-call PR lookup, **naming the branch explicitly** rather than relying on the
      checked-out branch: `gh pr view "$CURRENT_BRANCH" --json state,url,number,baseRefName`, falling
      back to `gh pr list --head "$CURRENT_BRANCH" --state all --limit 10 --json
@@ -840,7 +749,7 @@ Fixed order — beads before git, ledger last:
      **same `--exit-code` form step 1 used** — `git ls-remote --exit-code --heads "$REMOTE"
      "$CURRENT_BRANCH"` — capturing its status before any pipe, since `$?` after `ls-remote | cut`
      is `cut`'s status and reads 0 even when the lookup failed.
-   - **Re-read the base too**, in remote mode: `git fetch --quiet "$REMOTE"` again, then
+   - **Re-read the base too**, in remote mode: `git fetch --prune --quiet "$REMOTE"` again, then
      `git rev-parse "$BASE_REF^{tree}"`, compared against the `BASE_TREE` step 1 captured. Mergedness
      was computed from *both* sides — `merge-tree` performs a real merge of the branch and the base —
      so a snapshot of the branch alone does not establish that the verdict still holds. The fetch
@@ -870,11 +779,10 @@ Fixed order — beads before git, ledger last:
        remote gone) → the branch's state is unknown, not absent. Empty output alone cannot tell the two
        apart, which is why the `--exit-code` form is required: measured on git 2.47, an absent ref
        exits **2**, a found one **0**, and an unreachable remote **128**, while all three print nothing
-       usable to stdout. Treat it exactly like the failed PR lookup above — skip the remote branch
-       **and** the ledger purge, each with a summary failure line naming the failed lookup. A
-       re-validation the run could not perform is a reason to refuse, never a licence to record the
-       cleanup as done; step 1's capture is subject to the same rule, and a `REMOTE_TIP_STATUS` that
-       was neither 0 nor 2 means there is no lease value to push with either.
+       usable to stdout. Treat it exactly like the failed PR lookup above (R1) — skip the remote
+       branch **and** the ledger purge, each with a summary failure line naming the failed lookup.
+       Step 1's capture obeys the same rule: a `REMOTE_TIP_STATUS` that was neither 0 nor 2 leaves no
+       lease value to push with either.
      - the remote-tip re-read resolves to a **different OID** than `REMOTE_TIP` → this is the moved-tip
        case: the remote branch is skipped, with a summary line naming the new commit, exactly like a
        moved local tip.
@@ -928,17 +836,13 @@ the next item — this holds for **any** git or tooling failure encountered here
 skill happens to name, so no failure needs to match a specific description to count as
 non-blocking.
 
-**The first exception: item 1 not closing the task stops the beads half.** Items 2 and 3 both act on
-the premise that the task is closed — a container parent qualifies only because its last open child
-just closed, and the plan is deleted because the work it planned is done. Item 1 can leave that
-premise false in three distinct ways, and all three skip items 2 and 3, each with its own summary
-line naming which one it was: the pre-close re-read showed a child that is `in_progress` now; the
-re-read itself failed, so eligibility could not be verified; or `bd close` ran and failed. Git cleanup (item 5) and the ledger (item 6) are unaffected: they depend on the branch's
-state, not on the task's, and stay independent and non-blocking. Item 4 still runs — syncing
-whatever beads state does exist costs nothing and loses nothing. This is a different situation from
-the scenario having left item 1 in "Не буду" over `in_progress` children (step 3): that is a decision
-made before execution starts, not a failure, but it skips items 2 and 3 for the identical reason —
-the premise they need never became true.
+**The first exception: item 1 not closing the task stops the beads half.** Items 2 and 3 both act
+on the premise that the task is closed. Item 1 can leave that premise false in three ways — the
+pre-close re-read showed an `in_progress` child; the re-read itself failed; or `bd close` ran and
+failed — and all three skip items 2 and 3, each with its own summary line naming which one it was.
+Items 4 (sync), 5 (git) and 6 (ledger) are unaffected: they depend on the branch's state, not the
+task's. The scenario having left item 1 in "Не буду" is not a failure but skips items 2 and 3 for the
+identical reason — the premise never became true.
 
 **The second exception: a failed checkout (item 5) stops the pull and the local branch delete.**
 `git pull` and `git branch -D` both act on the premise that HEAD moved off the task's branch and onto
@@ -1027,7 +931,8 @@ PR_STATE overrides a tree mismatch instead of stopping; any other state (`NO_PR`
 stopping outright. A hard stop points to `superpowers:finishing-a-development-branch`. Cleanup (worktree, local branch, remote
 branch, ledger) lives inside the single scenario (step 3) and applies only when the branch matches
 the closed task **and** mergedness is confirmed; the remote branch additionally requires that the
-PR's state is known and not `OPEN`, and the worktree that its working copy is clean. The plan is
+PR's state is known and not `OPEN` and that its tip still equals the local one, and the worktree that
+its working copy is clean. The plan is
 outside this set — it belongs to the task and is handled whenever the task closes, unless git tracks
 the file, in which case it stays in git. Cleanup is non-blocking; the one thing that
 does block is item 1 not closing the task — a child found `in_progress` at the pre-close re-read, a
@@ -1584,6 +1489,96 @@ the index, so an uncommitted deletion still reports as tracked, and that is **no
 A task recorded more than one branch (`flow:start` step 8.1's `--append`, for a parallel workstream
 in another project or PR). The scenario is built for `CURRENT_BRANCH` only, as today
 (`claude-tools-elf.51`) — the task's other recorded branches are neither compared nor touched.
+
+## Why these checks
+
+Everything here is reasoning, not instruction — the steps above carry the rules themselves. It is
+recorded so a later reader can tell a considered constraint from an accidental one before removing
+it. Numbers 1-9 are the base-resolution rules of step 1.
+
+**1. Each candidate is validated where it is chosen.** A target branch deleted after its own merge,
+or a dangling HEAD symref, must not shadow a perfectly good later candidate. Validating once at the
+end of the chain instead turns a repository whose default branch is neither `master` nor `main` into
+`NO_BASE` and stops the run for nothing.
+
+**2. The base comes from the remote.** A local `master` that has not been pulled since the PR merged
+makes the criterion lie, and the safety check then evicts the user for no reason.
+
+**3. The PR's own target comes first — the reason is stacked branches.** A subtask branch is
+routinely opened against its feature branch; compared against the repository's default branch it
+reads "not merged" until the whole feature lands, and the safety check would refuse exactly the
+tasks that get closed most often. The PR/MR target is the precise answer to "where was this work
+supposed to land".
+
+**4. `git symbolic-ref` is only the second candidate.** `refs/remotes/<remote>/HEAD` is frequently
+absent or not a symbolic ref (`fatal: ref refs/remotes/origin/HEAD is not a symbolic ref` — this
+repository has no such ref at all), the default branch may carry any name, and the remote is not
+always `origin`. `git remote set-head --auto` asks the server which branch is default, so it is
+tried before giving up; the `master` → `main` pair is a last-ditch convention, not a definition.
+
+**5. No source of a base may hand back the branch itself.** A base equal to `CURRENT_BRANCH` makes
+`merge-tree` compare the branch with itself and report "merged" unconditionally — a confirmed verdict
+for work that landed nowhere. All three inferring sources can produce it. The upstream is the obvious
+one (`@{upstream}` usually *is* `$REMOTE/$CURRENT_BRANCH`). The remote's HEAD symref names the task
+branch whenever the remote's default *is* that branch — the ordinary state of a repository holding
+one branch. And a PR's target carries the same name as the current branch when the PR comes from a
+fork: the head is `fork:branch`, the base is the upstream's branch of that name, and in the fork
+`refs/remotes/$REMOTE/<base>` resolves back to our own. The conventional `master`/`main` candidate
+needs no guard — a task branch named `master` is a branch mismatch, and step 2 refuses every branch
+row there regardless.
+
+**6. No base asks rather than improvises.** An empty base makes `merge-tree` error out and every
+guard below it meaningless — and those guards are what stand between the run and irreversible
+deletions. The `if` also keeps the user from seeing two `fatal:` lines instead of step 2's question.
+
+**7. A branch that never committed anything is indistinguishable from a merged one, and needs no
+distinguishing.** Its tip *is* the base's tip as of creation — an ancestor of the base, exactly like
+a fast-forward or merge-commit merge. `git rev-list --count`, `git merge-base --is-ancestor` and
+`git for-each-ref --contains` agree in every one of those states. A ref reachable from the base can
+be deleted without losing a commit, by construction. What *can* be lost is uncommitted content in
+the working copy, which `WORKTREE_DIRTY` measures directly.
+
+**8. The tree comparison decays; `PR_STATE` does not.** `git merge-tree --write-tree` performs a
+real three-way merge against the base **as it stands now**. Measured on git 2.47: right after a
+squash merge, `MERGED_TREE == BASE_TREE`; once the base later edits the same lines the branch
+touched, `merge-tree` exits 1 with `CONFLICT (content)` and a differing tree; once the base deletes a
+file the branch touched, `CONFLICT (modify/delete)`. Both read as "not merged" on a branch that did
+merge. `PR_STATE` records a fact about the past, so step 2's ladder checks it first.
+
+**9. `--untracked-files=all` is required, and gitignored files still do not count.** Plain
+`git status` collapses a brand-new directory to a single `dir/` entry, and an untracked note inside
+it must count as content to lose. The subtraction for the plan exists because an untracked plan in a
+non-gitignored `docs/plans/` would make the working copy dirty all by itself and refuse the cleanup
+it is part of; when the plan row is *refused*, nothing is going to delete those files, so they count
+as dirt again. Ignored files are excluded deliberately: they are disposable by construction — the
+plan files themselves live in a gitignored directory and are meant to vanish with the worktree.
+
+**A tracked plan stays in git.** `rm` on a tracked file dirties the working tree immediately before
+`git worktree remove`, which then refuses (this skill never passes `--force`), and the content is in
+history anyway — so a real removal buys nothing and still costs its own commit, PR, merge and
+`flow:done` run. Deleting a *modified* tracked plan leaves the same `D` entry in `git status`.
+
+**Branch rows are never gated on the commit graph.** Counting
+`git rev-list --count "$BASE_REF..$CURRENT_BRANCH"` distinguishes none of the states in 7 above, so
+refusing a row on it would report "влитость не подтверждена" on a demonstrably merged branch in every
+repository that does not squash-merge.
+
+**The ledger's gate is the PR's state, never branch deletion.** A branch is routinely kept on purpose
+after a merge — for history, or to re-read what happened in review — so its survival must not keep a
+settled PR's ledger alive forever; conversely a successful `git branch -d` says nothing about whether
+the PR is still taking review.
+
+**Deleting the remote branch closes an open PR.** On GitHub `git push "$REMOTE" --delete <branch>`
+closes the PR attached to it: an irreversible external action that the line "удалю ветку на origin"
+does not announce and the single approval was never asked about.
+
+**The base question's quoting is legibility, not the untrusted-data rule.** The answer is typed by
+the person who started this run, in their own terminal, against their own repository — there is no
+second party, and an answer containing `$(...)` is that person running a command on themselves. The
+rule that governs reviewer text, PR-author-controlled branch names and `bd` content elsewhere in flow
+does not extend here; a reviewer should not file this as an injection site. What quoting buys is the
+ordinary case: a branch legitimately named with a `$` in it expands to nothing and the run reports
+the wrong ref as missing.
 
 ## The Bottom Line
 

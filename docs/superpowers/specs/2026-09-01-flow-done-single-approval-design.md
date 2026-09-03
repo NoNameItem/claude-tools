@@ -166,11 +166,11 @@ D2.1, which updates remote-tracking refs and nothing else:
 | Task | session context → branch → `flow-find-leaf` |
 | Parent chain | `bd show` upwards: id, type (`epic` or not), open-children count |
 | Task's own status/children | the same `bd show` call, for the task itself — status and open children (D2.7) |
-| Plan file | `Plan:` line in the description, else `git ls-files --others --modified` over the plan directories |
+| Plan file | `Plan:` line in the description, else `git ls-files --others --modified` over the plan directories; with it `PLAN_TRACKED`, `PLAN_GONE` and `PLAN_HASH` (`git hash-object`), all three re-checked in D5's item 3 |
 | Worktree | `flow-in-worktree` |
 | Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it |
 | Remote branch | `git branch -r` |
-| Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --exit-code --heads <remote> <branch>`, capturing its status **before** any pipe (`$?` after `ls-remote \| cut` is `cut`'s) and the OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>` — re-read in D5's re-validation, before either branch delete |
+| Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --exit-code --heads <remote> <branch>`, capturing its status **before** any pipe (`$?` after `ls-remote \| cut` is `cut`'s) and the OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>` — re-read in D5's re-validation, before either branch delete. **The two must be equal for the remote-branch row to be offered** (D2.10) |
 | Ledger | present when a `PR_NUMBER` was obtained |
 
 Three decisions differ from today's behaviour:
@@ -179,6 +179,11 @@ Three decisions differ from today's behaviour:
 Comparing against a local `master` that lags (no `git pull` since the PR merged) makes the criterion
 report "not merged" and the safety check evict the user for no reason. In remote mode: `git fetch`
 first, then the chain below. In local-only mode the local branch is the only option.
+
+The fetch **prunes** (`git fetch --prune "$REMOTE"`, and likewise the re-fetch in D5's item 5).
+Without it a candidate deleted on the remote keeps its `refs/remotes/<remote>/<name>` ref, so the
+`show-ref` validation below accepts a base that no longer exists — and D5's `BASE_TREE` comparison
+then reports it "unchanged" precisely because nothing touched the stale ref.
 
 The remote is resolved **before** the fetch and named in it — `git fetch "$REMOTE"`. A bare
 `git fetch` takes the current branch's upstream remote and falls back to `origin`, so a repository
@@ -384,6 +389,17 @@ ready to have its worktree and branches cleaned up. Gating cleanup on the task's
 strand that branch's resources for as long as the epic has open children, which in practice is
 indefinitely.
 
+**D2.10. The remote tip must equal the local one before the remote-branch row is offered.**
+Mergedness is established by comparing the base with the **local** branch; `REMOTE_TIP` is captured
+only as a `--force-with-lease` value and is never passed to `merge-tree`. So a remote branch that had
+already diverged when the run started — a collaborator pushed to it — carries commits the verdict
+says nothing about, and D5's re-validation does not catch it either: that check proves only that the
+tip has not moved *since collection*. Unequal tips send the row to "Не буду" with its own reason.
+
+The test is **equality, not ancestry**, so a local tip ahead of the remote refuses the row too even
+though deleting the remote ref would lose nothing there. Accepted: the refusal is visible and a
+correction moves it (D3), while an ancestry test would add a branch for the rarer direction.
+
 ### D3. Scenario format and defaults (step 3)
 
 One block: a header of facts, a numbered list of actions, a separate list of what is deliberately
@@ -415,14 +431,14 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 | Plan file | **delete** when untracked; **leave in git** when tracked, clean or modified; **none** when several candidates match | a plan was found |
 | Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
 | Local branch | delete, always `-D` | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
-| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, PR state known and not `OPEN` |
+| Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, `REMOTE_TIP == LOCAL_TIP`, PR state known and not `OPEN` |
 | Ledger | purge when `MERGED`; **leave** when `CLOSED` or `OPEN` | PR known, ledger exists, branch matches the task, mergedness confirmed |
 | Container parent | close | no open children remain once this run's closures are counted, type ≠ `epic` |
 | Epic parent | **do not close** — default, overridable by a correction | same condition, type `epic` |
 | `flow-sync push` | do | always |
 
-Four gates guard the four branch-gated rows — worktree, local branch, remote branch, ledger — each
-with its own named refusal in "Не буду". The plan row is **not** among them: the plan belongs to
+Five gates guard the four branch-gated rows — worktree, local branch, remote branch, ledger — each
+with its own named refusal in "Не буду"; the remote branch carries two of its own. The plan row is **not** among them: the plan belongs to
 the task, not to the branch, so it is handled whenever the task closes, including under an
 unconfirmed verdict. Wherever this document refuses "every deletion" for an unconfirmed verdict, it
 means those four rows.
@@ -449,6 +465,9 @@ disagreement or refusing on it.
   "удалю ветку на origin" does not announce. `UNKNOWN` (D2.6) refuses the row the same way and for
   the same reason: what cannot be ruled out may be a live PR. The two rules about the same PR must
   point the same way: an `OPEN` PR keeps both its ledger and its branch.
+- **the remote tip equals the local one** (D2.10), for the remote branch alone. Mergedness is
+  established against the local branch, so a remote tip that had already diverged when the run
+  started carries commits the verdict never examined.
 - **the working copy is clean**, for the worktree alone —
   `git status --porcelain --untracked-files=all` empty. This is the one row that can destroy
   content existing nowhere else, and this is the direct measurement of whether such content exists.
@@ -488,10 +507,12 @@ Two rules replace the tests this text-only approach cannot have:
 be omitted for an explicitly named reason. A skipped row now means a silent action or a silent
 omission, not merely an unasked question.
 
-**D3.2. "Не буду" lists only deliberate refusals** — the task itself, when it still has
+**D3.2. "Не буду" lists only deliberate refusals**, rendered as a table in the skill — the task
+itself, when it still has
 `in_progress` children (D2.7), unless a correction moved it into "Сделаю"; the epic, unless a
 correction moved it into "Сделаю"; the ledger of a `CLOSED`, `OPEN` or `UNKNOWN` PR; the remote
-branch when its PR is `OPEN` or its state is `UNKNOWN`; the four branch-gated rows (worktree, local
+branch when its PR is `OPEN` or its state is `UNKNOWN`, or when its tip differs from the local one
+(D2.10); the four branch-gated rows (worktree, local
 branch, remote branch, ledger) when the branch does not belong to the task, and those same four
 when mergedness is unconfirmed (D2.2's case 4) — the plan in neither case, its fate follows the
 task; the worktree when the working copy is dirty, and the local branch with it; the plan when
@@ -539,7 +560,13 @@ Fixed order — beads first, git second:
    leaves the parent open exactly as a revealed child would, but the summary names the two causes
    separately — the re-read failed, versus a child was opened
 3. plan: `rm` when the scenario lists it for deletion — **untracked** plans by default; a tracked
-   one, clean or modified, stays in git unless a correction moved its row into "Сделаю" (D3). The
+   one, clean or modified, stays in git unless a correction moved its row into "Сделаю" (D3).
+   **Re-checks tracked state and content immediately before the `rm`** (`git ls-files
+   --error-unmatch`, and `git hash-object` against the collected `PLAN_HASH`), for the same reason
+   items 1, 2 and 5 re-read their own premises: a file that became tracked, or whose content changed
+   while the scenario awaited approval, is left alone with a summary line naming which of the two
+   happened. An editor, a formatter or another session can write to a plan between the approval and
+   the `rm`, and that content exists nowhere else. The
    link is cleared with `flow-link-doc <task> Plan ""` **only when the plan is actually gone from
    the working copy after this item** — deleted just now, or already absent at collection time — and
    only when the task description held a `Plan:` line to begin with; a tracked plan left in git on
@@ -562,7 +589,7 @@ Fixed order — beads first, git second:
      output is parsed rather than reduced to an exit status), never the collapsed
      `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
      meaning the task's branch partway through;
-   - re-reads the base as well, in remote mode: a fresh `git fetch <remote>`, then
+   - re-reads the base as well, in remote mode: a fresh `git fetch --prune <remote>`, then
      `git rev-parse "<base-ref>^{tree}"` against the `BASE_TREE` D2 captured. `merge-tree` merges
      *both* sides, so re-reading only the branch does not establish that the verdict still holds; a
      base moved by a force-push (an emergency rollback done by reset rather than by a revert commit)
@@ -659,6 +686,45 @@ The summary lists the scenario items with their actual outcome and names diverge
 
 The approval was given once and in advance — to a list, not to each action as it happened — so the
 summary is obliged to show where the promise was not kept.
+
+### D6. Document shape: rules in the steps, reasoning in one place
+
+The skill grew from 754 lines at implementation to 1608 across eight review rounds — the additions
+being almost entirely justificatory prose attached to individual rules. Each paragraph was defensible
+on its own (an unexplained rule gets removed by the next reader who cannot see what it costs), but
+their sum buried the algorithm: step 1 reached 368 lines, of which the commands were about a sixth.
+The measure that matters is the workflow, not the file: it stood at 956 lines and now stands at 824,
+with this round's three fixes included in the smaller figure.
+
+Two decisions follow, and only the first of them reduces size:
+
+**D6.1. Four recurring rules are stated once and referenced.** The same reasoning was being rewritten
+at every site it applied to. Named `R1`-`R4` in the skill, immediately before the workflow:
+
+| | Rule |
+|---|---|
+| R1 | A premise the run cannot verify is refused, never assumed — a failed lookup is not a "no" |
+| R2 | An irreversible action re-checks its premise immediately before acting |
+| R3 | A default is not a prohibition — every "Не буду" row moves on a correction |
+| R4 | Mergedness gates the four branch rows, never the task, the parents, the plan or the sync |
+
+Sites that previously re-argued one of these now name it. R1 replaces the separate arguments at the
+`UNKNOWN` PR lookup (D2.6), the pre-close and pre-parent re-reads (D5 items 1-2) and the remote-tip
+re-read (D5 item 5); R2 replaces the "must not trust a snapshot" argument repeated across those same
+three; R3 replaces four near-identical "default, not a prohibition" paragraphs; R4 replaces the
+"which rows mergedness gates" restatement in D2.9, D3 and D5.
+
+**D6.2. Per-rule reasoning moves to one "Why these checks" section at the end.** This changes no
+size — the skill is loaded whole — and is purely about legibility: the steps carry commands and
+one-line rules, and the evidence behind them (measured git behaviour, the fork-PR base collision, the
+worktree/plan subtraction, the untrusted-data carve-out) sits where it can be read deliberately
+rather than mid-algorithm. The reasoning is **kept, not cut**: a rule whose cost is not recorded is a
+rule the next reader removes.
+
+Not done, and deliberately: the step-by-step evidence itself is not condensed further. Measured facts
+(`git merge-tree` decaying after a squash merge, `ls-remote --exit-code` returning 2/0/128) are what
+keep the rules from being re-litigated each round, and each was written because a round had already
+gone wrong without it.
 
 ## What this replaces in SKILL.md
 
