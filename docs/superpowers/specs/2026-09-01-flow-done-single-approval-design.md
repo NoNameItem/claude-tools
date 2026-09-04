@@ -188,7 +188,7 @@ then reports it "unchanged" precisely because nothing touched the stale ref.
 The remote is resolved **before** the fetch and named in it — `git fetch "$REMOTE"`. A bare
 `git fetch` takes the current branch's upstream remote and falls back to `origin`, so a repository
 whose only remote carries another name fetches nothing, or fails, and every comparison below then
-runs on stale remote-tracking refs. The same rule governs the `git pull` in D5's item 5.
+runs on stale remote-tracking refs.
 
 The chain, first hit wins — and **no candidate may name the current branch**, for the reason given
 below the list; one that does falls through like a candidate the remote does not have:
@@ -234,8 +234,8 @@ makes `merge-tree` error out, and that comparison is what guards every deletion.
 
 Comparison base and checkout target are kept as separate values. `BASE_REF` (`origin/master`) goes
 to `merge-tree` and `rev-parse`; `BASE_LOCAL` (`master`) is what step 5 checks out —
-`git checkout origin/master` detaches HEAD and the `git pull` after it fails with "You are not
-currently on a branch".
+`git checkout origin/master` detaches HEAD, and the merge after it then fast-forwards HEAD alone,
+leaving the base branch where it was — a silent no-op rather than an error.
 
 **D2.2. Mergedness comes from git by default; a `MERGED` PR state overrides a stale comparison.**
 `merge-tree` works in both modes and survives squash — but it performs a real three-way merge
@@ -652,11 +652,18 @@ Fixed order — beads first, git second:
    Only then: `cd` to the main repo root (leaving the worktree — removing the one you stand in makes
    every later command fail) → `git worktree remove` (skipped above if the local tip moved) →
    `git checkout <BASE_LOCAL>` (the local branch name — checking out `BASE_REF`/`origin/master`
-   detaches HEAD and breaks the pull). `git pull --ff-only "$REMOTE" "$BASE_LOCAL"` (**in remote mode
-   only** — a local-only repository has nothing to pull from; the operands are named because
+   detaches HEAD, and the merge below then fast-forwards HEAD alone while the base branch stays put:
+   a silent no-op rather than an error). `git merge --ff-only "$BASE_REF"` (**in remote mode only** —
+   a local-only repository has no remote-tracking ref to merge from), **never `git pull`**: a pull is
+   a fetch plus a merge, and that fetch would land after the re-validation already compared
+   `BASE_TREE`, re-opening the window it exists to close — a base force-pushed in between
+   fast-forwards cleanly past the point mergedness was established while the deletions still run off
+   the stale verdict (D5.1). Merging the remote-tracking ref the re-validation just fetched does no
+   network I/O, so check and act stay adjacent. It also keeps the property a bare `pull` lacks:
    `BASE_LOCAL` is chosen from what the *remote* has and its local tracking configuration is never
-   inspected, and `--ff-only` turns a mismatch into a refusal instead of a merge commit on a branch
-   this run has no business writing to) and `git branch -D` (skipped above if the local tip moved; otherwise only
+   inspected, so a bare `pull` could fail or merge some other ref into a persistent branch this run
+   has no business writing to; `--ff-only` turns the remaining mismatch into a refusal instead of a
+   merge commit. And `git branch -D` (skipped above if the local tip moved; otherwise only
    when the scenario listed the local branch) **run only when the checkout succeeded** — see the
    second carve-out below. The remote branch, when the scenario listed it and the re-validation block
    above did not skip it, is deleted with a **lease** rather than a bare `--delete`, so the check and
@@ -692,15 +699,16 @@ exists costs nothing. Same downstream skip, different cause, when the scenario i
 "Не буду" over `in_progress` children (D2.7): that is decided before execution starts, not a failure,
 but the premise items 2 and 3 depend on never becomes true either way.
 
-**The second: a failed checkout (item 5) stops the pull and the local branch delete.** `git pull` and
+**The second: a failed checkout (item 5) stops the merge and the local branch delete.**
+`git merge --ff-only` and
 `git branch -D` both act on the premise that HEAD moved off the task's branch and onto `BASE_LOCAL` —
-the pull needs a real branch checked out to merge into, and deleting a branch that may still be
+the merge needs a real branch checked out to advance, and deleting a branch that may still be
 checked out is refused by git anyway. If `git checkout <BASE_LOCAL>` fails (the base is checked out
 in another worktree, or the tree is dirty), that premise is false, so both are **skipped**, each with
 its own summary line naming the failed checkout. The worktree removal, the remote-branch delete and
 the ledger purge are unaffected — they do not depend on where HEAD ends up. This carve-out and item
 5's re-validation block are independent: either alone can skip the local branch, and a failed
-checkout still skips the pull and the local deletion even when the re-validation block found nothing
+checkout still skips the merge and the local deletion even when the re-validation block found nothing
 wrong.
 
 The summary lists the scenario items with their actual outcome and names divergences explicitly:

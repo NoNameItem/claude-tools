@@ -144,9 +144,10 @@ The block below produces **two distinct values, never interchangeable**:
   and `rev-parse`;
 - `BASE_LOCAL` — the **checkout target** (`master`), the local branch name step 5 checks out.
 
-Checking out `BASE_REF` detaches HEAD and makes the following `git pull` fail with "You are not
-currently on a branch"; comparing against `BASE_LOCAL` in remote mode compares against a possibly
-stale local ref. Keep them apart.
+Checking out `BASE_REF` detaches HEAD, and the `git merge --ff-only` after it then **succeeds while
+advancing nothing** — measured on git 2.47, a detached merge fast-forwards HEAD alone and leaves the
+local base branch where it was, so the failure is silent rather than loud. Comparing against
+`BASE_LOCAL` in remote mode compares against a possibly stale local ref. Keep them apart.
 
 ```bash
 if [ -n "$(git remote)" ]; then
@@ -821,11 +822,11 @@ Fixed order — beads before git, ledger last:
    root (the parent of `.worktrees/`) before anything else below. Removing the worktree you are
    standing in makes every command after it fail. For whichever rows the re-validation above did not
    already skip: `git worktree remove <path>` → `git checkout "$BASE_LOCAL"`. **Check out
-   `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD and the `git pull`
-   right after it fails with "You are not currently on a branch".
+   `BASE_LOCAL`, never `BASE_REF`:** `git checkout origin/master` detaches HEAD, and the merge below
+   then fast-forwards HEAD alone — succeeding while the local base branch stays where it was.
 
-   `git pull --ff-only "$REMOTE" "$BASE_LOCAL"` (**remote mode only** — a local-only repository has
-   no upstream to pull from) and
+   `git merge --ff-only "$BASE_REF"` (**remote mode only** — a local-only repository has no
+   remote-tracking ref to merge from) and
    `git branch -D <branch>` (only when the scenario listed the local branch — mergedness confirmed,
    the branch matches the task, and re-validation did not skip it; and always `-D`, never `-d`: tree
    equality already proves the tip adds nothing to the base, and `-d` would refuse right after a
@@ -834,12 +835,18 @@ Fixed order — beads before git, ledger last:
    independent of the re-validation block above: either rule alone can skip the local branch, and
    both are checked.
 
-   **The pull names its operands and refuses to merge.** Step 1 chooses `BASE_LOCAL` by checking
-   that the *remote* has that branch; it never looks at the local branch's tracking configuration.
-   So a local branch of that name with no upstream, or one tracking a different remote, makes a bare
-   `git pull` either fail or merge some other ref into the base branch — a persistent branch this
-   run has no business writing to. Naming `"$REMOTE" "$BASE_LOCAL"` removes the guesswork, and
-   `--ff-only` turns the remaining bad case into a refusal instead of a merge commit.
+   **Merge from the validated ref — never `git pull` here.** A `pull` is a fetch plus a merge, and
+   that fetch would land **after** the re-validation block above already checked `BASE_TREE`,
+   re-opening the window it exists to close: a base force-pushed in between (an emergency rollback
+   done by reset rather than by a revert) fast-forwards cleanly past the point mergedness was
+   established, while `git branch -D` and the leased remote delete still run off the stale verdict.
+   `$BASE_REF` is the remote-tracking ref the re-validation just fetched and compared, so merging it
+   performs **no network I/O at all** and check and act stay adjacent (R2). It also keeps the
+   property a bare `git pull` lacks: step 1 chooses `BASE_LOCAL` by checking that the *remote* has
+   that branch and never inspects the local branch's tracking configuration, so a bare `pull` on a
+   local branch with no upstream — or one tracking a different remote — would fail or merge some
+   other ref into a persistent branch this run has no business writing to. `--ff-only` turns the
+   remaining bad case into a refusal instead of a merge commit.
 
    Delete the remote branch — when the scenario listed it and re-validation above did not skip
    it — with a **lease** rather than a bare `--delete`, so the check and the deletion are one atomic
@@ -874,11 +881,12 @@ Items 4 (sync), 5 (git) and 6 (ledger) are unaffected: they depend on the branch
 task's. The scenario having left item 1 in "Не буду" is not a failure but skips items 2 and 3 for the
 identical reason — the premise never became true.
 
-**The second exception: a failed checkout (item 5) stops the pull and the local branch delete.**
-`git pull` and `git branch -D` both act on the premise that HEAD moved off the task's branch and onto
-`BASE_LOCAL` — the pull needs a real branch checked out to merge into, and deleting a branch we might
+**The second exception: a failed checkout (item 5) stops the merge and the local branch delete.**
+`git merge --ff-only` and `git branch -D` both act on the premise that HEAD moved off the task's
+branch and onto `BASE_LOCAL` — the merge needs a real branch checked out to advance, and deleting a
+branch we might
 still be standing on is refused by git anyway. If `git checkout "$BASE_LOCAL"` failed (the base is
-checked out elsewhere, or the tree is dirty), that premise is false, so `git pull` and
+checked out elsewhere, or the tree is dirty), that premise is false, so `git merge --ff-only` and
 `git branch -D` are **skipped**, each with its own summary line naming the failed checkout as the
 reason. The worktree removal, the remote-branch delete and the ledger purge are unaffected: they do
 not depend on where HEAD ends up. This exception and item 5's re-validation block are independent —
@@ -933,7 +941,7 @@ as silent absences.
 ✅ Run flow-sync push at end
 ✅ Purge the PR's persistent review ledger when the scenario says so
 ✅ Delete local branch, remote branch, worktree when the scenario says so
-✅ Switch to the local default branch, and pull after cleanup in remote mode
+✅ Switch to the local default branch, and fast-forward it from the validated remote-tracking ref after cleanup in remote mode
 
 ### This Skill Does NOT:
 ❌ Git operations unrelated to cleanup (commit, push, merge, etc.) — including committing the plan file's own deletion/move; the branch cleanup step (or the user's next workflow) handles git state
