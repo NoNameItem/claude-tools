@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0](https://github.com/NoNameItem/claude-tools/compare/flow-3.1.0...flow-3.2.0) (2026-09-04)
+
+
+### Features
+
+* **flow:** adapt plugin tooling for Codex plugins ([#117](https://github.com/NoNameItem/claude-tools/issues/117)) ([1feb3b9](https://github.com/NoNameItem/claude-tools/commit/1feb3b950e479de1cac51d894e51e15eeda861d2))
+* **flow:** add native Codex CLI support ([#113](https://github.com/NoNameItem/claude-tools/issues/113)) ([ed00a63](https://github.com/NoNameItem/claude-tools/commit/ed00a63ec37a005744d733caf32b53085ba31337))
+* **flow:** persistent per-PR review ledger for flow:review-comments ([#118](https://github.com/NoNameItem/claude-tools/issues/118)) ([af1f02f](https://github.com/NoNameItem/claude-tools/commit/af1f02fc9051d83e00d31b8b32efac0af22470e7))
+* **flow:** replace flow:done step-by-step questions with one scenario ([#139](https://github.com/NoNameItem/claude-tools/issues/139)) ([70668aa](https://github.com/NoNameItem/claude-tools/commit/70668aa3b4e3682593f4700496deb887d350c706))
+
+
+### Bug Fixes
+
+* **flow:** decide review-ledger re-surfacing from per-reply seen bits ([#134](https://github.com/NoNameItem/claude-tools/issues/134)) ([0918ac8](https://github.com/NoNameItem/claude-tools/commit/0918ac851b1ff42182d127e0c95c6de551f7feb8))
+* **flow:** harden Phase 4.2 card emission ([#137](https://github.com/NoNameItem/claude-tools/issues/137)) ([164558c](https://github.com/NoNameItem/claude-tools/commit/164558c166bc5d25864a9f5a8b2b9a8b6a00963d))
+
 ## [3.1.0](https://github.com/NoNameItem/claude-tools/compare/flow-3.0.0...flow-3.1.0) (2026-07-14)
 
 
