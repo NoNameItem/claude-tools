@@ -316,7 +316,7 @@ When to use: after pushing a PR and receiving review comments.
 Rides the automated bot/CI review cycle on a GitHub PR or GitLab MR to convergence:
 waits for the checks on the current head, runs `/flow:review-comments`, and repeats each
 time a fix is pushed — until no new comments come back. Gate-name-agnostic and
-cross-platform; reply-only (never resolves threads or merges).
+cross-platform; it resolves the bot threads it answers, never a human's, and never merges.
 
 When to use: after pushing to a PR/MR, to ride the bot review rounds without babysitting.
 

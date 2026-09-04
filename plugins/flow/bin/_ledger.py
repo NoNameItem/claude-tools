@@ -53,6 +53,10 @@ SNAPSHOT_FIELDS = (
     "snippet",
     "side",
     "position",
+    # The platform's resolve target. Snapshot, not durable memory: the platform owns it, and a
+    # row that predates the field simply acquires it on its next reconcile — no schema bump,
+    # because `_structure_is_sound` does not enumerate row fields.
+    "resolve_id",
 )
 
 # Segments that mark the route in a PR/MR URL: GitHub `/pull/<n>` (and `/pulls/<n>`),
