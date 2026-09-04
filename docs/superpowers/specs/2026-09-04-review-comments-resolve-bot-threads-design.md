@@ -47,13 +47,16 @@ Resolve a thread when, and only when, all of the following hold:
 
 1. this run **actually posted a reply** into it;
 2. the thread was opened by a **bot** (`is_bot`);
-3. the platform gives us something to resolve (`resolve_id` is not null).
+3. the platform gives us something to resolve (`resolve_id` is not null);
+4. **no human other than us has spoken in the thread** — a bot-opened thread a person has replied
+   into is that person's thread now, not the bot's.
 
 Resolution is **unconditional** under those conditions — no flag, no prompt, no stored consent.
 The decision the thread earned (`fix` / `won't-fix` / `follow-up`) does not gate it.
 
-**Human threads are never resolved.** For people the skill stays strictly reply-only: resolving
-marks a reviewer's concern as settled by the author, and that judgement stays with the user.
+**Human threads are never resolved — whether a human opened the thread or only joined one a bot
+opened.** For people the skill stays strictly reply-only: resolving marks a reviewer's concern as
+settled by the author, and that judgement stays with the user.
 
 ### Why unconditional, and what it costs
 
@@ -89,7 +92,8 @@ different identifier from the reply target:
 |---|---|
 | GitHub, inline thread | the review thread's GraphQL **node id** (`PRRT_…`) |
 | GitHub, review-body summary | `null` — no thread exists |
-| GitLab, discussion | the discussion id (the same value as `discussion_id`) |
+| GitLab, discussion with a resolvable note | the discussion id (the same value as `discussion_id`) |
+| GitLab, discussion with no resolvable note (a general MR note — an individual note, `resolvable: false`, exactly the shape a review bot's summary takes on GitLab) | `null` — nothing `PUT .../discussions/{id}` can resolve |
 
 **The name is `resolve_id`, not `thread_id`.** The ledger row already has a `thread_id`, and it
 means the *reply* target (`_ledger.thread_id_of`). Reusing that name would eventually send a node
@@ -130,12 +134,19 @@ gh api graphql \
 # GitLab — resolve_id is the discussion id
 glab api --method PUT \
   "projects/{project}/merge_requests/{iid}/discussions/{resolve_id}" \
-  -f resolved=true
+  -F resolved=true
 ```
 
-`resolve_id` is platform-generated and opaque — no reviewer-controlled text reaches these commands
-— but it is still passed as its own argument rather than interpolated into a string a shell
-re-parses, following the skill's untrusted-data rule by construction.
+`-F`, not `-f`: `glab api` sends a `-f`/`--raw-field` value as a string and a `-F`/`--field` value
+with its type inferred — the reverse of `gh api`'s convention — so `resolved=true` needs `-F` to
+reach the platform as a boolean rather than the string `"true"`.
+
+`resolve_id` is platform-generated and opaque — no reviewer-controlled text reaches these commands.
+On GitHub it is passed as its own GraphQL variable (`-f id={resolve_id}`), never interpolated into
+the query string. On GitLab it **is** interpolated into the request URL (inside double quotes) —
+practically safe, because these ids are platform-generated and never carry reviewer text, but that
+is a narrower claim than "passed as its own argument": the GitLab call does not get the same
+shell-re-parsing protection the GitHub call gets by construction.
 
 A failed mutation does **not** abort the loop: the ref is carried to the 5.8 report and the next
 thread is processed.
@@ -176,6 +187,16 @@ with something to add — un-resolving on the platform returns the row to `live`
 the next round. The alternative (a `resolved_by_us` marker plus an exception inside `is_working`)
 would put a special case into the single function that answers "is this row still work?", which is
 the one place in the ledger that has earned staying simple.
+
+**The fourth resolve condition (no human other than us has spoken in the thread) is what keeps
+this trade confined to bots.** A thread already carrying a human reply is never resolved in the
+first place, so the swallowed-reply risk above only applies to a *bot* returning to a thread it
+opened — never to a human's remark, which the gate keeps live by refusing to resolve the thread at
+all. What the gate does **not** cover is a human's *first* reply, posted after we already resolved
+a thread that had none: that reply still falls under this same accepted risk, because the gate is
+checked once, at resolve time, not watched afterward. Closing that gap would mean polling platform
+state after the resolve call rather than before it — out of scope here, same as the rest of this
+risk.
 
 ## Acceptance
 
