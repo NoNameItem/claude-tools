@@ -404,6 +404,21 @@ The test is **equality, not ancestry**, so a local tip ahead of the remote refus
 though deleting the remote ref would lose nothing there. Accepted: the refusal is visible and a
 correction moves it (D3), while an ancestry test would add a branch for the rarer direction.
 
+**D2.11. The PR list is capped at 100, deliberately.** `gh pr list` returns strictly newest-first
+(verified across this repository's 141 PRs, monotonically descending by number), so a cap can hide an
+`OPEN` PR only when 100 newer PRs share the same head branch. Measured here: 112 of 120 branches have
+exactly one PR, the busiest human branch three, and only release-please's reused branch names reach 7
+and 8 — where the open PR is always the newest and arrives first regardless of the cap. Removing the
+bound would mean a second, unbounded `--state open` lookup at both call sites; the cap plus a
+recorded rationale is the cheaper answer for a shape the data does not produce.
+
+**D2.12. Every path is resolved from the repository root.** `/flow:done` is routinely invoked from a
+subdirectory, and the plan paths are written root-relative — the `git ls-files` pathspec, `test -e`,
+`git hash-object`, the `rm`. From `plugins/flow` the pathspec matches nothing and `test -e` reports
+an existing plan as gone, which then clears a still-valid `Plan:` link. Step 1 opens with
+`cd "$(git rev-parse --show-toplevel)"`; D5's later `cd` out of a worktree is a separate move and is
+unaffected.
+
 ### D3. Scenario format and defaults (step 3)
 
 One block: a header of facts, a numbered list of actions, a separate list of what is deliberately
@@ -601,7 +616,7 @@ Fixed order — beads first, git second:
    resolves the wrong branch's PR, since HEAD has already moved. The block:
    - re-runs D2's two-call PR lookup, **naming the branch explicitly**
      (`gh pr view <branch> --json state,url,number,baseRefName`, falling back to
-     `gh pr list --head <branch> --state all --limit 10 --json state,url,number,baseRefName`, whose
+     `gh pr list --head <branch> --state all --limit 100 --json state,url,number,baseRefName`, whose
      output is parsed rather than reduced to an exit status), never the collapsed
      `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
      meaning the task's branch partway through;

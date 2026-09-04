@@ -77,9 +77,17 @@ HEAD symref is missing, `git remote set-head --auto` — both touch remote-track
 else: no working tree, no branch, no task is changed here. Gather every fact step 3's scenario needs
 before printing anything.
 
+**Start at the repository root.** `/flow:done` is routinely invoked from a subdirectory, and every
+plan path in this skill is written root-relative — the `git ls-files` pathspec, `test -e`,
+`git hash-object` and the `rm` itself. Run from `plugins/flow`, that pathspec matches nothing and
+`test -e` reports an existing plan as gone, which then clears a still-valid `Plan:` link. One `cd`
+at the top anchors all of them; step 5's later `cd` out of a worktree is a different move and still
+happens.
+
 **Branch and repository mode:**
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"   # every path below is repo-root-relative
 CURRENT_BRANCH=$(git branch --show-current)
 git remote   # empty → local-only mode; any output → remote mode
 ```
@@ -97,7 +105,7 @@ if [ -n "$PR_JSON" ]; then
 else
   # scoped to THIS branch, and its output is read — an exit status alone says only
   # that the platform answered, not that the branch has no PR
-  PR_LIST=$(gh pr list --head "$CURRENT_BRANCH" --state all --limit 10 \
+  PR_LIST=$(gh pr list --head "$CURRENT_BRANCH" --state all --limit 100 \
               --json state,url,number,baseRefName 2>/dev/null)
   if [ $? -ne 0 ]; then
     PR_STATE=UNKNOWN    # the lookup itself failed — auth, rate limit, network
@@ -106,7 +114,7 @@ else
   else
     # an OPEN PR outranks any closed or merged one for the same branch: it is the
     # state that must stop the run, and `--limit 1` alone could hand back a closed
-    # one created later
+    # one created later. The 100 cap is deliberate — see "Why these checks"
     PR_ONE=$(echo "$PR_LIST" | jq -c '[.[] | select(.state == "OPEN")][0] // .[0]')
     PR_STATE=$(echo "$PR_ONE" | jq -r .state)
     PR_URL=$(echo "$PR_ONE" | jq -r .url)
@@ -754,7 +762,7 @@ Fixed order — beads before git, ledger last:
    *succeeded and then went stale*. Different failures, both refused.
    - Re-run step 1's two-call PR lookup, **naming the branch explicitly** rather than relying on the
      checked-out branch: `gh pr view "$CURRENT_BRANCH" --json state,url,number,baseRefName`, falling
-     back to `gh pr list --head "$CURRENT_BRANCH" --state all --limit 10 --json
+     back to `gh pr list --head "$CURRENT_BRANCH" --state all --limit 100 --json
      state,url,number,baseRefName`, **read the same way step 1 reads it** — non-zero exit →
      `UNKNOWN`, empty array → `NO_PR`, otherwise that PR's own state with an `OPEN` entry outranking
      any closed or merged one. Never the collapsed `gh pr view || echo NO_PR` form, and never the
@@ -1597,6 +1605,17 @@ the PR is still taking review.
 **Deleting the remote branch closes an open PR.** On GitHub `git push "$REMOTE" --delete <branch>`
 closes the PR attached to it: an irreversible external action that the line "удалю ветку на origin"
 does not announce and the single approval was never asked about.
+
+**The PR list is capped at 100, and the cap is a bound the ordering makes safe.** `gh pr list`
+returns strictly newest-first — verified across this repository's 141 PRs, monotonically descending
+by number — so a cap hides an `OPEN` PR only when 100 *newer* PRs share the same head branch name.
+Measured here: 112 of 120 branches carry exactly one PR, the busiest human branch three, and the only
+branches that accumulate more are release-please's, which reuse one name by design and reach 7 and 8.
+On those the open PR is always the newest and arrives first regardless of the cap. The dangerous
+shape — an *old* open PR buried under 100 newer terminal ones — does not occur in that data and is
+not what branch reuse produces. Removing the cap entirely would mean a second unbounded `--state
+open` call at both lookup sites; the bound plus this note is the cheaper answer, and a future reader
+now knows it was chosen rather than defaulted.
 
 **The base question's quoting is legibility, not the untrusted-data rule.** The answer is typed by
 the person who started this run, in their own terminal, against their own repository — there is no
