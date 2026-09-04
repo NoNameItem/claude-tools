@@ -1,6 +1,6 @@
 ---
 name: review-loop
-description: "Use after pushing to a GitHub Pull Request or GitLab Merge Request when you want the automated bot/CI review cycle ridden round after round to convergence, instead of re-invoking flow:review-comments by hand each round. Cross-platform (gh/glab), gate-name-agnostic. Reply-only: it never resolves threads or merges. Not for human-reviewer feedback."
+description: "Use after pushing to a GitHub Pull Request or GitLab Merge Request when you want the automated bot/CI review cycle ridden round after round to convergence, instead of re-invoking flow:review-comments by hand each round. Cross-platform (gh/glab), gate-name-agnostic. Reply-only for human threads: it resolves the bot threads it answers, never a human's, and never merges. Not for human-reviewer feedback."
 allowed-tools: Skill(flow:review-comments) Bash(gh:*) Bash(glab:*) Bash(git:*) Bash(flow-wait-ci) Bash(flow-wait-ci:*) Bash(flow-review-ledger) Bash(flow-review-ledger:*) Read
 ---
 
@@ -38,9 +38,9 @@ thread count, so it stays platform-agnostic by construction.
 
 - **Human review.** A human reviewer's reaction time is unbounded (hours/days). Handle
   those with a standalone `flow:review-comments` call, not the loop.
-- **To make the PR/MR mergeable.** The loop is **reply-only**. Convergence means "the bots
-  have nothing new to say," NOT "ready to merge." Resolving review threads and merging stay
-  **yours to do**. See red flags.
+- **To make the PR/MR mergeable.** Convergence means "the bots have nothing new to say," NOT
+  "ready to merge." Each round resolves the bot threads it answered; a **human's** thread and the
+  **merge** stay **yours to do**. See red flags.
 
 ## Platform + PR/MR resolution
 
@@ -251,8 +251,8 @@ fail the same way.
       перезапусти `/flow:review-loop`, когда проверки завершатся." Not a clean finish.
     - round **not** PARTIAL, `failed` **empty** → **clean convergence.** The stats output you just
       printed is the PR/MR's cumulative ledger summary — report a short summary from it and remind
-      the user that **resolving the threads and merging are theirs to do** (the loop is
-      reply-only).
+      the user that the bot threads answered this run are already resolved, while **any human
+      thread and the merge are theirs to do**.
     - round **not** PARTIAL, `failed` **non-empty** (gate (d) option 1, or a threadless red
       check) → **red-check hand-off:** "остановился, проверка `<name>` красная — чини руками."
       Not a clean finish.
@@ -294,8 +294,9 @@ decision is better.
 
 - "I'll add a `max_rounds` / wall-clock cap so it can't run forever." → **No.** Use the round
   indicator + interactivity; the human's Esc is the stop.
-- "Convergence means it's ready — I'll resolve the threads and/or merge." → **No.**
-  Reply-only. Resolving conversations and merging are the human's job.
+- "Convergence means it's ready — I'll resolve the remaining threads and/or merge." → **No.**
+  The bot threads this loop answered are already resolved in-round. Anything still open is a
+  human's, and merging is always the human's job.
 - "I'll run `flow:review-comments` non-interactively / with a flag." → It's reused verbatim,
   interactive. No flags, no bypass of its push confirmation.
 - "I'll count actionable threads myself to decide convergence." → **No.** review-comments owns

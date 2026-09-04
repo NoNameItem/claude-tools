@@ -690,3 +690,17 @@ def test_review_comments_reports_resolved_threads() -> None:
     report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
     assert "Threads resolved:" in report
     assert "Resolve failed:" in report
+
+
+REVIEW_LOOP_SKILL = FLOW_ROOT / "skills" / "review-loop" / "SKILL.md"
+
+
+def test_review_loop_never_claims_it_resolves_nothing() -> None:
+    """The loop reuses review-comments verbatim, so its rounds now resolve bot threads. Its
+    three reply-only claims must narrow to humans — while the merge ban stays absolute."""
+    text = REVIEW_LOOP_SKILL.read_text()
+    assert "it never resolves threads or merges" not in text
+    assert "Reply-only. Resolving conversations and merging are the human's job." not in text
+    # The merge ban must survive the rewrite — assert the replacement's own words, not the bare
+    # substring "merge", which any of the file's dozens of unrelated mentions would satisfy.
+    assert "merging is always the human's job" in text
