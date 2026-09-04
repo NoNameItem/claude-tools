@@ -1,6 +1,6 @@
 """Tests for the persistent per-PR review ledger (_ledger core + flow-review-ledger CLI)."""
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 from __future__ import annotations
 
@@ -1822,3 +1822,30 @@ def test_the_high_water_mark_machinery_is_gone():
     answer to 'did this thread advance?', which is the drift the seen set exists to end."""
     for name in ("id_advanced", "last_reply_id", "threadless"):
         assert not hasattr(_ledger, name), f"_ledger.{name} should have been deleted"
+
+
+class TestResolveTarget:
+    """`resolve_id` is current-snapshot data, not durable memory: the platform owns it, so the
+    row takes whatever this round observed."""
+
+    def test_reconcile_stores_the_resolve_target(self, harness):
+        meta = meta_doc([inline_comment(1, resolve_id="PRRT_kwABC")])
+        harness.reconcile(meta)
+        assert harness.ledger(meta)["rows"]["comment:1"]["resolve_id"] == "PRRT_kwABC"
+
+    def test_a_later_round_refreshes_it(self, harness):
+        meta = meta_doc([inline_comment(1, resolve_id="PRRT_new")])
+        harness.reconcile(meta_doc([inline_comment(1, resolve_id="PRRT_old")]))
+        harness.reconcile(meta)
+        assert harness.ledger(meta)["rows"]["comment:1"]["resolve_id"] == "PRRT_new"
+
+    def test_get_hands_the_resolve_target_to_the_reply_step(self, harness):
+        """Phase 5.7 reads one row via `get`; if the field did not survive that projection the
+        skill would have to re-read the collector document it deliberately does not keep."""
+        meta = meta_doc([inline_comment(1, is_bot=True, resolve_id="PRRT_kwABC")])
+        harness.reconcile(meta)
+        result = harness.run("get", "--ref", "C1", "--meta", harness.write_meta(meta))
+        assert result.returncode == 0, result.stderr
+        row = json.loads(result.stdout)
+        assert row["resolve_id"] == "PRRT_kwABC"
+        assert row["is_bot"] is True
