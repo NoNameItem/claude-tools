@@ -11,8 +11,9 @@ repo-wide agent and review guidance.
 
 - **Skills:** `start` (pick task, branch/worktree strategy, set in_progress), `continue`
   (fast resume of an active leaf task), `after-design` / `after-plan` (link the newest
-  spec/plan doc into the task), `decompose` (discuss → create subtasks), `done` (verify PR,
-  close task, walk up to parents, sync), `init-worktree` (sub-skill: init a fresh worktree),
+  spec/plan doc into the task), `decompose` (discuss → create subtasks), `done` (collect
+  state, check mergedness via `git merge-tree`, present one scenario for a single approval,
+  then close task, close eligible non-epic parents, sync), `init-worktree` (sub-skill: init a fresh worktree),
   `review-comments` (process all PR/MR review threads — GitHub & GitLab), `review-loop`
   (ride the bot/CI review cycle to convergence — calls review-comments + flow-wait-ci),
   `sonar-sync` (pull Sonar issues into beads tasks).
