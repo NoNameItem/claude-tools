@@ -660,13 +660,18 @@ def test_review_loop_does_not_reference_a_deleted_phase_3_confirmation() -> None
 
 
 def test_review_comments_resolves_only_bot_threads() -> None:
-    """The gate is `is_bot`. A human's thread is theirs to close — the skill must say so where
-    the resolve step is, not only in the boundaries list."""
+    """The gate is `is_bot` AND no human has spoken in the thread. A human's thread — whether they
+    opened it or only joined a bot's — is theirs to close, and the skill must say so in the resolve
+    step's own words, not only in the boundaries list."""
     phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
     assert "resolve_id" in phase_5_7
     assert "is_bot" in phase_5_7
     assert "resolveReviewThread" in phase_5_7
     assert "resolved=true" in phase_5_7
+    # The fourth gate: a human reply anywhere in the thread blocks the resolve, even when a bot
+    # opened it.
+    assert "no reply from a human other than our own account" in phase_5_7
+    assert "and neither is a bot-opened thread a human has" in phase_5_7
 
 
 def test_review_comments_resolve_step_never_fires_for_a_withheld_reply() -> None:

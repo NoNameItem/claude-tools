@@ -1540,3 +1540,36 @@ def test_gitlab_discussion_resolves_by_its_discussion_id(fake_glab_api):
     c = doc["comments"][0]
     assert c["discussion_id"] == "abc123"
     assert c["resolve_id"] == "abc123"
+
+
+def test_gitlab_non_resolvable_discussion_has_no_resolve_target(fake_glab_api):
+    """A GitLab general MR note (an individual note, `resolvable: false` — exactly the shape a
+    review bot's summary takes on GitLab) has no resolvable note, so there is nothing
+    `PUT .../discussions/{id}` can resolve. `resolve_id` must degrade to null while
+    `discussion_id` — the reply target — still carries the discussion id."""
+    fake_glab_api.set("project", "g/r")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 3, "source_branch": "b", "web_url": "u", "state": "opened"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "d9",
+                    "notes": [
+                        {
+                            "id": 1,
+                            "system": False,
+                            "author": {"username": "codex_bot"},
+                            "body": "walkthrough",
+                            "resolvable": False,
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "3", "--platform", "gitlab", env=fake_glab_api.env()))
+    c = doc["comments"][0]
+    assert c["discussion_id"] == "d9"
+    assert c["resolve_id"] is None

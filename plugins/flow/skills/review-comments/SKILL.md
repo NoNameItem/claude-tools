@@ -217,11 +217,15 @@ through Phase 5's checkpoints (5.7, 5.7a), never assigned by `reconcile`. Every 
 all** — membership requires `status == "open"` **and** `platform_state == "live"`, so either one
 removes a row from the loop with the agent doing nothing:
 
-- **`resolved`** — a reviewer or the human marked the thread resolved on the platform. Resolution
-  is deliberately **terminal**: further replies in a resolved thread do not bring it back. A
-  reviewer who wants another look **un-resolves** the thread (which does return the row to the
-  working set, whatever its status) or opens a new one. The alternative — re-opening on any reply
-  — would re-triage a settled finding every time someone posts "thanks, looks good".
+- **`resolved`** — a reviewer or the human marked the thread resolved on the platform, **or this
+  skill's own 5.7 resolved it on a previous round** (a bot thread that earned a reply and had no
+  human in it). Resolution is deliberately **terminal**: further replies in a resolved thread do
+  not bring it back. A reviewer who wants another look **un-resolves** the thread (which does
+  return the row to the working set, whatever its status) or opens a new one. The alternative —
+  re-opening on any reply — would re-triage a settled finding every time someone posts "thanks,
+  looks good". For a thread this skill resolved, that same terminality is the accepted trade the
+  design doc's Risks section names: a reply landing after our own resolve is swallowed until
+  someone un-resolves it on the platform.
 - **`absent`** — the thread is missing from this round's snapshot, i.e. gone from the platform.
   Trustworthy because the collector aborts rather than degrading to a partial answer on any API
   failure (see "Collector Could Not Reach the Platform" in Edge Cases), so "not in the snapshot"
@@ -924,7 +928,7 @@ Options:
 
 Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref} --meta "$FLOW_RC_DIR/metadata.json"` — the
 locator is required, exactly as in Phase 3; without it the command exits 2 before reading the row —
-and take three fields from it: `platform`, `kind`, and **`thread_id`** — the row's only reply target. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
+and take `platform`, `kind`, and **`thread_id`** — the row's only reply target — from it for the reply below, plus `resolve_id`, `is_bot`, and `thread` for the resolve step that follows it. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
@@ -1004,17 +1008,25 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
   --decisions "$FLOW_RC_DIR/checkpoint-C1.json" --head "$(git rev-parse HEAD)"
 ```
 
-**Then resolve the thread — but only when its author is a bot.** With the checkpoint written, close
-the thread on the platform. All three must hold, and they are checked in this order:
+**Then resolve the thread — but only when its author is a bot and no human has spoken in it.**
+With the checkpoint written, close the thread on the platform. All four must hold, and they are
+checked in this order:
 
 1. the reply above was **actually posted** this run (a **withheld** reply never reaches this step,
    so a thread we did not answer cannot be closed);
 2. the row's `is_bot` is `true`;
-3. the row's `resolve_id` is not `null`.
+3. the row's `resolve_id` is not `null`;
+4. the row's `thread` holds **no reply from a human other than our own account** — read `me` from
+   `metadata.json` (`jq -r .me`) and scan the entries `flow-review-ledger get` returned under
+   `thread`: any entry with `is_bot: false` and `user` not equal to `me` fails this gate.
 
-**A thread opened by a human is never resolved.** Marking a person's concern settled by the
-author's own verdict is the user's call, not this skill's — for people the skill stays strictly
-reply-only. For a bot the decision does not matter: `fix`, `won't-fix` and `follow-up` all close it.
+**A thread opened by a human is never resolved — and neither is a bot-opened thread a human has
+replied into.** A bot does not argue back, but a person who spoke in that thread has made it
+theirs: resolving it would close their remark on our own verdict, exactly the outcome this rule
+exists to prevent. Marking a person's concern settled by the author's own verdict is the user's
+call, not this skill's — for people (whether they opened the thread or joined one) the skill stays
+strictly reply-only. For a bot thread no human has touched the decision does not matter: `fix`,
+`won't-fix` and `follow-up` all close it.
 
 `resolve_id` is the **resolve** target and is not `thread_id` (the **reply** target): on GitHub it
 is the review thread's GraphQL node id, on GitLab the discussion id. Both come from the row
@@ -1033,8 +1045,15 @@ gh api graphql \
 ```bash
 glab api --method PUT \
   "projects/{project}/merge_requests/{iid}/discussions/{resolve_id}" \
-  -f resolved=true
+  -F resolved=true
 ```
+
+`-F`, not `-f`/`--raw-field`: `glab api` sends a `-f`/`--raw-field` value as a **string**, and a
+`-F`/`--field` value with its **type inferred** — the opposite of `gh api`'s convention, so `true`
+sent via `-f` reaches the platform as the string `"true"`, not a boolean. The reply command above
+deliberately keeps `--raw-field`: it carries reviewer-facing text, which must stay a string
+regardless of what it looks like. `-F` also flips `glab api`'s default method to POST, so the
+explicit `--method PUT` above stays required.
 
 A failed mutation **does not abort the loop and unwinds nothing**: the reply stands, its checkpoint
 stands, the next ref is processed, and the ref is carried to the 5.8 `Resolve failed` line. Nothing
@@ -1142,7 +1161,7 @@ Processed: {total} comments
   Failed: {count} ({list of refs whose apply failed — stays `open` with the `fix` decision kept, not reported fixed})
   Reply deferred (push skipped): {count} ({fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed, plus `outdated_fixed` refs whose `Fixed in subsequent commits` was withheld because the branch is ahead of the remote})
   Threads resolved: {count} ({bot refs whose thread was closed after its reply landed})
-  Resolve failed: {count} ({refs whose reply posted but whose resolve call failed})
+  Resolve failed: {count} ({refs whose reply posted but whose resolve call failed, plus bot refs whose `resolve_id` was null — no call to make})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
@@ -1168,13 +1187,13 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 - Run an adversarial pre-push self-review on correctness/logic/security rounds
 - **Create a beads follow-up task** for deferred comments (parent epic inferred from the path), then `flow-sync push`
 - Reply on the platform (GitHub or GitLab) with appropriate messages
-- **Resolve the threads it replied to when they were opened by a bot** (GitHub `resolveReviewThread`, GitLab `resolved=true`) — never a thread opened by a human
+- **Resolve the threads it replied to when they were opened by a bot and no human has spoken in them** (GitHub `resolveReviewThread`, GitLab `resolved=true`) — never a thread a human opened or joined
 - Commit with proper scope
 - Push with user confirmation
 - Show summary report
 
 ### This Skill Does NOT:
-- Resolve/dismiss threads opened by **humans** — for people the skill is strictly reply-only (bot threads it answered are resolved; see above)
+- Resolve/dismiss threads **humans** opened or joined — for people the skill is strictly reply-only (bot threads no human has spoken in are resolved; see above)
 - Modify files outside the scope of comments — **except** sibling sites within a user-confirmed generalized fix (Phase 5.1), which are in scope by definition
 - Handle PR/MR approval or merge
 - Process comments from closed/merged PRs/MRs

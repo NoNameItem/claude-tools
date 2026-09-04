@@ -531,7 +531,13 @@ def gl_collect(number: str | None) -> dict:
                 "comment_id": None,
                 "discussion_id": disc.get("id"),
                 "summary_id": None,
-                "resolve_id": disc.get("id"),  # GitLab resolves by discussion id — same key
+                # GitLab resolves by discussion id — same key as `discussion_id` — but only when
+                # the discussion HAS a resolvable note. A general MR note (an individual note,
+                # `resolvable: false`, exactly the shape a review bot's summary takes on GitLab)
+                # has nothing `PUT .../discussions/{id}` can resolve; sending that call 400s.
+                # Degrade to null like the GitHub review-body case: the reply target
+                # (`discussion_id`) survives, only the resolve target goes away.
+                "resolve_id": disc.get("id") if resolvable else None,
                 "body": root.get("body", ""),
                 "thread": thread,
                 "diff_hunk": None,
