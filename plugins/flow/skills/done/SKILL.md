@@ -197,12 +197,10 @@ else
   BASE_TREE=$(git rev-parse "$BASE_REF^{tree}")
   # equal → the branch adds nothing to the base → merged (survives squash and rebase,
   # but decays once the base edits the same lines — step 2 checks PR_STATE first)
-  WORKTREE_DIRTY=$(git status --porcelain --untracked-files=all)
-  # non-empty → the working copy holds content that exists nowhere else (gates the worktree row)
 fi
 ```
 
-Nine rules go with it. Each is argued in "Why these checks" at the end of this file; the numbers
+Eight rules go with it. Each is argued in "Why these checks" at the end of this file; the numbers
 below are the anchors.
 
 1. **Each candidate is validated where it is chosen**, and a bad one falls through to the *next*
@@ -221,9 +219,6 @@ below are the anchors.
    command tells the two apart — nor needs to.
 8. **The tree comparison is the *local* signal; `PR_STATE == MERGED` outranks it**, because
    `merge-tree` re-runs against the base as it stands *now* and its answer decays.
-9. **`WORKTREE_DIRTY` gates the worktree row**, and the local-branch row through it.
-   `--untracked-files=all` is required. The plan this same scenario deletes does not count as
-   content to lose; a *refused* plan row does.
 
 `git merge-tree --write-tree` requires git >= 2.38. If it is unavailable, say so, print the branch
 and the base you could not compare, and ask the user to confirm the work is merged — step 2 defines
@@ -325,6 +320,20 @@ Filter results by filename containing "impl" or "plan" (case-insensitive) and se
 matching the task title. No candidates: nothing to carry forward. **More than one candidate:**
 also not something to ask about here — carry the full list into the scenario, where step 3
 defaults to touching none of them (see step 3's defaults table).
+
+**Working copy**, captured here rather than with the base — it gates the worktree row and has
+nothing to do with whether a base exists (inside the base block it would go unset on `NO_BASE`), and
+the plan it subtracts is only known by this point:
+
+```bash
+WORKTREE_DIRTY=$(git status --porcelain --untracked-files=all)
+```
+
+**`WORKTREE_DIRTY` gates the worktree row**, and the local-branch row through it.
+`--untracked-files=all` is required. **Subtract the plan files this same scenario deletes** — they
+are named in it and covered by the same approval, and step 5 removes them before it touches the
+worktree; a *refused* plan row counts as dirt again, because nothing is going to delete it. Argued
+in "Why these checks".
 
 **Worktree:** `flow-in-worktree` — exit 0 if we are in a worktree.
 **Remote branch:** `git branch -r --list "$REMOTE/$CURRENT_BRANCH"` — non-empty means it exists.
@@ -433,13 +442,14 @@ name may contain shell metacharacters.
   its own. The rest of the run proceeds unchanged from there.
 - **The answer names no existing ref** → say so, and ask once more.
 - **Still nothing usable** (the user declines, or the second answer resolves nothing either) →
-  **STOP**, exactly as before: nothing is closed, deleted, or synced. Never guess a base to get past
-  this.
+  **STOP** — nothing is closed, deleted, or synced — **unless `PR_STATE == MERGED`**, in which case
+  the carve-out above governs instead: mergedness stands without a base, so the task, the parents,
+  the plan and the sync proceed and only the rows needing a checkout target are refused (R4). Never
+  guess a base to get past this.
 
 **If the branch matches the task:** the tree comparison alone is not the final word — `git
 merge-tree` re-runs against the base **as it stands now**, and once the base has moved over the
-same lines the branch touched, an already-merged branch reads as a conflict (see the "Nine rules"
-above). `PR_STATE` records a fact about the past and does not decay that way. Apply this four-case
+same lines the branch touched, an already-merged branch reads as a conflict (rule 8 of step 1). `PR_STATE` records a fact about the past and does not decay that way. Apply this four-case
 ladder, evaluated top to bottom — the **first** case that matches decides the verdict:
 
 1. **`PR_STATE == MERGED`** → verdict **confirmed**, no matter what the tree comparison found. The
@@ -566,7 +576,7 @@ check that did not run:
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do — **Не буду**, default only, when the task still has `in_progress` children | always |
-| Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match | a plan was found |
+| Plan file | delete when untracked; **leave in git** when tracked (clean or modified); **none** when several candidates match, or when the task's own closing row was refused | a plan was found |
 | Worktree | delete | we are in a worktree, the branch matches the task, mergedness is confirmed, and `WORKTREE_DIRTY` is empty |
 | Local branch | delete, always `-D` | mergedness confirmed, the branch matches the task, and — when we are in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, `REMOTE_TIP == LOCAL_TIP`, and `PR_STATE` is known and not `OPEN` (`UNKNOWN` refuses like `OPEN`) |
@@ -588,8 +598,12 @@ two of them on the remote branch, which is the row with the most ways to go wron
 known and not `OPEN`, and `REMOTE_TIP == LOCAL_TIP`; and `WORKTREE_DIRTY` is empty, for the
 worktree. **The plan row is not among them** — see below.
 
-**Only two things change the plan's default, and mergedness is neither** (R4): several candidates
-matched (below), or git tracks the file (step 1).
+**Three things change the plan's default, and mergedness is none of them** (R4): several
+candidates matched (below), git tracks the file (step 1), or **the task's own closing row was
+refused** — the plan is deleted because the work it planned is done, so a task that is not closing
+keeps its plan, exactly as a container parent whose last open child is not closing stays open. Step 5
+enforces this at execution either way (item 1 gates item 3); stating it as a row default keeps the
+printed scenario from promising a deletion the run already knows it will skip.
 
 **A tracked plan stays in git**, modified or not, with the reason `план закоммичен — удалять его
 надо отдельным PR, а не здесь`. Like the epic row this is a default (R3), and a correction moving it
@@ -663,7 +677,7 @@ omission — not merely an unasked question.
 |---|---|
 | The task itself | it still has `in_progress` children (R3) |
 | The epic parent | epics are not closed automatically (R3) |
-| The plan | several candidates match, or git tracks it (R3) |
+| The plan | several candidates match, git tracks it, or the task's own closing row was refused (R3) |
 | The remote branch | its PR is `OPEN` or `UNKNOWN`, or its tip differs from the local one |
 | The ledger | the PR is `CLOSED`, `OPEN` or `UNKNOWN` |
 | The worktree — and the local branch with it | the working copy is dirty |
@@ -718,8 +732,13 @@ Fixed order — beads before git, ledger last:
    the working copy has nothing to delete, tracked or not. **The link is cleared only when the plan
    is actually gone from the working copy after this item** — deleted just now (untracked by
    default, or tracked after a correction moved its row into "Сделаю"), or already absent at
-   collection time — and only if the task description held a `Plan:` line to begin with:
-   `flow-link-doc {task-id} Plan ""` then removes the now-stale link. A plan left in git on the
+   collection time — and **only if the description's `Plan:` line still names the path this run
+   collected** (R2). `flow-link-doc {task-id} Plan ""` strips *every* `Plan:` line from the
+   description as it stands at that moment, so a link another session repointed while the scenario
+   waited would be wiped along with the stale one — and the file re-check above would not catch it,
+   the collected file being untouched. Re-read the line, and when it names a different path leave it
+   alone and say so in the summary. Otherwise `flow-link-doc {task-id} Plan ""` removes the
+   now-stale link. A plan left in git on the
    default path still points at a file that exists, so its `Plan:` link stays — clearing it
    unconditionally on every plan row, tracked or not, would be wrong. A plan found only as an
    untracked file (Source B in step 1) never had a link to remove, so this never fires for it
@@ -749,12 +768,15 @@ Fixed order — beads before git, ledger last:
      **same `--exit-code` form step 1 used** — `git ls-remote --exit-code --heads "$REMOTE"
      "$CURRENT_BRANCH"` — capturing its status before any pipe, since `$?` after `ls-remote | cut`
      is `cut`'s status and reads 0 even when the lookup failed.
-   - **Re-read the base too**, in remote mode: `git fetch --prune --quiet "$REMOTE"` again, then
-     `git rev-parse "$BASE_REF^{tree}"`, compared against the `BASE_TREE` step 1 captured. Mergedness
-     was computed from *both* sides — `merge-tree` performs a real merge of the branch and the base —
-     so a snapshot of the branch alone does not establish that the verdict still holds. The fetch
-     failing here is treated like the base having moved: the comparison could not be refreshed, so it
-     cannot vouch for anything.
+   - **Re-read the base too — in both modes.** `git rev-parse "$BASE_REF^{tree}"`, compared against
+     the `BASE_TREE` step 1 captured; in remote mode `git fetch --prune --quiet "$REMOTE"` runs first
+     so the ref being read is current. Mergedness was computed from *both* sides — `merge-tree`
+     performs a real merge of the branch and the base — so a snapshot of the branch alone does not
+     establish that the verdict still holds. **A local-only base is no less mobile:** `BASE_REF` is
+     then a local branch another worktree can reset or move while the scenario waits, and the
+     unchanged `LOCAL_TIP` would carry the run straight into `git branch -D`. Only the *fetch* is
+     remote-mode-specific; the comparison is not. A fetch that fails is treated like the base having
+     moved — the comparison could not be refreshed, so it cannot vouch for anything (R1).
    - The verdict gates **all four** destructive rows — worktree, local branch, remote branch,
      ledger — not only the remote push:
      - fresh `PR_STATE == OPEN`, or the lookup fails (`UNKNOWN`) → the remote branch and the ledger
@@ -924,7 +946,9 @@ as silent absences.
 ❌ Clean up branches for parent tasks (cascade closures)
 ❌ Block task closure if cleanup fails
 
-**Scope note:** The safety check (step 2) stops when no base can be determined, and when the
+**Scope note:** The safety check (step 2) stops when no base can be determined — unless
+`PR_STATE == MERGED`, where mergedness already stands without a base and only the rows needing a
+checkout target are refused — and when the
 branch belongs to the task, its tree doesn't match the base's, and `PR_STATE == OPEN`. A `MERGED`
 PR_STATE overrides a tree mismatch instead of stopping; any other state (`NO_PR`, `UNKNOWN`, a
 `CLOSED` PR whose tree didn't match, or no tree comparison at all) asks the user rather than
@@ -1373,9 +1397,10 @@ asks which branch is the base before it can start:
 ```
 
 A valid answer (checked against a real ref) resumes step 1's mergedness comparison with it and the
-run continues into step 2's normal case analysis, unchanged from there. An answer naming no ref
-gets one more try; if that also resolves nothing, the run **STOPs** exactly as before — nothing
-closed, deleted, or synced.
+run continues into step 2's normal case analysis, unchanged from there. An answer naming no ref gets
+one more try; if that also resolves nothing, step 2's own rule governs — a **STOP** with nothing
+closed, deleted or synced, except under `PR_STATE == MERGED`, where the base was only ever wanted as
+a checkout target. Read it there rather than restating it here.
 
 ### The `gh` Lookup Failed
 
@@ -1494,7 +1519,7 @@ in another project or PR). The scenario is built for `CURRENT_BRANCH` only, as t
 
 Everything here is reasoning, not instruction — the steps above carry the rules themselves. It is
 recorded so a later reader can tell a considered constraint from an accidental one before removing
-it. Numbers 1-9 are the base-resolution rules of step 1.
+it. Numbers 1-8 are the base-resolution rules of step 1.
 
 **1. Each candidate is validated where it is chosen.** A target branch deleted after its own merge,
 or a dangling HEAD symref, must not shadow a perfectly good later candidate. Validating once at the
@@ -1545,7 +1570,8 @@ touched, `merge-tree` exits 1 with `CONFLICT (content)` and a differing tree; on
 file the branch touched, `CONFLICT (modify/delete)`. Both read as "not merged" on a branch that did
 merge. `PR_STATE` records a fact about the past, so step 2's ladder checks it first.
 
-**9. `--untracked-files=all` is required, and gitignored files still do not count.** Plain
+**The working-copy capture: `--untracked-files=all` is required, and gitignored files still do not
+count.** Plain
 `git status` collapses a brand-new directory to a single `dir/` entry, and an untracked note inside
 it must count as content to lose. The subtraction for the plan exists because an untracked plan in a
 non-gitignored `docs/plans/` would make the working copy dirty all by itself and refuse the cleanup

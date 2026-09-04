@@ -168,7 +168,7 @@ D2.1, which updates remote-tracking refs and nothing else:
 | Task's own status/children | the same `bd show` call, for the task itself — status and open children (D2.7) |
 | Plan file | `Plan:` line in the description, else `git ls-files --others --modified` over the plan directories; with it `PLAN_TRACKED`, `PLAN_GONE` and `PLAN_HASH` (`git hash-object`), all three re-checked in D5's item 3 |
 | Worktree | `flow-in-worktree` |
-| Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it |
+| Working copy | `git status --porcelain --untracked-files=all` — non-empty gates the worktree row, and only it. Captured **after** the plan is resolved and outside the base block: the plan it subtracts is not known earlier, and dirtiness does not depend on a base existing (inside that block it would go unset on `NO_BASE`) |
 | Remote branch | `git branch -r` |
 | Branch tips | local: `git rev-parse <branch>`; remote mode also: `git ls-remote --exit-code --heads <remote> <branch>`, capturing its status **before** any pipe (`$?` after `ls-remote \| cut` is `cut`'s) and the OID via `cut -f1`, since `ls-remote` prints `<oid>\t<ref>` — re-read in D5's re-validation, before either branch delete. **The two must be equal for the remote-branch row to be offered** (D2.10) |
 | Ledger | present when a `PR_NUMBER` was obtained |
@@ -314,7 +314,11 @@ quoted everywhere, since a branch name may carry shell metacharacters. A valid a
 and the run resumes the comparison from `merge-tree` as if D2.1 had resolved it; an answer naming no
 ref — or naming `CURRENT_BRANCH`, which fails the same self-comparison way D2.1's candidates do —
 is asked once more; a second failure, or a refusal, stops the run with nothing closed, deleted or
-synced. Asking is a pre-scenario clarification, like the two task-identity questions and D2.2's
+synced — **except when `PR_STATE == MERGED`**, where the base is wanted only as a checkout target and
+mergedness already stands without one: the task, the parents, the plan and the sync proceed, and only
+the rows needing somewhere to check out are refused. A base refusal stops the run only when
+mergedness is also unsettled; treating it as a total stop would contradict D2.2's case 1 and the rule
+that mergedness gates the branch, not the task. Asking is a pre-scenario clarification, like the two task-identity questions and D2.2's
 case-4 mergedness question — it does not weaken "one scenario, one approval", which is about the
 scenario itself.
 
@@ -428,7 +432,7 @@ One block: a header of facts, a numbered list of actions, a separate list of wha
 | Item | Default | Appears when |
 |---|---|---|
 | Close the task | do — **Не буду**, default only, when the task still has `in_progress` children (D2.7) | always |
-| Plan file | **delete** when untracked; **leave in git** when tracked, clean or modified; **none** when several candidates match | a plan was found |
+| Plan file | **delete** when untracked; **leave in git** when tracked, clean or modified; **none** when several candidates match, or when the task's own closing row was refused (D3.3) | a plan was found |
 | Worktree | delete | we are in a worktree, branch matches the task, mergedness confirmed, working copy clean |
 | Local branch | delete, always `-D` | mergedness confirmed, branch matches the task, and — in a worktree — that worktree is being removed |
 | Remote branch | delete | remote mode, branch exists, branch matches the task, mergedness confirmed, `REMOTE_TIP == LOCAL_TIP`, PR state known and not `OPEN` |
@@ -474,6 +478,14 @@ disagreement or refusing on it.
   A dirty working copy also takes the local-branch row with it: HEAD is still in that worktree, so
   `git branch -d` cannot run, and the scenario must not promise what execution will skip (D5's
   coupling, stated up front instead of discovered).
+
+**D3.3. The plan row follows the task's own closing row.** The plan is deleted because the work it
+planned is done, so a task whose closing row was refused — its own `in_progress` children, or a
+correction — keeps its plan, exactly as a container parent whose last open child is not closing stays
+open. D5's item 1 already gates item 3 at execution, so this changes no action; what it changes is
+the printed scenario, which would otherwise promise a deletion the run already knows it will skip and
+then contradict itself in the summary. Reachable without any correction: a task with `in_progress`
+children defaults item 1 to "Не буду" while an untracked plan defaults to "Сделаю".
 
 **Several plan candidates get no default deletion.** The plan row then lists every candidate and
 defaults to touching none — filed under "Не буду" with the list as the reason. Deleting the wrong
@@ -569,7 +581,11 @@ Fixed order — beads first, git second:
    the `rm`, and that content exists nowhere else. The
    link is cleared with `flow-link-doc <task> Plan ""` **only when the plan is actually gone from
    the working copy after this item** — deleted just now, or already absent at collection time — and
-   only when the task description held a `Plan:` line to begin with; a tracked plan left in git on
+   only when the description's `Plan:` line **still names the collected path**, re-read at that
+   moment. `flow-link-doc … Plan ""` strips every `Plan:` line from the description as it stands
+   then, so a link another session repointed while the scenario waited would be wiped along with the
+   stale one; the file re-check does not catch that, the collected file being untouched. A line
+   naming a different path is left alone and reported; a tracked plan left in git on
    the default path still points at a file that exists, so its link stays
 4. `flow-sync push`, reading its **stderr**: the helper is best-effort and exits 0 even when the
    dolt commit/pull/push failed, reporting the problem only on stderr
@@ -589,7 +605,10 @@ Fixed order — beads first, git second:
      output is parsed rather than reduced to an exit status), never the collapsed
      `gh pr view || echo NO_PR`, because item 5 is about to move HEAD and "the current branch" stops
      meaning the task's branch partway through;
-   - re-reads the base as well, in remote mode: a fresh `git fetch --prune <remote>`, then
+   - re-reads the base as well, **in both modes** — only the fetch is remote-mode-specific. A
+     local-only `BASE_REF` is a local branch another worktree can reset or move while the scenario
+     waits, and the unchanged local tip would otherwise carry the run into `git branch -D`. In remote
+     mode a fresh `git fetch --prune <remote>` runs first, then
      `git rev-parse "<base-ref>^{tree}"` against the `BASE_TREE` D2 captured. `merge-tree` merges
      *both* sides, so re-reading only the branch does not establish that the verdict still holds; a
      base moved by a force-push (an emergency rollback done by reset rather than by a revert commit)
