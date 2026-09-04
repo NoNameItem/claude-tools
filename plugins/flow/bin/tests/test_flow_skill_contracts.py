@@ -657,3 +657,36 @@ def test_review_loop_does_not_reference_a_deleted_phase_3_confirmation() -> None
     assert re.search(r"5\.6.{0,40}push confirmation|push confirmation.{0,40}5\.6", text, re.IGNORECASE), (
         "must still name the 5.6 push confirmation as a control point"
     )
+
+
+def test_review_comments_resolves_only_bot_threads() -> None:
+    """The gate is `is_bot`. A human's thread is theirs to close — the skill must say so where
+    the resolve step is, not only in the boundaries list."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "resolve_id" in phase_5_7
+    assert "is_bot" in phase_5_7
+    assert "resolveReviewThread" in phase_5_7
+    assert "resolved=true" in phase_5_7
+
+
+def test_review_comments_resolve_step_never_fires_for_a_withheld_reply() -> None:
+    """`withheld` alone was already in 5.7 before this feature — assert the gate's own wording,
+    or the test passes against the unchanged skill."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "actually posted" in phase_5_7
+    assert "never reaches this step" in phase_5_7
+
+
+def test_review_comments_boundaries_scope_reply_only_to_humans() -> None:
+    """The old absolute claim ("reply-only — on GitLab it never resolves discussions") is now
+    false; leaving it would put the skill in contradiction with its own Phase 5.7."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "on GitLab it never resolves discussions" not in text
+    does_not = section(text, "### This Skill Does NOT:", "## Red Flags")
+    assert "humans" in does_not
+
+
+def test_review_comments_reports_resolved_threads() -> None:
+    report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
+    assert "Threads resolved:" in report
+    assert "Resolve failed:" in report

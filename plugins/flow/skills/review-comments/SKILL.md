@@ -1004,6 +1004,43 @@ flow-review-ledger record --meta "$FLOW_RC_DIR/metadata.json" \
   --decisions "$FLOW_RC_DIR/checkpoint-C1.json" --head "$(git rev-parse HEAD)"
 ```
 
+**Then resolve the thread — but only when its author is a bot.** With the checkpoint written, close
+the thread on the platform. All three must hold, and they are checked in this order:
+
+1. the reply above was **actually posted** this run (a **withheld** reply never reaches this step,
+   so a thread we did not answer cannot be closed);
+2. the row's `is_bot` is `true`;
+3. the row's `resolve_id` is not `null`.
+
+**A thread opened by a human is never resolved.** Marking a person's concern settled by the
+author's own verdict is the user's call, not this skill's — for people the skill stays strictly
+reply-only. For a bot the decision does not matter: `fix`, `won't-fix` and `follow-up` all close it.
+
+`resolve_id` is the **resolve** target and is not `thread_id` (the **reply** target): on GitHub it
+is the review thread's GraphQL node id, on GitLab the discussion id. Both come from the row
+`flow-review-ledger get` already returned — no second read.
+
+**GitHub:**
+
+```bash
+gh api graphql \
+  -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' \
+  -f id={resolve_id}
+```
+
+**GitLab:**
+
+```bash
+glab api --method PUT \
+  "projects/{project}/merge_requests/{iid}/discussions/{resolve_id}" \
+  -f resolved=true
+```
+
+A failed mutation **does not abort the loop and unwinds nothing**: the reply stands, its checkpoint
+stands, the next ref is processed, and the ref is carried to the 5.8 `Resolve failed` line. Nothing
+about resolution is written to the ledger — a thread we resolved that later grows a reply comes back
+only if someone un-resolves it on the platform, which is the accepted trade in the design doc.
+
 A ref whose reply is **withheld** (5.6 skipped/failed, or the branch is ahead of the remote) posts
 nothing, so it has nothing to checkpoint here — it is carried to 5.7a still `open`.
 
@@ -1104,6 +1141,8 @@ Processed: {total} comments
   Follow-up not filed: {count} ({refs whose task was never created — bd unavailable or the batch was declined; stays `open`, re-triaged next round})
   Failed: {count} ({list of refs whose apply failed — stays `open` with the `fix` decision kept, not reported fixed})
   Reply deferred (push skipped): {count} ({fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed, plus `outdated_fixed` refs whose `Fixed in subsequent commits` was withheld because the branch is ahead of the remote})
+  Threads resolved: {count} ({bot refs whose thread was closed after its reply landed})
+  Resolve failed: {count} ({refs whose reply posted but whose resolve call failed})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
 
@@ -1129,12 +1168,13 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 - Run an adversarial pre-push self-review on correctness/logic/security rounds
 - **Create a beads follow-up task** for deferred comments (parent epic inferred from the path), then `flow-sync push`
 - Reply on the platform (GitHub or GitLab) with appropriate messages
+- **Resolve the threads it replied to when they were opened by a bot** (GitHub `resolveReviewThread`, GitLab `resolved=true`) — never a thread opened by a human
 - Commit with proper scope
 - Push with user confirmation
 - Show summary report
 
 ### This Skill Does NOT:
-- Resolve/dismiss threads on either platform (reply-only — on GitLab it never resolves discussions, even though `resolved` is available)
+- Resolve/dismiss threads opened by **humans** — for people the skill is strictly reply-only (bot threads it answered are resolved; see above)
 - Modify files outside the scope of comments — **except** sibling sites within a user-confirmed generalized fix (Phase 5.1), which are in scope by definition
 - Handle PR/MR approval or merge
 - Process comments from closed/merged PRs/MRs
@@ -1178,6 +1218,8 @@ If you're thinking any of these, STOP and follow the workflow:
 - "The ledger is stale, I'll re-triage everything from metadata.json" → The ledger IS the working surface. `reconcile` rebuilds the current fields from the platform every round; what it preserves is the decision history.
 - "This ref was C1 last round but C3 now, so refs are broken" → Refs are allocate-once and stable; the gaps are settled findings.
 - "I'll skip the record step, the replies are already posted" → Then the next round re-triages everything and duplicates the follow-up. 5.7a is mandatory.
+- "The human's comment is settled, I'll close that thread too" → Never. Only bot threads are resolved; a person's thread is theirs to close.
+- "The reply was withheld but the fix is obviously in — I'll resolve anyway" → No. Resolution follows a posted reply, nothing else.
 
 **All of these mean: Follow the workflow. Analyze before acting. Show the card. User triages.**
 
@@ -1216,6 +1258,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Fixes applied, push now" | On a code/logic/security round, run the skeptic first — it catches the shifted bug before the reviewer does. |
 | "Ledger refs should be contiguous" | Stable > contiguous. A gap is a finding that is already done. |
 | "Skip `record`, nothing changed" | Every ref that reached Phase 5 gets a row transition — including an aborted action left `open` with its decision. |
+| "A resolved thread is tidier, I'll close the human's too" | Only bots. Closing a person's finding on our own verdict is theirs to decide. |
 
 ## Examples
 
