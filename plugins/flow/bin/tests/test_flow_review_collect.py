@@ -1,6 +1,6 @@
 """Tests for flow-review-collect (deterministic Phase-2 collector)."""
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
 import json
@@ -1331,7 +1331,7 @@ def test_a_partial_resolution_page_aborts_instead_of_reporting_unknown(monkeypat
     _git = flow_review_collect_mod._git
     _patch_gh(monkeypatch, _git, api_run=paginating_api_with_null_cursor())
     with pytest.raises(_git.ApiUnavailableError):
-        flow_review_collect_mod.gh_review_thread_resolved_ids("o/r", 118)
+        flow_review_collect_mod.gh_review_threads("o/r", 118)
 
 
 def test_resolved_is_always_a_bool_for_a_threaded_item(monkeypatch):
@@ -1412,3 +1412,131 @@ def test_mr_view_failure_exits_4_end_to_end_instead_of_crashing(monkeypatch, cap
     assert flow_review_collect_mod.main(["4", "--platform", "gitlab"]) == 4
     err = capsys.readouterr().err
     assert "401" in err
+
+
+def _threads_page(nodes):
+    """One `reviewThreads` GraphQL page, already wrapped in its data envelope."""
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {"nodes": nodes, "pageInfo": {"hasNextPage": False, "endCursor": None}}
+                    }
+                }
+            }
+        }
+    )
+
+
+def _gh_inline_fixture(fake_gh_api, threads_nodes):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {
+                    "id": 9,
+                    "in_reply_to_id": None,
+                    "user": {"login": "codex[bot]"},
+                    "path": "a.py",
+                    "line": 42,
+                    "start_line": None,
+                    "original_line": 42,
+                    "original_start_line": None,
+                    "body": "finding",
+                    "diff_hunk": "@@ -40,4 +40,4 @@\n w\n x\n y\n z",
+                }
+            ]
+        ),
+    )
+    fake_gh_api.set("reviews", "[]")
+    fake_gh_api.set("review_threads", _threads_page(threads_nodes))
+
+
+def test_github_inline_comment_carries_the_thread_node_id(fake_gh_api):
+    """`resolve_id` is the GraphQL node id — the only value `resolveReviewThread` accepts. It is
+    NOT `comment_id` (the reply target), and the two must stay distinguishable."""
+    _gh_inline_fixture(
+        fake_gh_api,
+        [{"id": "PRRT_kwABC", "isResolved": False, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["comment_id"] == 9
+    assert c["resolve_id"] == "PRRT_kwABC"
+    assert c["resolved"] is False
+
+
+def test_github_resolved_state_and_node_id_come_from_one_walk(fake_gh_api):
+    """The resolution flag and the resolve target are two answers from the same query — a
+    resolved thread must report both, or one of the two walks would have to be added back."""
+    _gh_inline_fixture(
+        fake_gh_api,
+        [{"id": "PRRT_kwABC", "isResolved": True, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["resolved"] is True
+    assert c["resolve_id"] == "PRRT_kwABC"
+
+
+def test_github_thread_without_a_node_id_degrades_to_null(fake_gh_api):
+    """A malformed node costs that one thread its resolve target, never the whole run."""
+    _gh_inline_fixture(
+        fake_gh_api,
+        [{"isResolved": False, "comments": {"nodes": [{"fullDatabaseId": "9"}]}}],
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    assert doc["comments"][0]["resolve_id"] is None
+
+
+def test_github_review_body_summary_has_no_resolve_target(fake_gh_api):
+    """A review body is not a thread: nothing to resolve, so the field is null by construction."""
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+    fake_gh_api.set("comments", "[]")
+    fake_gh_api.set(
+        "reviews",
+        json.dumps([{"id": 500, "user": {"login": "codex[bot]"}, "body": "### Review", "state": "COMMENTED"}]),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    c = doc["comments"][0]
+    assert c["kind"] == "summary"
+    assert c["resolve_id"] is None
+
+
+def test_gitlab_discussion_resolves_by_its_discussion_id(fake_glab_api):
+    """GitLab's PUT key is the discussion id, so `resolve_id` mirrors `discussion_id` — one
+    field the skill can read on either platform without branching."""
+    fake_glab_api.set("project", "g/r")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 3, "source_branch": "b", "web_url": "u", "state": "opened"}))
+    fake_glab_api.set(
+        "discussions",
+        json.dumps(
+            [
+                {
+                    "id": "abc123",
+                    "notes": [
+                        {
+                            "id": 1,
+                            "system": False,
+                            "author": {"username": "codex_bot"},
+                            "body": "finding",
+                            "resolvable": True,
+                            "resolved": False,
+                            "position": {"new_path": "a.py", "new_line": 5, "position_type": "text"},
+                        }
+                    ],
+                }
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "3", "--platform", "gitlab", env=fake_glab_api.env()))
+    c = doc["comments"][0]
+    assert c["discussion_id"] == "abc123"
+    assert c["resolve_id"] == "abc123"
