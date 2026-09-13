@@ -1525,7 +1525,7 @@ def test_cache_ttl_default_flows_to_cache(make_render_context, minimal_input_dat
     ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
     module = UsageLimitsModule(ctx, {})
     assert module.cache is not None
-    assert module.cache.rate_limit == 60
+    assert module.cache.rate_limit == 120
 
 
 def test_cache_ttl_custom_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
@@ -1658,3 +1658,10 @@ class TestConfigBackCompat:
         assert "Session:" in output
         # Removed keys fall back to defaults, not applied.
         assert not hasattr(module.params, "show_sonnet")
+
+    def test_cache_ttl_defaults_to_120(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.params.cache_ttl == 120
+        assert module.cache is not None
+        assert module.cache.rate_limit == 120

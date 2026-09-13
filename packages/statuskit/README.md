@@ -182,6 +182,16 @@ as plain text.
 
 Displays API usage limits with color-coded warnings based on consumption rate.
 
+`Session` and `Weekly` come from the `rate_limits` block Claude Code puts in the statusline
+payload — no network call, refreshed on every API response. Per-model rows (`Fable`, …) are not
+in that payload, so they are fetched from the account usage endpoint at most once per
+`cache_ttl` and cached; the last payload block is cached too, so a brand-new session can show
+the overall rows before its first API response.
+
+A row that comes from the cache after a failed refresh is marked with its age, e.g.
+`Fable: 25% (Wed 08:00) (40m ago)`. When the endpoint answers `429`, its `Retry-After` is
+honoured: no request goes out until the window it names has passed.
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `show_session` | bool | `true` | Show 5-hour session limit |
@@ -195,7 +205,7 @@ Displays API usage limits with color-coded warnings based on consumption rate.
 | `session_time_format` | string | `"remaining"` | Time format for session limit |
 | `weekly_time_format` | string | `"reset_at"` | Time format for weekly limit |
 | `model_time_format` | string | `"reset_at"` | Time format for per-model limits |
-| `cache_ttl` | int | `60` | Cache lifetime in seconds |
+| `cache_ttl` | int | `120` | Minimum seconds between usage-API refetches (per-model rows only) |
 
 **Time format values:**
 

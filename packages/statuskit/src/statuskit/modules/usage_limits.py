@@ -710,7 +710,7 @@ class UsageLimitsParams:
     session_time_format: str = param("remaining", "Session time display", choices=_TIME_FORMAT_CHOICES)
     weekly_time_format: str = param("reset_at", "Weekly time display", choices=_TIME_FORMAT_CHOICES)
     model_time_format: str = param("reset_at", "Per-model time display", choices=_TIME_FORMAT_CHOICES)
-    cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
+    cache_ttl: int = param(120, "Minimum seconds between usage-API refetches")
 
 
 class UsageLimitsModule(BaseModule[UsageLimitsParams]):
