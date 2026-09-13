@@ -6,7 +6,7 @@ import json
 import math
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -860,6 +860,13 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         now = datetime.now(UTC)
         payload, payload_age = self._resolve_payload(data, now)
 
+        # A per-model row is stale when the last refresh attempt did not produce data: the claim
+        # advanced last_attempt_at while fetched_at stayed where the last success left it. An
+        # active 429 backoff is covered by the same comparison.
+        model_age: float | None = None
+        if data and data.last_attempt_at and data.fetched_at < data.last_attempt_at:
+            model_age = (now - data.fetched_at).total_seconds()
+
         groups: list[UsageGroup] = []
         for key in _GROUP_ORDER:
             window = _payload_window(payload, key)
@@ -873,7 +880,12 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
                 if window is not None
                 else None
             )
-            models = [m for g in (data.groups if data else []) if g.key == key for m in g.models]
+            models = [
+                replace(m, stale_seconds=model_age)
+                for g in (data.groups if data else [])
+                if g.key == key
+                for m in g.models
+            ]
             if overall is not None or models:
                 groups.append(UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key], overall=overall, models=models))
         return UsageData(groups=groups, fetched_at=now) if groups else None
@@ -1020,7 +1032,11 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         if self.params.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
-        return f"{label_str}{bar} {util_str}{time_str}"
+        stale_str = ""
+        if limit.stale_seconds is not None:
+            stale_str = colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
+
+        return f"{label_str}{bar} {util_str}{time_str}{stale_str}"
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""

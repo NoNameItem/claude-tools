@@ -1,6 +1,7 @@
 """Tests for usage_limits module."""
 
 import json
+import re
 import tempfile
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -1162,6 +1163,84 @@ class TestPayloadSource:
             )
             UsageLimitsModule(ctx, {})._get_usage_data()
         mock_fetch.assert_called_once()
+
+
+class TestStaleness:
+    """Rows rendered from a cache whose source failed to refresh carry their age."""
+
+    def _stale_cache(self, models):
+        """Endpoint cache whose last attempt failed 40 minutes after the last success.
+
+        The extra second keeps the age clear of the `40m` / `39m` boundary: the renderer floors
+        minutes, so an age of exactly 2400 s would be at the mercy of float rounding.
+        """
+        fetched = datetime.now(UTC) - timedelta(minutes=40, seconds=1)
+        return UsageData(
+            groups=[_weekly_group(None, None, models=models)],
+            fetched_at=fetched,
+            last_attempt_at=datetime.now(UTC),
+        )
+
+    def test_model_row_shows_its_age_when_the_refresh_failed(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, None)])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(40m ago)" in output
+
+    def test_fresh_model_row_has_no_suffix(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=now,
+                last_attempt_at=now,
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "ago)" not in output
+
+    def test_live_payload_rows_never_show_an_age(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+        assert "ago)" not in output
+
+    def test_cached_payload_rows_show_their_age(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=datetime.now(UTC) - timedelta(minutes=5, seconds=1),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(5m ago)" in output
+
+    def test_suffix_appears_in_single_line_mode(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, None)])
+            output = UsageLimitsModule(ctx, {"multiline": False}).render()
+        assert output is not None
+        assert "(40m ago)" in output
+
+    def test_suffix_follows_the_reset_time(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        reset = datetime.now(UTC) + timedelta(days=2)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, reset)])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert re.search(r"\(\w{3} \d{2}:\d{2}\) \(40m ago\)", output)
 
 
 class TestGetUsageDataRateLimited:
