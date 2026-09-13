@@ -12,6 +12,7 @@ from .core import (
     make_cost_data,
     make_input_data,
     make_model_data,
+    make_rate_limits_data,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "make_cost_data",
     "make_input_data",
     "make_model_data",
+    "make_rate_limits_data",
 ]

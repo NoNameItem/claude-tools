@@ -57,6 +57,20 @@ def make_context_window_data(
     }
 
 
+def make_rate_limits_data(
+    five_hour: tuple[float, int | None] | None = (46.0, 1757809800),
+    seven_day: tuple[float, int | None] | None = (15.0, 1758000000),
+) -> dict:
+    """Create a statusline `rate_limits` block: {window: (used_percentage, resets_at epoch)}."""
+    block: dict = {}
+    for key, window in (("five_hour", five_hour), ("seven_day", seven_day)):
+        if window is None:
+            continue
+        used, resets_at = window
+        block[key] = {"used_percentage": used, "resets_at": resets_at}
+    return block
+
+
 def make_input_data(
     model: dict | None = None,
     cost: dict | None = None,
@@ -64,6 +78,7 @@ def make_input_data(
     session_id: str | None = None,
     cwd: str | None = None,
     workspace: dict | None = None,
+    rate_limits: object | None = None,
 ) -> dict:
     """Create full input data dict."""
     data = {}
@@ -79,4 +94,6 @@ def make_input_data(
         data["cwd"] = cwd
     if workspace is not None:
         data["workspace"] = workspace
+    if rate_limits is not None:
+        data["rate_limits"] = rate_limits
     return data
