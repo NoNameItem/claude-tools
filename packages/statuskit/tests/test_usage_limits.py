@@ -28,6 +28,7 @@ from statuskit.modules.usage_limits import (
     parse_api_response,
 )
 
+from tests.factories import make_input_data, make_model_data
 from tests.factories.usage_limits import make_api_response, make_legacy_api_response
 
 SESSION_WINDOW = 5.0
@@ -543,6 +544,27 @@ def _weekly_group(util: float | None, resets_at: datetime | None, models: list[U
     return UsageGroup("weekly", WEEKLY_WINDOW, overall=overall, models=models or [])
 
 
+def _payload_ctx(make_render_context, tmp_path, *, five_hour=(46.0, None), seven_day=(15.0, None), debug=False):
+    """Render context whose statusline payload carries `rate_limits`.
+
+    Reset times are given as offsets in hours from now, or None for "no reset time".
+    """
+
+    def epoch(offset_hours):
+        if offset_hours is None:
+            return None
+        return int((datetime.now(UTC) + timedelta(hours=offset_hours)).timestamp())
+
+    block = {}
+    if five_hour is not None:
+        block["five_hour"] = {"used_percentage": five_hour[0], "resets_at": epoch(five_hour[1])}
+    if seven_day is not None:
+        block["seven_day"] = {"used_percentage": seven_day[0], "resets_at": epoch(seven_day[1])}
+    return make_render_context(
+        make_input_data(model=make_model_data(), rate_limits=block), debug=debug, cache_dir=tmp_path
+    )
+
+
 class TestUsageCache:
     """Cache save/load for the grouped format."""
 
@@ -823,16 +845,10 @@ class TestUsageCache:
 class TestRenderMultiline:
     """Nested multiline rendering."""
 
-    def test_session_and_weekly(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_session_and_weekly(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
-                    _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3)),
-                ],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             output = UsageLimitsModule(ctx, {}).render()
         assert output is not None
         assert "Usage:" in output
@@ -841,20 +857,19 @@ class TestRenderMultiline:
         assert "Weekly:" in output
         assert "2%" in output
 
-    def test_models_nested_under_weekly(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_models_nested_under_weekly(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
                 groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
                     _weekly_group(
-                        2.0,
-                        datetime.now(UTC) + timedelta(days=3),
+                        None,
+                        None,
                         models=[
                             UsageLimit("Fable", 34.0, datetime.now(UTC) + timedelta(days=4)),
                             UsageLimit("Opus", 88.0, datetime.now(UTC) + timedelta(days=4)),
                         ],
-                    ),
+                    )
                 ],
                 fetched_at=datetime.now(UTC),
             )
@@ -868,14 +883,11 @@ class TestRenderMultiline:
         assert "Opus:" in output
         assert "88%" in output
 
-    def test_zero_percent_model_hidden_by_default(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_zero_percent_model_hidden_by_default(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
-                groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
-                    _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", 0.0, None)]),
-                ],
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 0.0, None)])],
                 fetched_at=datetime.now(UTC),
             )
             output = UsageLimitsModule(ctx, {}).render()
@@ -975,17 +987,16 @@ class TestRenderMultiline:
 class TestRenderSingleLine:
     """Flat single-line rendering."""
 
-    def test_flat_short_labels(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_flat_short_labels(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
                 groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
                     _weekly_group(
-                        2.0,
-                        datetime.now(UTC) + timedelta(days=3),
+                        None,
+                        None,
                         models=[UsageLimit("Fable", 34.0, datetime.now(UTC) + timedelta(days=4))],
-                    ),
+                    )
                 ],
                 fetched_at=datetime.now(UTC),
             )
@@ -998,17 +1009,115 @@ class TestRenderSingleLine:
 
 
 class TestProgressBar:
-    def test_render_with_progress_bar(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_render_with_progress_bar(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(45.0, 2.5), seven_day=None)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[_session_group(45.0, datetime.now(UTC) + timedelta(hours=2.5))],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             output = UsageLimitsModule(ctx, {"show_progress_bar": True}).render()
         assert output is not None
         assert "[" in output
         assert "]" in output
+
+
+class TestPayloadSource:
+    """Session / Weekly come from the payload; per-model rows come from the API cache."""
+
+    def test_overall_rows_come_from_the_payload(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            # The cache holds DIFFERENT overall numbers — the payload must win.
+            mock_get.return_value = UsageData(
+                groups=[_session_group(11.0, None), _weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+        assert "15%" in output
+        assert "11%" not in output
+        assert "2%" not in output
+
+    def test_model_rows_come_from_the_cache(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "Fable" in output
+        assert "25%" in output
+
+    def test_without_payload_or_cached_payload_no_overall_rows(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_session_group(11.0, None), _weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is None
+
+    def test_model_rows_render_without_any_payload(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(2.0, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "Fable" in output
+        assert "2%" not in output
+
+    def test_cached_payload_is_used_when_the_block_is_absent(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=datetime.now(UTC) - timedelta(minutes=2),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+
+    def test_payload_is_persisted_to_the_cache(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value=None),
+        ):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.payload is not None
+        assert cached.payload.five_hour is not None
+        assert cached.payload.five_hour.used_percentage == 46.0
+        assert cached.payload_seen_at is not None
+
+    def test_payload_is_not_rewritten_within_the_save_interval(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+            first_cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+            assert first_cached is not None
+            first = first_cached.payload_seen_at
+            UsageLimitsModule(ctx, {})._get_usage_data()
+            second_cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+            assert second_cached is not None
+            second = second_cached.payload_seen_at
+        assert first == second
+
+    def test_show_session_false_hides_the_payload_row(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+            output = UsageLimitsModule(ctx, {"show_session": False}).render()
+        assert output is not None
+        assert "46%" not in output
+        assert "15%" in output
 
 
 class TestGetUsageDataRateLimited:
@@ -1300,39 +1409,39 @@ class TestModelVisibilityConfig:
 
     @staticmethod
     def _data_with_fable(util: float, resets_at: datetime | None):
+        # No group overall here — an overall row now comes from the payload (see `_payload_ctx`
+        # in each test), not from the API cache these tests mock.
         return UsageData(
-            groups=[
-                _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", util, resets_at)])
-            ],
+            groups=[_weekly_group(None, None, models=[UsageLimit("Fable", util, resets_at)])],
             fetched_at=datetime.now(UTC),
         )
 
-    def test_always_show_forces_zero_percent_model(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_always_show_forces_zero_percent_model(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(0.0, None)
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" in output
 
-    def test_never_show_hides_used_model(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_never_show_hides_used_model(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_never_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_never_beats_always(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_never_beats_always(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"], "models_never_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_matching_is_case_insensitive(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_matching_is_case_insensitive(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
@@ -1341,13 +1450,13 @@ class TestModelVisibilityConfig:
 
     @staticmethod
     def _data_with_scoped_fable():
-        """Weekly with both the model-wide Fable row and a narrower Fable·cli one."""
+        """Weekly models: the model-wide Fable row and a narrower Fable·cli one (no overall)."""
         resets = datetime.now(UTC) + timedelta(days=4)
         return UsageData(
             groups=[
                 _weekly_group(
-                    2.0,
-                    resets,
+                    None,
+                    None,
                     models=[
                         UsageLimit("Fable", 34.0, resets, model="Fable"),
                         UsageLimit("Fable·cli", 12.0, resets, model="Fable", surface="cli"),
@@ -1357,30 +1466,27 @@ class TestModelVisibilityConfig:
             fetched_at=datetime.now(UTC),
         )
 
-    def test_bare_model_name_covers_its_scoped_rows(self, make_render_context, minimal_input_data, tmp_path):
+    def test_bare_model_name_covers_its_scoped_rows(self, make_render_context, tmp_path):
         """An existing `fable` config entry keeps covering the narrower Fable·cli row."""
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_scoped_fable()
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_bare_model_name_in_always_show_also_forces_scoped_rows(
-        self, make_render_context, minimal_input_data, tmp_path
-    ):
+    def test_bare_model_name_in_always_show_also_forces_scoped_rows(self, make_render_context, tmp_path):
         """Documented consequence of symmetric matching: `always_show` widens the same way.
 
         A bare `Fable` entry force-shows a 0% `Fable·cli` row the user never configured. Kept
         symmetric with `never_show` on purpose — a new scoped row from the API should surface
         rather than stay invisible — so this asserts the surprising direction stays intentional.
         """
-        resets = datetime.now(UTC) + timedelta(days=4)
         data = UsageData(
             groups=[
                 _weekly_group(
-                    2.0,
-                    resets,
+                    None,
+                    None,
                     models=[
                         UsageLimit("Fable", 0.0, None, model="Fable"),
                         UsageLimit("Fable·cli", 0.0, None, model="Fable", surface="cli"),
@@ -1389,15 +1495,15 @@ class TestModelVisibilityConfig:
             ],
             fetched_at=datetime.now(UTC),
         )
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = data
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable·cli" in output
 
-    def test_scoped_name_targets_only_that_row(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_scoped_name_targets_only_that_row(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_scoped_fable()
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable·cli"]}).render()
@@ -1409,15 +1515,12 @@ class TestModelVisibilityConfig:
 class TestConfigBackCompat:
     """Old configs with removed keys must not crash."""
 
-    def test_legacy_show_sonnet_key_does_not_crash(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_legacy_show_sonnet_key_does_not_crash(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.0), seven_day=None)
         # show_sonnet / sonnet_time_format were removed; they are now unknown keys.
         config = {"show_sonnet": True, "sonnet_time_format": "reset_at"}
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[_session_group(11.0, datetime.now(UTC) + timedelta(hours=2))],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             module = UsageLimitsModule(ctx, config)
             output = module.render()
         assert output is not None

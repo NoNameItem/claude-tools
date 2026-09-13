@@ -30,6 +30,7 @@ API_TIMEOUT = 3.0
 HTTP_TOO_MANY_REQUESTS = 429
 RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
 CACHE_FILENAME = "usage_limits.json"
+PAYLOAD_SAVE_INTERVAL = 60.0  # min seconds between cache writes of the statusline payload block
 
 FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY  # 168.0
@@ -175,6 +176,13 @@ def _serialize_payload(payload: RateLimits | None) -> dict | None:
             "resets_at": window.resets_at.isoformat() if window.resets_at else None,
         }
     return out or None
+
+
+def _payload_window(payload: RateLimits | None, group_key: str) -> RateLimitWindow | None:
+    """The payload window backing a group's overall row."""
+    if payload is None:
+        return None
+    return payload.five_hour if group_key == "session" else payload.seven_day
 
 
 def _scope_label(model: str | None, surface: str | None) -> str | None:
@@ -711,18 +719,16 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
     def render(self) -> str | None:
         """Render usage limits display."""
-        data = self._get_usage_data()
+        display = self._display_data(self._get_usage_data())
 
         parts: list[str] = []
 
-        # Main output (only when there is something visible to show)
-        if data and self._visible_groups(data):
+        if display and self._visible_groups(display):
             if self.params.multiline:
-                parts.append(self._render_multiline(data))
+                parts.append(self._render_multiline(display))
             else:
-                parts.append(self._render_single_line(data))
+                parts.append(self._render_single_line(display))
 
-        # Debug output (appended to statusline)
         if self.debug and hasattr(self, "_debug_messages"):
             parts.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
 
@@ -738,6 +744,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         self._debug_messages: list[str] = []
 
         cached = self.cache.load() if self.cache else None
+        cached = self._persist_payload(cached)
 
         token = get_token()
         if not token:
@@ -803,6 +810,66 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         else:
             self._debug_messages.append(f"{outcome.error or 'API failed'}, using cache")
         return cached, cached
+
+    def _live_payload(self) -> RateLimits | None:
+        """The `rate_limits` block of THIS render's statusline payload, when Claude Code sent one."""
+        return self.data.rate_limits
+
+    def _persist_payload(self, cached: UsageData | None) -> UsageData | None:
+        """Store this render's payload limits in the cache, at most once per PAYLOAD_SAVE_INTERVAL.
+
+        The limits are account-wide, not session-wide, so the last block seen by any session is
+        correct for a session that has not made its first API call yet. Writing on every render
+        would mean a file write per statusline repaint, hence the interval.
+        """
+        live = self._live_payload()
+        if live is None or self.cache is None:
+            return cached
+        now = datetime.now(UTC)
+        entry = cached if cached is not None else UsageData(groups=[], fetched_at=now)
+        seen = entry.payload_seen_at
+        if seen is not None and (now - seen).total_seconds() < PAYLOAD_SAVE_INTERVAL:
+            return entry
+        entry.payload = live
+        entry.payload_seen_at = now
+        self.cache.save(entry)
+        return entry
+
+    def _resolve_payload(self, data: UsageData | None, now: datetime) -> tuple[RateLimits | None, float | None]:
+        """The payload to render from, plus its age in seconds when it comes from the cache."""
+        live = self._live_payload()
+        if live is not None:
+            return live, None
+        if data and data.payload is not None and data.payload_seen_at is not None:
+            return data.payload, (now - data.payload_seen_at).total_seconds()
+        return None, None
+
+    def _display_data(self, data: UsageData | None) -> UsageData | None:
+        """Merge the two sources into the groups to render.
+
+        Overall rows come from the statusline payload (live, or the cached block). Per-model rows
+        come from the API cache, which is the only source that has them.
+        """
+        now = datetime.now(UTC)
+        payload, payload_age = self._resolve_payload(data, now)
+
+        groups: list[UsageGroup] = []
+        for key in _GROUP_ORDER:
+            window = _payload_window(payload, key)
+            overall = (
+                UsageLimit(
+                    label=_GROUP_LABELS[key],
+                    utilization=window.used_percentage,
+                    resets_at=window.resets_at,
+                    stale_seconds=payload_age,
+                )
+                if window is not None
+                else None
+            )
+            models = [m for g in (data.groups if data else []) if g.key == key for m in g.models]
+            if overall is not None or models:
+                groups.append(UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key], overall=overall, models=models))
+        return UsageData(groups=groups, fetched_at=now) if groups else None
 
     def _visible_groups(self, data: UsageData) -> list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]]:
         """For each group, return (group, overall-or-None-if-hidden, visible models)."""
