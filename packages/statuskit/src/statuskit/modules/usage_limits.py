@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from termcolor import colored
@@ -26,6 +26,8 @@ CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
+HTTP_TOO_MANY_REQUESTS = 429
+RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
 CACHE_FILENAME = "usage_limits.json"
 
 FIVE_HOUR_WINDOW = 5.0
@@ -64,6 +66,21 @@ class UsageGroup:
     window_hours: float  # 5.0 or 168.0 — used by the color heuristic
     overall: UsageLimit | None = None  # scope-less limit (session / weekly_all)
     models: list[UsageLimit] = field(default_factory=list)  # weekly_scoped per-model limits
+
+
+@dataclass
+class FetchOutcome:
+    """One usage-API call: the parsed data, or why it produced none.
+
+    The caller needs more than "it failed": a 429 must start a backoff for exactly as long as the
+    server asked, and the debug line must name the HTTP status so a 401 (token) is not mistaken
+    for a 429 (rate limit) or a timeout (network).
+    """
+
+    data: UsageData | None = None
+    status: int | None = None  # HTTP status when the server answered at all
+    retry_after: float | None = None  # seconds, set only for a 429
+    error: str | None = None  # short error class for the debug line
 
 
 @dataclass
@@ -226,6 +243,22 @@ def _parse_legacy(response: dict) -> list[UsageGroup]:
     return groups
 
 
+def _parse_retry_after(value: str | None) -> float:
+    """Seconds to wait, from a 429's Retry-After header.
+
+    Only the delta-seconds form is honoured; the HTTP-date form and anything unparseable or
+    negative fall back to RETRY_AFTER_FALLBACK, which is never worse than hammering.
+    """
+    if value:
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return RETRY_AFTER_FALLBACK
+        if math.isfinite(seconds) and seconds >= 0:
+            return seconds
+    return RETRY_AFTER_FALLBACK
+
+
 def parse_api_response(response: object) -> UsageData:
     """Parse an API response into UsageData, preferring the `limits` array over legacy keys."""
     # Typed `object`, not `dict`: the payload comes straight from json.loads(), so a top-level
@@ -357,29 +390,39 @@ def get_token() -> str | None:
     return _get_keychain_token() or _get_file_token()
 
 
-def fetch_usage_api(token: str) -> UsageData | None:
-    """Fetch usage data from Anthropic API.
+def fetch_usage_api(token: str) -> FetchOutcome:
+    """Fetch usage data from the Anthropic OAuth usage endpoint.
 
     Args:
         token: OAuth access token
 
     Returns:
-        UsageData or None on error
+        FetchOutcome: parsed data on success, otherwise the status / retry hint / error class.
     """
+    request = Request(  # noqa: S310
+        API_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
     try:
-        request = Request(  # noqa: S310
-            API_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-        )
         with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310
-            data = json.loads(response.read())
-            return parse_api_response(data)
-    except (TimeoutError, URLError, json.JSONDecodeError):
-        pass
-    return None
+            payload = json.loads(response.read())
+    except HTTPError as exc:
+        # MUST precede URLError: HTTPError is a subclass, and only it carries the status and the
+        # Retry-After header the backoff is built on.
+        if exc.code == HTTP_TOO_MANY_REQUESTS:
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            return FetchOutcome(status=exc.code, retry_after=_parse_retry_after(header))
+        return FetchOutcome(status=exc.code)
+    except TimeoutError:
+        return FetchOutcome(error="timeout")
+    except URLError:
+        return FetchOutcome(error="network error")
+    except json.JSONDecodeError:
+        return FetchOutcome(error="bad JSON")
+    return FetchOutcome(data=parse_api_response(payload))
 
 
 class UsageCache:
@@ -627,7 +670,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
                 return cached
 
         # Try to fetch fresh data
-        new_data = fetch_usage_api(token)
+        new_data = fetch_usage_api(token).data
 
         # Determine what to return, and (separately) what to persist.
         to_save: UsageData | None

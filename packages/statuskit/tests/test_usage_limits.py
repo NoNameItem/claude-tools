@@ -3,16 +3,21 @@
 import json
 import tempfile
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from statuskit.modules.usage_limits import (
+    API_URL,
+    RETRY_AFTER_FALLBACK,
+    FetchOutcome,
     UsageCache,
     UsageData,
     UsageGroup,
     UsageLimit,
     UsageLimitsModule,
+    _parse_retry_after,
     calculate_color,
     fetch_usage_api,
     format_progress_bar,
@@ -460,27 +465,72 @@ class TestGetToken:
 
 
 class TestFetchUsageApi:
-    def test_fetch_success(self):
-        response_data = json.dumps(make_api_response()).encode()
+    """The usage-API call and how each outcome is reported."""
+
+    def test_successful_fetch_returns_data(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_response = mock_urlopen.return_value.__enter__.return_value
-            mock_response.read.return_value = response_data
-            data = fetch_usage_api("test-token")
-            assert data is not None
-            session = _group(data, "session")
-            assert session is not None
-            assert session.overall is not None
-            assert session.overall.utilization == 11.0
+            mock_response.read.return_value = json.dumps(make_api_response()).encode()
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is not None
+        assert outcome.data.groups
+        assert outcome.retry_after is None
+        assert outcome.status is None
 
-    def test_fetch_timeout(self):
+    def test_timeout_reports_the_error_class(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = TimeoutError("timeout")
-            assert fetch_usage_api("test-token") is None
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "timeout"
 
-    def test_fetch_error(self):
+    def test_network_error_reports_the_error_class(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = URLError("connection failed")
-            assert fetch_usage_api("test-token") is None
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "network error"
+
+    def test_bad_json_reports_the_error_class(self):
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"{not json"
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "bad JSON"
+
+    def test_429_carries_retry_after_seconds(self):
+        headers = Message()
+        headers["Retry-After"] = "1198"
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="Too Many Requests", hdrs=headers, fp=None)
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.status == 429
+        assert outcome.retry_after == 1198.0
+
+    def test_429_without_a_usable_header_falls_back(self):
+        for value in (None, "", "soon", "-5"):
+            headers = Message()
+            if value is not None:
+                headers["Retry-After"] = value
+            with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="rate", hdrs=headers, fp=None)
+                outcome = fetch_usage_api("test-token")
+            assert outcome.retry_after == RETRY_AFTER_FALLBACK
+
+    def test_other_http_error_reports_the_status(self):
+        headers = Message()
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=401, msg="Unauthorized", hdrs=headers, fp=None)
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.status == 401
+        assert outcome.retry_after is None
+
+    def test_parse_retry_after_accepts_plain_seconds(self):
+        assert _parse_retry_after("92") == 92.0
+        assert _parse_retry_after(" 92 ") == 92.0
+        assert _parse_retry_after("0") == 0.0
 
 
 def _session_group(util: float, resets_at: datetime | None) -> UsageGroup:
@@ -908,7 +958,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = new_data
+                mock_fetch.return_value = FetchOutcome(data=new_data)
                 result = module._get_usage_data()
         assert result is not None
         session = _group(result, "session")
@@ -935,7 +985,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                mock_fetch.return_value = FetchOutcome(data=UsageData(groups=[], fetched_at=datetime.now(UTC)))
                 result = module._get_usage_data()
         assert result is not None
         assert result.groups == []  # empty result kept, cache NOT used as a cover-up
@@ -963,7 +1013,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                mock_fetch.return_value = FetchOutcome(data=UsageData(groups=[], fetched_at=datetime.now(UTC)))
                 module._get_usage_data()
         reloaded = module.cache.load()
         assert reloaded is not None
@@ -982,7 +1032,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = None
+                mock_fetch.return_value = FetchOutcome()
                 module._get_usage_data()
                 module._get_usage_data()
         assert mock_fetch.call_count == 1
@@ -1003,7 +1053,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = None
+                mock_fetch.return_value = FetchOutcome()
                 module._get_usage_data()
         reloaded = module.cache.load()
         assert reloaded is not None
