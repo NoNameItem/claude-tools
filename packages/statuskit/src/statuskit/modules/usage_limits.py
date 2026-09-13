@@ -91,7 +91,14 @@ class FetchOutcome:
 
 @dataclass
 class UsageData:
-    """All usage groups plus fetch/attempt timestamps."""
+    """All usage groups plus fetch/attempt timestamps.
+
+    `last_attempt_at` has NO default derived from `fetched_at`: it means "an endpoint fetch was
+    attempted at this instant", set only by `UsageCache.claim_attempt` and `_apply_outcome`. A
+    `UsageData` built for another reason (e.g. `_persist_payload`'s cold-cache stand-in) must be
+    able to say "no attempt has happened" — defaulting it to `fetched_at` would make that
+    fabricated entry look like a completed attempt and wrongly throttle the next real one.
+    """
 
     groups: list[UsageGroup]
     fetched_at: datetime
@@ -99,10 +106,6 @@ class UsageData:
     retry_after_until: datetime | None = None  # no request before this instant (from a 429)
     payload: RateLimits | None = None  # last `rate_limits` block seen in a statusline payload
     payload_seen_at: datetime | None = None  # when that block was seen
-
-    def __post_init__(self) -> None:
-        if self.last_attempt_at is None:
-            self.last_attempt_at = self.fetched_at
 
 
 def _as_dict(value: object) -> dict:
@@ -621,7 +624,6 @@ class UsageCache:
                     "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
-            last_attempt_at = data.last_attempt_at or data.fetched_at
             cache_data = {
                 "data": {
                     "groups": [
@@ -634,8 +636,13 @@ class UsageCache:
                     ],
                 },
                 "fetched_at": data.fetched_at.isoformat(),
-                "last_attempt_at": last_attempt_at.isoformat(),
             }
+
+            # No fallback to `fetched_at`: an unset `last_attempt_at` means no attempt was ever
+            # made, and writing the key anyway would make a fabricated entry (a payload-only
+            # write on a cold cache) look like a completed attempt on the next load.
+            if data.last_attempt_at is not None:
+                cache_data["last_attempt_at"] = data.last_attempt_at.isoformat()
 
             if data.retry_after_until is not None:
                 cache_data["retry_after_until"] = data.retry_after_until.isoformat()

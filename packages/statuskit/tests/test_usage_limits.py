@@ -54,10 +54,15 @@ class TestDataModel:
         assert group.overall is None
         assert group.models == []
 
-    def test_usage_data_defaults_last_attempt_to_fetched(self):
-        now = datetime.now(UTC)
-        data = UsageData(groups=[], fetched_at=now)
-        assert data.last_attempt_at == now
+    def test_usage_data_leaves_last_attempt_at_none_when_omitted(self):
+        """No default from `fetched_at`: omitting it must mean "no attempt", not "just now".
+
+        Only `UsageCache.claim_attempt` / `_apply_outcome` are allowed to set it — a `UsageData`
+        fabricated for another reason (e.g. `_persist_payload`'s cold-cache stand-in) must not
+        look like a completed attempt and wrongly throttle the next real fetch.
+        """
+        data = UsageData(groups=[], fetched_at=datetime.now(UTC))
+        assert data.last_attempt_at is None
 
 
 class TestParseLimitsArray:
@@ -1086,9 +1091,7 @@ class TestPayloadSource:
 
     def test_payload_is_persisted_to_the_cache(self, make_render_context, tmp_path):
         ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
-        with (
-            patch("statuskit.modules.usage_limits.get_token", return_value=None),
-        ):
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
             UsageLimitsModule(ctx, {})._get_usage_data()
         cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
         assert cached is not None
@@ -1108,6 +1111,7 @@ class TestPayloadSource:
             second_cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
             assert second_cached is not None
             second = second_cached.payload_seen_at
+        assert first is not None
         assert first == second
 
     def test_show_session_false_hides_the_payload_row(self, make_render_context, tmp_path):
@@ -1119,6 +1123,46 @@ class TestPayloadSource:
         assert "46%" not in output
         assert "15%" in output
 
+    def test_persisting_the_payload_does_not_suppress_the_first_fetch(self, make_render_context, tmp_path):
+        """Regression: a payload write on a cold cache must not read back as a completed attempt.
+
+        `_persist_payload` fabricates a `UsageData` when there is no cache file yet. If that
+        fabricated entry's `last_attempt_at` defaulted to `fetched_at` (as `UsageData` used to),
+        the TTL gate right below would see an attempt "already made" moments ago and skip the
+        fetch for a full `cache_ttl` — even though no request was ever sent.
+        """
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            mock_fetch.return_value = FetchOutcome(
+                data=UsageData(groups=[_weekly_group(2.0, None)], fetched_at=datetime.now(UTC))
+            )
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_the_persisted_payload_does_not_throttle_a_sibling_session(self, make_render_context, tmp_path):
+        """Regression: the cold-cache payload write must not stand a SIBLING session down either.
+
+        A render with no token still writes the payload to a cold cache. A second module instance
+        over that same cache dir, with a token this time, must still attempt its own fetch — the
+        fabricated entry on disk must not carry a `last_attempt_at` that throttles it.
+        """
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            mock_fetch.return_value = FetchOutcome(
+                data=UsageData(groups=[_weekly_group(2.0, None)], fetched_at=datetime.now(UTC))
+            )
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_called_once()
+
 
 class TestGetUsageDataRateLimited:
     """Rate-limit / fetch-first behavior (unchanged logic, grouped data)."""
@@ -1127,15 +1171,23 @@ class TestGetUsageDataRateLimited:
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
         module = UsageLimitsModule(ctx, {})
         assert module.cache is not None
+        # `last_attempt_at` is explicit here — `fetched_at` alone no longer implies "just
+        # attempted" (see TestDataModel::test_usage_data_leaves_last_attempt_at_none_when_omitted),
+        # and this test's whole point is proving the TTL gate blocks the fetch below.
         module.cache.save(
             UsageData(
                 groups=[_session_group(45.0, datetime.now(UTC) + timedelta(hours=2.5))],
                 fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
             )
         )
-        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+        with (
+            patch("statuskit.modules.usage_limits.get_token") as mock_token,
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
             mock_token.return_value = "test-token"
             result = module._get_usage_data()
+        mock_fetch.assert_not_called()
         assert result is not None
         session = _group(result, "session")
         assert session is not None
