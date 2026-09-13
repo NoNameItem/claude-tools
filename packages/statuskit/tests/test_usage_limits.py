@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
+from statuskit.core.models import RateLimits, RateLimitWindow
 from statuskit.modules.usage_limits import (
     API_URL,
     RETRY_AFTER_FALLBACK,
@@ -726,6 +727,97 @@ class TestUsageCache:
 
         cache_file.write_text("{not json at all")
         assert cache.load() is None
+
+    def test_retry_after_until_round_trips(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        until = datetime.now(UTC) + timedelta(seconds=1198)
+        cache.save(UsageData(groups=[], fetched_at=datetime.now(UTC), retry_after_until=until))
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.retry_after_until == until
+
+    def test_payload_round_trips(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        seen = datetime.now(UTC)
+        reset = datetime.now(UTC) + timedelta(hours=3)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=seen,
+                payload=RateLimits(
+                    five_hour=RateLimitWindow(46.0, reset),
+                    seven_day=RateLimitWindow(15.0, None),
+                ),
+                payload_seen_at=seen,
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.payload is not None
+        assert loaded.payload.five_hour is not None
+        assert loaded.payload.five_hour.used_percentage == 46.0
+        assert loaded.payload.five_hour.resets_at == reset
+        assert loaded.payload.seven_day is not None
+        assert loaded.payload.seven_day.resets_at is None
+        assert loaded.payload_seen_at == seen
+
+    def test_cache_without_the_new_keys_still_loads(self, tmp_path):
+        """A file written by the previous version must keep working."""
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": "weekly", "overall": None, "models": []}]},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "last_attempt_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        assert loaded.retry_after_until is None
+        assert loaded.payload is None
+        assert loaded.payload_seen_at is None
+
+    def test_malformed_new_keys_are_ignored(self, tmp_path):
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": []},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "last_attempt_at": datetime.now(UTC).isoformat(),
+                    "retry_after_until": "not a date",
+                    "payload": "soon",
+                    "payload_seen_at": 12345,
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        assert loaded.retry_after_until is None
+        assert loaded.payload is None
+
+    def test_claim_attempt_writes_the_stamp_before_returning(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        before = datetime.now(UTC)
+        claimed = cache.claim_attempt(None)
+        on_disk = json.loads((tmp_path / "usage_limits.json").read_text())
+        assert claimed.last_attempt_at is not None
+        assert claimed.last_attempt_at >= before
+        assert datetime.fromisoformat(on_disk["last_attempt_at"]) >= before
+
+    def test_claim_attempt_keeps_existing_data(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        old = datetime.now(UTC) - timedelta(minutes=40)
+        cache.save(UsageData(groups=[_weekly_group(2.0, None)], fetched_at=old, last_attempt_at=old))
+        claimed = cache.claim_attempt(cache.load())
+        assert claimed.fetched_at == old
+        assert claimed.last_attempt_at is not None
+        assert claimed.last_attempt_at > old
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.groups
 
 
 class TestRenderMultiline:

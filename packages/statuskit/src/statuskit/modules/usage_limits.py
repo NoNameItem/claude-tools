@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from termcolor import colored
 
+from statuskit.core.models import RateLimits, RateLimitWindow
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
@@ -49,6 +50,9 @@ class UsageLimit:
     A scoped limit is keyed by the PAIR, not by the model alone: the API can narrow a limit by
     model, by surface, or by both, and two rows differing only in `surface` are different
     quotas that must not collapse into one another. Both are None for a group's `overall`.
+
+    `stale_seconds` is a render-time field set by the renderer when its source failed to refresh.
+    It is never parsed from the cache and never serialized.
     """
 
     label: str  # "Session" / "Weekly" / "Fable" / "Fable·cli"
@@ -56,6 +60,7 @@ class UsageLimit:
     resets_at: datetime | None  # None when not yet used or API issue
     model: str | None = None
     surface: str | None = None
+    stale_seconds: float | None = None  # age of the cached value when its source failed to refresh
 
 
 @dataclass
@@ -90,6 +95,9 @@ class UsageData:
     groups: list[UsageGroup]
     fetched_at: datetime
     last_attempt_at: datetime | None = None
+    retry_after_until: datetime | None = None  # no request before this instant (from a 429)
+    payload: RateLimits | None = None  # last `rate_limits` block seen in a statusline payload
+    payload_seen_at: datetime | None = None  # when that block was seen
 
     def __post_init__(self) -> None:
         if self.last_attempt_at is None:
@@ -131,6 +139,42 @@ def _coerce_utilization(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
     return float(value) if math.isfinite(value) else None
+
+
+def _deserialize_payload(value: object) -> RateLimits | None:
+    """Rebuild the cached statusline payload block, or None when it is absent or unreadable."""
+    if not isinstance(value, dict):
+        return None
+
+    def window(raw: object) -> RateLimitWindow | None:
+        if not isinstance(raw, dict):
+            return None
+        used = _coerce_utilization(raw.get("used_percentage"))
+        if used is None:
+            return None
+        resets_at = _parse_cache_datetime(raw.get("resets_at"))
+        return RateLimitWindow(used_percentage=used, resets_at=resets_at)
+
+    five_hour = window(value.get("five_hour"))
+    seven_day = window(value.get("seven_day"))
+    if five_hour is None and seven_day is None:
+        return None
+    return RateLimits(five_hour=five_hour, seven_day=seven_day)
+
+
+def _serialize_payload(payload: RateLimits | None) -> dict | None:
+    """Cache form of the payload block: percentages plus ISO reset times."""
+    if payload is None:
+        return None
+    out: dict = {}
+    for key, window in (("five_hour", payload.five_hour), ("seven_day", payload.seven_day)):
+        if window is None:
+            continue
+        out[key] = {
+            "used_percentage": window.used_percentage,
+            "resets_at": window.resets_at.isoformat() if window.resets_at else None,
+        }
+    return out or None
 
 
 def _scope_label(model: str | None, surface: str | None) -> str | None:
@@ -464,8 +508,21 @@ class UsageCache:
             if stamp is None:
                 return None  # no usable timestamp at all — nothing worth keeping
 
+            retry_after_until = _parse_cache_datetime(data.get("retry_after_until"))
+            payload_seen_at = _parse_cache_datetime(data.get("payload_seen_at"))
+            payload = _deserialize_payload(data.get("payload"))
+            if payload is None:
+                payload_seen_at = None
+
             def stamps_only() -> UsageData:
-                return UsageData(groups=[], fetched_at=stamp, last_attempt_at=last_attempt_at)
+                return UsageData(
+                    groups=[],
+                    fetched_at=stamp,
+                    last_attempt_at=last_attempt_at,
+                    retry_after_until=retry_after_until,
+                    payload=payload,
+                    payload_seen_at=payload_seen_at,
+                )
 
             def deserialize_limit(d: dict | None) -> UsageLimit | None:
                 if not isinstance(d, dict):
@@ -529,7 +586,14 @@ class UsageCache:
             except (ValueError, TypeError, AttributeError):
                 return stamps_only()  # malformed group payload — keep the throttle timestamps
 
-            return UsageData(groups=groups, fetched_at=stamp, last_attempt_at=last_attempt_at)
+            return UsageData(
+                groups=groups,
+                fetched_at=stamp,
+                last_attempt_at=last_attempt_at,
+                retry_after_until=retry_after_until,
+                payload=payload,
+                payload_seen_at=payload_seen_at,
+            )
         except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError, AttributeError):
             return None
 
@@ -565,6 +629,14 @@ class UsageCache:
                 "last_attempt_at": last_attempt_at.isoformat(),
             }
 
+            if data.retry_after_until is not None:
+                cache_data["retry_after_until"] = data.retry_after_until.isoformat()
+            serialized_payload = _serialize_payload(data.payload)
+            if serialized_payload is not None:
+                cache_data["payload"] = serialized_payload
+                seen = data.payload_seen_at or data.fetched_at
+                cache_data["payload_seen_at"] = seen.isoformat()
+
             with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
                 f.write(json.dumps(cache_data))
                 temp_path = Path(f.name)
@@ -575,6 +647,21 @@ class UsageCache:
                 temp_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    def claim_attempt(self, cached: UsageData | None) -> UsageData:
+        """Stamp an attempt as starting now and persist it, before the request goes out.
+
+        Several Claude Code sessions render the same statusline against the same cache file. With
+        the stamp written only after the response, every session whose render lands in the gap
+        fires its own request — a burst per TTL instead of one call. Claiming first costs one
+        atomic write and makes the other sessions fall into the TTL branch. A process that dies
+        mid-request costs at most one TTL of staleness.
+        """
+        now = datetime.now(UTC)
+        claimed = cached if cached is not None else UsageData(groups=[], fetched_at=now)
+        claimed.last_attempt_at = now
+        self.save(claimed)
+        return claimed
 
 
 # Shared by the three *_time_format fields below (same choices, same examples).
