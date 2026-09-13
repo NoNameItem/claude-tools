@@ -7,7 +7,7 @@ import math
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.error import HTTPError, URLError
@@ -729,72 +729,80 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         return "\n".join(parts) if parts else None
 
     def _get_usage_data(self) -> UsageData | None:
-        """Get usage data using refresh-first pattern.
+        """Load cached usage data, refreshing it from the API when policy allows.
 
-        Logic:
-        1. Load existing cache (for fallback)
-        2. If can fetch: try API, save result, return data
-        3. Otherwise: return cached data
+        Order of the gates, each one cheaper than the next: no token, an active 429 backoff, the
+        TTL. Only past all three does a request go out, and only after the attempt is claimed in
+        the cache so sibling sessions stand down.
         """
         self._debug_messages: list[str] = []
 
-        # Load cache for potential fallback
         cached = self.cache.load() if self.cache else None
 
-        # Check if we can fetch
         token = get_token()
         if not token:
             self._debug_messages.append("No token, using cache")
             return cached
 
-        # Check rate limit using cached data (avoids second file read).
-        # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but
-        # must still throttle, otherwise every render re-hits the API and sustains a 429.
+        now = datetime.now(UTC)
+        if cached and cached.retry_after_until and now < cached.retry_after_until:
+            left = int((cached.retry_after_until - now).total_seconds())
+            self._debug_messages.append(f"Backing off after HTTP 429, {left}s left")
+            return cached
+
+        # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but must
+        # still throttle, otherwise every render re-hits the API and sustains a 429.
         if cached and cached.last_attempt_at and self.cache:
-            age = (datetime.now(UTC) - cached.last_attempt_at).total_seconds()
+            age = (now - cached.last_attempt_at).total_seconds()
             if age < self.cache.rate_limit:
                 self._debug_messages.append("Rate limited, using cache")
                 return cached
 
-        # Try to fetch fresh data
-        new_data = fetch_usage_api(token).data
+        if self.cache:
+            cached = self.cache.claim_attempt(cached)
 
-        # Determine what to return, and (separately) what to persist.
-        to_save: UsageData | None
-        if new_data and new_data.groups:
-            data = new_data
-            to_save = new_data
-        elif new_data:
-            # The request succeeded but nothing parsed — most likely the API changed shape.
-            # RETURN the empty result rather than silently falling back to the cache: a stale but
-            # plausible-looking statusline would hide the breakage and the user would never learn
-            # statuskit needs updating. But do NOT persist it — writing an empty payload over the
-            # last known-good cache would poison every LATER render that legitimately falls back
-            # (no token / rate limited / API down), long after this hiccup passed.
-            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
-            data = new_data
-            # With no cache to protect there is nothing to poison, and persisting the empty
-            # payload is what keeps last_attempt_at advancing — otherwise the failing API would
-            # be re-hit on every single render.
-            to_save = cached if cached is not None else new_data
-        else:
-            self._debug_messages.append("API failed, using cache")
-            data = cached
-            to_save = cached
+        data, to_save = self._apply_outcome(fetch_usage_api(token), cached)
 
-        # Advance the attempt clock on whatever we persist so the next render throttles instead of
-        # hammering, while keeping fetched_at (true data age) untouched.
-        if to_save is not None and to_save is not new_data:
-            to_save.last_attempt_at = datetime.now(UTC)
-
-        # Save so the advanced attempt clock (and any fresh data) persists across renders.
-        if self.cache and to_save:
+        if self.cache and to_save is not None:
             self.cache.save(to_save)
-
         if not data:
             self._debug_messages.append("No data available")
-
         return data
+
+    def _apply_outcome(
+        self, outcome: FetchOutcome, cached: UsageData | None
+    ) -> tuple[UsageData | None, UsageData | None]:
+        """Fold one fetch outcome into (what to render, what to persist)."""
+        now = datetime.now(UTC)
+        new_data = outcome.data
+
+        if new_data and new_data.groups:
+            new_data.last_attempt_at = now
+            # Carry the payload block across a successful endpoint fetch — it belongs to the other
+            # source and a refresh here must not wipe it. retry_after_until stays at its default
+            # None, which is exactly how a success clears an earlier backoff.
+            if cached is not None:
+                new_data.payload = cached.payload
+                new_data.payload_seen_at = cached.payload_seen_at
+            return new_data, new_data
+
+        if new_data is not None:
+            # The request succeeded but nothing parsed — most likely the API changed shape. RETURN
+            # the empty result rather than silently falling back to the cache: a stale but
+            # plausible-looking statusline would hide the breakage. But do NOT persist it over the
+            # last known-good cache, which every later fallback render depends on.
+            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
+            return new_data, cached if cached is not None else new_data
+
+        if outcome.retry_after is not None:
+            self._debug_messages.append(f"HTTP {outcome.status}, backing off for {int(outcome.retry_after)}s")
+            if cached is not None:
+                cached.retry_after_until = now + timedelta(seconds=outcome.retry_after)
+        elif outcome.status is not None:
+            self._debug_messages.append(f"HTTP {outcome.status}, using cache")
+        else:
+            self._debug_messages.append(f"{outcome.error or 'API failed'}, using cache")
+        return cached, cached
 
     def _visible_groups(self, data: UsageData) -> list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]]:
         """For each group, return (group, overall-or-None-if-hidden, visible models)."""

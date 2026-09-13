@@ -1162,6 +1162,124 @@ class TestGetUsageDataRateLimited:
         assert output is not None
         assert "[usage_limits] No token" in output
 
+    def test_429_persists_the_backoff_deadline(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(status=429, retry_after=1198.0),
+            ),
+        ):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.retry_after_until is not None
+        assert 1100 < (cached.retry_after_until - datetime.now(UTC)).total_seconds() <= 1198
+
+    def test_backoff_blocks_the_next_request(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            module = UsageLimitsModule(ctx, {"cache_ttl": 0})
+            data = module._get_usage_data()
+        mock_fetch.assert_not_called()
+        assert data is not None
+        assert data.groups
+        assert any("Backing off" in m for m in module._debug_messages)
+
+    def test_expired_backoff_allows_the_request(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ) as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_success_clears_the_backoff(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.retry_after_until is None
+
+    def test_attempt_is_claimed_before_the_request(self, make_render_context, minimal_input_data, tmp_path):
+        seen: dict = {}
+
+        def fake_fetch(_token):
+            seen["stamp"] = json.loads((tmp_path / "usage_limits.json").read_text()).get("last_attempt_at")
+            return FetchOutcome(error="timeout")
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=fake_fetch),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        assert seen["stamp"] is not None
+
+    def test_debug_message_names_the_failure(self, make_render_context, minimal_input_data, tmp_path):
+        cases = [
+            (FetchOutcome(status=401), "HTTP 401"),
+            (FetchOutcome(status=503), "HTTP 503"),
+            (FetchOutcome(error="timeout"), "timeout"),
+            (FetchOutcome(error="network error"), "network error"),
+            (FetchOutcome(status=429, retry_after=60.0), "HTTP 429"),
+        ]
+        for outcome, expected in cases:
+            ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
+            with (
+                patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+                patch("statuskit.modules.usage_limits.fetch_usage_api", return_value=outcome),
+            ):
+                module = UsageLimitsModule(ctx, {"cache_ttl": 0})
+                module._get_usage_data()
+            assert any(expected in m for m in module._debug_messages), (outcome, module._debug_messages)
+
 
 def test_cache_ttl_default_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
     ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
