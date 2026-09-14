@@ -188,6 +188,10 @@ in that payload, so they are fetched from the account usage endpoint at most onc
 `cache_ttl` and cached; the last payload block is cached too, so a brand-new session can show
 the overall rows before its first API response.
 
+`Session` and `Weekly` need a recent Claude Code that sends `rate_limits` in the statusline
+payload. Without it (an older Claude Code, or a cold cache before the first payload with that
+block arrives), only the per-model rows render.
+
 A row that comes from the cache after a failed refresh is marked with its age, e.g.
 `Fable: 25% (Wed 08:00) (40m ago)`. When the endpoint answers `429`, its `Retry-After` is
 honoured: no request goes out until the window it names has passed.

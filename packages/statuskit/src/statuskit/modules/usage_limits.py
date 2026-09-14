@@ -31,6 +31,7 @@ HTTP_TOO_MANY_REQUESTS = 429
 RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
 CACHE_FILENAME = "usage_limits.json"
 PAYLOAD_SAVE_INTERVAL = 60.0  # min seconds between cache writes of the statusline payload block
+STALE_SUFFIX_MIN_SECONDS = 60.0  # below this, "(0m ago)" carries no information — suppress it
 
 FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY  # 168.0
@@ -497,6 +498,9 @@ class UsageCache:
         self.cache_dir = cache_dir
         self.rate_limit = rate_limit
         self.cache_file = cache_dir / CACHE_FILENAME
+        # Set by `save()` on every call; `claim_attempt()`'s caller reads it to know whether the
+        # attempt claim it just made actually reached disk.
+        self.last_save_ok: bool = True
 
     def load(self) -> UsageData | None:
         """Load cached data, or None when the file is missing or carries no usable timestamp.
@@ -609,7 +613,14 @@ class UsageCache:
             return None
 
     def save(self, data: UsageData) -> None:
-        """Save data to cache atomically (temp file + rename)."""
+        """Save data to cache atomically (temp file + rename).
+
+        Sets `last_save_ok` so a caller that cares (`claim_attempt`'s caller, via the attribute)
+        can tell a silently swallowed write failure from a normal save — a failed write here means
+        the attempt claim never reached disk, and the thundering-herd protection it exists for
+        comes back unnoticed.
+        """
+        self.last_save_ok = True
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -660,8 +671,9 @@ class UsageCache:
                 temp_path.replace(self.cache_file)
             except OSError:
                 temp_path.unlink(missing_ok=True)
+                self.last_save_ok = False
         except OSError:
-            pass
+            self.last_save_ok = False
 
     def claim_attempt(self, cached: UsageData | None) -> UsageData:
         """Stamp an attempt as starting now and persist it, before the request goes out.
@@ -774,6 +786,8 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
         if self.cache:
             cached = self.cache.claim_attempt(cached)
+            if not self.cache.last_save_ok:
+                self._debug_messages.append("Could not write the attempt claim; sibling sessions may all refetch")
 
         data, to_save = self._apply_outcome(fetch_usage_api(token), cached)
 
@@ -791,6 +805,12 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         new_data = outcome.data
 
         if new_data and new_data.groups:
+            # Both stamps describe THIS attempt: `model_age` (in `_display_data`) measures staleness
+            # as `fetched_at < last_attempt_at`, and a successful fetch must make that false, not
+            # merely close to false — else the age keeps growing from a `fetched_at` set moments
+            # earlier inside `parse_api_response`, and every per-model row carries a permanent
+            # "(0m ago)" that only grows.
+            new_data.fetched_at = now
             new_data.last_attempt_at = now
             # Carry the payload block across a successful endpoint fetch — it belongs to the other
             # source and a refresh here must not wipe it. retry_after_until stays at its default
@@ -806,7 +826,17 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             # plausible-looking statusline would hide the breakage. But do NOT persist it over the
             # last known-good cache, which every later fallback render depends on.
             self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
-            return new_data, cached if cached is not None else new_data
+            # Carry the payload block too — it belongs to the other source, and dropping it here
+            # would make the whole Usage block vanish (Session/Weekly included) for as long as the
+            # endpoint keeps answering 200 with an unparseable body, even though the payload itself
+            # never stopped arriving.
+            if cached is not None:
+                new_data.payload = cached.payload
+                new_data.payload_seen_at = cached.payload_seen_at
+            # `cached`, not `cached if cached is not None else new_data`: by this point `_get_usage_data`
+            # has always claimed the attempt first, so `cached` is non-None whenever `self.cache`
+            # exists; when it doesn't, the caller discards `to_save` anyway.
+            return new_data, cached
 
         if outcome.retry_after is not None:
             self._debug_messages.append(f"HTTP {outcome.status}, backing off for {int(outcome.retry_after)}s")
@@ -859,6 +889,10 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         """
         now = datetime.now(UTC)
         payload, payload_age = self._resolve_payload(data, now)
+        if payload is None and hasattr(self, "_debug_messages"):
+            self._debug_messages.append(
+                "No rate_limits in the statusline payload — Session/Weekly need a recent Claude Code"
+            )
 
         # A per-model row is stale when the last refresh attempt did not produce data: the claim
         # advanced last_attempt_at while fetched_at stayed where the last success left it. An
@@ -1033,7 +1067,9 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
         stale_str = ""
-        if limit.stale_seconds is not None:
+        # Below a minute, format_remaining_time floors to "0m" — a suffix that carries no
+        # information and looks like the row is broken rather than merely young.
+        if limit.stale_seconds is not None and limit.stale_seconds >= STALE_SUFFIX_MIN_SECONDS:
             stale_str = colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
 
         return f"{label_str}{bar} {util_str}{time_str}{stale_str}"
