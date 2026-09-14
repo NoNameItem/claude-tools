@@ -1283,7 +1283,7 @@ class TestStaleness:
         assert re.search(r"\(\w{3} \d{2}:\d{2}\) \(40m ago\)", output)
 
     def test_sub_minute_age_has_no_suffix(self, make_render_context, tmp_path):
-        """Below 60s, `format_remaining_time` floors to "0m" — suppress the suffix entirely."""
+        """Below the floor, `format_remaining_time` renders "0m" — suppress the suffix entirely."""
         ctx = _payload_ctx(make_render_context, tmp_path)
         fetched = datetime.now(UTC) - timedelta(seconds=30)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
@@ -1296,18 +1296,43 @@ class TestStaleness:
         assert output is not None
         assert "ago)" not in output
 
-    def test_just_over_a_minute_age_still_shows_the_suffix(self, make_render_context, tmp_path):
+    def _aged_cache(self, seconds: float) -> UsageData:
+        """A per-model cache whose last refresh attempt failed `seconds` after the last success."""
+        return UsageData(
+            groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+            fetched_at=datetime.now(UTC) - timedelta(seconds=seconds),
+            last_attempt_at=datetime.now(UTC),
+        )
+
+    def test_age_inside_the_refresh_cycle_has_no_suffix(self, make_render_context, tmp_path):
+        """Past the minute floor but inside cache_ttl: the data is not due yet, so it is not late."""
         ctx = _payload_ctx(make_render_context, tmp_path)
-        fetched = datetime.now(UTC) - timedelta(seconds=61)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
-                fetched_at=fetched,
-                last_attempt_at=datetime.now(UTC),
-            )
+            mock_get.return_value = self._aged_cache(61)
             output = UsageLimitsModule(ctx, {}).render()
         assert output is not None
-        assert "(1m ago)" in output
+        assert "ago)" not in output
+
+    def test_age_past_the_refresh_cycle_shows_the_suffix(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._aged_cache(121)  # default cache_ttl is 120
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(2m ago)" in output
+
+    def test_the_threshold_follows_cache_ttl(self, make_render_context, tmp_path):
+        """The same age is late under a short TTL and not yet late under a long one."""
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._aged_cache(121)
+            short = UsageLimitsModule(ctx, {"cache_ttl": 60}).render()
+            mock_get.return_value = self._aged_cache(121)
+            long_ttl = UsageLimitsModule(ctx, {"cache_ttl": 600}).render()
+        assert short is not None
+        assert long_ttl is not None
+        assert "(2m ago)" in short
+        assert "ago)" not in long_ttl
 
 
 class TestGetUsageDataRateLimited:
@@ -1627,8 +1652,10 @@ class TestGetUsageDataRateLimited:
             (FetchOutcome(error="network error"), "network error"),
             (FetchOutcome(status=429, retry_after=60.0), "HTTP 429"),
         ]
-        for outcome, expected in cases:
-            ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
+        # Each case gets its own cache dir: the 429 case persists a backoff deadline, which
+        # would gate every case that ran after it and make the test pass only in this order.
+        for i, (outcome, expected) in enumerate(cases):
+            ctx = make_render_context(minimal_input_data, cache_dir=tmp_path / str(i), debug=True)
             with (
                 patch("statuskit.modules.usage_limits.get_token", return_value="t"),
                 patch("statuskit.modules.usage_limits.fetch_usage_api", return_value=outcome),

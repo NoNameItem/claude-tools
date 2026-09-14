@@ -31,7 +31,7 @@ HTTP_TOO_MANY_REQUESTS = 429
 RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
 CACHE_FILENAME = "usage_limits.json"
 PAYLOAD_SAVE_INTERVAL = 60.0  # min seconds between cache writes of the statusline payload block
-STALE_SUFFIX_MIN_SECONDS = 60.0  # below this, "(0m ago)" carries no information — suppress it
+STALE_SUFFIX_FLOOR_SECONDS = 60.0  # never mark below this: format_remaining_time floors to "0m"
 
 FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY  # 168.0
@@ -772,7 +772,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
         now = datetime.now(UTC)
         if cached and cached.retry_after_until and now < cached.retry_after_until:
-            left = int((cached.retry_after_until - now).total_seconds())
+            left = math.ceil((cached.retry_after_until - now).total_seconds())
             self._debug_messages.append(f"Backing off after HTTP 429, {left}s left")
             return cached
 
@@ -914,12 +914,10 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
                 if window is not None
                 else None
             )
-            models = [
-                replace(m, stale_seconds=model_age)
-                for g in (data.groups if data else [])
-                if g.key == key
-                for m in g.models
-            ]
+            group_models = [m for g in (data.groups if data else []) if g.key == key for m in g.models]
+            # Only copy when there is an age to stamp: the common path is fresh data, and a
+            # per-row `replace` on every render allocates for nothing.
+            models = group_models if model_age is None else [replace(m, stale_seconds=model_age) for m in group_models]
             if overall is not None or models:
                 groups.append(UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key], overall=overall, models=models))
         return UsageData(groups=groups, fetched_at=now) if groups else None
@@ -1067,9 +1065,11 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
         stale_str = ""
-        # Below a minute, format_remaining_time floors to "0m" — a suffix that carries no
-        # information and looks like the row is broken rather than merely young.
-        if limit.stale_seconds is not None and limit.stale_seconds >= STALE_SUFFIX_MIN_SECONDS:
+        # The suffix means "older than it should be", so it starts one refresh cycle out: inside
+        # cache_ttl the data is simply not due yet. The floor keeps it clear of the range where
+        # format_remaining_time renders "0m", which reads as broken rather than merely young.
+        stale_threshold = max(self.params.cache_ttl, STALE_SUFFIX_FLOOR_SECONDS)
+        if limit.stale_seconds is not None and limit.stale_seconds >= stale_threshold:
             stale_str = colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
 
         return f"{label_str}{bar} {util_str}{time_str}{stale_str}"
