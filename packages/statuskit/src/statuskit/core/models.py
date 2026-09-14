@@ -1,6 +1,8 @@
 """Data types for statuskit."""
 
+import math
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -52,6 +54,49 @@ class ContextWindow:
 
 
 @dataclass
+class RateLimitWindow:
+    """One subscription usage window reported by Claude Code in the statusline payload."""
+
+    used_percentage: float
+    resets_at: datetime | None
+
+
+@dataclass
+class RateLimits:
+    """Subscription usage limits from the payload's `rate_limits` block.
+
+    Claude Code fills these from the `anthropic-ratelimit-unified-*` response headers, so they
+    cost no network call and refresh on every API response. `spend_limit` (gateway deployments)
+    is deliberately not modelled — statuskit does not render it.
+    """
+
+    five_hour: RateLimitWindow | None = None
+    seven_day: RateLimitWindow | None = None
+
+
+def _parse_rate_limit_window(value: object) -> RateLimitWindow | None:
+    """Build a RateLimitWindow from one payload window, or None when it is unusable.
+
+    Payload values are untrusted: `used_percentage` must be a finite number (a bool would sail
+    through `float()` as 1.0), and `resets_at` is epoch SECONDS, not an ISO string. A window with
+    an unusable reset time is still worth showing, so only the percentage gates the window.
+    """
+    if not isinstance(value, dict):
+        return None
+    percent = value.get("used_percentage")
+    if isinstance(percent, bool) or not isinstance(percent, int | float) or not math.isfinite(percent):
+        return None
+    resets_at = None
+    epoch = value.get("resets_at")
+    if not isinstance(epoch, bool) and isinstance(epoch, int | float) and math.isfinite(epoch):
+        try:
+            resets_at = datetime.fromtimestamp(epoch, UTC)
+        except (OSError, OverflowError, ValueError):
+            resets_at = None
+    return RateLimitWindow(used_percentage=float(percent), resets_at=resets_at)
+
+
+@dataclass
 class StatusInput:
     """Parsed input from Claude Code status hook."""
 
@@ -61,6 +106,7 @@ class StatusInput:
     workspace: Workspace | None
     cost: Cost | None
     context_window: ContextWindow | None
+    rate_limits: RateLimits | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "StatusInput":
@@ -123,6 +169,14 @@ class StatusInput:
                 current_usage=current_usage,
             )
 
+        rl_data = data.get("rate_limits")
+        rate_limits = None
+        if isinstance(rl_data, dict):
+            five_hour = _parse_rate_limit_window(rl_data.get("five_hour"))
+            seven_day = _parse_rate_limit_window(rl_data.get("seven_day"))
+            if five_hour is not None or seven_day is not None:
+                rate_limits = RateLimits(five_hour=five_hour, seven_day=seven_day)
+
         return cls(
             session_id=data.get("session_id"),
             cwd=data.get("cwd"),
@@ -130,6 +184,7 @@ class StatusInput:
             workspace=workspace,
             cost=cost,
             context_window=context_window,
+            rate_limits=rate_limits,
         )
 
 
