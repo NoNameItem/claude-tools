@@ -54,7 +54,8 @@ class UsageLimit:
     model, by surface, or by both, and two rows differing only in `surface` are different
     quotas that must not collapse into one another. Both are None for a group's `overall`.
 
-    `stale_seconds` is a render-time field set by the renderer when its source failed to refresh.
+    `stale_seconds` is a render-time field set by the renderer when its source failed to refresh
+    and the value is late for that source's refresh cycle.
     It is never parsed from the cache and never serialized.
     """
 
@@ -63,7 +64,7 @@ class UsageLimit:
     resets_at: datetime | None  # None when not yet used or API issue
     model: str | None = None
     surface: str | None = None
-    stale_seconds: float | None = None  # age of the cached value when its source failed to refresh
+    stale_seconds: float | None = None  # age of a cached value late for its source's refresh cycle
 
 
 @dataclass
@@ -339,6 +340,20 @@ def _backoff_left(cached: UsageData | None, now: datetime) -> int | None:
     if left > RETRY_AFTER_MAX:
         return None
     return math.ceil(left)
+
+
+def _late_age(age: float | None, refresh_interval: float) -> float | None:
+    """`age` when a cached value is late for its source's refresh cycle, else None.
+
+    The "(<age> ago)" suffix means "older than it should be", so it starts one refresh cycle out:
+    inside the cycle the data is simply not due yet. Each source has its own cycle — `cache_ttl`
+    for the endpoint, `PAYLOAD_SAVE_INTERVAL` for the payload block — and `cache_ttl` must not
+    leak into payload rows, whose freshness it does not govern. The floor keeps the suffix clear
+    of the range where format_remaining_time renders "0m", which reads as broken, not young.
+    """
+    if age is None or age < max(refresh_interval, STALE_SUFFIX_FLOOR_SECONDS):
+        return None
+    return age
 
 
 def parse_api_response(response: object) -> UsageData:
@@ -823,7 +838,13 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             self._debug_messages.append("No token, using cache")
             return cached
 
-        data, to_save = self._apply_outcome(fetch_usage_api(token), cached)
+        outcome = fetch_usage_api(token)
+        # Fold the outcome into the cache as it is now, not into the snapshot loaded before the
+        # request: the request can take up to API_TIMEOUT, and saving that snapshot would roll back
+        # whatever sibling sessions persisted meanwhile (a fresher payload, a 429 backoff). Our own
+        # snapshot is the fallback only when the re-load yields nothing at all.
+        fresh = self.cache.load() if self.cache else None
+        data, to_save = self._apply_outcome(outcome, fresh if fresh is not None else cached)
 
         if self.cache and to_save is not None:
             self.cache.save(to_save)
@@ -933,8 +954,9 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         # active 429 backoff is covered by the same comparison.
         model_age: float | None = None
         if data and data.last_attempt_at and data.fetched_at < data.last_attempt_at:
-            model_age = (now - data.fetched_at).total_seconds()
+            model_age = _late_age((now - data.fetched_at).total_seconds(), self.params.cache_ttl)
 
+        payload_stale = _late_age(payload_age, PAYLOAD_SAVE_INTERVAL)
         groups: list[UsageGroup] = []
         for key in _GROUP_ORDER:
             window = _payload_window(payload, key)
@@ -943,7 +965,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
                     label=_GROUP_LABELS[key],
                     utilization=window.used_percentage,
                     resets_at=window.resets_at,
-                    stale_seconds=payload_age,
+                    stale_seconds=payload_stale,
                 )
                 if window is not None
                 else None
@@ -1107,12 +1129,8 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         return color, colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
 
     def _stale_suffix(self, limit: UsageLimit) -> str:
-        """Format the "(<age> ago)" suffix of a cached value whose source failed to refresh."""
-        # The suffix means "older than it should be", so it starts one refresh cycle out: inside
-        # cache_ttl the data is simply not due yet. The floor keeps it clear of the range where
-        # format_remaining_time renders "0m", which reads as broken rather than merely young.
-        stale_threshold = max(self.params.cache_ttl, STALE_SUFFIX_FLOOR_SECONDS)
-        if limit.stale_seconds is None or limit.stale_seconds < stale_threshold:
+        """Format the "(<age> ago)" suffix of a cached value that is late for its source (see _late_age)."""
+        if limit.stale_seconds is None:
             return ""
         return colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
 

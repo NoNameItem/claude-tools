@@ -1382,6 +1382,38 @@ class TestStaleness:
         assert output is not None
         assert "(5m ago)" in output
 
+    def test_cached_payload_rows_ignore_cache_ttl(self, make_render_context, minimal_input_data, tmp_path):
+        """`cache_ttl` governs the endpoint only: a long TTL must not hide an old payload row's age."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=now,
+                last_attempt_at=now,
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=59, seconds=1),
+            )
+            output = UsageLimitsModule(ctx, {"cache_ttl": 3600}).render()
+        assert output is not None
+        assert "(59m ago)" in output
+
+    def test_payload_rows_are_late_after_one_save_interval(self, make_render_context, minimal_input_data, tmp_path):
+        """Past the payload save interval (60 s) a cached payload is late, even inside cache_ttl."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=now,
+                last_attempt_at=now,
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(seconds=91),
+            )
+            output = UsageLimitsModule(ctx, {}).render()  # default cache_ttl is 120
+        assert output is not None
+        assert "(1m ago)" in output
+
     def test_suffix_appears_in_single_line_mode(self, make_render_context, tmp_path):
         ctx = _payload_ctx(make_render_context, tmp_path)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
@@ -1817,6 +1849,114 @@ class TestGetUsageDataRateLimited:
             output = UsageLimitsModule(ctx, {"cache_ttl": 60}).render()
         mock_fetch.assert_not_called()
         assert output is not None
+
+    def test_a_sibling_backoff_written_during_the_request_survives(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """The outcome folds into the cache re-loaded after the request, not the snapshot before it.
+
+        The request can take up to API_TIMEOUT; saving the pre-request snapshot would erase a 429
+        backoff a sibling session persisted meanwhile, and the next render would refetch into it.
+        """
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+            )
+        )
+        deadline = now + timedelta(minutes=10)
+
+        def sibling_backs_off(_token):
+            sibling = UsageCache(cache_dir=tmp_path, rate_limit=0)
+            state = sibling.load()
+            assert state is not None
+            state.retry_after_until = deadline
+            sibling.save(state)
+            return FetchOutcome(status=500, error="HTTP 500")
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=sibling_backs_off),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.retry_after_until == deadline
+
+    def test_a_sibling_payload_written_during_the_request_survives_a_success(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """A successful fetch carries the payload as it is after the request, not an older copy."""
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=30),
+            )
+        )
+
+        def sibling_stores_payload(_token):
+            sibling = UsageCache(cache_dir=tmp_path, rate_limit=0)
+            state = sibling.load()
+            assert state is not None
+            state.payload = RateLimits(five_hour=RateLimitWindow(80.0, None), seven_day=None)
+            state.payload_seen_at = now
+            sibling.save(state)
+            return FetchOutcome(data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC)))
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=sibling_stores_payload),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.payload is not None
+        assert reloaded.payload.five_hour is not None
+        assert reloaded.payload.five_hour.used_percentage == 80.0
+        assert reloaded.payload_seen_at == now
+
+    def test_an_unreadable_cache_after_the_request_falls_back_to_our_snapshot(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """When the re-load yields nothing, the outcome still lands, folded into our own snapshot."""
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=30),
+            )
+        )
+
+        def cache_vanishes(_token):
+            (tmp_path / "usage_limits.json").unlink()
+            return FetchOutcome(data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC)))
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=cache_vanishes),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        weekly = _group(reloaded, "weekly")
+        assert weekly is not None
+        assert weekly.overall is not None
+        assert weekly.overall.utilization == 3.0
+        assert reloaded.payload is not None
+        assert reloaded.payload.five_hour is not None
+        assert reloaded.payload.five_hour.used_percentage == 46.0
 
     def test_attempt_is_claimed_before_the_request(self, make_render_context, minimal_input_data, tmp_path):
         seen: dict = {}
