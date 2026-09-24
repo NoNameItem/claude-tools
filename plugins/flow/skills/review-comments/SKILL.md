@@ -281,6 +281,8 @@ writes `verdict-{ref}.json`).
 ````
 Analyze this PR/MR review comment and return a structured verdict.
 
+Read-only: do not create, modify or delete any file.
+
 Read comment `{ref}` from its row extract at `{FLOW_RC_DIR}/row-{ref}.json` — its `body`,
 `thread`, `diff_hunk`, `snippet`, `path`, `line`/`start_line`, and `kind`. (For a grouped call, read
 every listed row file.) The collector already reconstructed `snippet` wherever the reviewer
@@ -578,6 +580,8 @@ only the site inventory and evidence contract.
 **Subagent prompt (per accepted fix):**
 
 ```
+Read-only: do not create, modify or delete any file.
+
 The accepted fix is: {fix description} at {path}:{lines}.
 
 Find siblings — other places with the SAME underlying issue: other event types,
@@ -687,6 +691,8 @@ clean-result output contract.
 **Subagent prompt:**
 
 ```
+Read-only: do not create, modify or delete any file.
+
 You are a fresh skeptic reviewing an applied fix BEFORE it is pushed. Do not
 rubber-stamp — your job is to catch what the next review round would flag.
 

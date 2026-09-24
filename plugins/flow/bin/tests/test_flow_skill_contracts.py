@@ -41,9 +41,17 @@ MANIFEST_PATH_FIELDS = ("commands", "agents", "skills", "hooks", "mcpServers", "
 
 def test_claude_manifest_declared_paths_exist() -> None:
     # A manifest path Claude Code cannot resolve breaks plugin loading, and no other check sees it:
-    # validate_plugin.py only checks the `./` prefix.
+    # validate_plugin.py only checks the `./` prefix. A field may be a single path (str) or an
+    # array of paths (e.g. "commands": [...]); other shapes (an inline mcpServers object) are
+    # not paths and are ignored.
     manifest = json.loads((FLOW_ROOT / ".claude-plugin" / "plugin.json").read_text())
-    declared = [manifest[key] for key in MANIFEST_PATH_FIELDS if isinstance(manifest.get(key), str)]
+    declared: list[str] = []
+    for key in MANIFEST_PATH_FIELDS:
+        value = manifest.get(key)
+        if isinstance(value, str):
+            declared.append(value)
+        elif isinstance(value, list):
+            declared.extend(item for item in value if isinstance(item, str))
     assert not [path for path in declared if not (FLOW_ROOT / path).exists()]
 
 
@@ -132,6 +140,7 @@ NOT_CLAUDE_NATIVE = (
     "`strongest`",
     "Codex",
     'subagent_type="Bash"',  # no such agent type in current Claude Code; pre-#113 skill text used it
+    "harness's",  # possessive form of the adapter's "the harness's ... mechanism" idiom
 )
 TIER_WORD = re.compile(r"\b(?:fast|balanced|strongest)[- ]tier\b", re.IGNORECASE)
 NAMED_TOOL = re.compile(r"\b(Read|Write|Edit|Skill|Grep|Glob|Agent) tool\b")

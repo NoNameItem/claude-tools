@@ -438,7 +438,7 @@ If you're thinking any of these, STOP and follow the workflow:
 **Skill loading violations (MOST CRITICAL):**
 - "Let me wait for content to load" → Content IS loaded. Read it NOW.
 - "I'll prepare while reading" → NO. Read FIRST, act SECOND.
-- "Let me get the task list" → STOP. Did you read the skill? Run the script.
+- "Let me get the bd task list" → STOP. Did you read the skill? Run the script.
 
 **Command violations:**
 - "bd ready is good enough" → Use the script
@@ -480,7 +480,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | Excuse | Reality |
 |--------|---------|
 | "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
-| "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
+| "I'll get the bd task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
 | "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| flow-task-tree` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "A structured dialog for selection is nicer" | It auto-submits on the AFK timeout (claude-tools-6q4) and can't do hierarchical numbers. Plain text for tasks AND branches. |
