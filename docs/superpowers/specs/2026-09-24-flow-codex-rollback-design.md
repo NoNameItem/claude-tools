@@ -2,7 +2,8 @@
 
 **Task:** claude-tools-elf.64
 **Date:** 2026-09-24
-**Status:** approved, pending implementation plan
+**Status:** approved; implementation plan written (sections 3–4 and Delivery corrected during
+planning)
 
 ## Problem
 
@@ -153,11 +154,15 @@ Deleted with their code: `plugins/flow/bin/tests/test_flow_hooks.py`,
 Restored to their pre-Codex content (#113/#117 were purely additive in them, so restoring equals
 removing exactly the Codex tests): `.github/scripts/tests/test_validate_plugin.py`,
 `.github/scripts/tests/test_pin_marketplace_refs.py`. The existing validator tests were not changed
-by #113 and already pass against the argparse `main` kept in section 4.
+by #113. One test #113 added covers kept behaviour, not Codex —
+`test_main_without_plugin_path_returns_script_error` for the argparse `main` kept in section 4 — so
+it comes back in a `TestMain` class together with main-level exit-code characterization tests that
+pin the section 4 refactor.
 
-`plugins/flow/bin/tests/test_py39_compat.py` — remove `PY311_EXCEPTIONS`, `_find_pre311_python`,
-both `test_py311_*` tests, the docstring paragraph about the 3.11 exception and the `ast` import;
-the helper glob covers every helper again.
+`plugins/flow/bin/tests/test_py39_compat.py` — remove `PY311_EXCEPTIONS`, both `test_py311_*`
+tests, the exclusion filter in the helper glob and the docstring paragraph about the 3.11
+exception; the helper glob covers every helper again. **Keep** `_find_pre311_python` and the `ast`
+import: `test_reply_order_parses_a_z_suffix_on_a_real_pre311_interpreter` (#134) uses them.
 
 `plugins/flow/bin/tests/test_flow_skill_contracts.py`:
 
@@ -178,7 +183,13 @@ the helper glob covers every helper again.
   substrings `active harness`, `capability tier`, `native non-shell`, `` `balanced` ``,
   `` `fast` ``, `` `strongest` `` or `Codex` (checked today: the backticked tier words occur only in
   tier context). The Withdrawn spec stays in `docs/` with that vocabulary, so an agent reading it
-  could carry it back; the guard keeps the acceptance criterion executable.
+  could carry it back; the guard keeps the acceptance criterion executable. It scans the whole
+  file, frontmatter included (init-worktree's phrase sits in `description:`), and additionally
+  rejects `subagent_type="Bash"` and un-backticked tier words (`balanced tier`, `Balanced-Tier`).
+- Two more regression tests: every `Read`/`Write`/`Edit`/`Skill` tool a skill body names is
+  granted by its `allowed-tools` (body only; `Skill(flow:…)` counts as `Skill`), and every path
+  declared in `.claude-plugin/plugin.json` exists. A third pins the conditional task-list step
+  and its grants in `start`/`continue`.
 - Ledger and review-loop tests from #118–#142 are untouched; none asserts neutral wording.
 
 ### 4. Repo tooling and docs
@@ -189,7 +200,10 @@ the helper glob covers every helper again.
   `require_codex_manifest` parameter; the #117 symmetric registration collapses to the single
   Claude-marketplace `validate_marketplace_registration`. **Keep** #113's harness-neutral `main`
   refactor (argparse, `_find_repo_root`): the pre-#113 `main` carried bare
-  `# noqa: PLR0911, PLR0912` and `# noqa: PLR2004`.
+  `# noqa: PLR0911, PLR0912` and `# noqa: PLR2004`. The kept `main` still has a bare
+  `# noqa: PLR0911` (eight returns once the Codex flag is gone), so the first-error → exit-code
+  mapping moves into `_exit_code`, `main` drops to five returns and the suppression goes (RUF100
+  would flag it once unused).
 - `.github/scripts/pin_marketplace_refs.py` — restored to its pre-#117 content (single
   `MARKETPLACE` constant; no `load_marketplaces`, `resolve_all_pins`, `pin_all_marketplaces`).
 - `.github/workflows/_reusable-claude-code-plugin-ci.yml` — drop the `EXTRA_ARGS` block (one-line
@@ -244,14 +258,19 @@ a **merged** PR body (works with squash merges, which this repo uses).
 
 One branch, one PR labelled `flow`. CONTRIBUTING allows one project plus repo-level files per PR and
 per commit. The validator, the CI flag, the manifests and the marketplaces must change in the same
-PR head, or plugin CI fails on the missing/extra manifest. Logical commits (exact order and
-boundaries in the plan, keeping each commit green where practical):
+PR head, or plugin CI fails on the missing/extra manifest. Logical commits, each green:
 
 1. `refactor(flow): remove the Codex manifest, hooks layer and agent-profile setup`
-2. `refactor(flow): return skill text to Claude-native tools and models`
-3. `refactor(flow): rewrite skill contract tests for Claude-native wording`
+2. `refactor(flow): dispatch review-comments subagents as general-purpose with an explicit model`
+3. `refactor(flow): return skill text to Claude-native tools`
 4. `ci: drop Codex manifest and marketplace support from plugin tooling`
 5. `docs: withdraw the Codex specs and drop Codex from CLAUDE.md`
+
+Skill text and the contract tests that constrain it land together. Splitting them ("skills" then
+"tests") cannot be green: the current `FORBIDDEN` list bans `TodoWrite`/`Skill tool`/`model=` in
+most skills and the current dispatch test bans `subagent_type`/`Read tool`/`Write tool` in
+review-comments. Tiers→models in review-comments (outside `FORBIDDEN`) goes first, with its
+dispatch test; the tool names, the task list, the guard and the `FORBIDDEN` deletion follow.
 
 ## Risks
 
@@ -274,6 +293,9 @@ boundaries in the plan, keeping each commit green where practical):
   the two Withdrawn specs, this spec, and `test_flow_skill_contracts.py` (the guard names the word).
 - `git grep -nE 'active harness|capability tier|native non-shell'` matches only the Withdrawn specs,
   this spec and the guard in `test_flow_skill_contracts.py`.
+- Outside `docs/superpowers/specs/`, nothing references the removed paths or flag:
+  `git grep -nE 'plugins/flow/hooks|hooks/(_runtime|session-start|claude-hooks|codex)|create-codex-agents|codex-agent-setup|_codex_agents|\.agents/|\.codex-plugin|require-codex-manifest'`
+  is empty; every release-please `extra-files` path exists.
 - Bare `uv run pytest` passes all three suites; `uv run ruff check` / `ruff format --check` clean on
   changed files; pathless `uv run ty check` clean;
   `python .github/scripts/validate_plugin.py plugins/flow` exits 0.
