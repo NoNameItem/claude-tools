@@ -3,12 +3,14 @@
 import json
 import re
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
+import pytest
 from statuskit.core.models import RateLimits, RateLimitWindow
 from statuskit.modules.usage_limits import (
     API_URL,
@@ -271,6 +273,15 @@ class TestParseLimitsArray:
         )
         assert parse_api_response(response).groups == []
 
+    def test_oversized_integer_utilization_is_skipped(self):
+        # json.loads() turns a long integer literal into an int too large for a float, and
+        # math.isfinite() raises OverflowError on it instead of returning False.
+        huge = "1" + "0" * 400
+        response = json.loads(
+            '{"limits": [{"kind":"session","group":"session","percent":' + huge + ',"resets_at":null,"scope":null}]}'
+        )
+        assert parse_api_response(response).groups == []
+
     def test_non_dict_response_yields_no_groups(self):
         # json.loads() can hand back a list or a string; the parser must degrade, not raise.
         assert parse_api_response(["not", "a", "dict"]).groups == []
@@ -435,10 +446,24 @@ class TestFormatRemainingTime:
 
 
 class TestFormatResetAt:
+    @pytest.fixture
+    def east_of_utc(self, monkeypatch):
+        """Local timezone UTC+3, so astimezone() moves a UTC time forward."""
+        monkeypatch.setenv("TZ", "Etc/GMT-3")  # the POSIX sign is inverted: this is UTC+3
+        time.tzset()
+        yield
+        monkeypatch.undo()
+        time.tzset()
+
     def test_format_weekday_time(self):
         result = format_reset_at(datetime(2026, 1, 29, 17, 0, 0, tzinfo=UTC))
         assert len(result.split()) == 2
         assert ":" in result
+
+    @pytest.mark.usefixtures("east_of_utc")
+    def test_reset_near_datetime_max_falls_back_to_utc(self):
+        # East of UTC, astimezone() pushes the last representable UTC minute past datetime.max.
+        assert format_reset_at(datetime.max.replace(tzinfo=UTC)) == "Fri 23:59"
 
 
 class TestFormatProgressBar:
@@ -450,6 +475,13 @@ class TestFormatProgressBar:
 
     def test_half_bar(self):
         assert format_progress_bar(50.0, width=10) == "[█████░░░░░]"
+
+    def test_out_of_range_utilization_is_clamped(self):
+        # An untrusted percent may be any finite float: 1e20 overflowed the repeat count, and
+        # 1e9..1e19 would have built a multi-GB bar.
+        assert format_progress_bar(1e20, width=10) == "[██████████]"
+        assert format_progress_bar(150.0, width=10) == "[██████████]"
+        assert format_progress_bar(-1e20, width=10) == "[░░░░░░░░░░]"
 
 
 class TestGetToken:
@@ -845,6 +877,26 @@ class TestUsageCache:
         loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
         assert loaded is not None
         assert loaded.retry_after_until is None
+        assert loaded.payload is None
+
+    def test_oversized_integers_are_dropped_not_raised(self, tmp_path):
+        """An int too large for a float drops the value instead of raising out of load()."""
+        huge = 10**400
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": "weekly", "overall": {"label": "Weekly", "utilization": huge}}]},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "payload": {"five_hour": {"used_percentage": huge}},
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        weekly = _group(loaded, "weekly")
+        assert weekly is not None
+        assert weekly.overall is None
         assert loaded.payload is None
 
     def test_claim_attempt_writes_the_stamp_before_returning(self, tmp_path):

@@ -81,12 +81,13 @@ class TestRateLimitsParsing:
         assert result.rate_limits.five_hour.resets_at is None
 
     def test_unusable_percentage_drops_the_window(self):
-        for bad in (True, "46", None, float("nan"), float("inf"), [1]):
+        # 10**400: json.loads() builds such an int from a long literal, and it overflows float().
+        for bad in (True, "46", None, float("nan"), float("inf"), [1], 10**400):
             data = make_input_data(rate_limits={"five_hour": {"used_percentage": bad, "resets_at": 1757809800}})
             assert StatusInput.from_dict(data).rate_limits is None
 
     def test_unusable_reset_time_keeps_the_window(self):
-        for bad in (True, "later", {"a": 1}, float("nan")):
+        for bad in (True, "later", {"a": 1}, float("nan"), 10**400):
             data = make_input_data(rate_limits={"five_hour": {"used_percentage": 46, "resets_at": bad}})
             result = StatusInput.from_dict(data)
             assert result.rate_limits is not None

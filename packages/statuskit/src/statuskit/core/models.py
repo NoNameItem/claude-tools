@@ -74,26 +74,42 @@ class RateLimits:
     seven_day: RateLimitWindow | None = None
 
 
+def finite_float(value: object) -> float | None:
+    """`value` as a finite float, or None when it is not a usable number.
+
+    Rejects bool (`float(True)` is 1.0), non-numerics, NaN / Infinity, and ints too large for a
+    float: `json.loads` builds those from a long integer literal, and both `float()` and
+    `math.isfinite()` raise OverflowError on them instead of returning a value.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _parse_rate_limit_window(value: object) -> RateLimitWindow | None:
     """Build a RateLimitWindow from one payload window, or None when it is unusable.
 
-    Payload values are untrusted: `used_percentage` must be a finite number (a bool would sail
-    through `float()` as 1.0), and `resets_at` is epoch SECONDS, not an ISO string. A window with
-    an unusable reset time is still worth showing, so only the percentage gates the window.
+    Payload values are untrusted, so both numbers go through `finite_float`; `resets_at` is epoch
+    SECONDS, not an ISO string. A window with an unusable reset time is still worth showing, so
+    only the percentage gates the window.
     """
     if not isinstance(value, dict):
         return None
-    percent = value.get("used_percentage")
-    if isinstance(percent, bool) or not isinstance(percent, int | float) or not math.isfinite(percent):
+    percent = finite_float(value.get("used_percentage"))
+    if percent is None:
         return None
     resets_at = None
-    epoch = value.get("resets_at")
-    if not isinstance(epoch, bool) and isinstance(epoch, int | float) and math.isfinite(epoch):
+    epoch = finite_float(value.get("resets_at"))
+    if epoch is not None:
         try:
             resets_at = datetime.fromtimestamp(epoch, UTC)
         except (OSError, OverflowError, ValueError):
             resets_at = None
-    return RateLimitWindow(used_percentage=float(percent), resets_at=resets_at)
+    return RateLimitWindow(used_percentage=percent, resets_at=resets_at)
 
 
 @dataclass

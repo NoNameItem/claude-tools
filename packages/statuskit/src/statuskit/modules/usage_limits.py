@@ -15,7 +15,7 @@ from urllib.request import Request, urlopen
 
 from termcolor import colored
 
-from statuskit.core.models import RateLimits, RateLimitWindow
+from statuskit.core.models import RateLimits, RateLimitWindow, finite_float
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
@@ -140,11 +140,11 @@ def _coerce_utilization(value: object) -> float | None:
       * non-numerics (str/list/dict) — a numeric-looking string is still a shape change, and the
         renderer's `> 0` comparison and `:.0f` format assume a real number;
       * NaN / Infinity — json.loads() accepts those bare tokens, and they survive float() only
-        to raise ValueError/OverflowError inside format_progress_bar's int().
+        to raise ValueError/OverflowError inside format_progress_bar's int();
+      * ints too large for a float — json.loads() builds one from a long integer literal, and
+        math.isfinite() raises OverflowError on it instead of returning False.
     """
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value) if math.isfinite(value) else None
+    return finite_float(value)
 
 
 def _deserialize_payload(value: object) -> RateLimits | None:
@@ -400,7 +400,11 @@ def format_reset_at(reset_time: datetime) -> str:
     Returns:
         Formatted string: "Thu 17:00"
     """
-    local_time = reset_time.astimezone()  # Convert to local timezone
+    try:
+        local_time = reset_time.astimezone()  # Convert to local timezone
+    except (OverflowError, OSError, ValueError):
+        # East of UTC a reset near datetime.max has no local time; show it in UTC instead.
+        local_time = reset_time
     return local_time.strftime("%a %H:%M")
 
 
@@ -414,7 +418,8 @@ def format_progress_bar(utilization: float, width: int = 10) -> str:
     Returns:
         Formatted bar: "[████░░░░░░]"
     """
-    filled = int(utilization / 100 * width)
+    # Clamp: the percent is untrusted, and an out-of-range value overflows or explodes the repeat count.
+    filled = max(0, min(width, int(utilization / 100 * width)))
     empty = width - filled
     return f"[{'█' * filled}{'░' * empty}]"
 
