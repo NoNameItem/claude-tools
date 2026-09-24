@@ -842,6 +842,37 @@ class TestUsageCache:
         assert loaded.payload.seven_day.resets_at is None
         assert loaded.payload_seen_at == seen
 
+    def test_naive_timestamps_load_as_utc(self, tmp_path):
+        """Offset-less stamps (hand-edited or migrated cache) load as UTC, like a naive `resets_at`.
+
+        Every one of them is later compared with aware `datetime.now(UTC)`; a naive value would
+        raise TypeError there and take the whole module down.
+        """
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": "2026-01-27T12:00:00",
+                    "last_attempt_at": "2026-01-27T12:30:00",
+                    "retry_after_until": "2026-01-27T12:50:00",
+                    "payload_seen_at": "2026-01-27T12:29:00",
+                    "payload": {
+                        "five_hour": {"used_percentage": 46.0, "resets_at": "2026-01-27T15:00:00"},
+                        "seven_day": {"used_percentage": 15.0, "resets_at": None},
+                    },
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.fetched_at == datetime(2026, 1, 27, 12, 0, tzinfo=UTC)
+        assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, tzinfo=UTC)
+        assert loaded.retry_after_until == datetime(2026, 1, 27, 12, 50, tzinfo=UTC)
+        assert loaded.payload_seen_at == datetime(2026, 1, 27, 12, 29, tzinfo=UTC)
+        assert loaded.payload is not None
+        assert loaded.payload.five_hour is not None
+        assert loaded.payload.five_hour.resets_at == datetime(2026, 1, 27, 15, 0, tzinfo=UTC)
+
     def test_cache_without_the_new_keys_still_loads(self, tmp_path):
         """A file written by the previous version must keep working."""
         cache_file = tmp_path / "usage_limits.json"
@@ -1741,6 +1772,51 @@ class TestGetUsageDataRateLimited:
         reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
         assert reloaded is not None
         assert reloaded.retry_after_until is None
+
+    @pytest.mark.parametrize("scenario", ["backoff", "ttl", "live_payload"])
+    def test_naive_cache_timestamps_keep_the_module_rendering(
+        self, make_render_context, minimal_input_data, tmp_path, scenario
+    ):
+        """A cache with offset-less stamps must not crash the render.
+
+        Regression: naive values met aware `datetime.now(UTC)` in the backoff, TTL, payload-age
+        and model-age arithmetic and raised TypeError, so the module vanished from the statusline.
+        `live_payload` puts `rate_limits` in the statusline payload: only then does
+        `_persist_payload` reach its save-interval arithmetic on the cached `payload_seen_at`.
+        """
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(seconds=10),
+                retry_after_until=now + timedelta(minutes=10) if scenario == "backoff" else None,
+                payload=RateLimits(
+                    five_hour=RateLimitWindow(46.0, now + timedelta(hours=3)),
+                    seven_day=RateLimitWindow(15.0, None),
+                ),
+                payload_seen_at=now - timedelta(minutes=2),
+            )
+        )
+        cache_file = tmp_path / "usage_limits.json"
+        raw = json.loads(cache_file.read_text())
+        for key in ("fetched_at", "last_attempt_at", "retry_after_until", "payload_seen_at"):
+            if raw.get(key):
+                raw[key] = datetime.fromisoformat(raw[key]).replace(tzinfo=None).isoformat()
+        cache_file.write_text(json.dumps(raw))
+
+        ctx = (
+            _payload_ctx(make_render_context, tmp_path)
+            if scenario == "live_payload"
+            else make_render_context(minimal_input_data, cache_dir=tmp_path)
+        )
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            output = UsageLimitsModule(ctx, {"cache_ttl": 60}).render()
+        mock_fetch.assert_not_called()
+        assert output is not None
 
     def test_attempt_is_claimed_before_the_request(self, make_render_context, minimal_input_data, tmp_path):
         seen: dict = {}

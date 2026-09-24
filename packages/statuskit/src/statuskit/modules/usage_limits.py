@@ -121,13 +121,19 @@ def _as_dict(value: object) -> dict:
 
 
 def _parse_cache_datetime(value: object) -> datetime | None:
-    """Parse an ISO timestamp from a cache payload, or None when missing/malformed."""
+    """Parse an ISO timestamp from a cache payload, or None when missing/malformed.
+
+    An offset-less value (hand-edited or migrated cache) is read as UTC, the same as a naive
+    `resets_at` at render time: every stamp parsed here is later compared with aware
+    `datetime.now(UTC)`, and a naive one would raise TypeError there and take the module down.
+    """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _coerce_utilization(value: object) -> float | None:
