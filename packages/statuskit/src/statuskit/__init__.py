@@ -12,6 +12,24 @@ from .core.config import load_config
 from .core.loader import load_modules
 from .core.models import RenderContext, StatusInput
 
+# Claude Code post-processes statusline output with
+# `stdout.trim().split("\n").flatMap((line) => line.trim() || [])` (checked in 2.1.281), so every
+# line loses its leading whitespace, NBSP and the other Unicode spaces included. U+2800 (braille
+# pattern blank) is a width-1 blank that JS trim() keeps: swapping it in for an indent's first
+# space keeps the indent at its exact width.
+_INDENT_GUARD = "\u2800"
+
+
+def _guard_indent(text: str) -> str:
+    """Protect each line's leading spaces from Claude Code's per-line trim().
+
+    Whitespace-only lines stay as they are: Claude Code drops them, and a guard would turn them
+    into visible blank lines.
+    """
+    return "\n".join(
+        _INDENT_GUARD + line[1:] if line.startswith(" ") and line.strip() else line for line in text.split("\n")
+    )
+
 
 def _handle_setup(args: Namespace) -> None:
     """Handle setup command."""
@@ -97,7 +115,7 @@ def _render_statusline() -> None:
         try:
             output = mod.render()
             if output:
-                print(output)
+                print(_guard_indent(output))
         except Exception as e:
             if config.debug:
                 print(colored(f"[!] {mod.name}: {e}", "red"))

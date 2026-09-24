@@ -213,3 +213,87 @@ def test_main_outputs_ansi_codes_when_colors_enabled(capsys, monkeypatch):
     captured = capsys.readouterr()
     # ANSI escape sequence starts with \x1b[
     assert "\x1b[" in captured.out, f"Expected ANSI codes in output, got: {captured.out!r}"
+
+
+# ECMAScript WhiteSpace + LineTerminator: exactly what String.prototype.trim() strips.
+_JS_WHITESPACE = (
+    "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
+def _claude_code_statusline(stdout: str) -> str:
+    """Reproduce Claude Code's post-processing of statusline output (checked in 2.1.281).
+
+    ``stdout.trim().split("\\n").flatMap((line) => line.trim() || []).join("\\n")``
+    """
+    lines = stdout.strip(_JS_WHITESPACE).split("\n")
+    return "\n".join(stripped for line in lines if (stripped := line.strip(_JS_WHITESPACE)))
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("  └ Fable: 34%", "\u2800 └ Fable: 34%"),
+        ("  \x1b[2m└\x1b[0m Fable: 34%", "\u2800 \x1b[2m└\x1b[0m Fable: 34%"),
+        (" x", "\u2800x"),
+        ("├ Session: 11%", "├ Session: 11%"),
+        ("\x1b[2m└\x1b[0m Weekly:  2%", "\x1b[2m└\x1b[0m Weekly:  2%"),
+        ("\t└ Fable", "\t└ Fable"),
+        ("   ", "   "),
+        (
+            "Usage:\n└ Weekly:  2%\n  ├ Fable\n  └ Opus",
+            "Usage:\n└ Weekly:  2%\n\u2800 ├ Fable\n\u2800 └ Opus",
+        ),
+    ],
+    ids=[
+        "two-space-indent",
+        "indent-before-ansi-connector",
+        "single-space",
+        "no-indent",
+        "ansi-first",
+        "tab-indent",
+        "whitespace-only",
+        "multiline",
+    ],
+)
+def test_guard_indent(text, want):
+    """_guard_indent swaps only an indent's first space for the guard, line by line."""
+    from statuskit import _guard_indent
+
+    assert _guard_indent(text) == want
+
+
+def test_claude_code_trim_strips_plain_indent():
+    """The simulated Claude Code trim drops a plain-space indent (the bug being fixed)."""
+    stdout = "Usage:\n└ Weekly:  2%\n  \x1b[2m└\x1b[0m Fable: 34%\n"
+
+    assert _claude_code_statusline(stdout) == "Usage:\n└ Weekly:  2%\n\x1b[2m└\x1b[0m Fable: 34%"
+
+
+def test_guarded_indent_survives_claude_code_trim():
+    """A guarded indent keeps its two-column offset through Claude Code's per-line trim()."""
+    from statuskit import _guard_indent
+
+    stdout = _guard_indent("Usage:\n└ Weekly:  2%\n  \x1b[2m└\x1b[0m Fable: 34%") + "\n"
+
+    assert _claude_code_statusline(stdout) == "Usage:\n└ Weekly:  2%\n\u2800 \x1b[2m└\x1b[0m Fable: 34%"
+
+
+def test_render_statusline_guards_indented_lines(capsys):
+    """_render_statusline protects a module's indented lines from Claude Code's trim()."""
+    from statuskit import _render_statusline
+    from statuskit.core.config import Config
+
+    module = MagicMock()
+    module.render.return_value = "Usage:\n└ Weekly:  2%\n  └ Fable: 34%"
+
+    with (
+        patch("sys.stdin", MagicMock()),
+        patch("json.load", return_value={"model": {"display_name": "Test"}}),
+        patch("statuskit.load_config", return_value=Config(modules=["model"], colors=False)),
+        patch("statuskit.load_modules", return_value=[module]),
+    ):
+        _render_statusline()
+
+    assert capsys.readouterr().out == "Usage:\n└ Weekly:  2%\n\u2800 └ Fable: 34%\n"
