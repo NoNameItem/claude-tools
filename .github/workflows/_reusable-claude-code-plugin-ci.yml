@@ -143,7 +143,10 @@ jobs:
             # Lint all Python files in plugin
             echo "files=plugins/$PLUGIN" >> "$GITHUB_OUTPUT"
           else
-            # Lint only changed Python files
+            # Lint only changed Python files. CHANGED_FILES (detect_changes.py) includes deleted
+            # paths, and ruff exits non-zero on a path that no longer exists in the checkout — so
+            # filter those out here rather than in detect_changes.py, which must still mark a
+            # deletion as a change.
             PY_FILES=$(echo "$CHANGED_FILES" |
               jq -r --arg p "$PLUGIN" \
                 '.[$p] // [] | .[] |
@@ -151,7 +154,9 @@ jobs:
                    endswith(".py") or
                    test("/bin/flow-[^/]+$")
                  )' |
-              tr '\n' ' ')
+              while IFS= read -r f; do
+                if [ -e "$f" ]; then printf '%s ' "$f"; fi
+              done)
             if [ -z "$PY_FILES" ]; then
               echo "files=" >> "$GITHUB_OUTPUT"
             else
