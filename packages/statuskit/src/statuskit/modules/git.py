@@ -135,7 +135,7 @@ class PrCache:
                 except (KeyError, ValueError, TypeError, AttributeError):
                     continue
             return PrCacheDoc(providers=providers, entries=entries, provider_misses=provider_misses)
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError, AttributeError, OSError):
+        except (KeyError, ValueError, TypeError, AttributeError, OSError):  # ValueError covers json.JSONDecodeError
             return PrCacheDoc.empty()
 
     def save(self, doc: PrCacheDoc) -> None:
@@ -233,6 +233,28 @@ def _gitlab_state(state: str | None, is_draft: bool) -> str | None:
     return None
 
 
+def _load_json_array(stdout: str) -> list | None:
+    """Decode a CLI's JSON output; None when it is not valid JSON or not a JSON array."""
+    try:
+        items = json.loads(stdout or "[]")
+    except ValueError:  # json.JSONDecodeError is a ValueError subclass
+        return None
+    return items if isinstance(items, list) else None
+
+
+def _is_foreign_pr(item: dict, owner: str | None) -> bool:
+    """True when a `gh` PR's head repository belongs to an owner other than ``owner``.
+
+    GitHub owner names are case-insensitive; ``owner`` keeps the remote URL's casing while the
+    head owner is GitHub's canonical login, so they are compared folded. An unknown ``owner``
+    or a missing head owner never marks a PR foreign.
+    """
+    if owner is None:
+        return False
+    head_owner = (item.get("headRepositoryOwner") or {}).get("login")
+    return head_owner is not None and head_owner.lower() != owner.lower()
+
+
 def parse_github_pr_list(stdout: str, owner: str | None = None) -> list[PrInfo] | None:
     """Parse `gh pr list --json …` output.
 
@@ -243,22 +265,15 @@ def parse_github_pr_list(stdout: str, owner: str | None = None) -> list[PrInfo] 
     (fork PRs that merely share the branch name) are dropped, so only the current
     repo's own PR for the branch is considered.
     """
-    try:
-        items = json.loads(stdout or "[]")
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(items, list):
+    items = _load_json_array(stdout)
+    if items is None:
         return None
     result: list[PrInfo] = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        if owner is not None:
-            head_owner = (item.get("headRepositoryOwner") or {}).get("login")
-            # GitHub owner names are case-insensitive; ``owner`` keeps the remote URL's
-            # casing while ``head_owner`` is GitHub's canonical login, so compare folded.
-            if head_owner is not None and head_owner.lower() != owner.lower():
-                continue  # fork PR with the same head branch name — not ours
+        if _is_foreign_pr(item, owner):
+            continue  # fork PR with the same head branch name — not ours
         number = item.get("number")
         state = _github_state(item.get("state"), bool(item.get("isDraft", False)))
         if not isinstance(number, int) or state is None:
@@ -273,11 +288,8 @@ def parse_gitlab_mr_list(stdout: str) -> list[PrInfo] | None:
     MRs opened from a fork (``source_project_id`` != ``target_project_id``) are dropped
     so a fork MR sharing the source-branch name is not mistaken for the current repo's MR.
     """
-    try:
-        items = json.loads(stdout or "[]")
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(items, list):
+    items = _load_json_array(stdout)
+    if items is None:
         return None
     result: list[PrInfo] = []
     for item in items:
@@ -621,7 +633,7 @@ class GitModule(BaseModule[GitParams]):
         binary = _CLI_BINARY[provider]
         cmd = [binary, *args]
         try:
-            result = subprocess.run(  # noqa: S603 - cmd is a fixed [binary, *args] list; no shell, no user-controlled executable
+            result = subprocess.run(  # noqa: S603 - argv is a known CLI binary plus our own args and runs without a shell
                 cmd,
                 capture_output=True,
                 text=True,

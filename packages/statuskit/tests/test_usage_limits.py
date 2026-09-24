@@ -194,6 +194,20 @@ class TestParseLimitsArray:
         assert weekly is not None
         assert [(m.label, m.utilization) for m in weekly.models] == [("Fable", 10.0)]
 
+    def test_unusable_row_does_not_claim_its_scope(self):
+        # Only a row that parsed claims its (model, surface) pair: an unusable first row must not
+        # hide the valid duplicate that follows it.
+        scope = {"model": {"display_name": "Fable"}, "surface": None}
+        response = {
+            "limits": [
+                {"kind": "weekly_scoped", "group": "weekly", "percent": "n/a", "resets_at": None, "scope": scope},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 42.0, "resets_at": None, "scope": scope},
+            ]
+        }
+        weekly = _group(parse_api_response(response), "weekly")
+        assert weekly is not None
+        assert [(m.label, m.utilization) for m in weekly.models] == [("Fable", 42.0)]
+
     def test_boolean_percent_is_rejected(self):
         # float(True) is 1.0 — a malformed boolean would otherwise render as a bogus 1% quota.
         response = {
@@ -709,6 +723,27 @@ class TestUsageCache:
         assert loaded is not None
         assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
 
+    def test_malformed_group_keeps_throttle_timestamps(self, tmp_path):
+        """A group that breaks deserialization drops the limits, never the timestamps.
+
+        An unhashable `key` raises TypeError on the window lookup. Losing `last_attempt_at` with it
+        would let a failing API be re-hit on every render.
+        """
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": ["session"], "overall": None, "models": []}]},
+                    "fetched_at": "2026-01-27T12:00:00+00:00",
+                    "last_attempt_at": "2026-01-27T12:30:00+00:00",
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.groups == []
+        assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, 0, tzinfo=UTC)
+
     def test_scope_fields_survive_cache_roundtrip(self, tmp_path):
         cache = UsageCache(cache_dir=tmp_path)
         weekly = UsageGroup(key="weekly", window_hours=WEEKLY_WINDOW)
@@ -952,6 +987,17 @@ class TestUsageCache:
         assert loaded.groups
 
 
+def _tree_rows(output: str) -> list[tuple[str, str]]:
+    """(connector with its indent, label) for every row under the "Usage:" header."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    rows = []
+    for line in plain.split("\n")[1:]:
+        match = re.match(r"( *[├└]) ([^:]+):", line)
+        assert match is not None, line
+        rows.append((match.group(1), match.group(2)))
+    return rows
+
+
 class TestRenderMultiline:
     """Nested multiline rendering."""
 
@@ -1038,6 +1084,40 @@ class TestRenderMultiline:
         assert output is not None
         fable_line = next(line for line in output.split("\n") if "Fable" in line)
         assert not fable_line.startswith("  ")
+
+    def test_connectors_when_a_middle_group_has_no_overall(self, make_render_context, tmp_path):
+        # Session has no payload window, so its models are top-level rows; none of them may close
+        # the tree, since Weekly still follows.
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[
+                    UsageGroup(
+                        "session",
+                        SESSION_WINDOW,
+                        models=[UsageLimit("Fable", 30.0, None), UsageLimit("Opus", 40.0, None)],
+                    ),
+                    _weekly_group(None, None, models=[UsageLimit("Haiku", 10.0, None)]),
+                ],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert _tree_rows(output) == [("├", "Fable"), ("├", "Opus"), ("└", "Weekly"), ("  └", "Haiku")]
+
+    def test_connectors_when_the_last_group_has_no_overall(self, make_render_context, tmp_path):
+        # Weekly has no payload window: its models are top-level, and the last of them closes the tree.
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=None)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[
+                    _weekly_group(None, None, models=[UsageLimit("Fable", 30.0, None), UsageLimit("Opus", 40.0, None)])
+                ],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert _tree_rows(output) == [("├", "Session"), ("├", "Fable"), ("└", "Opus")]
 
     def test_dynamic_label_width_aligns(self, make_render_context, minimal_input_data, tmp_path):
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)

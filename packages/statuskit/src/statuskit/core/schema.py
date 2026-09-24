@@ -134,6 +134,20 @@ class ParamWarning:
     kind: str  # "invalid" | "unknown"
 
 
+def _generic_type_msg(raw: Any, origin: Any, expected_type: Any) -> str | None:
+    """`_type_msg` for a generic alias such as ``list[str]``: the container, then its elements."""
+    if not isinstance(raw, origin):
+        return f"expected {origin.__name__}, got {type(raw).__name__}"
+    args = get_args(expected_type)
+    if not args:
+        return None
+    elem_type = args[0]
+    bad = [e for e in raw if not isinstance(e, elem_type)]
+    if not bad:
+        return None
+    return f"expected {origin.__name__}[{elem_type.__name__}], got element {type(bad[0]).__name__}"
+
+
 def _type_msg(raw: Any, expected_type: Any) -> str | None:
     """Return an error message if `raw` fails the type check, else None.
 
@@ -147,16 +161,7 @@ def _type_msg(raw: Any, expected_type: Any) -> str | None:
     origin = get_origin(expected_type)
     msg: str | None = None
     if origin is not None:
-        # Generic alias, e.g. list[str].
-        if not isinstance(raw, origin):
-            msg = f"expected {origin.__name__}, got {type(raw).__name__}"
-        else:
-            args = get_args(expected_type)
-            if args:
-                elem_type = args[0]
-                bad = [e for e in raw if not isinstance(e, elem_type)]
-                if bad:
-                    msg = f"expected {origin.__name__}[{elem_type.__name__}], got element {type(bad[0]).__name__}"
+        msg = _generic_type_msg(raw, origin, expected_type)
     elif expected_type is bool and not isinstance(raw, bool):
         msg = f"expected bool, got {type(raw).__name__}"
     elif expected_type is int and (isinstance(raw, bool) or not isinstance(raw, int)):
