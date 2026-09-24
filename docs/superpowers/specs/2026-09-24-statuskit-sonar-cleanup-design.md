@@ -102,12 +102,15 @@ to module level:
 - `_deserialize_limit(d: object) -> UsageLimit | None` — the former `deserialize_limit`,
   unchanged in what it accepts or rejects. Its comment about type-checking `label` and
   `utilization` here, not at render time, moves with it.
-- `_deserialize_groups(groups_raw: object) -> list[UsageGroup]` — returns `[]` for a non-list
-  (legacy `{session,weekly,sonnet}` cache or unreadable payload), and keeps the inner
+- `_deserialize_groups(groups_raw: list) -> list[UsageGroup]` keeps the inner
   `try/except (ValueError, TypeError, AttributeError)` that turns a malformed group
   (e.g. an unhashable `key`) into `[]`. **That `try` must stay inside the helper.** If the error
   reached `load`'s outer `except`, `load` would return None and lose `last_attempt_at`, the only
-  thing throttling a failing API.
+  thing throttling a failing API. `load` keeps the non-list check (legacy
+  `{session,weekly,sonnet}` cache or unreadable payload → `[]`). The parameter is a bare `list`
+  rather than `object`: ty narrows `isinstance(object, list)` to `list[object]`, which would
+  type the group `key` as `object`, while a bare `list` keeps the elements `Unknown`, as the
+  untyped cache JSON was before.
 - `stamps_only()` disappears: `load` builds one `UsageData` whose `groups` is whatever
   `_deserialize_groups` returned. That is the same object `stamps_only()` produced whenever the
   groups were a miss.
