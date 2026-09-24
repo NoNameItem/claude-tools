@@ -426,7 +426,7 @@ def _get_keychain_token() -> str | None:
         Token string or None if not found
     """
     try:
-        result = subprocess.run(  # noqa: S603 - fixed argv: absolute /usr/bin/security path, constant args, no shell
+        result = subprocess.run(  # noqa: S603 - fixed argv of the absolute /usr/bin/security path and constant args with no shell
             ["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True,
             text=True,
@@ -475,7 +475,7 @@ def fetch_usage_api(token: str) -> FetchOutcome:
     Returns:
         FetchOutcome: parsed data on success, otherwise the status / retry hint / error class.
     """
-    request = Request(  # noqa: S310 - URL is the constant https API_URL, never user-supplied
+    request = Request(  # noqa: S310 - URL is the constant https API_URL and never user-supplied
         API_URL,
         headers={
             "Authorization": f"Bearer {token}",
