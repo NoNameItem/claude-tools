@@ -23,6 +23,7 @@ import urllib.parse
 from pathlib import Path
 
 import _git
+import _gl_discussions
 
 SNIPPET_CONTEXT = 4  # lines of current-file context above/below the commented range
 THIN_HUNK_LINES = 4  # a GitHub diff_hunk with fewer body lines than this is "thin" → add a snippet
@@ -130,18 +131,20 @@ def attach_snippet(item: dict, *, is_github: bool, root: Path | None = None) -> 
     item["snippet"] = build_snippet(item["path"], start, line, root=root)
 
 
-def is_bot(login: str) -> bool:
-    low = (login or "").lower()
-    # Word-boundary suffix (`-bot`/`_bot`), not a bare `bot` suffix, so human logins like
-    # `abbot`/`talbot` are not misclassified. Keeps GitHub `dependabot[bot]`,
-    # `github-actions[bot]` and GitLab `project_123_bot` service accounts.
-    return "[bot]" in low or "coderabbit" in low or low.endswith(("-bot", "_bot"))
+def gh_is_bot(user: dict | None) -> bool:
+    """The platform's own answer — GitHub REST `user.type` — never a guess from the login.
+
+    `is_bot` gates resolving a thread, a call that closes someone's finding, so a person whose
+    login merely looks like a bot's (`release-bot`) must stay a person. A user object with no
+    `type` counts as not-a-bot: the direction in which nothing gets resolved.
+    """
+    return (user or {}).get("type") == "Bot"
 
 
-def thread_reply(user: str, body: str, reply_id: object, created_at: object) -> dict:
+def thread_reply(user: str, body: str, reply_id: object, created_at: object, *, bot: bool) -> dict:
     """One thread reply. `id` is how reconcile tells a reply it holds from one it does not, and
     `created_at` is what orders the stored thread; the rest is display context."""
-    return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": is_bot(user)}
+    return {"user": user, "body": body, "id": reply_id, "created_at": created_at, "is_bot": bot}
 
 
 def gh_kind(comment: dict) -> str:
@@ -327,6 +330,7 @@ def gh_collect(number: str | None) -> dict:
                 r.get("body", ""),
                 r.get("id"),
                 r.get("created_at"),
+                bot=gh_is_bot(r.get("user")),
             )
             for r in replies
         ]
@@ -338,7 +342,7 @@ def gh_collect(number: str | None) -> dict:
         items.append(
             {
                 "user": login,
-                "is_bot": is_bot(login),
+                "is_bot": gh_is_bot(c.get("user")),
                 "kind": gh_kind(c),
                 "path": c.get("path"),
                 "start_line": start_line,
@@ -384,7 +388,7 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
         login = (rv.get("user") or {}).get("login", "")
         body = (rv.get("body") or "").strip()
         state = (rv.get("state") or "").upper()
-        bot = is_bot(login)
+        bot = gh_is_bot(rv.get("user"))
         if not body or not (bot or state in _ACTIONABLE_HUMAN_REVIEW_STATES):
             continue
         items.append(
@@ -479,6 +483,27 @@ def gl_kind(position: dict | None, start_line: object, line: object) -> str:
     return "inline"
 
 
+def _gl_bot_map(full_path: str, iid: object) -> dict[str, bool]:
+    """username → account type for every note author on the MR, from GitLab GraphQL — REST notes
+    carry no account type at all (see `_gl_discussions`).
+
+    Degrades instead of aborting: a self-hosted schema that rejects the query, or a transient
+    failure, leaves every author not-a-bot for this round. That is the safe direction for the
+    only destructive consumer (nothing gets resolved) and the live resolve gate re-checks the
+    account type before any mutation anyway; what the round loses is only humans-first order.
+    """
+    try:
+        return _gl_discussions.bot_by_username(_gl_discussions.walk(full_path, iid))
+    except _git.ApiUnavailableError as exc:
+        print(
+            f"flow-review-collect: could not read the GitLab account type of note authors ({exc}); "
+            f"every author is treated as not a bot this round — no thread will be resolved, and "
+            f"bot comments are ordered with the humans.",
+            file=sys.stderr,
+        )
+        return {}
+
+
 def gl_collect(number: str | None) -> dict:
     unit = gl_resolve_unit(number)
     project = _resolve_project()
@@ -487,6 +512,7 @@ def gl_collect(number: str | None) -> dict:
     discussions = json.loads(
         _git.glab_api(f"projects/{project}/merge_requests/{unit['number']}/discussions", paginate=True)
     )
+    bots = _gl_bot_map(urllib.parse.unquote(project), unit["number"])
     items: list[dict] = []
     for disc in discussions:
         notes = [n for n in (disc.get("notes") or []) if not n.get("system")]
@@ -498,15 +524,12 @@ def gl_collect(number: str | None) -> dict:
         resolvable = [n for n in notes if n.get("resolvable")]
         resolved = bool(resolvable) and all(n.get("resolved") for n in resolvable)
         root, replies = notes[0], notes[1:]
-        thread = [
-            thread_reply(
-                (n.get("author") or {}).get("username", "?"),
-                n.get("body", ""),
-                n.get("id"),
-                n.get("created_at"),
+        thread = []
+        for n in replies:
+            name = (n.get("author") or {}).get("username", "?")
+            thread.append(
+                thread_reply(name, n.get("body", ""), n.get("id"), n.get("created_at"), bot=bots.get(name, False))
             )
-            for n in replies
-        ]
         latest = thread[-1]["user"] if thread else None
         username = (root.get("author") or {}).get("username", "?")
         position = root.get("position")
@@ -520,7 +543,7 @@ def gl_collect(number: str | None) -> dict:
         items.append(
             {
                 "user": username,
-                "is_bot": is_bot(username),
+                "is_bot": bots.get(username, False),
                 "kind": gl_kind(position, start_line, line),
                 "path": path,
                 "start_line": start_line,

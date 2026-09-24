@@ -162,7 +162,7 @@ def test_github_already_replied_and_bot_ref(fake_gh_api):
             [
                 {
                     "id": 1,
-                    "user": {"login": "coderabbitai[bot]"},
+                    "user": {"login": "coderabbitai[bot]", "type": "Bot"},
                     "path": "a.py",
                     "line": 3,
                     "body": "z",
@@ -181,18 +181,166 @@ def test_github_already_replied_and_bot_ref(fake_gh_api):
     assert doc["counts"]["actionable"] == 0
 
 
-def test_is_bot_word_boundary():
-    is_bot = flow_review_collect_mod.is_bot
-    # Bots: explicit [bot] suffix, coderabbit, and -bot/_bot service accounts.
-    assert is_bot("dependabot[bot]") is True
-    assert is_bot("github-actions[bot]") is True
-    assert is_bot("coderabbitai") is True
-    assert is_bot("project_9_bot") is True
-    assert is_bot("release-bot") is True
-    # Humans whose login merely ends in the letters "bot".
-    assert is_bot("abbot") is False
-    assert is_bot("talbot") is False
-    assert is_bot("alice") is False
+def _gh_minimal(fake_gh_api):
+    fake_gh_api.set("repo", "o/r")
+    fake_gh_api.set("user", "me")
+    fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
+
+
+def test_github_is_bot_is_the_account_type_not_the_login(fake_gh_api):
+    """`is_bot` gates a destructive call (resolving a thread), so it is the platform's answer —
+    `user.type` — never a guess from the login. A person whose login ends in `-bot` is a person;
+    an App whose login carries no bot-looking token is still a bot."""
+    _gh_minimal(fake_gh_api)
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {"id": 1, "user": {"login": "release-bot", "type": "User"}, "path": "a.py", "line": 3, "body": "h"},
+                {"id": 2, "user": {"login": "renovate", "type": "Bot"}, "path": "b.py", "line": 4, "body": "b"},
+                {"id": 3, "user": {"login": "coderabbitai[bot]"}, "path": "c.py", "line": 5, "body": "no type"},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    by_user = {c["user"]: c for c in doc["comments"]}
+    assert by_user["release-bot"]["is_bot"] is False
+    assert by_user["release-bot"]["ref"].startswith("U")
+    assert by_user["renovate"]["is_bot"] is True
+    assert by_user["renovate"]["ref"].startswith("C")
+    # No `type` at all → not a bot: the safe direction for the resolve gate.
+    assert by_user["coderabbitai[bot]"]["is_bot"] is False
+
+
+def test_github_thread_replies_and_summaries_take_is_bot_from_the_account_type(fake_gh_api):
+    _gh_minimal(fake_gh_api)
+    fake_gh_api.set(
+        "comments",
+        json.dumps(
+            [
+                {"id": 1, "user": {"login": "codex[bot]", "type": "Bot"}, "path": "a.py", "line": 3, "body": "z"},
+                {"id": 2, "in_reply_to_id": 1, "user": {"login": "ann-bot", "type": "User"}, "body": "hm"},
+                {"id": 3, "in_reply_to_id": 1, "user": {"login": "helper", "type": "Bot"}, "body": "ok"},
+            ]
+        ),
+    )
+    fake_gh_api.set(
+        "reviews",
+        json.dumps(
+            [
+                {"id": 7, "user": {"login": "walker", "type": "Bot"}, "body": "walkthrough", "state": "COMMENTED"},
+                {"id": 8, "user": {"login": "x_bot", "type": "User"}, "body": "LGTM", "state": "APPROVED"},
+            ]
+        ),
+    )
+    doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
+    inline = next(c for c in doc["comments"] if c["comment_id"] == 1)
+    assert [(r["user"], r["is_bot"]) for r in inline["thread"]] == [("ann-bot", False), ("helper", True)]
+    summaries = [c for c in doc["comments"] if c["kind"] == "summary"]
+    # The bot walkthrough is a summary item; the human APPROVED body is not actionable — which it
+    # would have been had the `x_bot` login made it a "bot".
+    assert [(s["user"], s["is_bot"]) for s in summaries] == [("walker", True)]
+
+
+def gl_graphql_page(discussions, *, has_next=False, cursor=None):
+    """One page of the collector's / gate's GitLab GraphQL discussions walk. `discussions` is a
+    list of (discussion id, resolved, [(username, bot, system), ...])."""
+    nodes = [
+        {
+            "id": f"gid://gitlab/Discussion/{did}",
+            "resolved": resolved,
+            "notes": {
+                "pageInfo": {"hasNextPage": False},
+                "nodes": [{"system": system, "author": {"username": u, "bot": bot}} for u, bot, system in notes],
+            },
+        }
+        for did, resolved, notes in discussions
+    ]
+    return json.dumps(
+        {
+            "data": {
+                "project": {
+                    "mergeRequest": {
+                        "discussions": {"nodes": nodes, "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}}
+                    }
+                }
+            }
+        }
+    )
+
+
+def _gl_minimal(fake_glab_api, discussions):
+    fake_glab_api.set("project", "g/p")
+    fake_glab_api.set("user", json.dumps({"username": "me"}))
+    fake_glab_api.set("mr_view", json.dumps({"iid": 4, "source_branch": "mb", "web_url": "wu", "state": "opened"}))
+    fake_glab_api.set("discussions", json.dumps(discussions))
+
+
+def _gl_note(did, username, body="n"):
+    return {"id": did, "notes": [{"system": False, "author": {"username": username}, "body": body}]}
+
+
+def test_gitlab_is_bot_comes_from_graphql_not_the_login(fake_glab_api):
+    """GitLab REST notes carry no account type, so the collector asks GraphQL (`UserCore.bot`).
+    Token bots are named `project_<N>_bot_<hash>` — no `_bot` suffix, so the old heuristic missed
+    every one — and `gitlab-bot` on gitlab.com is a regular account the heuristic called a bot."""
+    access_bot = "project_278964_bot_89f97e2c57b0b54a"
+    _gl_minimal(fake_glab_api, [_gl_note("d1", access_bot), _gl_note("d2", "gitlab-bot"), _gl_note("d3", "carol")])
+    fake_glab_api.set(
+        "graphql",
+        gl_graphql_page([("d1", False, [(access_bot, True, False)]), ("d2", False, [("gitlab-bot", False, False)])]),
+    )
+    doc = _out(run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env()))
+    by_user = {c["user"]: c for c in doc["comments"]}
+    assert by_user[access_bot]["is_bot"] is True
+    assert by_user[access_bot]["ref"] == "C1"
+    assert by_user["gitlab-bot"]["is_bot"] is False
+    # An author GraphQL never mentioned defaults to not-a-bot.
+    assert by_user["carol"]["is_bot"] is False
+
+
+def test_gitlab_is_bot_map_follows_graphql_pagination(fake_glab_api):
+    _gl_minimal(fake_glab_api, [_gl_note("d1", "alpha"), _gl_note("d2", "beta")])
+    fake_glab_api.set("graphql", gl_graphql_page([("d1", False, [("alpha", True, False)])], has_next=True, cursor="c1"))
+    fake_glab_api.set("graphql_page2", gl_graphql_page([("d2", False, [("beta", True, False)])]))
+    doc = _out(run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env()))
+    assert {c["user"]: c["is_bot"] for c in doc["comments"]} == {"alpha": True, "beta": True}
+
+
+def test_gitlab_thread_replies_take_is_bot_from_graphql(fake_glab_api):
+    disc = {
+        "id": "d1",
+        "notes": [
+            {"system": False, "author": {"username": "rb"}, "body": "root"},
+            {"system": False, "author": {"username": "project_9_bot_ab12"}, "body": "bot reply"},
+            {"system": False, "author": {"username": "me"}, "body": "our reply"},
+        ],
+    }
+    _gl_minimal(fake_glab_api, [disc])
+    fake_glab_api.set(
+        "graphql", gl_graphql_page([("d1", False, [("rb", True, False), ("project_9_bot_ab12", True, False)])])
+    )
+    doc = _out(run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env()))
+    thread = doc["comments"][0]["thread"]
+    assert [(r["user"], r["is_bot"]) for r in thread] == [("project_9_bot_ab12", True), ("me", False)]
+
+
+def test_gitlab_graphql_failure_degrades_every_author_to_not_a_bot(fake_glab_api):
+    """A self-hosted schema that rejects the query, or a transient failure, must not abort the
+    round: "not a bot" is the safe direction for the only destructive consumer (nothing gets
+    resolved), and the live resolve gate re-checks the account type anyway. It is not silent."""
+    _gl_minimal(fake_glab_api, [_gl_note("d1", "project_9_bot_ab12")])
+    fake_glab_api.set("graphql_fail", "glab: Field 'bot' doesn't exist on type 'UserCore'\n")
+    r = run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env())
+    doc = _out(r)
+    assert doc["comments"][0]["is_bot"] is False
+    assert "account type" in r.stderr
+    assert "not a bot" in r.stderr
+
+
+def test_no_login_heuristic_survives():
+    """The name-based guess is gone for good — its only callers now read the account type."""
+    assert not hasattr(flow_review_collect_mod, "is_bot")
 
 
 def test_github_multipage_comments_both_pages_included(fake_gh_api):
@@ -229,8 +377,8 @@ def test_github_multipage_reviews_both_pages_included(fake_gh_api):
     fake_gh_api.set("user", "me")
     fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
     fake_gh_api.set("comments", "[]")
-    page1 = [{"id": 301, "user": {"login": "coderabbitai[bot]"}, "body": "review page 1"}]
-    page2 = [{"id": 302, "user": {"login": "coderabbitai[bot]"}, "body": "review page 2"}]
+    page1 = [{"id": 301, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "body": "review page 1"}]
+    page2 = [{"id": 302, "user": {"login": "coderabbitai[bot]", "type": "Bot"}, "body": "review page 2"}]
     fake_gh_api.set("reviews", json.dumps({"__pages__": [page1, page2]}))
     r = run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env())
     doc = _out(r)
@@ -278,6 +426,7 @@ def test_gitlab_inline_and_general(fake_glab_api):
             ]
         ),
     )
+    fake_glab_api.set("graphql", gl_graphql_page([("d2", False, [("coderabbit", True, False)])]))
     r = run_helper("flow-review-collect", "4", "--platform", "gitlab", env=fake_glab_api.env())
     doc = _out(r)
     assert doc["platform"] == "gitlab"
@@ -376,7 +525,11 @@ def test_github_bot_summary_from_review_body(fake_gh_api):
         "reviews",
         json.dumps(
             [
-                {"id": 55, "user": {"login": "coderabbitai[bot]"}, "body": "Consider adding retry logic."},
+                {
+                    "id": 55,
+                    "user": {"login": "coderabbitai[bot]", "type": "Bot"},
+                    "body": "Consider adding retry logic.",
+                },
             ]
         ),
     )
@@ -443,7 +596,11 @@ def test_github_review_body_summary_resolved_is_none(fake_gh_api):
         "reviews",
         json.dumps(
             [
-                {"id": 55, "user": {"login": "coderabbitai[bot]"}, "body": "Consider adding retry logic."},
+                {
+                    "id": 55,
+                    "user": {"login": "coderabbitai[bot]", "type": "Bot"},
+                    "body": "Consider adding retry logic.",
+                },
             ]
         ),
     )
@@ -918,7 +1075,7 @@ def test_github_thread_replies_carry_id_created_at_and_is_bot(fake_gh_api):
                 {
                     "id": 11,
                     "in_reply_to_id": 10,
-                    "user": {"login": "coderabbitai[bot]"},
+                    "user": {"login": "coderabbitai[bot]", "type": "Bot"},
                     "body": "reply",
                     "created_at": "2026-07-20T10:00:00Z",
                 },
@@ -969,7 +1126,9 @@ def test_github_kind_inline_file_and_summary(fake_gh_api):
             ]
         ),
     )
-    fake_gh_api.set("reviews", json.dumps([{"id": 900, "user": {"login": "coderabbitai"}, "body": "walkthrough"}]))
+    fake_gh_api.set(
+        "reviews", json.dumps([{"id": 900, "user": {"login": "coderabbitai", "type": "Bot"}, "body": "walkthrough"}])
+    )
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
     kinds = {c["body"]: c["kind"] for c in doc["comments"]}
     assert kinds == {"inline": "inline", "file-level": "file", "walkthrough": "summary"}
@@ -1003,6 +1162,9 @@ def test_gitlab_kind_and_thread_reply_fields(fake_glab_api):
                 {"id": "d2", "notes": [{"id": 3, "author": {"username": "bob"}, "body": "general"}]},
             ]
         ),
+    )
+    fake_glab_api.set(
+        "graphql", gl_graphql_page([("d1", False, [("alice", False, False), ("project_1_bot", True, False)])])
     )
     doc = _out(run_helper("flow-review-collect", "7", "--platform", "gitlab", env=fake_glab_api.env()))
     by_body = {c["body"]: c for c in doc["comments"]}
@@ -1440,7 +1602,7 @@ def _gh_inline_fixture(fake_gh_api, threads_nodes):
                 {
                     "id": 9,
                     "in_reply_to_id": None,
-                    "user": {"login": "codex[bot]"},
+                    "user": {"login": "codex[bot]", "type": "Bot"},
                     "path": "a.py",
                     "line": 42,
                     "start_line": None,
@@ -1501,7 +1663,9 @@ def test_github_review_body_summary_has_no_resolve_target(fake_gh_api):
     fake_gh_api.set("comments", "[]")
     fake_gh_api.set(
         "reviews",
-        json.dumps([{"id": 500, "user": {"login": "codex[bot]"}, "body": "### Review", "state": "COMMENTED"}]),
+        json.dumps(
+            [{"id": 500, "user": {"login": "codex[bot]", "type": "Bot"}, "body": "### Review", "state": "COMMENTED"}]
+        ),
     )
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
     c = doc["comments"][0]

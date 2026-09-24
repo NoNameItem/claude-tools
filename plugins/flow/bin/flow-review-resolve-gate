@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Decide, on the LIVE thread, whether Phase 5.7 may resolve it.
+
+    flow-review-resolve-gate --meta <metadata.json> --resolve-id <id>
+
+The ledger row Phase 5.7 holds is the Phase-2 snapshot: by the time a reply is posted, triage,
+the fixes and the push confirmation have taken minutes, and a person may have replied into the
+thread meanwhile. So this reads ONE thread from the platform right now and judges that.
+
+Reads `platform`, `me` and the unit number from the collector's metadata.json; `--resolve-id` is
+the row's `resolve_id` (GitHub review-thread node id, GitLab discussion id). Prints one JSON line
+`{"resolve": true|false, "reason": "..."}` on stdout and exits:
+
+  0  resolve — the opener is a bot by ACCOUNT TYPE (never by login), every other author is a bot
+     or `me`, and the thread is still open
+  3  refused — the live thread forbids it: a human opener, a human other than `me` replied, a
+     deleted (null) author — counted as a human — or the thread is already resolved
+  4  could not verify — an API error, the thread was not found, metadata unreadable, or the
+     thread holds more comments/notes than one page (a partial thread is never judged)
+
+Fails closed: anything short of a positive, complete answer refuses. It only READS — the
+mutation stays in the skill, run after a 0 from here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import _git
+import _gl_discussions
+
+RESOLVE, REFUSED, UNVERIFIED = 0, 3, 4
+
+_GH_QUERY = (
+    "query($id:ID!){node(id:$id){__typename ... on PullRequestReviewThread{"
+    "isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename}}}}}}"
+)
+
+
+class ThreadUnverifiedError(Exception):
+    """The thread could not be read completely; the caller refuses with exit 4."""
+
+
+def _opener_refusal(login: str | None, bot: bool) -> str | None:
+    if login is None:
+        return "the thread was opened by a deleted account — counted as a human"
+    if not bot:
+        return f"the thread was opened by {login}, which is not a bot account"
+    return None
+
+
+def _reply_refusal(login: str | None, bot: bool, me: str) -> str | None:
+    if login is None:
+        return "a deleted account replied in the thread — counted as a human"
+    if not bot and login != me:
+        return f"{login}, a human, has replied in the thread"
+    return None
+
+
+def judge(authors: list[tuple[str | None, bool]], *, resolved: bool, me: str) -> tuple[int, str]:
+    """The gate itself, platform-neutral. `authors` is every speaker in thread order as
+    (login-or-None, is-a-bot-by-account-type); None is a deleted account."""
+    if resolved:
+        return REFUSED, "the thread is already resolved on the platform"
+    if not authors:
+        return UNVERIFIED, "the thread has no comments"
+    refusals = (_reply_refusal(login, bot, me) for login, bot in authors[1:])
+    reason = _opener_refusal(*authors[0]) or next((r for r in refusals if r), None)
+    if reason is not None:
+        return REFUSED, reason
+    return RESOLVE, "a bot thread in which no human other than us has replied"
+
+
+def github_thread(resolve_id: str) -> tuple[list[tuple[str | None, bool]], bool]:
+    """(authors, resolved) of one review thread, read by its node id.
+
+    Account type is GraphQL `__typename == "Bot"`. The bot's GraphQL login drops the REST
+    `[bot]` suffix, so logins here are only ever compared with `me` — a person's login, which is
+    the same in both APIs.
+    """
+    raw = _git.api_run(["gh", "api", "graphql", "-f", f"query={_GH_QUERY}", "-f", f"id={resolve_id}"])
+    try:
+        node = json.loads(raw)["data"]["node"]
+    except (ValueError, KeyError, TypeError) as exc:
+        msg = "the review-thread query returned no data"
+        raise ThreadUnverifiedError(msg) from exc
+    if not isinstance(node, dict) or node.get("__typename") != "PullRequestReviewThread":
+        msg = f"no review thread with id {resolve_id}"
+        raise ThreadUnverifiedError(msg)
+    comments = node.get("comments") or {}
+    if (comments.get("pageInfo") or {}).get("hasNextPage"):
+        msg = "the thread has more comments than one page; a partial thread is never judged"
+        raise ThreadUnverifiedError(msg)
+    authors: list[tuple[str | None, bool]] = []
+    for c in comments.get("nodes") or []:
+        author = c.get("author")
+        if not author:
+            authors.append((None, False))
+        else:
+            authors.append((author.get("login"), author.get("__typename") == "Bot"))
+    return authors, node.get("isResolved") is True
+
+
+def gitlab_discussion(resolve_id: str, iid: object) -> tuple[list[tuple[str | None, bool]], bool]:
+    """(authors, resolved) of one MR discussion, found by walking the MR's discussions — GitLab
+    GraphQL has no lookup by discussion id, and REST notes carry no account type."""
+    nodes = _gl_discussions.walk(_gl_discussions.project_path(), iid)
+    node = next((n for n in nodes if _gl_discussions.discussion_id(n) == resolve_id), None)
+    if node is None:
+        msg = f"no discussion with id {resolve_id} on this MR"
+        raise ThreadUnverifiedError(msg)
+    if ((node.get("notes") or {}).get("pageInfo") or {}).get("hasNextPage"):
+        msg = "the discussion has more notes than one page; a partial thread is never judged"
+        raise ThreadUnverifiedError(msg)
+    authors: list[tuple[str | None, bool]] = []
+    for note in _gl_discussions.notes_of(node):
+        author = note.get("author")
+        if not author:
+            authors.append((None, False))
+        else:
+            authors.append((author.get("username"), author.get("bot") is True))
+    return authors, node.get("resolved") is True
+
+
+def _emit(code: int, reason: str) -> int:
+    print(json.dumps({"resolve": code == RESOLVE, "reason": reason}))
+    if code == UNVERIFIED:
+        print(f"flow-review-resolve-gate: could not verify the thread, not resolving it: {reason}", file=sys.stderr)
+    return code
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="flow-review-resolve-gate")
+    parser.add_argument("--meta", required=True, help="the collector's metadata.json")
+    parser.add_argument("--resolve-id", required=True, help="the ledger row's resolve_id")
+    args = parser.parse_args(argv)
+
+    try:
+        meta = json.loads(Path(args.meta).read_text(encoding="utf-8"))
+        platform = meta["platform"]
+        me = meta["me"]
+        number = meta["unit"]["number"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return _emit(UNVERIFIED, f"cannot read platform/me/unit from {args.meta}: {exc}")
+
+    try:
+        if platform == "github":
+            authors, resolved = github_thread(args.resolve_id)
+        elif platform == "gitlab":
+            authors, resolved = gitlab_discussion(args.resolve_id, number)
+        else:
+            return _emit(UNVERIFIED, f"unknown platform {platform!r} in {args.meta}")
+    except (ThreadUnverifiedError, _git.ApiUnavailableError) as exc:
+        return _emit(UNVERIFIED, str(exc))
+    return _emit(*judge(authors, resolved=resolved, me=str(me)))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

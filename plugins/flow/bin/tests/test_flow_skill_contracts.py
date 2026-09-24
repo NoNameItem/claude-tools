@@ -695,6 +695,32 @@ def test_review_comments_reports_resolved_threads() -> None:
     report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
     assert "Threads resolved:" in report
     assert "Resolve failed:" in report
+    assert "Resolve withheld:" in report
+
+
+def test_review_comments_resolve_gate_reads_the_live_thread() -> None:
+    """PR #142 review: the human-participation check read the Phase-2 snapshot, so a person who
+    replied during triage, the fixes or the push confirmation was invisible to it. The decision is
+    now taken by `flow-review-resolve-gate` on the live thread, immediately before the mutation —
+    and the step must say that the snapshot is NOT what decides."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    gate = phase_5_7.index("flow-review-resolve-gate --meta")
+    assert gate < phase_5_7.index("resolveReviewThread"), "the gate must run before the GitHub mutation"
+    assert gate < phase_5_7.index("resolved=true"), "the gate must run before the GitLab mutation"
+    assert "--resolve-id {resolve_id}" in phase_5_7
+    assert re.search(r"\blive\b", phase_5_7)
+    assert "not the Phase-2 snapshot" in phase_5_7
+    # A non-zero gate means no mutation, and the ref is reported rather than silently dropped.
+    assert re.search(r"non-zero.{0,120}no mutation|no mutation.{0,120}non-zero", phase_5_7, re.DOTALL)
+    assert "Resolve withheld" in phase_5_7
+
+
+def test_review_comments_bot_means_account_type_not_login() -> None:
+    """PR #142 review: `is_bot` came from a login heuristic, so a person named `release-bot` could
+    have their thread resolved. The step must say what `is_bot` is now."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "account type" in phase_5_7
+    assert "never from the login" in phase_5_7
 
 
 REVIEW_LOOP_SKILL = FLOW_ROOT / "skills" / "review-loop" / "SKILL.md"

@@ -1,7 +1,7 @@
 ---
 name: review-comments
 description: Process unresolved review comments on a GitHub Pull Request or GitLab Merge Request — collect them, analyze each with subagents, apply accepted fixes, argue against invalid ones, and reply on the platform. Use when addressing PR/MR review feedback. Pass a PR/MR number to target a specific one.
-allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Bash(jq:*) Agent Read Write Grep
+allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-bd:*) Bash(flow-require-bd) Bash(flow-review-collect:*) Bash(flow-review-collect) Bash(flow-review-ledger:*) Bash(flow-review-ledger) Bash(flow-review-resolve-gate:*) Bash(flow-comment-card:*) Bash(flow-comment-card) Bash(flow-sync:*) Bash(mktemp:*) Bash(cat:*) Bash(cat) Bash(cut:*) Bash(jq:*) Agent Read Write Grep
 ---
 
 # Flow: Review Comments
@@ -928,7 +928,7 @@ Options:
 
 Post replies **after** the push (5.6) so each reply reflects the remote's actual state. For each comment with a `fix` / `won't-fix` / `follow-up` decision, post a reply into its thread. Execute **sequentially** (avoid rate limiting). Read the row once with `flow-review-ledger get --ref {ref} --meta "$FLOW_RC_DIR/metadata.json"` — the
 locator is required, exactly as in Phase 3; without it the command exits 2 before reading the row —
-and take `platform`, `kind`, and **`thread_id`** — the row's only reply target — from it for the reply below, plus `resolve_id`, `is_bot`, and `thread` for the resolve step that follows it. `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
+and take `platform`, `kind`, and **`thread_id`** — the row's only reply target — from it for the reply below, plus `resolve_id` and `is_bot` for the resolve step that follows it (that step does not read the row's `thread` — a Phase-2 snapshot; `flow-review-resolve-gate` reads the thread live). `thread_id` is the review comment id on GitHub and the discussion id on GitLab, so each platform's command below substitutes it directly:
 
 **Gate `Fixed:` replies on the push (5.6).** A `Fixed: {change}` reply (including the generalized form) asserts the change is **landed on the remote** — post it **only if the 5.6 push succeeded**. If the push was **skipped or failed**, post **no** `Fixed:` reply for a fix applied this run; carry those refs to the 5.8 `Reply deferred` line.
 
@@ -1014,11 +1014,27 @@ checked in this order:
 
 1. the reply above was **actually posted** this run (a **withheld** reply never reaches this step,
    so a thread we did not answer cannot be closed);
-2. the row's `is_bot` is `true`;
+2. the row's `is_bot` is `true` — the collector sets it from the platform's **account type**
+   (GitHub `user.type`, GitLab GraphQL `bot`), never from the login; here it is only a cheap
+   pre-filter, so a human-opened row never costs an API call;
 3. the row's `resolve_id` is not `null`;
-4. the row's `thread` holds **no reply from a human other than our own account** — read `me` from
-   `metadata.json` (`jq -r .me`) and scan the entries `flow-review-ledger get` returned under
-   `thread`: any entry with `is_bot: false` and `user` not equal to `me` fails this gate.
+4. **`flow-review-resolve-gate` exits `0`**, run immediately before the mutation. It reads the
+   thread **live** from the platform — not the Phase-2 snapshot `flow-review-ledger get` returned
+   under `thread`, which is minutes old by now: a person may have replied during triage, the fixes
+   or the push confirmation — and confirms that the opener is a bot by account type and that the
+   thread holds **no reply from a human other than our own account** (`me` from `metadata.json`).
+
+```bash
+flow-review-resolve-gate --meta "$FLOW_RC_DIR/metadata.json" --resolve-id {resolve_id}
+```
+
+The gate prints one JSON line, `{"resolve": …, "reason": "…"}`, and fails closed. Exit `3`: the live
+thread forbids it — a human opener, a human other than `me` has replied, a deleted author (counted as
+a human), or the thread is already resolved. Exit `4`: the thread could not be verified — an API
+error, the thread not found, or more comments than one page.
+
+On any non-zero exit there is **no mutation**: the ref goes to the 5.8 `Resolve withheld` line with
+the gate's `reason`, and the loop moves on to the next ref.
 
 **A thread opened by a human is never resolved — and neither is a bot-opened thread a human has
 replied into.** A bot does not argue back, but a person who spoke in that thread has made it
@@ -1030,7 +1046,7 @@ strictly reply-only. For a bot thread no human has touched the decision does not
 
 `resolve_id` is the **resolve** target and is not `thread_id` (the **reply** target): on GitHub it
 is the review thread's GraphQL node id, on GitLab the discussion id. Both come from the row
-`flow-review-ledger get` already returned — no second read.
+`flow-review-ledger get` already returned; the only platform read in this step is the live gate.
 
 **GitHub:**
 
@@ -1161,6 +1177,7 @@ Processed: {total} comments
   Failed: {count} ({list of refs whose apply failed — stays `open` with the `fix` decision kept, not reported fixed})
   Reply deferred (push skipped): {count} ({fix refs whose `Fixed:` reply was withheld because 5.6 was skipped/failed, plus `outdated_fixed` refs whose `Fixed in subsequent commits` was withheld because the branch is ahead of the remote})
   Threads resolved: {count} ({bot refs whose thread was closed after its reply landed})
+  Resolve withheld: {count} ({ref → the live gate's `reason`: a human replied, already resolved, or could not verify})
   Resolve failed: {count} ({refs whose reply posted but whose resolve call failed, plus bot refs whose `resolve_id` was null — no call to make})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
@@ -1187,7 +1204,7 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 - Run an adversarial pre-push self-review on correctness/logic/security rounds
 - **Create a beads follow-up task** for deferred comments (parent epic inferred from the path), then `flow-sync push`
 - Reply on the platform (GitHub or GitLab) with appropriate messages
-- **Resolve the threads it replied to when they were opened by a bot and no human has spoken in them** (GitHub `resolveReviewThread`, GitLab `resolved=true`) — never a thread a human opened or joined
+- **Resolve the threads it replied to when they were opened by a bot and no human has spoken in them** (GitHub `resolveReviewThread`, GitLab `resolved=true`) — "bot" by the platform's account type, and "no human" checked on the live thread by `flow-review-resolve-gate` right before the call; never a thread a human opened or joined
 - Commit with proper scope
 - Push with user confirmation
 - Show summary report
@@ -1238,6 +1255,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "This ref was C1 last round but C3 now, so refs are broken" → Refs are allocate-once and stable; the gaps are settled findings.
 - "I'll skip the record step, the replies are already posted" → Then the next round re-triages everything and duplicates the follow-up. 5.7a is mandatory.
 - "The human's comment is settled, I'll close that thread too" → Never. Only bot threads are resolved; a person's thread is theirs to close.
+- "The ledger row shows no human reply, the live gate is a wasted call" → The row is the Phase-2 snapshot. Run `flow-review-resolve-gate` before every resolve; a non-zero exit means no mutation.
 - "The reply was withheld but the fix is obviously in — I'll resolve anyway" → No. Resolution follows a posted reply, nothing else.
 
 **All of these mean: Follow the workflow. Analyze before acting. Show the card. User triages.**
