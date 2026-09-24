@@ -657,3 +657,81 @@ def test_review_loop_does_not_reference_a_deleted_phase_3_confirmation() -> None
     assert re.search(r"5\.6.{0,40}push confirmation|push confirmation.{0,40}5\.6", text, re.IGNORECASE), (
         "must still name the 5.6 push confirmation as a control point"
     )
+
+
+def test_review_comments_resolves_only_bot_threads() -> None:
+    """The gate is `is_bot` AND no human has spoken in the thread. A human's thread — whether they
+    opened it or only joined a bot's — is theirs to close, and the skill must say so in the resolve
+    step's own words, not only in the boundaries list."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "resolve_id" in phase_5_7
+    assert "is_bot" in phase_5_7
+    assert "resolveReviewThread" in phase_5_7
+    assert "resolved=true" in phase_5_7
+    # The fourth gate: a human reply anywhere in the thread blocks the resolve, even when a bot
+    # opened it.
+    assert "no reply from a human other than our own account" in phase_5_7
+    assert "and neither is a bot-opened thread a human has" in phase_5_7
+
+
+def test_review_comments_resolve_step_never_fires_for_a_withheld_reply() -> None:
+    """`withheld` alone was already in 5.7 before this feature — assert the gate's own wording,
+    or the test passes against the unchanged skill."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "actually posted" in phase_5_7
+    assert "never reaches this step" in phase_5_7
+
+
+def test_review_comments_boundaries_scope_reply_only_to_humans() -> None:
+    """The old absolute claim ("reply-only — on GitLab it never resolves discussions") is now
+    false; leaving it would put the skill in contradiction with its own Phase 5.7."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "on GitLab it never resolves discussions" not in text
+    does_not = section(text, "### This Skill Does NOT:", "## Red Flags")
+    assert "humans" in does_not
+
+
+def test_review_comments_reports_resolved_threads() -> None:
+    report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
+    assert "Threads resolved:" in report
+    assert "Resolve failed:" in report
+    assert "Resolve withheld:" in report
+
+
+def test_review_comments_resolve_gate_reads_the_live_thread() -> None:
+    """PR #142 review: the human-participation check read the Phase-2 snapshot, so a person who
+    replied during triage, the fixes or the push confirmation was invisible to it. The decision is
+    now taken by `flow-review-resolve-gate` on the live thread, immediately before the mutation —
+    and the step must say that the snapshot is NOT what decides."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    gate = phase_5_7.index("flow-review-resolve-gate --meta")
+    assert gate < phase_5_7.index("resolveReviewThread"), "the gate must run before the GitHub mutation"
+    assert gate < phase_5_7.index("resolved=true"), "the gate must run before the GitLab mutation"
+    assert "--resolve-id {resolve_id}" in phase_5_7
+    assert re.search(r"\blive\b", phase_5_7)
+    assert "not the Phase-2 snapshot" in phase_5_7
+    # A non-zero gate means no mutation, and the ref is reported rather than silently dropped.
+    assert re.search(r"non-zero.{0,120}no mutation|no mutation.{0,120}non-zero", phase_5_7, re.DOTALL)
+    assert "Resolve withheld" in phase_5_7
+
+
+def test_review_comments_bot_means_account_type_not_login() -> None:
+    """PR #142 review: `is_bot` came from a login heuristic, so a person named `release-bot` could
+    have their thread resolved. The step must say what `is_bot` is now."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert "account type" in phase_5_7
+    assert "never from the login" in phase_5_7
+
+
+REVIEW_LOOP_SKILL = FLOW_ROOT / "skills" / "review-loop" / "SKILL.md"
+
+
+def test_review_loop_never_claims_it_resolves_nothing() -> None:
+    """The loop reuses review-comments verbatim, so its rounds now resolve bot threads. Its
+    three reply-only claims must narrow to humans — while the merge ban stays absolute."""
+    text = REVIEW_LOOP_SKILL.read_text()
+    assert "it never resolves threads or merges" not in text
+    assert "Reply-only. Resolving conversations and merging are the human's job." not in text
+    # The merge ban must survive the rewrite — assert the replacement's own words, not the bare
+    # substring "merge", which any of the file's dozens of unrelated mentions would satisfy.
+    assert "merging is always the human's job" in text

@@ -316,7 +316,7 @@ When to use: after pushing a PR and receiving review comments.
 Rides the automated bot/CI review cycle on a GitHub PR or GitLab MR to convergence:
 waits for the checks on the current head, runs `/flow:review-comments`, and repeats each
 time a fix is pushed — until no new comments come back. Gate-name-agnostic and
-cross-platform; reply-only (never resolves threads or merges).
+cross-platform; it resolves the bot threads it answers, never a human's, and never merges.
 
 When to use: after pushing to a PR/MR, to ride the bot review rounds without babysitting.
 
@@ -382,6 +382,7 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
 | `flow-wait-ci <n> <sha> --platform <github\|gitlab>` | Block until the PR/MR CI pipeline for an exact head SHA is terminal (exit 0/2/3/4); gate-name-agnostic |
 | `flow-review-ledger <reconcile\|get\|record\|stats\|purge>` | Persistent per-PR review ledger: durable memory of every review finding and what was decided about it |
+| `flow-review-resolve-gate --meta <metadata.json> --resolve-id <id>` | Read one review thread live and decide whether it may be resolved: a bot opener by account type, no human reply other than ours (exit 0 resolve / 3 refused / 4 could not verify) |
 
 Run the tests: `uv run pytest plugins/flow/bin/tests/`. CI runs them too — the
 plugin-CI `test` job executes any plugin's `bin/tests/` on every PR.

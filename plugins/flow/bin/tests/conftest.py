@@ -1,6 +1,6 @@
 """Shared fixtures for flow bin/ helper tests."""
 
-# ruff: noqa: INP001, PLW1510  # PLW1510: check IS passed via **common (false positive)
+# ruff: noqa: PLW1510  # PLW1510: check IS passed via **common (false positive)
 
 import subprocess
 import sys
@@ -348,6 +348,14 @@ if a[:1] == ["api"]:
         emit("user", "me"); sys.exit(0)
     slurp = "--slurp" in rest
     ep = endpoint(rest)
+    if ep == "graphql" and any("PullRequestReviewThread" in t for t in rest):
+        # The live resolve gate's single-thread `node(id:)` read, distinct from the collector's
+        # `reviewThreads` walk. `thread_node_fail` holds the stderr real `gh` prints on exit 1.
+        fail = STATE / "thread_node_fail"
+        if fail.exists():
+            sys.stderr.write(fail.read_text()); sys.exit(1)
+        emit("thread_node", '{{"data":{{"node":null}}}}')
+        sys.exit(0)
     if ep == "graphql":
         emit("review_threads", EMPTY_THREADS)
         sys.exit(0)
@@ -405,6 +413,11 @@ def endpoint(rest):
         return tok
     return ""
 
+EMPTY_DISCUSSIONS = (
+    '{{"data":{{"project":{{"mergeRequest":{{"discussions":'
+    '{{"nodes":[],"pageInfo":{{"hasNextPage":false,"endCursor":null}}}}}}}}}}}}'
+)
+
 if a[:2] == ["repo", "view"]:
     p = STATE / "project"
     path = p.read_text() if p.exists() else "g/r"
@@ -416,6 +429,13 @@ if a[:1] == ["api"]:
     if "user" in rest:
         emit("user", '{{"username": "me"}}'); sys.exit(0)  # glab api user -> JSON (no -q flag)
     ep = endpoint(rest)
+    if ep == "graphql":
+        # `graphql_fail` holds the stderr real `glab` prints when it exits 1 on a GraphQL error.
+        fail = STATE / "graphql_fail"
+        if fail.exists():
+            sys.stderr.write(fail.read_text()); sys.exit(1)
+        page = "graphql_page2" if any(t.startswith("cursor=") for t in rest) else "graphql"
+        emit(page, EMPTY_DISCUSSIONS); sys.exit(0)
     if ep.endswith("/discussions"):
         emit("discussions"); sys.exit(0)
 sys.exit(0)
