@@ -1,7 +1,7 @@
 ---
 name: continue
 description: Fast return to an active in_progress beads task — find it, resolve its saved branch or worktree, and show the task card. Use when resuming work after /clear or a new session. To pick a new task instead, use flow:start.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TaskCreate TaskUpdate TodoWrite
 ---
 
 # Flow: Continue
@@ -22,7 +22,7 @@ allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-find-leaf) Bash
 
 **Required action NOW:**
 1. Read this entire skill (don't skim)
-2. Track the workflow steps with the active harness's progress mechanism.
+2. If the session has the task list (`TaskCreate`/`TaskUpdate`; `TodoWrite` on older setups), create one item per workflow step before Step 1; otherwise continue without it.
 3. ONLY THEN execute Step 1
 
 </STOP-AND-READ>
@@ -326,7 +326,7 @@ Proceed to Step 8 (init new worktree).
 
 **Only if a new worktree was created in Step 7b (Option 2).**
 
-Invoke `flow:init-worktree` through the active harness's skill mechanism.
+Invoke the `flow:init-worktree` skill using the Skill tool.
 
 ### 9. Show Task Card
 

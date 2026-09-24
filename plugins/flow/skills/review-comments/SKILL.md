@@ -12,7 +12,7 @@ allowed-tools: Bash(git:*) Bash(gh:*) Bash(glab:*) Bash(bd:*) Bash(flow-require-
 
 This skill makes every unresolved review comment reviewable and triageable **inside Claude Code**: for each comment it shows the **anchored code** (syntax-highlighted), the **full comment text + thread**, and the **agent's take** (category + short honest assessment) as a per-comment **card**, then lets the user decide **fix / won't-fix / follow-up** per comment. It applies accepted fixes, argues against invalid comments, files follow-ups as beads tasks, and replies on the platform. It works on **GitHub Pull Requests** (`gh`) and **GitLab Merge Requests** (`glab`), against both hosted (github.com / gitlab.com) and **self-hosted / Enterprise** instances. The platform is auto-detected (Phase 0). Code is written by Claude Code, reviewed by the user and a bot (e.g. CodeRabbit).
 
-**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
+**Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the **Write tool → file** and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
 **Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. There is no pre-analysis gate — the ledger already excludes what is settled, so the working set a round carries is exactly what needs a look. Phase 3 analyzes the whole working set up front (parallel sonnet reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
 
@@ -334,13 +334,12 @@ Steps:
      misleading current-tree window — this branch is what stops the analyzer from trusting the stale
      line number.)
    - **otherwise** (a normal inline comment): Read the file around the relevant lines (±20 lines of
-     context) using the active harness's native non-shell file mechanism — this is judgment tracing, not
-     snippet mechanics. Take
+     context) using the **Read tool** — this is judgment tracing, not snippet mechanics. Take
      `start = start_line` (or `line` when there is no `start_line`) and `end = line`; for a grouped call,
      use the union — `start` = the smallest, `end` = the largest. The read's `limit` is a line **count**, not
      an end line, so use `offset = max(1, start − 20)` and `limit = (end + 20) − offset + 1` — never the
      absolute `end` as the limit (that would read ~`end` lines). Pass the (untrusted) `{path}` as a data
-     argument to that mechanism; never build a shell command from it.
+     argument to the Read tool; never build a shell command from it.
    If understanding the code needs a value defined elsewhere (a variable, a
    constant, what a helper actually compares against), trace it — do not stop at
    the local lines. The bug is often in WHAT is compared, not whether a
@@ -401,7 +400,7 @@ Return ONLY the JSON verdict object — no fenced blocks, no other output.
 **After all subagents return:**
 
 For each verdict, the **main LLM** validates the returned JSON (it must parse and carry `category`,
-`thought`, `suggested`) and writes it with the active harness's native non-shell file mechanism to
+`thought`, `suggested`) and writes it with the **Write tool** to
 `"$FLOW_RC_DIR/verdict-{ref}.json"`
 — no shell, no quoting, so a reviewer's text or the LLM's own `thought` never reaches a command line.
 
@@ -800,8 +799,8 @@ build the title or description from a shell heredoc or an unquoted argument:** a
 early and silently truncates the task body (this repo's own review comments contain the literal
 `FLOW_RC_EOF`, so this is not hypothetical).
 
-**Materialize each free-text value with the active harness's native non-shell file mechanism, then
-pass it by file** — that mechanism takes the content as a direct argument that no shell ever parses,
+**Materialize each free-text value with the Write tool, then pass it by file** — the Write tool
+takes the content as a tool argument that no shell ever parses,
 so delimiter collision and expansion are both impossible. Write the title to `$FLOW_RC_DIR/title-{ref}.txt` and the full description (PR/MR URL,
 `path:lines`, the reviewer's comment text read from the ledger row, and the agent's take) to
 `$FLOW_RC_DIR/desc-{ref}.md`, then:
@@ -821,7 +820,7 @@ next ref. A `bd create` is an irreversible external side effect, and the batch i
 3 of 5 fails (bd error, a lock, a crash) and the run aborts, the tasks already filed for refs 1-2
 exist in beads but nothing in the ledger knows it, so the next round re-surfaces those rows unchanged
 and files the SAME task again. Write a one-entry decisions file (`$FLOW_RC_DIR/checkpoint-{ref}.json`)
-with the harness's native non-shell file mechanism and record it immediately:
+with the Write tool and record it immediately:
 
 ```json
 { "C3": { "status": "open", "decision": "follow_up", "followup_task_id": "claude-tools-5vg-12" } }
@@ -946,8 +945,7 @@ Count **0** → post `Fixed in subsequent commits`. **Non-zero** → the fixing 
 
 Replies that assert **no** change landed this run post regardless of the push: `Won't fix:` (nothing was changed) and `Filed as follow-up:` (work is only tracked).
 
-For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the active harness's native
-non-shell file mechanism first**, then pass
+For each reply, **write the body to `$FLOW_RC_DIR/reply-{ref}.txt` with the Write tool first**, then pass
 it as a **quoted** command substitution `"$(cat …)"` — which captures the file's bytes as a single
 argument with no shell re-parsing, so a `Won't fix:` rationale that quotes reviewer text (backticks, `$`,
 or a `FLOW_RC_EOF` line) reaches the API verbatim and cannot truncate or break out.
@@ -1099,7 +1097,7 @@ gives the next round its context, while `open` records that nothing was delivere
 | push skipped, so `Fixed:` is withheld | `status: open`, `decision: fix`, `reason`: push deferred |
 | task filed, reply not yet posted (5.4 checkpoint) | `status: open`, `decision: follow_up`, `followup_task_id` set |
 
-Write **one** decisions file with the active harness's native non-shell file mechanism — `reason` is
+Write **one** decisions file with the Write tool — `reason` is
 reviewer-derived free text, so it goes by file, never through a shell:
 
 `$FLOW_RC_DIR/decisions.json`:

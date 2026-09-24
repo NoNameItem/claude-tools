@@ -121,7 +121,7 @@ If all checked: Done.
 ✅ Sync changes to git
 
 ### This Skill Does NOT (Long list - READ IT):
-❌ Create todo lists (use the active harness's progress mechanism separately if needed)
+❌ Create todo lists (use the task list separately if needed)
 ❌ Commit plan file to git (separate workflow)
 ❌ Create subtasks (use after-design for that)
 ❌ Update task status (use flow:start)
@@ -141,7 +141,7 @@ If all checked: Done.
 Save Plan link. That's the setup. Done.
 
 **If user wants todos:**
-Tell them to use the active harness's progress mechanism separately. Not this skill's job.
+Tell them to use the task list separately. Not this skill's job.
 
 **If user wants to commit plan:**
 Tell them to use git workflow. Not this skill's job.
@@ -169,7 +169,7 @@ If you're thinking any of these, STOP and just save the link:
 |--------|---------|
 | "User wants setup" | Setup = save Plan link. Not todos or commits. |
 | "Task is too simple" | Simple is good. Do it simply. Don't add extras. |
-| "I'll create todos to help" | The active harness's progress mechanism is a separate workflow. Out of scope. |
+| "I'll create todos to help" | The task list is a separate workflow. Out of scope. |
 | "Committing plan is good practice" | Git workflow is separate. Out of scope. |
 | "I did helpful things" | Did you save Plan link? If no, task not done. |
 | "Being maximally helpful" | Maximal help = doing THE task, not extras. |

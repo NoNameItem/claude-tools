@@ -193,7 +193,7 @@ Append a `## Decomposition` section to the end of the design document:
 ```
 
 ```bash
-# Update the document with the active harness's native non-shell editing mechanism.
+# Update the document with the Edit tool (not echo).
 # Then:
 git add <design-path>   # the path from the task's Design: link, e.g. docs/superpowers/specs/...
 git commit -m "docs(flow): add decomposition to design doc"
