@@ -19,7 +19,7 @@ FLOW_ROOT = Path(__file__).resolve().parents[2]
 MIGRATED = {
     path
     for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
-    if path.parent.name not in {"sonar-sync", "review-comments", "create-codex-agents"}
+    if path.parent.name not in {"sonar-sync", "review-comments"}
 }
 FORBIDDEN = (
     "TodoWrite",
@@ -47,6 +47,17 @@ def test_every_skill_has_one_physical_skill_md() -> None:
 def test_all_executable_helpers_use_reserved_prefix() -> None:
     executable = [path for path in (FLOW_ROOT / "bin").iterdir() if path.is_file() and os.access(path, os.X_OK)]
     assert all(path.name.startswith("flow-") for path in executable)
+
+
+MANIFEST_PATH_FIELDS = ("commands", "agents", "skills", "hooks", "mcpServers", "outputStyles", "lspServers")
+
+
+def test_claude_manifest_declared_paths_exist() -> None:
+    # A manifest path Claude Code cannot resolve breaks plugin loading, and no other check sees it:
+    # validate_plugin.py only checks the `./` prefix.
+    manifest = json.loads((FLOW_ROOT / ".claude-plugin" / "plugin.json").read_text())
+    declared = [manifest[key] for key in MANIFEST_PATH_FIELDS if isinstance(manifest.get(key), str)]
+    assert not [path for path in declared if not (FLOW_ROOT / path).exists()]
 
 
 FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
@@ -115,7 +126,7 @@ def test_frontmatter_exception_is_only_sonar_sync() -> None:
     assert {"sonar-sync"} == {
         path.parent.name
         for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
-        if path not in MIGRATED and path.parent.name not in {"review-comments", "create-codex-agents"}
+        if path not in MIGRATED and path.parent.name != "review-comments"
     }
 
 
@@ -137,95 +148,6 @@ def test_review_comments_declares_semantic_dispatch_contracts() -> None:
         assert output_marker in normalized_body
     for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
         assert term not in body
-
-
-# --- create-codex-agents: purpose-built setup skill (Task 5) --------------------------------
-#
-# Excluded from MIGRATED (it legitimately names Codex configuration concepts) and from the
-# sonar-sync-only frontmatter-exception check above, per the design. It still must: declare the
-# setup helper's grants exactly (both the bare and args forms, regardless of which forms the
-# prose happens to use), never hard-code an account-specific model slug (model IDs are always
-# asked for, never guessed), and never name a concrete harness's file-editing tool (it must stay
-# usable by any harness that can safely write project files).
-
-CODEX_AGENTS_SKILL = FLOW_ROOT / "skills" / "create-codex-agents" / "SKILL.md"
-
-FORBIDDEN_MODEL_SLUGS = (
-    "gpt-3",
-    "gpt-4",
-    "gpt-5",
-    "o1-",
-    "o3-",
-    "o4-",
-    "codex-mini",
-    "claude-3",
-    "claude-opus",
-    "claude-sonnet",
-    "claude-haiku",
-)
-
-FORBIDDEN_HARNESS_FILE_TOOLS = (
-    "write tool",
-    "edit tool",
-    "read tool",
-    "apply_patch",
-    "str_replace_editor",
-    "notebookedit",
-)
-
-
-def test_create_codex_agents_skill_exists() -> None:
-    assert CODEX_AGENTS_SKILL.is_file()
-
-
-def test_create_codex_agents_declares_exact_helper_grants() -> None:
-    # Deliberately does not reuse the generic `helper_forms` scan used for MIGRATED skills:
-    # this skill's prose legitimately contains the Codex profile names `flow-fast` /
-    # `flow-balanced` / `flow-strongest` as data values (not bin/ helper invocations), which
-    # match the same `flow-[a-z0-9-]+` pattern the generic scanner treats as a command needing
-    # its own grant. Check exactly what the design requires instead: both exact forms of the
-    # one real helper this skill drives, and no unscoped wildcard.
-    grants = allowed_tools(CODEX_AGENTS_SKILL.read_text())
-    assert "Bash(flow-codex-agent-setup)" in grants
-    assert "Bash(flow-codex-agent-setup:*)" in grants
-    assert "Bash(flow-*)" not in grants
-
-
-def test_create_codex_agents_has_no_hardcoded_model_slug() -> None:
-    body = CODEX_AGENTS_SKILL.read_text().lower()
-    hits = [slug for slug in FORBIDDEN_MODEL_SLUGS if slug in body]
-    assert not hits, f"create-codex-agents hard-codes a model slug: {hits}"
-
-
-def test_create_codex_agents_names_no_concrete_harness_file_tool() -> None:
-    body = CODEX_AGENTS_SKILL.read_text().lower()
-    hits = [name for name in FORBIDDEN_HARNESS_FILE_TOOLS if name in body]
-    assert not hits, f"create-codex-agents names a concrete harness file tool: {hits}"
-
-
-# --- Task 6: documentation contracts -----------------------------------------------------
-
-
-def test_readme_documents_codex_runtime_contract() -> None:
-    readme = (FLOW_ROOT / "README.md").read_text()
-    for required in (
-        "$flow:start",
-        "/flow:start",
-        "/hooks",
-        "allow_managed_hooks_only",
-        "flow:create-codex-agents",
-        "Codex CLI 0.144.6",
-        "codex -m",
-        "one active Flow plugin version",
-        "POSIX",
-    ):
-        assert required in readme
-
-
-def test_old_allowed_tools_design_is_marked_superseded() -> None:
-    text = (FLOW_ROOT.parents[1] / "docs/superpowers/specs/2026-07-07-flow-allowed-tools-audit-design.md").read_text()
-    assert "Superseded for Codex" in text
-    assert "2026-07-17-flow-codex-support-design.md" in text
 
 
 # --- Task: persistent per-PR review ledger (claude-tools-elf.39) -----------------------------
