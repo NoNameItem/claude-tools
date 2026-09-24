@@ -1032,27 +1032,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             time_fmt: Time format ("remaining" or "reset_at")
             bar_width: Width for progress bar
         """
-        # Calculate color and time based on resets_at availability
-        if limit.resets_at is None:
-            # No reset time: dim color, placeholder for time
-            color = None  # Will use attrs=["dark"]
-            time_str = colored(" (—)", attrs=["dark"]) if self.params.show_reset_time else ""
-        else:
-            # Normalize naive datetime to UTC to avoid TypeError on subtraction
-            resets_at = limit.resets_at
-            if resets_at.tzinfo is None:
-                resets_at = resets_at.replace(tzinfo=UTC)
-
-            # Normal case: color based on utilization vs time
-            now = datetime.now(UTC)
-            remaining = max(0, (resets_at - now).total_seconds() / 3600)
-            color = calculate_color(limit.utilization, remaining, window)
-            time_str = ""
-            if self.params.show_reset_time:
-                if time_fmt == "remaining":
-                    time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
-                else:
-                    time_str = colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
+        color, time_str = self._color_and_reset_time(limit, window, time_fmt)
 
         # Format utilization with appropriate color
         if color is None:
@@ -1064,15 +1044,43 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         if self.params.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
-        stale_str = ""
+        return f"{label_str}{bar} {util_str}{time_str}{self._stale_suffix(limit)}"
+
+    def _color_and_reset_time(self, limit: UsageLimit, window: float, time_fmt: str) -> tuple[str | None, str]:
+        """Pick the utilization color and the reset-time suffix for a single limit item.
+
+        Returns:
+            (color, time_str). color is None when the limit has no reset time: the
+            utilization is then rendered dim instead of colored against the window.
+        """
+        if limit.resets_at is None:
+            # No reset time: dim color, placeholder for time
+            return None, colored(" (—)", attrs=["dark"]) if self.params.show_reset_time else ""
+
+        # Normalize naive datetime to UTC to avoid TypeError on subtraction
+        resets_at = limit.resets_at
+        if resets_at.tzinfo is None:
+            resets_at = resets_at.replace(tzinfo=UTC)
+
+        # Normal case: color based on utilization vs time
+        now = datetime.now(UTC)
+        remaining = max(0, (resets_at - now).total_seconds() / 3600)
+        color = calculate_color(limit.utilization, remaining, window)
+        if not self.params.show_reset_time:
+            return color, ""
+        if time_fmt == "remaining":
+            return color, colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
+        return color, colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
+
+    def _stale_suffix(self, limit: UsageLimit) -> str:
+        """Format the "(<age> ago)" suffix of a cached value whose source failed to refresh."""
         # The suffix means "older than it should be", so it starts one refresh cycle out: inside
         # cache_ttl the data is simply not due yet. The floor keeps it clear of the range where
         # format_remaining_time renders "0m", which reads as broken rather than merely young.
         stale_threshold = max(self.params.cache_ttl, STALE_SUFFIX_FLOOR_SECONDS)
-        if limit.stale_seconds is not None and limit.stale_seconds >= stale_threshold:
-            stale_str = colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
-
-        return f"{label_str}{bar} {util_str}{time_str}{stale_str}"
+        if limit.stale_seconds is None or limit.stale_seconds < stale_threshold:
+            return ""
+        return colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""

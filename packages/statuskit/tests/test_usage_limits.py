@@ -1004,6 +1004,33 @@ class TestRenderMultiline:
         assert "Fable:" in output
         assert "(—)" in output
 
+    def test_show_reset_time_false_hides_time_and_placeholder(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=None)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 45.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {"show_reset_time": False}).render()
+        assert output is not None
+        assert "11%" in output
+        assert "45%" in output
+        # Neither the reset time of a timed row nor the "(—)" placeholder of an untimed one.
+        assert "(" not in output
+
+    def test_naive_resets_at_is_treated_as_utc(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        naive = (datetime.now(UTC) + timedelta(days=4)).replace(tzinfo=None)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 34.0, naive)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {"model_time_format": "remaining"}).render()
+        assert output is not None
+        assert "34%" in output
+        assert "(—)" not in output
+
 
 class TestRenderSingleLine:
     """Flat single-line rendering."""
