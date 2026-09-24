@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0](https://github.com/NoNameItem/claude-tools/compare/flow-3.1.0...flow-3.2.0) (2026-09-24)
+
+
+### Features
+
+* **flow:** persistent per-PR review ledger for flow:review-comments ([#118](https://github.com/NoNameItem/claude-tools/issues/118)) ([af1f02f](https://github.com/NoNameItem/claude-tools/commit/af1f02fc9051d83e00d31b8b32efac0af22470e7))
+* **flow:** replace flow:done step-by-step questions with one scenario ([#139](https://github.com/NoNameItem/claude-tools/issues/139)) ([70668aa](https://github.com/NoNameItem/claude-tools/commit/70668aa3b4e3682593f4700496deb887d350c706))
+* **flow:** resolve bot threads after replying in review-comments ([#142](https://github.com/NoNameItem/claude-tools/issues/142)) ([e1cee12](https://github.com/NoNameItem/claude-tools/commit/e1cee12bf1422187516ffb81d20f71e8596e9a07))
+
+
+### Bug Fixes
+
+* **flow:** decide review-ledger re-surfacing from per-reply seen bits ([#134](https://github.com/NoNameItem/claude-tools/issues/134)) ([0918ac8](https://github.com/NoNameItem/claude-tools/commit/0918ac851b1ff42182d127e0c95c6de551f7feb8))
+* **flow:** dispatch review-comments subagents as general-purpose with an explicit model ([452f0f7](https://github.com/NoNameItem/claude-tools/commit/452f0f7c923ad6118d15974119af45f36a1177eb))
+* **flow:** flow-wait-ci counts active GitHub states, not dict keys ([7ceb7f3](https://github.com/NoNameItem/claude-tools/commit/7ceb7f3775a375710aa30dfcd7c0224febae2585))
+* **flow:** grant each skill only the flow-* helpers it actually runs ([ed00a63](https://github.com/NoNameItem/claude-tools/commit/ed00a63ec37a005744d733caf32b53085ba31337))
+* **flow:** harden Phase 4.2 card emission ([#137](https://github.com/NoNameItem/claude-tools/issues/137)) ([164558c](https://github.com/NoNameItem/claude-tools/commit/164558c166bc5d25864a9f5a8b2b9a8b6a00963d))
+* **flow:** track start/continue steps in the task list only when the session has one ([452f0f7](https://github.com/NoNameItem/claude-tools/commit/452f0f7c923ad6118d15974119af45f36a1177eb))
+
 ## [3.1.0](https://github.com/NoNameItem/claude-tools/compare/flow-3.0.0...flow-3.1.0) (2026-07-14)
 
 
