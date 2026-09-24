@@ -1,8 +1,12 @@
 # Flow Codex support — design
 
+> **Withdrawn (2026-09-24).** Flow's Codex CLI support was reverted before any release
+> (claude-tools-elf.64, see `2026-09-24-flow-codex-rollback-design.md`). Kept as a historical
+> record — nothing described here exists in the codebase any more.
+
 **Date:** 2026-07-17
 **Updated:** 2026-07-19
-**Status:** approved
+**Status:** withdrawn
 
 ## Context
 
