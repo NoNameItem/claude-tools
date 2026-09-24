@@ -96,12 +96,24 @@ when a group has no overall row.
 
 Decision on each render:
 
-1. No token → cache only.
-2. `now < retry_after_until` → cache only (debug: `Backing off until <t>`).
-3. `now - last_attempt_at < cache_ttl` → cache only (debug: `Rate limited, using cache`).
-4. Otherwise **claim first**: write `last_attempt_at = now` to the cache atomically (existing
-   temp-file + `replace`), *then* fetch. Any other process rendering in the meantime sees the
-   fresh stamp and takes branch 3. A crashed process costs at most one TTL of silence.
+1. `now < retry_after_until` → cache only (debug: `Backing off after HTTP 429, <n>s left`). A
+   deadline more than `RETRY_AFTER_MAX` (3600 s) away is ignored: no capped 429 writes one, so it
+   comes from a pre-cap or corrupted cache.
+2. `now - last_attempt_at < cache_ttl` → cache only (debug: `Rate limited, using cache`).
+3. Otherwise **claim first**: write `last_attempt_at = now` to the cache atomically (existing
+   temp-file + `replace`), *then* look up the token and fetch. Any other process rendering in the
+   meantime sees the fresh stamp and takes branch 2. A crashed process costs at most one TTL of
+   silence.
+4. No token → cache only (debug: `No token, using cache`). The claim stands: a missing token is a
+   failed attempt like any other, so sibling sessions stand down for the TTL and per-model rows
+   show their age.
+
+The token lookup comes after the claim on purpose. On macOS it is a ~16 ms Keychain subprocess;
+ahead of the claim it widens the window in which sibling processes load the same stale stamp and
+all pass branch 2 (~17 ms instead of ~0.2 ms), and every TTL-blocked render pays for it. The
+read-check-claim sequence is still not atomic across processes. An interprocess lock was
+considered and rejected: with the narrow window a collision is rare, and it costs one duplicate
+request in that TTL cycle, not a burst.
 
 Fetch outcomes (`fetch_usage_api` returns a small result type instead of `UsageData | None`):
 
@@ -109,7 +121,7 @@ Fetch outcomes (`fetch_usage_api` returns a small result type instead of `UsageD
 |---|---|---|
 | 200, limits parsed | groups, `fetched_at = now`, clear `retry_after_until` | — |
 | 200, nothing parsed | nothing beyond the claim | `Fetched OK but parsed no limits — API format may have changed` (unchanged) |
-| 429 | `retry_after_until = now + Retry-After` (300 s when the header is missing or unparseable) | `HTTP 429, backing off for <n>s` |
+| 429 | `retry_after_until = now + min(Retry-After, 3600 s)` (300 s when the header is missing or unparseable) | `HTTP 429, backing off for <n>s` |
 | other HTTP error | nothing beyond the claim | `HTTP <code>, using cache` |
 | timeout / URLError / JSON error | nothing beyond the claim | `<timeout|network error|bad JSON>, using cache` |
 
