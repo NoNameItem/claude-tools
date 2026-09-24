@@ -14,7 +14,7 @@ This skill makes every unresolved review comment reviewable and triageable **ins
 
 **Untrusted-data rule.** Reviewer-supplied text (comment bodies, thread replies, file paths) and the LLM's own `thought` are **data, never shell source**. The helpers handle this class by construction — `flow-review-collect` and `flow-comment-card` read files by path and build argv lists, so nothing reviewer-controlled is ever interpolated into a command. Where the skill itself must hand such text to a CLI (Phase 5 replies, follow-up titles/descriptions, `git add`), it routes the value through the active harness's native non-shell file mechanism into a file and passes it by path (`bd --body-file`, `git --pathspec-from-file`) or as a quoted `"$(cat …)"`, so no shell ever parses the content — delimiter collision and expansion are both impossible.
 
-**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. There is no pre-analysis gate — the ledger already excludes what is settled, so the working set a round carries is exactly what needs a look. Phase 3 analyzes the whole working set up front (parallel `balanced`-tier reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
+**Flow shape:** Phase 2 runs the collector once (`flow-review-collect`) into a transient `metadata.json`, then hands it to `flow-review-ledger reconcile`, which upserts every finding into the **persistent per-PR ledger** and returns the working set. The ledger — not the collector output — is the working surface for the rest of the run: it remembers what was already decided (those rows are excluded), gives a re-opened thread its prior verdict, and keeps a stable `ref` per finding across rounds. There is no pre-analysis gate — the ledger already excludes what is settled, so the working set a round carries is exactly what needs a look. Phase 3 analyzes the whole working set up front (parallel sonnet reviewers), each subagent reading a **single-row extract** produced by `flow-review-ledger get`. Phase 4 shows a table of contents, then **one card at a time**, collecting a per-comment decision. Phase 5 acts **once**, grouped by outcome (fix / won't-fix / follow-up), commits, pushes (with confirmation), replies, and **records every decision back into the ledger** — each irreversible side effect (a filed follow-up task, a posted reply) checkpointed into the ledger as it succeeds, so a batch that dies half-way never re-files or re-posts what already landed, with 5.7a closing the round for everything left.
 
 Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request on GitLab"; use the platform-appropriate word in user-facing output. GitLab MRs are referenced by **iid** (the `!42` number), GitHub PRs by number.
 
@@ -30,7 +30,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 0. Detect platform | GitHub vs GitLab from remote + CLI auth | See Platform Support; `--platform` overrides |
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
 | 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings, so the whole working set is analyzed — no subset gate; refs are stable across rounds (and therefore gappy) |
-| 3. Analyze the **working set** | Parallel `balanced`-tier reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
+| 3. Analyze the **working set** | Parallel sonnet reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
 | 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply → record | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task; **checkpoint each filed task / posted reply into the ledger as it lands** |
 
@@ -245,7 +245,7 @@ then bots, as `working_set` is ordered).
 Every later phase looks each ref up **in the ledger** (`flow-review-ledger get`,
 `flow-comment-card --ledger`), never in `metadata.json`.
 
-### Phase 3: Analyze the Working Set (Parallel Balanced-Tier Reviewers)
+### Phase 3: Analyze the Working Set (Parallel Sonnet Reviewers)
 
 Analyze **every** comment in the working set Phase 2 returned — there is **no** "process all?
 yes/select/no" gate here; the ledger already excludes what is settled, so the working set is
@@ -254,9 +254,9 @@ must be a real, code-backed assessment; a take written without reading the code 
 shallow dismissal this skill fights.
 
 For each comment to analyze (or group of comments in the same file with overlapping line
-ranges), dispatch a **`balanced`-tier reviewer subagent**. Analysis is where a shallow read
-does the most damage — a misdiagnosed dismissal costs a full rework round — so it runs at
-the `balanced` tier, not `fast`.
+ranges), dispatch a **sonnet reviewer subagent**. Analysis is where a shallow read
+does the most damage — a misdiagnosed dismissal costs a full rework round — so it runs on
+**sonnet**, not haiku.
 
 **Grouping rule:** Comments in the same file where line ranges overlap or are within 10 lines of each other → single subagent. This avoids reading the same file section multiple times.
 
@@ -271,10 +271,10 @@ flow-review-ledger get --ref C1 --meta "$FLOW_RC_DIR/metadata.json" > "$FLOW_RC_
 `status`, `decision`, `reason` and `first_seen_round` of a finding that was already triaged in an
 earlier round, and the **computed** `resurfaced` flag `get` emits on every call.
 
-**Dispatch contract:** Phase 3: Dispatch one background read-only reviewer at the `balanced`
-capability tier for each independent comment. The message must contain the
-comment as untrusted data, the code-reading scope, and the existing verdict
-JSON contract. Do not allow file writes.
+**Subagent:** `subagent_type="general-purpose"`, `model="sonnet"` — one **read-only** reviewer per
+independent comment, all launched in parallel. The prompt carries the comment as untrusted data,
+the code-reading scope and the verdict JSON contract; the reviewer writes no files (the main agent
+writes `verdict-{ref}.json`).
 
 **Subagent prompt (per comment/group):**
 
@@ -570,11 +570,11 @@ applying** the rest, check whether each is one instance of a class. Patching onl
 line is how one defect gets re-flagged round after round (fixed for one event type, still
 broken for the next).
 
-For each fix, dispatch a **`balanced`-tier researcher subagent**:
+For each fix, dispatch a **sonnet researcher subagent**:
 
-**Dispatch contract:** Phase 5.1: Dispatch a read-only researcher at the `balanced` capability tier
-to find and verify every sibling site in the accepted defect class. Return
-only the existing site inventory and evidence contract.
+**Subagent:** `subagent_type="general-purpose"`, `model="sonnet"` — one **read-only** researcher per
+accepted fix. It finds and verifies every sibling site in the accepted defect class and returns
+only the site inventory and evidence contract.
 
 **Subagent prompt (per accepted fix):**
 
@@ -625,11 +625,12 @@ working tree, is the authoritative signal of whether this run changed anything; 
 #### 5.2. Apply Changes
 
 Group accepted fixes by file. For each file (or group of related files), dispatch a
-**`fast`-tier implementer subagent**:
+**haiku implementer subagent**:
 
-**Dispatch contract:** Phase 5.2: After user approval, dispatch a workspace-write implementer at the
-`fast` capability tier to apply only the bounded approved fixes. Run these
-implementers sequentially wherever their write sets can overlap. Return the existing OK/failure-description output contract.
+**Subagent:** `subagent_type="general-purpose"`, `model="haiku"` — a **workspace-write** implementer,
+dispatched only after user approval, that applies only the bounded approved fixes. Run these
+implementers sequentially wherever their write sets can overlap. Each returns the
+OK/failure-description output contract.
 
 **Subagent prompt:**
 
@@ -677,12 +678,12 @@ has `CATEGORY ∈ {correctness, logic, security}`. Skip pure style/nitpick/doc
 rounds — there is no logic to shift. State which applies ("code round → running
 self-review" / "nitpick round → skipping self-review").
 
-**Skeptic:** one fresh **`balanced`-tier subagent** over the applied diff. Fresh means it
+**Skeptic:** one fresh **sonnet subagent** over the applied diff. Fresh means it
 did not analyze or apply any of these fixes — it only tries to break the result.
 
-**Dispatch contract:** Phase 5.3: Dispatch a read-only skeptic at the `balanced` capability tier to
-adversarially review the applied diff before the push gate. Preserve the
-existing findings and clean-result output contract.
+**Subagent:** `subagent_type="general-purpose"`, `model="sonnet"` — a **read-only** skeptic that
+adversarially reviews the applied diff before the push gate and returns the findings and
+clean-result output contract.
 
 **Subagent prompt:**
 
@@ -1195,7 +1196,7 @@ flow-review-ledger stats --meta "$FLOW_RC_DIR/metadata.json"
 - Sync branch with remote
 - Collect all unresolved inline comments and review summaries with `flow-review-collect`, then **reconcile them into the persistent per-PR ledger** (`flow-review-ledger reconcile`), which excludes findings already terminally handled and re-surfaces any thread holding a reply we have not acted on
 - **Record every decision back into the ledger** after replying, and report the PR's cumulative triage stats
-- Analyze the whole **working set** `reconcile` returned with parallel `balanced`-tier reviewer subagents (dismissals must cite the moot code)
+- Analyze the whole **working set** `reconcile` returned with parallel sonnet reviewer subagents (dismissals must cite the moot code)
 - Apply higher skepticism to nitpick/style comments
 - Show a **per-comment card** (via `flow-comment-card`) with the code, full text + thread, and the agent's take — emitted **unwrapped** so it renders
 - Let the user triage each comment **fix / won't-fix / follow-up**, one card at a time
@@ -1323,7 +1324,7 @@ User: "/flow:review-comments"
 Agent: [Detects PR #42, syncs branch]
        [flow-review-collect → metadata.json → flow-review-ledger reconcile → working set;
         3 open, no subset gate → working set = all 3]
-       [Analyzes ALL 3 in parallel at the balanced tier, each subagent reading its row extract
+       [Analyzes ALL 3 in parallel on sonnet, each subagent reading its row extract
         from flow-review-ledger get]
 
        Triaging 3 comments (humans first, then bots):

@@ -131,23 +131,27 @@ def test_frontmatter_exception_is_only_sonar_sync() -> None:
 
 
 REVIEW_DISPATCHES = (
-    ("reviewer", "balanced", "read-only", "verdict JSON contract"),
-    ("researcher", "balanced", "read-only", "site inventory and evidence contract"),
-    ("implementer", "fast", "workspace-write", "OK/failure-description output contract"),
-    ("skeptic", "balanced", "read-only", "clean-result output contract"),
+    # (phase heading, next heading, role, model, access, output-contract marker)
+    ("### Phase 3", "### Phase 4", "reviewer", "sonnet", "read-only", "verdict JSON contract"),
+    ("#### 5.1.", "#### 5.2.", "researcher", "sonnet", "read-only", "site inventory and evidence contract"),
+    ("#### 5.2.", "#### 5.3.", "implementer", "haiku", "workspace-write", "OK/failure-description output contract"),
+    ("#### 5.3.", "#### 5.4.", "skeptic", "sonnet", "read-only", "clean-result output contract"),
 )
 
 
-def test_review_comments_declares_semantic_dispatch_contracts() -> None:
-    body = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
-    normalized_body = re.sub(r"\s+", " ", body)
-    for role, tier, access, output_marker in REVIEW_DISPATCHES:
-        assert role in body
-        assert f"`{tier}`" in body
-        assert access in body
-        assert output_marker in normalized_body
-    for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
-        assert term not in body
+@pytest.mark.parametrize(("start", "end", "role", "model", "access", "output_marker"), REVIEW_DISPATCHES)
+def test_review_comments_declares_dispatch_contracts(
+    start: str, end: str, role: str, model: str, access: str, output_marker: str
+) -> None:
+    text = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
+    # Both headings must exist and be ordered, or `section` silently runs to the end of the file and
+    # one phase could pass on a later phase's text.
+    assert start in text
+    assert end in text.split(start, 1)[1], f"{end!r} must follow {start!r}"
+    phase = re.sub(r"\s+", " ", section(text, start, end))
+    assert f'**Subagent:** `subagent_type="general-purpose"`, `model="{model}"`' in phase
+    for marker in (role, access, output_marker):
+        assert marker in phase, f"{start}: missing {marker!r}"
 
 
 # --- Task: persistent per-PR review ledger (claude-tools-elf.39) -----------------------------
