@@ -29,6 +29,7 @@ API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
 HTTP_TOO_MANY_REQUESTS = 429
 RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
+RETRY_AFTER_MAX = 3600.0  # cap on any 429 backoff: a huge Retry-After must not stall refreshes for years
 CACHE_FILENAME = "usage_limits.json"
 PAYLOAD_SAVE_INTERVAL = 60.0  # min seconds between cache writes of the statusline payload block
 STALE_SUFFIX_FLOOR_SECONDS = 60.0  # never mark below this: format_remaining_time floors to "0m"
@@ -303,7 +304,10 @@ def _parse_retry_after(value: str | None) -> float:
     """Seconds to wait, from a 429's Retry-After header.
 
     Only the delta-seconds form is honoured; the HTTP-date form and anything unparseable or
-    negative fall back to RETRY_AFTER_FALLBACK, which is never worse than hammering.
+    negative fall back to RETRY_AFTER_FALLBACK, which is never worse than hammering. The delay is
+    capped at RETRY_AFTER_MAX: past a certain size `now + timedelta(...)` overflows and takes the
+    whole module down, and well before that a finite but absurd value would stall refreshes for
+    years. A server that really wants a longer pause answers the one capped retry with another 429.
     """
     if value:
         try:
@@ -311,8 +315,24 @@ def _parse_retry_after(value: str | None) -> float:
         except ValueError:
             return RETRY_AFTER_FALLBACK
         if math.isfinite(seconds) and seconds >= 0:
-            return seconds
+            return min(seconds, RETRY_AFTER_MAX)
     return RETRY_AFTER_FALLBACK
+
+
+def _backoff_left(cached: UsageData | None, now: datetime) -> int | None:
+    """Whole seconds left in an active 429 backoff, or None when none holds.
+
+    Every deadline this module writes lies at most RETRY_AFTER_MAX past the moment it was written,
+    so one further than that from `now` comes from a cache written before the cap existed, or from
+    a corrupted file. Ignoring it costs one request; honouring it could stall refreshes for good.
+    """
+    until = cached.retry_after_until if cached else None
+    if until is None or now >= until:
+        return None
+    left = (until - now).total_seconds()
+    if left > RETRY_AFTER_MAX:
+        return None
+    return math.ceil(left)
 
 
 def parse_api_response(response: object) -> UsageData:
@@ -406,7 +426,7 @@ def _get_keychain_token() -> str | None:
         Token string or None if not found
     """
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 - fixed argv: absolute /usr/bin/security path, constant args, no shell
             ["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True,
             text=True,
@@ -455,7 +475,7 @@ def fetch_usage_api(token: str) -> FetchOutcome:
     Returns:
         FetchOutcome: parsed data on success, otherwise the status / retry hint / error class.
     """
-    request = Request(  # noqa: S310
+    request = Request(  # noqa: S310 - URL is the constant https API_URL, never user-supplied
         API_URL,
         headers={
             "Authorization": f"Bearer {token}",
@@ -463,7 +483,7 @@ def fetch_usage_api(token: str) -> FetchOutcome:
         },
     )
     try:
-        with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310
+        with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310 - opens the Request built above from API_URL
             payload = json.loads(response.read())
     except HTTPError as exc:
         # MUST precede URLError: HTTPError is a subclass, and only it carries the status and the
@@ -756,24 +776,22 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
     def _get_usage_data(self) -> UsageData | None:
         """Load cached usage data, refreshing it from the API when policy allows.
 
-        Order of the gates, each one cheaper than the next: no token, an active 429 backoff, the
-        TTL. Only past all three does a request go out, and only after the attempt is claimed in
-        the cache so sibling sessions stand down.
+        Gates run cheapest first: an active 429 backoff, then the TTL. Past both, the attempt is
+        claimed in the cache so sibling sessions stand down, and only then is the token looked up.
+        On macOS that lookup is a ~16 ms Keychain subprocess: ahead of the claim it would widen the
+        window in which sibling sessions all pass the TTL on the same stale stamp, and every render
+        the TTL blocks would pay for it. A missing token therefore counts as a failed attempt, the
+        same as a network error.
         """
         self._debug_messages: list[str] = []
 
         cached = self.cache.load() if self.cache else None
         cached = self._persist_payload(cached)
 
-        token = get_token()
-        if not token:
-            self._debug_messages.append("No token, using cache")
-            return cached
-
         now = datetime.now(UTC)
-        if cached and cached.retry_after_until and now < cached.retry_after_until:
-            left = math.ceil((cached.retry_after_until - now).total_seconds())
-            self._debug_messages.append(f"Backing off after HTTP 429, {left}s left")
+        backoff_left = _backoff_left(cached, now)
+        if backoff_left is not None:
+            self._debug_messages.append(f"Backing off after HTTP 429, {backoff_left}s left")
             return cached
 
         # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but must
@@ -788,6 +806,11 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             cached = self.cache.claim_attempt(cached)
             if not self.cache.last_save_ok:
                 self._debug_messages.append("Could not write the attempt claim; sibling sessions may all refetch")
+
+        token = get_token()
+        if not token:
+            self._debug_messages.append("No token, using cache")
+            return cached
 
         data, to_save = self._apply_outcome(fetch_usage_api(token), cached)
 

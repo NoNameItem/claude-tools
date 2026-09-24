@@ -13,6 +13,7 @@ from statuskit.core.models import RateLimits, RateLimitWindow
 from statuskit.modules.usage_limits import (
     API_URL,
     RETRY_AFTER_FALLBACK,
+    RETRY_AFTER_MAX,
     FetchOutcome,
     UsageCache,
     UsageData,
@@ -539,6 +540,11 @@ class TestFetchUsageApi:
         assert _parse_retry_after("92") == 92.0
         assert _parse_retry_after(" 92 ") == 92.0
         assert _parse_retry_after("0") == 0.0
+
+    def test_parse_retry_after_caps_the_delay(self):
+        assert _parse_retry_after("3599") == 3599.0
+        assert _parse_retry_after("3601") == RETRY_AFTER_MAX
+        assert _parse_retry_after("1000000000000") == RETRY_AFTER_MAX
 
 
 def _session_group(util: float, resets_at: datetime | None) -> UsageGroup:
@@ -1188,13 +1194,14 @@ class TestPayloadSource:
     def test_the_persisted_payload_does_not_throttle_a_sibling_session(self, make_render_context, tmp_path):
         """Regression: the cold-cache payload write must not stand a SIBLING session down either.
 
-        A render with no token still writes the payload to a cold cache. A second module instance
-        over that same cache dir, with a token this time, must still attempt its own fetch — the
-        fabricated entry on disk must not carry a `last_attempt_at` that throttles it.
+        The payload block is written to a cold cache before any attempt is made. A second module
+        instance over that same cache dir must still attempt its own fetch — the fabricated entry
+        on disk must not carry a `last_attempt_at` that throttles it. (A render with no token is no
+        longer a way to get here: it claims the attempt, and a claim is meant to throttle.)
         """
         ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
-        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
-            UsageLimitsModule(ctx, {})._get_usage_data()
+        UsageLimitsModule(ctx, {})._persist_payload(None)
+        assert (tmp_path / "usage_limits.json").exists()
 
         with (
             patch("statuskit.modules.usage_limits.get_token", return_value="t"),
@@ -1565,6 +1572,26 @@ class TestGetUsageDataRateLimited:
         assert cached.retry_after_until is not None
         assert 1100 < (cached.retry_after_until - datetime.now(UTC)).total_seconds() <= 1198
 
+    def test_huge_retry_after_is_capped_end_to_end(self, make_render_context, minimal_input_data, tmp_path):
+        """Regression: a finite but huge Retry-After overflowed `now + timedelta(...)`.
+
+        The OverflowError escaped `_apply_outcome` and the whole module vanished from the
+        statusline. Only `urlopen` is mocked, so the real header parsing is on the path.
+        """
+        headers = Message()
+        headers["Retry-After"] = "1000000000000"
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen,
+        ):
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="rate", hdrs=headers, fp=None)
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.retry_after_until is not None
+        assert (cached.retry_after_until - datetime.now(UTC)).total_seconds() <= RETRY_AFTER_MAX
+
     def test_backoff_blocks_the_next_request(self, make_render_context, minimal_input_data, tmp_path):
         cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
         cache.save(
@@ -1595,6 +1622,34 @@ class TestGetUsageDataRateLimited:
                 fetched_at=datetime.now(UTC) - timedelta(minutes=40),
                 last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
                 retry_after_until=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ) as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_backoff_beyond_the_cap_is_ignored(self, make_render_context, minimal_input_data, tmp_path):
+        """A deadline further than RETRY_AFTER_MAX away was never written by a capped 429.
+
+        It comes from a cache that predates the cap, or a corrupted one; honouring it would stall
+        refreshes indefinitely.
+        """
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime(9999, 12, 31, tzinfo=UTC),
             )
         )
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
@@ -1649,6 +1704,50 @@ class TestGetUsageDataRateLimited:
         ):
             UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
         assert seen["stamp"] is not None
+
+    def test_ttl_blocked_render_skips_the_token_lookup(self, make_render_context, minimal_input_data, tmp_path):
+        """The lookup is a Keychain subprocess on macOS; a render the TTL blocks must not pay for it."""
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=120)
+        cache.save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_token.assert_not_called()
+
+    def test_token_is_looked_up_after_the_claim(self, make_render_context, minimal_input_data, tmp_path):
+        """Keeps the load-to-claim window down to a file read and write.
+
+        Sibling sessions that load the same stale stamp inside that window all pass the TTL; with the
+        Keychain subprocess inside it, the window was ~17 ms instead of ~0.2 ms.
+        """
+        seen: dict = {}
+
+        def fake_token():
+            path = tmp_path / "usage_limits.json"
+            seen["stamp"] = json.loads(path.read_text()).get("last_attempt_at") if path.exists() else None
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", side_effect=fake_token):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        assert seen["stamp"] is not None
+
+    def test_missing_token_counts_as_a_failed_attempt(self, make_render_context, minimal_input_data, tmp_path):
+        """A missing token claims the attempt like any failed fetch; a sibling stands down for the TTL."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_not_called()
 
     def test_debug_message_when_claim_write_fails(self, make_render_context, minimal_input_data, tmp_path):
         """A claim write that never reaches disk must be visible in debug output.
