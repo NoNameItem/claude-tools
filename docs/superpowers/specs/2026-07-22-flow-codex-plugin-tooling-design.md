@@ -1,7 +1,11 @@
 # Flow Codex plugin tooling — design
 
+> **Withdrawn (2026-09-24).** Flow's Codex CLI support was reverted before any release
+> (claude-tools-elf.64, see `2026-09-24-flow-codex-rollback-design.md`). Kept as a historical
+> record — nothing described here exists in the codebase any more.
+
 **Date:** 2026-07-22
-**Status:** approved
+**Status:** withdrawn
 **Task:** claude-tools-5vg.7 — *Adapt the plugin CI/release workflow for Codex plugins*
 
 ## Context

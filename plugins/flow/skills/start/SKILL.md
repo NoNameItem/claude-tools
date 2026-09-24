@@ -1,7 +1,7 @@
 ---
 name: start
 description: Start working on a beads task — select from the ready tree, create or switch the branch, init a worktree, and show the task card. Use when beginning a work session, after /clear, at session start, or when switching tasks. To resume an already in-progress task, use flow:continue.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) Bash(flow-current-task:*) Bash(flow-find-branches) Bash(flow-find-branches:*) Bash(flow-find-worktree:*) Bash(flow-in-worktree) Bash(flow-link-doc) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-task-tree) Bash(flow-task-tree:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) Bash(flow-current-task:*) Bash(flow-find-branches) Bash(flow-find-branches:*) Bash(flow-find-worktree:*) Bash(flow-in-worktree) Bash(flow-link-doc) Bash(flow-link-doc:*) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-task-tree) Bash(flow-task-tree:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TaskCreate TaskUpdate TodoWrite
 ---
 
 # Flow: Start Task
@@ -23,7 +23,7 @@ allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) B
 
 **Required action NOW:**
 1. Read this entire skill (don't skim)
-2. Track the workflow steps with the active harness's progress mechanism.
+2. If the session has the task list (`TaskCreate`/`TaskUpdate`; `TodoWrite` on older setups), create one item per workflow step before Step 1; otherwise continue without it.
 3. ONLY THEN execute Step 1
 
 </STOP-AND-READ>
@@ -363,7 +363,7 @@ Push the status change to the shared store immediately.
 
 **Skip this step if user did NOT choose a worktree option in Step 6.**
 
-After creating a worktree, invoke `flow:init-worktree` through the active harness's skill mechanism.
+After creating a worktree, invoke the `flow:init-worktree` skill using the Skill tool.
 
 This skill will:
 1. Read CLAUDE.md/README.md for setup instructions
@@ -438,7 +438,7 @@ If you're thinking any of these, STOP and follow the workflow:
 **Skill loading violations (MOST CRITICAL):**
 - "Let me wait for content to load" → Content IS loaded. Read it NOW.
 - "I'll prepare while reading" → NO. Read FIRST, act SECOND.
-- "Let me get the task list" → STOP. Did you read the skill? Run the script.
+- "Let me get the bd task list" → STOP. Did you read the skill? Run the script.
 
 **Command violations:**
 - "bd ready is good enough" → Use the script
@@ -480,7 +480,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | Excuse | Reality |
 |--------|---------|
 | "Let me wait for content to load" | Content IS loaded. Read the skill NOW. |
-| "I'll get the task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
+| "I'll get the bd task list while reading" | NO. Read skill FIRST. Commands come AFTER. |
 | "bd ready is a quick way to see tasks" | Wrong. Use the script: `bd graph --all --json \| flow-task-tree` |
 | "I'll build the tree myself" | Script does this correctly. Don't reinvent. |
 | "A structured dialog for selection is nicer" | It auto-submits on the AFK timeout (claude-tools-6q4) and can't do hierarchical numbers. Plain text for tasks AND branches. |

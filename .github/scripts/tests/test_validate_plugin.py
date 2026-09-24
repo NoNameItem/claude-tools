@@ -40,278 +40,6 @@ def temp_marketplace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def write_codex_manifest(plugin: Path, **overrides: object) -> None:
-    """Create a Codex manifest with valid default metadata."""
-    payload: dict[str, object] = {
-        "name": "test-plugin",
-        "version": "1.0.0",
-        "skills": "./skills/",
-        "hooks": "./hooks/codex-hooks.json",
-    }
-    payload.update(overrides)
-    target = plugin / ".codex-plugin"
-    target.mkdir(exist_ok=True)
-    (target / "plugin.json").write_text(json.dumps(payload))
-
-
-def test_required_codex_manifest_is_missing(temp_plugin: Path) -> None:
-    """Should fail when a required Codex manifest is missing."""
-    from ..validate_plugin import validate_codex_manifest
-
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-    assert result.errors == ["Codex plugin.json not found at .codex-plugin/plugin.json"]
-
-
-def test_codex_manifest_must_match_name_and_version(temp_plugin: Path) -> None:
-    """Should fail when Codex and Claude metadata differ."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, name="other", version="2.0.0")
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-    assert "Codex manifest name 'other' does not match Claude manifest name 'test-plugin'" in result.errors
-    assert "Codex manifest version '2.0.0' does not match Claude manifest version '1.0.0'" in result.errors
-
-
-def test_codex_manifest_paths_must_exist(temp_plugin: Path) -> None:
-    """Should fail when a declared Codex component path is missing."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin)
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-    assert "Codex manifest path does not exist: ./hooks/codex-hooks.json" in result.errors
-
-
-def test_codex_manifest_path_must_not_traverse_outside_plugin(temp_plugin: Path) -> None:
-    """Should reject a parent traversal even when its target exists."""
-    from ..validate_plugin import validate_codex_manifest
-
-    (temp_plugin.parent / "outside").mkdir()
-    write_codex_manifest(temp_plugin, skills="./../outside", hooks=[])
-
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-
-    assert "Codex manifest path escapes plugin directory: ./../outside" in result.errors
-
-
-def test_codex_manifest_path_must_not_be_absolute_after_prefix_strip(temp_plugin: Path) -> None:
-    """Should reject a path that becomes absolute after removing './'."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=".//tmp", hooks=[])
-
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-
-    assert "Codex manifest path escapes plugin directory: .//tmp" in result.errors
-
-
-def test_codex_manifest_symlink_must_not_escape_plugin(temp_plugin: Path) -> None:
-    """Should reject an existing in-plugin symlink whose target is outside."""
-    from ..validate_plugin import validate_codex_manifest
-
-    outside = temp_plugin.parents[1] / "outside"
-    outside.mkdir()
-    (temp_plugin / "outside-link").symlink_to(outside, target_is_directory=True)
-    write_codex_manifest(temp_plugin, skills="./outside-link", hooks=[])
-
-    result = validate_codex_manifest(
-        temp_plugin,
-        {"name": "test-plugin", "version": "1.0.0"},
-        required=True,
-    )
-
-    assert "Codex manifest path escapes plugin directory: ./outside-link" in result.errors
-
-
-CLAUDE_METADATA = {"name": "test-plugin", "version": "1.0.0"}
-
-
-def test_codex_apps_accepts_single_existing_path(temp_plugin: Path) -> None:
-    """Should accept `apps` as a single path to an existing file."""
-    from ..validate_plugin import validate_codex_manifest
-
-    (temp_plugin / "flow.app.json").write_text("{}")
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps="./flow.app.json")
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert result.errors == []
-
-
-def test_codex_apps_rejects_a_list(temp_plugin: Path) -> None:
-    """Codex allows only a single path string for `apps`."""
-    from ..validate_plugin import validate_codex_manifest
-
-    (temp_plugin / "flow.app.json").write_text("{}")
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps=["./flow.app.json"])
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert "Codex manifest field 'apps' must be a single path string" in result.errors
-
-
-def test_codex_apps_path_must_exist(temp_plugin: Path) -> None:
-    """Should fail when `apps` points at a missing file."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], apps="./missing.app.json")
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert "Codex manifest path does not exist: ./missing.app.json" in result.errors
-
-
-def test_codex_hooks_accepts_inline_object(temp_plugin: Path) -> None:
-    """Codex allows an inline hook object instead of a path."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks={"SessionStart": [{"command": "echo hi"}]})
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert result.errors == []
-
-
-def test_codex_hooks_accepts_inline_object_list(temp_plugin: Path) -> None:
-    """Codex allows a list of inline hook objects."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[{"SessionStart": []}, {"PreToolUse": []}])
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert result.errors == []
-
-
-def test_codex_hooks_rejects_mixed_list(temp_plugin: Path) -> None:
-    """A list mixing paths and inline objects is not a Codex shape."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=["./hooks/codex-hooks.json", {"SessionStart": []}])
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert any("Codex manifest field 'hooks' must be" in error for error in result.errors)
-
-
-def test_codex_mcp_servers_accepts_inline_object(temp_plugin: Path) -> None:
-    """Codex allows an inline mcpServers object."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers={"beads": {"command": "bd"}})
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert result.errors == []
-
-
-def test_codex_mcp_servers_path_is_validated(temp_plugin: Path) -> None:
-    """A string mcpServers value is still validated as a path."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers="./missing-mcp.json")
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert "Codex manifest path does not exist: ./missing-mcp.json" in result.errors
-
-
-def test_codex_mcp_servers_rejects_a_list(temp_plugin: Path) -> None:
-    """Codex has no list form for mcpServers."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], mcpServers=["./mcp.json"])
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert "Codex manifest field 'mcpServers' must be a path or an inline object" in result.errors
-
-
-def test_codex_ignores_non_codex_fields(temp_plugin: Path) -> None:
-    """`agents` is not a Codex field, so it must not produce a path error."""
-    from ..validate_plugin import validate_codex_manifest
-
-    write_codex_manifest(temp_plugin, skills=[], hooks=[], agents="./missing-agents")
-
-    result = validate_codex_manifest(temp_plugin, CLAUDE_METADATA, required=True)
-
-    assert result.errors == []
-
-
-def test_optional_codex_manifest_absence_is_allowed(temp_plugin: Path, temp_marketplace: Path) -> None:
-    """Should keep Codex support optional when no Codex manifest exists."""
-    from ..validate_plugin import validate_plugin
-
-    result = validate_plugin(temp_plugin, temp_marketplace)
-
-    assert result.success is True
-    assert result.errors == []
-
-
-def test_optional_invalid_codex_manifest_fails(temp_plugin: Path, temp_marketplace: Path) -> None:
-    """Should validate a Codex manifest whenever one is present."""
-    from ..validate_plugin import validate_plugin
-
-    target = temp_plugin / ".codex-plugin"
-    target.mkdir()
-    (target / "plugin.json").write_text("{not valid JSON")
-
-    result = validate_plugin(temp_plugin, temp_marketplace)
-
-    assert result.success is False
-    assert any("Invalid Codex plugin.json" in error for error in result.errors)
-
-
-def test_main_without_plugin_path_returns_script_error(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
-) -> None:
-    """Should preserve the historical return-code contract for missing CLI input."""
-    from ..validate_plugin import main
-
-    monkeypatch.setattr("sys.argv", ["validate_plugin.py"])
-
-    assert main() == 10
-    assert "usage:" in capsys.readouterr().err.lower()
-
-
-def test_main_requires_codex_manifest_when_flag_is_set(
-    temp_plugin: Path,
-    temp_marketplace: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture,
-) -> None:
-    """Should pass --require-codex-manifest through main to validation."""
-    from ..validate_plugin import main
-
-    (temp_marketplace / ".git").mkdir()
-    monkeypatch.setattr(
-        "sys.argv",
-        ["validate_plugin.py", "--require-codex-manifest", str(temp_plugin)],
-    )
-
-    assert main() == 1
-    assert "Codex plugin.json not found at .codex-plugin/plugin.json" in capsys.readouterr().out
-
-
 class TestValidatePluginJson:
     """Tests for plugin.json validation."""
 
@@ -811,85 +539,60 @@ class TestValidateMarketplace:
         assert any("unsupported source value" in e for e in result.errors)
 
 
-class TestCodexMarketplaceRegistration:
-    """A plugin shipping a Codex manifest must also be in the Codex marketplace."""
+class TestMain:
+    """Tests for the CLI entry point's return-code contract."""
 
-    @staticmethod
-    def _write_marketplaces(repo_root: Path, *, codex_entry_name: str | None) -> None:
-        """Write the Claude marketplace, plus the Codex one when a name is given."""
-        entry = {
-            "name": "dual",
-            "source": {
-                "source": "git-subdir",
-                "url": "https://github.com/NoNameItem/claude-tools",
-                "path": "plugins/dual",
-                "ref": "dual-1.0.0",
-            },
-        }
-        claude_dir = repo_root / ".claude-plugin"
-        claude_dir.mkdir(exist_ok=True)
-        (claude_dir / "marketplace.json").write_text(json.dumps({"plugins": [entry]}))
+    def test_main_without_plugin_path_returns_script_error(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Should keep the historical return code 10 for missing CLI input."""
+        from ..validate_plugin import main
 
-        if codex_entry_name is None:
-            return
-        codex_dir = repo_root / ".agents" / "plugins"
-        codex_dir.mkdir(parents=True, exist_ok=True)
-        codex_entry = {**entry, "name": codex_entry_name}
-        (codex_dir / "marketplace.json").write_text(json.dumps({"plugins": [codex_entry]}))
+        monkeypatch.setattr("sys.argv", ["validate_plugin.py"])
 
-    @staticmethod
-    def _make_plugin(repo_root: Path, *, with_codex_manifest: bool) -> Path:
-        """A minimal plugin at <repo_root>/plugins/dual."""
-        plugin_dir = repo_root / "plugins" / "dual"
-        claude_plugin = plugin_dir / ".claude-plugin"
-        claude_plugin.mkdir(parents=True)
-        (claude_plugin / "plugin.json").write_text(json.dumps({"name": "dual", "version": "1.0.0"}))
-        if with_codex_manifest:
-            codex_plugin = plugin_dir / ".codex-plugin"
-            codex_plugin.mkdir()
-            (codex_plugin / "plugin.json").write_text(json.dumps({"name": "dual", "version": "1.0.0"}))
-        return plugin_dir
+        assert main() == 10
+        assert "usage:" in capsys.readouterr().err.lower()
 
-    def test_registered_in_both_marketplaces_is_valid(self, tmp_path: Path) -> None:
-        from ..validate_plugin import validate_plugin
+    def test_nonexistent_plugin_path_returns_script_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should return 10 when the plugin directory does not exist."""
+        from ..validate_plugin import main
 
-        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
-        self._write_marketplaces(tmp_path, codex_entry_name="dual")
+        monkeypatch.setattr("sys.argv", ["validate_plugin.py", str(tmp_path / "missing")])
 
-        result = validate_plugin(plugin_dir, tmp_path)
+        assert main() == 10
 
-        assert result.success is True
-        assert result.errors == []
+    @pytest.mark.parametrize(
+        ("manifest", "expected"),
+        [
+            ({"name": "test-plugin", "version": "1.0.0"}, 0),
+            (None, 1),  # plugin.json not found
+            ("{not json", 1),  # plugin.json is not valid JSON
+            ({"version": "1.0.0"}, 2),  # Missing required field: name
+            ({"name": "Test_Plugin", "version": "1.0.0"}, 3),  # Invalid name format
+            ({"name": "other-plugin", "version": "1.0.0"}, 1),  # name mismatch with the marketplace entry
+        ],
+    )
+    def test_exit_code_follows_the_first_error(
+        self,
+        temp_plugin: Path,
+        temp_marketplace: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        manifest: dict | None | str,
+        expected: int,
+    ) -> None:
+        """Should map the first validation error to the documented exit code."""
+        from ..validate_plugin import main
 
-    def test_codex_manifest_without_codex_marketplace_fails(self, tmp_path: Path) -> None:
-        from ..validate_plugin import validate_plugin
+        (temp_marketplace / ".git").mkdir()  # repo root = tmp_path, where temp_marketplace lives
+        manifest_path = temp_plugin / ".claude-plugin" / "plugin.json"
+        if manifest is None:
+            manifest_path.unlink()
+        elif isinstance(manifest, str):
+            manifest_path.write_text(manifest)
+        else:
+            manifest_path.write_text(json.dumps(manifest))
+        monkeypatch.setattr("sys.argv", ["validate_plugin.py", str(temp_plugin)])
 
-        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
-        self._write_marketplaces(tmp_path, codex_entry_name=None)
-
-        result = validate_plugin(plugin_dir, tmp_path)
-
-        assert result.success is False
-        assert any(".agents/plugins/marketplace.json" in error for error in result.errors)
-
-    def test_codex_marketplace_name_mismatch_fails(self, tmp_path: Path) -> None:
-        from ..validate_plugin import validate_plugin
-
-        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=True)
-        self._write_marketplaces(tmp_path, codex_entry_name="wrong-name")
-
-        result = validate_plugin(plugin_dir, tmp_path)
-
-        assert result.success is False
-        assert any("Name mismatch" in error and ".agents/plugins/marketplace.json" in error for error in result.errors)
-
-    def test_codex_marketplace_not_required_without_codex_manifest(self, tmp_path: Path) -> None:
-        from ..validate_plugin import validate_plugin
-
-        plugin_dir = self._make_plugin(tmp_path, with_codex_manifest=False)
-        self._write_marketplaces(tmp_path, codex_entry_name=None)
-
-        result = validate_plugin(plugin_dir, tmp_path)
-
-        assert result.success is True
-        assert result.errors == []
+        assert main() == expected

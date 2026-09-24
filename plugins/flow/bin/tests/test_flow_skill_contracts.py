@@ -1,9 +1,9 @@
-"""Static contracts for Flow's shared (harness-neutral) skill bodies.
+"""Static contracts for Flow's skill bodies.
 
-These tests guard the migration away from Claude-specific vocabulary
-(TodoWrite, Skill tool, subagent dispatch syntax) in skills that are shared
-across harnesses, and guard the Bash grant shape for the extracted flow-*
-helpers. `sonar-sync` is the sole named exception (not yet migrated).
+Guards the Bash grant shape for the extracted flow-* helpers (exact per-helper
+`allowed-tools` grants, literal bare helper names; `sonar-sync` is the sole
+exception), the review-comments subagent dispatch contracts, the Claude-native
+vocabulary of every skill, and the review ledger / review-loop contracts.
 """
 
 from __future__ import annotations
@@ -16,25 +16,12 @@ from pathlib import Path
 import pytest
 
 FLOW_ROOT = Path(__file__).resolve().parents[2]
-MIGRATED = {
+GRANT_AUDITED = {
     path
     for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
-    if path.parent.name not in {"sonar-sync", "review-comments", "create-codex-agents"}
+    if path.parent.name not in {"sonar-sync", "review-comments"}
 }
-FORBIDDEN = (
-    "TodoWrite",
-    "Skill tool",
-    "subagent_type",
-    'model="haiku"',
-    'model="sonnet"',
-    'model="opus"',
-)
-
-
-@pytest.mark.parametrize("skill", sorted(MIGRATED))
-def test_migrated_skill_body_uses_semantic_actions(skill: Path) -> None:
-    body = skill.read_text().split("---", 2)[-1]
-    assert not [term for term in FORBIDDEN if term in body]
+ALL_SKILLS = sorted((FLOW_ROOT / "skills").glob("*/SKILL.md"))
 
 
 def test_every_skill_has_one_physical_skill_md() -> None:
@@ -47,6 +34,25 @@ def test_every_skill_has_one_physical_skill_md() -> None:
 def test_all_executable_helpers_use_reserved_prefix() -> None:
     executable = [path for path in (FLOW_ROOT / "bin").iterdir() if path.is_file() and os.access(path, os.X_OK)]
     assert all(path.name.startswith("flow-") for path in executable)
+
+
+MANIFEST_PATH_FIELDS = ("commands", "agents", "skills", "hooks", "mcpServers", "outputStyles", "lspServers")
+
+
+def test_claude_manifest_declared_paths_exist() -> None:
+    # A manifest path Claude Code cannot resolve breaks plugin loading, and no other check sees it:
+    # validate_plugin.py only checks the `./` prefix. A field may be a single path (str) or an
+    # array of paths (e.g. "commands": [...]); other shapes (an inline mcpServers object) are
+    # not paths and are ignored.
+    manifest = json.loads((FLOW_ROOT / ".claude-plugin" / "plugin.json").read_text())
+    declared: list[str] = []
+    for key in MANIFEST_PATH_FIELDS:
+        value = manifest.get(key)
+        if isinstance(value, str):
+            declared.append(value)
+        elif isinstance(value, list):
+            declared.extend(item for item in value if isinstance(item, str))
+    assert not [path for path in declared if not (FLOW_ROOT / path).exists()]
 
 
 FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
@@ -85,7 +91,7 @@ def section(text: str, start: str, end: str) -> str:
 
 def test_helper_parsing_is_not_vacuous() -> None:
     # Guards against a mis-transcribed FENCE/INLINE/HELPER regex silently
-    # matching nothing, which would make the forbidden-term and grant tests
+    # matching nothing, which would make the grant and bare-name tests
     # pass vacuously. If this fails, the parsing regexes are broken.
     sample = "Run `flow-sync pull` and the bare `flow-actor`."
     forms = helper_forms(sample)
@@ -93,7 +99,7 @@ def test_helper_parsing_is_not_vacuous() -> None:
     assert ("flow-actor", "bare") in forms
 
 
-@pytest.mark.parametrize("skill", sorted(MIGRATED))
+@pytest.mark.parametrize("skill", sorted(GRANT_AUDITED))
 def test_helper_forms_have_exact_claude_grants(skill: Path) -> None:
     text = skill.read_text()
     grants = allowed_tools(text)
@@ -103,7 +109,7 @@ def test_helper_forms_have_exact_claude_grants(skill: Path) -> None:
         assert expected in grants, f"{skill.parent.name}: missing {expected}"
 
 
-@pytest.mark.parametrize("skill", sorted(MIGRATED))
+@pytest.mark.parametrize("skill", sorted(GRANT_AUDITED))
 def test_helpers_remain_literal_bare_names(skill: Path) -> None:
     body = skill.read_text().split("---", 2)[-1]
     assert "../../bin/flow-" not in body
@@ -115,117 +121,86 @@ def test_frontmatter_exception_is_only_sonar_sync() -> None:
     assert {"sonar-sync"} == {
         path.parent.name
         for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
-        if path not in MIGRATED and path.parent.name not in {"review-comments", "create-codex-agents"}
+        if path not in GRANT_AUDITED and path.parent.name != "review-comments"
     }
 
 
-REVIEW_DISPATCHES = (
-    ("reviewer", "balanced", "read-only", "verdict JSON contract"),
-    ("researcher", "balanced", "read-only", "site inventory and evidence contract"),
-    ("implementer", "fast", "workspace-write", "OK/failure-description output contract"),
-    ("skeptic", "balanced", "read-only", "clean-result output contract"),
-)
-
-
-def test_review_comments_declares_semantic_dispatch_contracts() -> None:
-    body = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
-    normalized_body = re.sub(r"\s+", " ", body)
-    for role, tier, access, output_marker in REVIEW_DISPATCHES:
-        assert role in body
-        assert f"`{tier}`" in body
-        assert access in body
-        assert output_marker in normalized_body
-    for term in ("subagent_type", 'model="haiku"', 'model="sonnet"', "Read tool", "Write tool"):
-        assert term not in body
-
-
-# --- create-codex-agents: purpose-built setup skill (Task 5) --------------------------------
+# --- Claude-native skill text (claude-tools-elf.64) -------------------------------------------
 #
-# Excluded from MIGRATED (it legitimately names Codex configuration concepts) and from the
-# sonar-sync-only frontmatter-exception check above, per the design. It still must: declare the
-# setup helper's grants exactly (both the bare and args forms, regardless of which forms the
-# prose happens to use), never hard-code an account-specific model slug (model IDs are always
-# asked for, never guessed), and never name a concrete harness's file-editing tool (it must stay
-# usable by any harness that can safely write project files).
+# Flow's Codex support and its runtime adapter were withdrawn before release. The withdrawn specs
+# in docs/superpowers/specs/ still use the adapter's harness-neutral vocabulary, so an agent
+# reading them could carry it back into a skill.
 
-CODEX_AGENTS_SKILL = FLOW_ROOT / "skills" / "create-codex-agents" / "SKILL.md"
+NOT_CLAUDE_NATIVE = (
+    "active harness",
+    "capability tier",
+    "native non-shell",
+    "`balanced`",
+    "`fast`",
+    "`strongest`",
+    "Codex",
+    'subagent_type="Bash"',  # no such agent type in current Claude Code; pre-#113 skill text used it
+    "harness's",  # possessive form of the adapter's "the harness's ... mechanism" idiom
+)
+TIER_WORD = re.compile(r"\b(?:fast|balanced|strongest)[- ]tier\b", re.IGNORECASE)
+NAMED_TOOL = re.compile(r"\b(Read|Write|Edit|Skill|Grep|Glob|Agent) tool\b")
 
-FORBIDDEN_MODEL_SLUGS = (
-    "gpt-3",
-    "gpt-4",
-    "gpt-5",
-    "o1-",
-    "o3-",
-    "o4-",
-    "codex-mini",
-    "claude-3",
-    "claude-opus",
-    "claude-sonnet",
-    "claude-haiku",
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_skills_use_claude_native_vocabulary(skill: Path) -> None:
+    # Whole file, frontmatter included: init-worktree's description carried one of these phrases.
+    text = skill.read_text()
+    assert not [term for term in NOT_CLAUDE_NATIVE if term in text]
+    assert not TIER_WORD.findall(text)
+
+
+@pytest.mark.parametrize("skill", ALL_SKILLS)
+def test_named_tools_are_granted(skill: Path) -> None:
+    # A skill that tells the model to use a tool its allowed-tools does not grant stalls on a
+    # permission prompt mid-workflow. Body only: a description may name the caller's tool
+    # (init-worktree is invoked "via the Skill tool" but grants only Bash and Read).
+    text = skill.read_text()
+    grants = {grant.split("(", 1)[0] for grant in allowed_tools(text)}
+    if not grants:
+        pytest.skip("no allowed-tools line: every tool is available")
+    named = set(NAMED_TOOL.findall(text.split("---", 2)[-1]))
+    assert not named - grants, f"{skill.parent.name}: names ungranted tools {sorted(named - grants)}"
+
+
+@pytest.mark.parametrize("name", ["start", "continue"])
+def test_start_and_continue_track_steps_only_when_the_task_list_exists(name: str) -> None:
+    # Claude Code >= 2.1.233 has no task-list tools on Opus 4.8 / Sonnet 5 / Fable 5 and newer
+    # unless CLAUDE_CODE_ENABLE_TODO_TOOLS=1, so an unconditional checklist step points at a
+    # missing tool.
+    text = (FLOW_ROOT / "skills" / name / "SKILL.md").read_text()
+    stop_and_read = section(text, "<STOP-AND-READ>", "</STOP-AND-READ>")
+    assert "If the session has the task list" in stop_and_read
+    assert "otherwise continue without it" in stop_and_read
+    assert {"TaskCreate", "TaskUpdate", "TodoWrite"} <= allowed_tools(text)
+
+
+REVIEW_DISPATCHES = (
+    # (phase heading, next heading, role, model, access, output-contract marker)
+    ("### Phase 3", "### Phase 4", "reviewer", "sonnet", "read-only", "verdict JSON contract"),
+    ("#### 5.1.", "#### 5.2.", "researcher", "sonnet", "read-only", "site inventory and evidence contract"),
+    ("#### 5.2.", "#### 5.3.", "implementer", "haiku", "workspace-write", "OK/failure-description output contract"),
+    ("#### 5.3.", "#### 5.4.", "skeptic", "sonnet", "read-only", "clean-result output contract"),
 )
 
-FORBIDDEN_HARNESS_FILE_TOOLS = (
-    "write tool",
-    "edit tool",
-    "read tool",
-    "apply_patch",
-    "str_replace_editor",
-    "notebookedit",
-)
 
-
-def test_create_codex_agents_skill_exists() -> None:
-    assert CODEX_AGENTS_SKILL.is_file()
-
-
-def test_create_codex_agents_declares_exact_helper_grants() -> None:
-    # Deliberately does not reuse the generic `helper_forms` scan used for MIGRATED skills:
-    # this skill's prose legitimately contains the Codex profile names `flow-fast` /
-    # `flow-balanced` / `flow-strongest` as data values (not bin/ helper invocations), which
-    # match the same `flow-[a-z0-9-]+` pattern the generic scanner treats as a command needing
-    # its own grant. Check exactly what the design requires instead: both exact forms of the
-    # one real helper this skill drives, and no unscoped wildcard.
-    grants = allowed_tools(CODEX_AGENTS_SKILL.read_text())
-    assert "Bash(flow-codex-agent-setup)" in grants
-    assert "Bash(flow-codex-agent-setup:*)" in grants
-    assert "Bash(flow-*)" not in grants
-
-
-def test_create_codex_agents_has_no_hardcoded_model_slug() -> None:
-    body = CODEX_AGENTS_SKILL.read_text().lower()
-    hits = [slug for slug in FORBIDDEN_MODEL_SLUGS if slug in body]
-    assert not hits, f"create-codex-agents hard-codes a model slug: {hits}"
-
-
-def test_create_codex_agents_names_no_concrete_harness_file_tool() -> None:
-    body = CODEX_AGENTS_SKILL.read_text().lower()
-    hits = [name for name in FORBIDDEN_HARNESS_FILE_TOOLS if name in body]
-    assert not hits, f"create-codex-agents names a concrete harness file tool: {hits}"
-
-
-# --- Task 6: documentation contracts -----------------------------------------------------
-
-
-def test_readme_documents_codex_runtime_contract() -> None:
-    readme = (FLOW_ROOT / "README.md").read_text()
-    for required in (
-        "$flow:start",
-        "/flow:start",
-        "/hooks",
-        "allow_managed_hooks_only",
-        "flow:create-codex-agents",
-        "Codex CLI 0.144.6",
-        "codex -m",
-        "one active Flow plugin version",
-        "POSIX",
-    ):
-        assert required in readme
-
-
-def test_old_allowed_tools_design_is_marked_superseded() -> None:
-    text = (FLOW_ROOT.parents[1] / "docs/superpowers/specs/2026-07-07-flow-allowed-tools-audit-design.md").read_text()
-    assert "Superseded for Codex" in text
-    assert "2026-07-17-flow-codex-support-design.md" in text
+@pytest.mark.parametrize(("start", "end", "role", "model", "access", "output_marker"), REVIEW_DISPATCHES)
+def test_review_comments_declares_dispatch_contracts(
+    start: str, end: str, role: str, model: str, access: str, output_marker: str
+) -> None:
+    text = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
+    # Both headings must exist and be ordered, or `section` silently runs to the end of the file and
+    # one phase could pass on a later phase's text.
+    assert start in text
+    assert end in text.split(start, 1)[1], f"{end!r} must follow {start!r}"
+    phase = re.sub(r"\s+", " ", section(text, start, end))
+    assert f'**Subagent:** `subagent_type="general-purpose"`, `model="{model}"`' in phase
+    for marker in (role, access, output_marker):
+        assert marker in phase, f"{start}: missing {marker!r}"
 
 
 # --- Task: persistent per-PR review ledger (claude-tools-elf.39) -----------------------------

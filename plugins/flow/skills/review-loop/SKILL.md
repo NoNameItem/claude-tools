@@ -180,7 +180,7 @@ hand-off, and it colors the final report at (g).
   re-surfaces does so only because its thread actually advanced (a reviewer objected, a reviewer
   acknowledged, or the human posted an instruction) — with its prior verdict attached.
 
-- Invoke `flow:review-comments <number>` through the active harness's skill mechanism and
+- Invoke `flow:review-comments <number>` using the Skill tool and
   preserve all of its confirmation, push, and reply gates. It is interactive and may
   push a new head. There is no round-level "no" gate: declining a card in Phase 4
   (`won't-fix` / `follow-up` instead of `fix`) settles that one comment and moves to the
