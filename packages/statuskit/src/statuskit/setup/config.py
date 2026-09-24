@@ -68,7 +68,7 @@ DEFAULT_CONFIG = """\
 # session_time_format = "remaining"  # "remaining", "reset_at"
 # weekly_time_format = "reset_at"    # "remaining", "reset_at"
 # model_time_format = "reset_at"     # "remaining", "reset_at"
-# cache_ttl = 60
+# cache_ttl = 120
 """
 
 

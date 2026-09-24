@@ -1,18 +1,28 @@
 """Tests for usage_limits module."""
 
 import json
+import re
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
+import pytest
+from statuskit.core.models import RateLimits, RateLimitWindow
 from statuskit.modules.usage_limits import (
+    API_URL,
+    RETRY_AFTER_FALLBACK,
+    RETRY_AFTER_MAX,
+    FetchOutcome,
     UsageCache,
     UsageData,
     UsageGroup,
     UsageLimit,
     UsageLimitsModule,
+    _parse_retry_after,
     calculate_color,
     fetch_usage_api,
     format_progress_bar,
@@ -22,6 +32,7 @@ from statuskit.modules.usage_limits import (
     parse_api_response,
 )
 
+from tests.factories import make_input_data, make_model_data
 from tests.factories.usage_limits import make_api_response, make_legacy_api_response
 
 SESSION_WINDOW = 5.0
@@ -47,10 +58,15 @@ class TestDataModel:
         assert group.overall is None
         assert group.models == []
 
-    def test_usage_data_defaults_last_attempt_to_fetched(self):
-        now = datetime.now(UTC)
-        data = UsageData(groups=[], fetched_at=now)
-        assert data.last_attempt_at == now
+    def test_usage_data_leaves_last_attempt_at_none_when_omitted(self):
+        """No default from `fetched_at`: omitting it must mean "no attempt", not "just now".
+
+        Only `UsageCache.claim_attempt` / `_apply_outcome` are allowed to set it — a `UsageData`
+        fabricated for another reason (e.g. `_persist_payload`'s cold-cache stand-in) must not
+        look like a completed attempt and wrongly throttle the next real fetch.
+        """
+        data = UsageData(groups=[], fetched_at=datetime.now(UTC))
+        assert data.last_attempt_at is None
 
 
 class TestParseLimitsArray:
@@ -257,6 +273,15 @@ class TestParseLimitsArray:
         )
         assert parse_api_response(response).groups == []
 
+    def test_oversized_integer_utilization_is_skipped(self):
+        # json.loads() turns a long integer literal into an int too large for a float, and
+        # math.isfinite() raises OverflowError on it instead of returning False.
+        huge = "1" + "0" * 400
+        response = json.loads(
+            '{"limits": [{"kind":"session","group":"session","percent":' + huge + ',"resets_at":null,"scope":null}]}'
+        )
+        assert parse_api_response(response).groups == []
+
     def test_non_dict_response_yields_no_groups(self):
         # json.loads() can hand back a list or a string; the parser must degrade, not raise.
         assert parse_api_response(["not", "a", "dict"]).groups == []
@@ -421,10 +446,24 @@ class TestFormatRemainingTime:
 
 
 class TestFormatResetAt:
+    @pytest.fixture
+    def east_of_utc(self, monkeypatch):
+        """Local timezone UTC+3, so astimezone() moves a UTC time forward."""
+        monkeypatch.setenv("TZ", "Etc/GMT-3")  # the POSIX sign is inverted: this is UTC+3
+        time.tzset()
+        yield
+        monkeypatch.undo()
+        time.tzset()
+
     def test_format_weekday_time(self):
         result = format_reset_at(datetime(2026, 1, 29, 17, 0, 0, tzinfo=UTC))
         assert len(result.split()) == 2
         assert ":" in result
+
+    @pytest.mark.usefixtures("east_of_utc")
+    def test_reset_near_datetime_max_falls_back_to_utc(self):
+        # East of UTC, astimezone() pushes the last representable UTC minute past datetime.max.
+        assert format_reset_at(datetime.max.replace(tzinfo=UTC)) == "Fri 23:59"
 
 
 class TestFormatProgressBar:
@@ -436,6 +475,13 @@ class TestFormatProgressBar:
 
     def test_half_bar(self):
         assert format_progress_bar(50.0, width=10) == "[█████░░░░░]"
+
+    def test_out_of_range_utilization_is_clamped(self):
+        # An untrusted percent may be any finite float: 1e20 overflowed the repeat count, and
+        # 1e9..1e19 would have built a multi-GB bar.
+        assert format_progress_bar(1e20, width=10) == "[██████████]"
+        assert format_progress_bar(150.0, width=10) == "[██████████]"
+        assert format_progress_bar(-1e20, width=10) == "[░░░░░░░░░░]"
 
 
 class TestGetToken:
@@ -460,27 +506,77 @@ class TestGetToken:
 
 
 class TestFetchUsageApi:
-    def test_fetch_success(self):
-        response_data = json.dumps(make_api_response()).encode()
+    """The usage-API call and how each outcome is reported."""
+
+    def test_successful_fetch_returns_data(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_response = mock_urlopen.return_value.__enter__.return_value
-            mock_response.read.return_value = response_data
-            data = fetch_usage_api("test-token")
-            assert data is not None
-            session = _group(data, "session")
-            assert session is not None
-            assert session.overall is not None
-            assert session.overall.utilization == 11.0
+            mock_response.read.return_value = json.dumps(make_api_response()).encode()
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is not None
+        assert outcome.data.groups
+        assert outcome.retry_after is None
+        assert outcome.status is None
 
-    def test_fetch_timeout(self):
+    def test_timeout_reports_the_error_class(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = TimeoutError("timeout")
-            assert fetch_usage_api("test-token") is None
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "timeout"
 
-    def test_fetch_error(self):
+    def test_network_error_reports_the_error_class(self):
         with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
             mock_urlopen.side_effect = URLError("connection failed")
-            assert fetch_usage_api("test-token") is None
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "network error"
+
+    def test_bad_json_reports_the_error_class(self):
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.return_value.__enter__.return_value.read.return_value = b"{not json"
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.error == "bad JSON"
+
+    def test_429_carries_retry_after_seconds(self):
+        headers = Message()
+        headers["Retry-After"] = "1198"
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="Too Many Requests", hdrs=headers, fp=None)
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.status == 429
+        assert outcome.retry_after == 1198.0
+
+    def test_429_without_a_usable_header_falls_back(self):
+        for value in (None, "", "soon", "-5"):
+            headers = Message()
+            if value is not None:
+                headers["Retry-After"] = value
+            with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="rate", hdrs=headers, fp=None)
+                outcome = fetch_usage_api("test-token")
+            assert outcome.retry_after == RETRY_AFTER_FALLBACK
+
+    def test_other_http_error_reports_the_status(self):
+        headers = Message()
+        with patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen:
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=401, msg="Unauthorized", hdrs=headers, fp=None)
+            outcome = fetch_usage_api("test-token")
+        assert outcome.data is None
+        assert outcome.status == 401
+        assert outcome.retry_after is None
+
+    def test_parse_retry_after_accepts_plain_seconds(self):
+        assert _parse_retry_after("92") == 92.0
+        assert _parse_retry_after(" 92 ") == 92.0
+        assert _parse_retry_after("0") == 0.0
+
+    def test_parse_retry_after_caps_the_delay(self):
+        assert _parse_retry_after("3599") == 3599.0
+        assert _parse_retry_after("3601") == RETRY_AFTER_MAX
+        assert _parse_retry_after("1000000000000") == RETRY_AFTER_MAX
 
 
 def _session_group(util: float, resets_at: datetime | None) -> UsageGroup:
@@ -490,6 +586,27 @@ def _session_group(util: float, resets_at: datetime | None) -> UsageGroup:
 def _weekly_group(util: float | None, resets_at: datetime | None, models: list[UsageLimit] | None = None) -> UsageGroup:
     overall = UsageLimit("Weekly", util, resets_at) if util is not None else None
     return UsageGroup("weekly", WEEKLY_WINDOW, overall=overall, models=models or [])
+
+
+def _payload_ctx(make_render_context, tmp_path, *, five_hour=(46.0, None), seven_day=(15.0, None), debug=False):
+    """Render context whose statusline payload carries `rate_limits`.
+
+    Reset times are given as offsets in hours from now, or None for "no reset time".
+    """
+
+    def epoch(offset_hours):
+        if offset_hours is None:
+            return None
+        return int((datetime.now(UTC) + timedelta(hours=offset_hours)).timestamp())
+
+    block = {}
+    if five_hour is not None:
+        block["five_hour"] = {"used_percentage": five_hour[0], "resets_at": epoch(five_hour[1])}
+    if seven_day is not None:
+        block["seven_day"] = {"used_percentage": seven_day[0], "resets_at": epoch(seven_day[1])}
+    return make_render_context(
+        make_input_data(model=make_model_data(), rate_limits=block), debug=debug, cache_dir=tmp_path
+    )
 
 
 class TestUsageCache:
@@ -534,6 +651,21 @@ class TestUsageCache:
                 assert mock_tmp.call_args[1]["dir"] == tmp_path
                 assert mock_tmp.call_args[1]["delete"] is False
                 mock_replace.assert_called_once()
+
+    def test_save_reports_success_and_failure_via_last_save_ok(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path)
+        data = UsageData(groups=[_session_group(45.0, datetime.now(UTC))], fetched_at=datetime.now(UTC))
+
+        cache.save(data)
+        assert cache.last_save_ok is True
+
+        with patch.object(Path, "replace", side_effect=OSError("disk full")):
+            cache.save(data)
+        assert cache.last_save_ok is False
+
+        # A later successful save clears the flag rather than latching the earlier failure.
+        cache.save(data)
+        assert cache.last_save_ok is True
 
     def test_old_format_cache_keeps_timestamps_without_limits(self, tmp_path):
         """Legacy cache (session/weekly/sonnet dict): limits are a miss, timestamps survive.
@@ -677,20 +809,156 @@ class TestUsageCache:
         cache_file.write_text("{not json at all")
         assert cache.load() is None
 
+    def test_retry_after_until_round_trips(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        until = datetime.now(UTC) + timedelta(seconds=1198)
+        cache.save(UsageData(groups=[], fetched_at=datetime.now(UTC), retry_after_until=until))
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.retry_after_until == until
+
+    def test_payload_round_trips(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        seen = datetime.now(UTC)
+        reset = datetime.now(UTC) + timedelta(hours=3)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=seen,
+                payload=RateLimits(
+                    five_hour=RateLimitWindow(46.0, reset),
+                    seven_day=RateLimitWindow(15.0, None),
+                ),
+                payload_seen_at=seen,
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.payload is not None
+        assert loaded.payload.five_hour is not None
+        assert loaded.payload.five_hour.used_percentage == 46.0
+        assert loaded.payload.five_hour.resets_at == reset
+        assert loaded.payload.seven_day is not None
+        assert loaded.payload.seven_day.resets_at is None
+        assert loaded.payload_seen_at == seen
+
+    def test_naive_timestamps_load_as_utc(self, tmp_path):
+        """Offset-less stamps (hand-edited or migrated cache) load as UTC, like a naive `resets_at`.
+
+        Every one of them is later compared with aware `datetime.now(UTC)`; a naive value would
+        raise TypeError there and take the whole module down.
+        """
+        cache = UsageCache(cache_dir=tmp_path)
+        (tmp_path / "usage_limits.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": "2026-01-27T12:00:00",
+                    "last_attempt_at": "2026-01-27T12:30:00",
+                    "retry_after_until": "2026-01-27T12:50:00",
+                    "payload_seen_at": "2026-01-27T12:29:00",
+                    "payload": {
+                        "five_hour": {"used_percentage": 46.0, "resets_at": "2026-01-27T15:00:00"},
+                        "seven_day": {"used_percentage": 15.0, "resets_at": None},
+                    },
+                }
+            )
+        )
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.fetched_at == datetime(2026, 1, 27, 12, 0, tzinfo=UTC)
+        assert loaded.last_attempt_at == datetime(2026, 1, 27, 12, 30, tzinfo=UTC)
+        assert loaded.retry_after_until == datetime(2026, 1, 27, 12, 50, tzinfo=UTC)
+        assert loaded.payload_seen_at == datetime(2026, 1, 27, 12, 29, tzinfo=UTC)
+        assert loaded.payload is not None
+        assert loaded.payload.five_hour is not None
+        assert loaded.payload.five_hour.resets_at == datetime(2026, 1, 27, 15, 0, tzinfo=UTC)
+
+    def test_cache_without_the_new_keys_still_loads(self, tmp_path):
+        """A file written by the previous version must keep working."""
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": "weekly", "overall": None, "models": []}]},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "last_attempt_at": datetime.now(UTC).isoformat(),
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        assert loaded.retry_after_until is None
+        assert loaded.payload is None
+        assert loaded.payload_seen_at is None
+
+    def test_malformed_new_keys_are_ignored(self, tmp_path):
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": []},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "last_attempt_at": datetime.now(UTC).isoformat(),
+                    "retry_after_until": "not a date",
+                    "payload": "soon",
+                    "payload_seen_at": 12345,
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        assert loaded.retry_after_until is None
+        assert loaded.payload is None
+
+    def test_oversized_integers_are_dropped_not_raised(self, tmp_path):
+        """An int too large for a float drops the value instead of raising out of load()."""
+        huge = 10**400
+        cache_file = tmp_path / "usage_limits.json"
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "data": {"groups": [{"key": "weekly", "overall": {"label": "Weekly", "utilization": huge}}]},
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "payload": {"five_hour": {"used_percentage": huge}},
+                }
+            )
+        )
+        loaded = UsageCache(cache_dir=tmp_path, rate_limit=60).load()
+        assert loaded is not None
+        weekly = _group(loaded, "weekly")
+        assert weekly is not None
+        assert weekly.overall is None
+        assert loaded.payload is None
+
+    def test_claim_attempt_writes_the_stamp_before_returning(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        before = datetime.now(UTC)
+        claimed = cache.claim_attempt(None)
+        on_disk = json.loads((tmp_path / "usage_limits.json").read_text())
+        assert claimed.last_attempt_at is not None
+        assert claimed.last_attempt_at >= before
+        assert datetime.fromisoformat(on_disk["last_attempt_at"]) >= before
+
+    def test_claim_attempt_keeps_existing_data(self, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=60)
+        old = datetime.now(UTC) - timedelta(minutes=40)
+        cache.save(UsageData(groups=[_weekly_group(2.0, None)], fetched_at=old, last_attempt_at=old))
+        claimed = cache.claim_attempt(cache.load())
+        assert claimed.fetched_at == old
+        assert claimed.last_attempt_at is not None
+        assert claimed.last_attempt_at > old
+        loaded = cache.load()
+        assert loaded is not None
+        assert loaded.groups
+
 
 class TestRenderMultiline:
     """Nested multiline rendering."""
 
-    def test_session_and_weekly(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_session_and_weekly(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
-                    _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3)),
-                ],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             output = UsageLimitsModule(ctx, {}).render()
         assert output is not None
         assert "Usage:" in output
@@ -699,20 +967,19 @@ class TestRenderMultiline:
         assert "Weekly:" in output
         assert "2%" in output
 
-    def test_models_nested_under_weekly(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_models_nested_under_weekly(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
                 groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
                     _weekly_group(
-                        2.0,
-                        datetime.now(UTC) + timedelta(days=3),
+                        None,
+                        None,
                         models=[
                             UsageLimit("Fable", 34.0, datetime.now(UTC) + timedelta(days=4)),
                             UsageLimit("Opus", 88.0, datetime.now(UTC) + timedelta(days=4)),
                         ],
-                    ),
+                    )
                 ],
                 fetched_at=datetime.now(UTC),
             )
@@ -726,14 +993,11 @@ class TestRenderMultiline:
         assert "Opus:" in output
         assert "88%" in output
 
-    def test_zero_percent_model_hidden_by_default(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_zero_percent_model_hidden_by_default(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
-                groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
-                    _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", 0.0, None)]),
-                ],
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 0.0, None)])],
                 fetched_at=datetime.now(UTC),
             )
             output = UsageLimitsModule(ctx, {}).render()
@@ -829,21 +1093,47 @@ class TestRenderMultiline:
         assert "Fable:" in output
         assert "(—)" in output
 
+    def test_show_reset_time_false_hides_time_and_placeholder(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=None)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 45.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {"show_reset_time": False}).render()
+        assert output is not None
+        assert "11%" in output
+        assert "45%" in output
+        # Neither the reset time of a timed row nor the "(—)" placeholder of an untimed one.
+        assert "(" not in output
+
+    def test_naive_resets_at_is_treated_as_utc(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        naive = (datetime.now(UTC) + timedelta(days=4)).replace(tzinfo=None)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 34.0, naive)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {"model_time_format": "remaining"}).render()
+        assert output is not None
+        assert "34%" in output
+        assert "(—)" not in output
+
 
 class TestRenderSingleLine:
     """Flat single-line rendering."""
 
-    def test_flat_short_labels(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_flat_short_labels(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.5), seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = UsageData(
                 groups=[
-                    _session_group(11.0, datetime.now(UTC) + timedelta(hours=2.5)),
                     _weekly_group(
-                        2.0,
-                        datetime.now(UTC) + timedelta(days=3),
+                        None,
+                        None,
                         models=[UsageLimit("Fable", 34.0, datetime.now(UTC) + timedelta(days=4))],
-                    ),
+                    )
                 ],
                 fetched_at=datetime.now(UTC),
             )
@@ -856,17 +1146,342 @@ class TestRenderSingleLine:
 
 
 class TestProgressBar:
-    def test_render_with_progress_bar(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_render_with_progress_bar(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(45.0, 2.5), seven_day=None)
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[_session_group(45.0, datetime.now(UTC) + timedelta(hours=2.5))],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             output = UsageLimitsModule(ctx, {"show_progress_bar": True}).render()
         assert output is not None
         assert "[" in output
         assert "]" in output
+
+
+class TestPayloadSource:
+    """Session / Weekly come from the payload; per-model rows come from the API cache."""
+
+    def test_overall_rows_come_from_the_payload(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            # The cache holds DIFFERENT overall numbers — the payload must win.
+            mock_get.return_value = UsageData(
+                groups=[_session_group(11.0, None), _weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+        assert "15%" in output
+        assert "11%" not in output
+        assert "2%" not in output
+
+    def test_model_rows_come_from_the_cache(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "Fable" in output
+        assert "25%" in output
+
+    def test_without_payload_or_cached_payload_no_overall_rows(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_session_group(11.0, None), _weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is None
+
+    def test_model_rows_render_without_any_payload(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(2.0, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "Fable" in output
+        assert "2%" not in output
+
+    def test_cached_payload_is_used_when_the_block_is_absent(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=datetime.now(UTC) - timedelta(minutes=2),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+
+    def test_payload_is_persisted_to_the_cache(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.payload is not None
+        assert cached.payload.five_hour is not None
+        assert cached.payload.five_hour.used_percentage == 46.0
+        assert cached.payload_seen_at is not None
+
+    def test_payload_is_not_rewritten_within_the_save_interval(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+            first_cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+            assert first_cached is not None
+            first = first_cached.payload_seen_at
+            UsageLimitsModule(ctx, {})._get_usage_data()
+            second_cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+            assert second_cached is not None
+            second = second_cached.payload_seen_at
+        assert first is not None
+        assert first == second
+
+    def test_show_session_false_hides_the_payload_row(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+            output = UsageLimitsModule(ctx, {"show_session": False}).render()
+        assert output is not None
+        assert "46%" not in output
+        assert "15%" in output
+
+    def test_persisting_the_payload_does_not_suppress_the_first_fetch(self, make_render_context, tmp_path):
+        """Regression: a payload write on a cold cache must not read back as a completed attempt.
+
+        `_persist_payload` fabricates a `UsageData` when there is no cache file yet. If that
+        fabricated entry's `last_attempt_at` defaulted to `fetched_at` (as `UsageData` used to),
+        the TTL gate right below would see an attempt "already made" moments ago and skip the
+        fetch for a full `cache_ttl` — even though no request was ever sent.
+        """
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            mock_fetch.return_value = FetchOutcome(
+                data=UsageData(groups=[_weekly_group(2.0, None)], fetched_at=datetime.now(UTC))
+            )
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_the_persisted_payload_does_not_throttle_a_sibling_session(self, make_render_context, tmp_path):
+        """Regression: the cold-cache payload write must not stand a SIBLING session down either.
+
+        The payload block is written to a cold cache before any attempt is made. A second module
+        instance over that same cache dir must still attempt its own fetch — the fabricated entry
+        on disk must not carry a `last_attempt_at` that throttles it. (A render with no token is no
+        longer a way to get here: it claims the attempt, and a claim is meant to throttle.)
+        """
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        UsageLimitsModule(ctx, {})._persist_payload(None)
+        assert (tmp_path / "usage_limits.json").exists()
+
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            mock_fetch.return_value = FetchOutcome(
+                data=UsageData(groups=[_weekly_group(2.0, None)], fetched_at=datetime.now(UTC))
+            )
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+
+class TestStaleness:
+    """Rows rendered from a cache whose source failed to refresh carry their age."""
+
+    def _stale_cache(self, models):
+        """Endpoint cache whose last attempt failed 40 minutes after the last success.
+
+        The extra second keeps the age clear of the `40m` / `39m` boundary: the renderer floors
+        minutes, so an age of exactly 2400 s would be at the mercy of float rounding.
+        """
+        fetched = datetime.now(UTC) - timedelta(minutes=40, seconds=1)
+        return UsageData(
+            groups=[_weekly_group(None, None, models=models)],
+            fetched_at=fetched,
+            last_attempt_at=datetime.now(UTC),
+        )
+
+    def test_model_row_shows_its_age_when_the_refresh_failed(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, None)])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(40m ago)" in output
+
+    def test_fresh_model_row_has_no_suffix(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=now,
+                last_attempt_at=now,
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "ago)" not in output
+
+    def test_successful_fetch_leaves_no_stale_suffix(self, make_render_context, minimal_input_data, tmp_path):
+        """End-to-end: a real, successful fetch must not leave `fetched_at` behind `last_attempt_at`.
+
+        `test_fresh_model_row_has_no_suffix` above only proves the renderer is correct once
+        `fetched_at == last_attempt_at`; it hand-builds that state directly. Production never
+        produced it before this fix: `_apply_outcome`'s success branch stamped `last_attempt_at`
+        with a fresh `now` but left `fetched_at` at the earlier instant `parse_api_response` set
+        inside `fetch_usage_api` — so `_display_data`'s `fetched_at < last_attempt_at` check was
+        true immediately after every successful fetch, and every per-model row carried a permanent,
+        ever-growing "(Xm ago)".
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        with (
+            patch("statuskit.modules.usage_limits.get_token") as mock_token,
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            mock_token.return_value = "test-token"
+            mock_fetch.return_value = FetchOutcome(
+                data=parse_api_response(make_api_response(models={"Fable": (25.0, None)}))
+            )
+            output = module.render()
+        assert output is not None
+        assert "ago)" not in output
+
+    def test_live_payload_rows_never_show_an_age(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(46.0, 3.0), seven_day=(15.0, 60.0))
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "46%" in output
+        assert "ago)" not in output
+
+    def test_cached_payload_rows_show_their_age(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=datetime.now(UTC) - timedelta(minutes=5, seconds=1),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(5m ago)" in output
+
+    def test_cached_payload_rows_ignore_cache_ttl(self, make_render_context, minimal_input_data, tmp_path):
+        """`cache_ttl` governs the endpoint only: a long TTL must not hide an old payload row's age."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=now,
+                last_attempt_at=now,
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=59, seconds=1),
+            )
+            output = UsageLimitsModule(ctx, {"cache_ttl": 3600}).render()
+        assert output is not None
+        assert "(59m ago)" in output
+
+    def test_payload_rows_are_late_after_one_save_interval(self, make_render_context, minimal_input_data, tmp_path):
+        """Past the payload save interval (60 s) a cached payload is late, even inside cache_ttl."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        now = datetime.now(UTC)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[],
+                fetched_at=now,
+                last_attempt_at=now,
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(seconds=91),
+            )
+            output = UsageLimitsModule(ctx, {}).render()  # default cache_ttl is 120
+        assert output is not None
+        assert "(1m ago)" in output
+
+    def test_suffix_appears_in_single_line_mode(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, None)])
+            output = UsageLimitsModule(ctx, {"multiline": False}).render()
+        assert output is not None
+        assert "(40m ago)" in output
+
+    def test_suffix_follows_the_reset_time(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        reset = datetime.now(UTC) + timedelta(days=2)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._stale_cache([UsageLimit("Fable", 25.0, reset)])
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert re.search(r"\(\w{3} \d{2}:\d{2}\) \(40m ago\)", output)
+
+    def test_sub_minute_age_has_no_suffix(self, make_render_context, tmp_path):
+        """Below the floor, `format_remaining_time` renders "0m" — suppress the suffix entirely."""
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        fetched = datetime.now(UTC) - timedelta(seconds=30)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = UsageData(
+                groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+                fetched_at=fetched,
+                last_attempt_at=datetime.now(UTC),
+            )
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "ago)" not in output
+
+    def _aged_cache(self, seconds: float) -> UsageData:
+        """A per-model cache whose last refresh attempt failed `seconds` after the last success."""
+        return UsageData(
+            groups=[_weekly_group(None, None, models=[UsageLimit("Fable", 25.0, None)])],
+            fetched_at=datetime.now(UTC) - timedelta(seconds=seconds),
+            last_attempt_at=datetime.now(UTC),
+        )
+
+    def test_age_inside_the_refresh_cycle_has_no_suffix(self, make_render_context, tmp_path):
+        """Past the minute floor but inside cache_ttl: the data is not due yet, so it is not late."""
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._aged_cache(61)
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "ago)" not in output
+
+    def test_age_past_the_refresh_cycle_shows_the_suffix(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._aged_cache(121)  # default cache_ttl is 120
+            output = UsageLimitsModule(ctx, {}).render()
+        assert output is not None
+        assert "(2m ago)" in output
+
+    def test_the_threshold_follows_cache_ttl(self, make_render_context, tmp_path):
+        """The same age is late under a short TTL and not yet late under a long one."""
+        ctx = _payload_ctx(make_render_context, tmp_path)
+        with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
+            mock_get.return_value = self._aged_cache(121)
+            short = UsageLimitsModule(ctx, {"cache_ttl": 60}).render()
+            mock_get.return_value = self._aged_cache(121)
+            long_ttl = UsageLimitsModule(ctx, {"cache_ttl": 600}).render()
+        assert short is not None
+        assert long_ttl is not None
+        assert "(2m ago)" in short
+        assert "ago)" not in long_ttl
 
 
 class TestGetUsageDataRateLimited:
@@ -876,15 +1491,23 @@ class TestGetUsageDataRateLimited:
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
         module = UsageLimitsModule(ctx, {})
         assert module.cache is not None
+        # `last_attempt_at` is explicit here — `fetched_at` alone no longer implies "just
+        # attempted" (see TestDataModel::test_usage_data_leaves_last_attempt_at_none_when_omitted),
+        # and this test's whole point is proving the TTL gate blocks the fetch below.
         module.cache.save(
             UsageData(
                 groups=[_session_group(45.0, datetime.now(UTC) + timedelta(hours=2.5))],
                 fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
             )
         )
-        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+        with (
+            patch("statuskit.modules.usage_limits.get_token") as mock_token,
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
             mock_token.return_value = "test-token"
             result = module._get_usage_data()
+        mock_fetch.assert_not_called()
         assert result is not None
         session = _group(result, "session")
         assert session is not None
@@ -908,7 +1531,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = new_data
+                mock_fetch.return_value = FetchOutcome(data=new_data)
                 result = module._get_usage_data()
         assert result is not None
         session = _group(result, "session")
@@ -935,7 +1558,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                mock_fetch.return_value = FetchOutcome(data=UsageData(groups=[], fetched_at=datetime.now(UTC)))
                 result = module._get_usage_data()
         assert result is not None
         assert result.groups == []  # empty result kept, cache NOT used as a cover-up
@@ -963,11 +1586,40 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
+                mock_fetch.return_value = FetchOutcome(data=UsageData(groups=[], fetched_at=datetime.now(UTC)))
                 module._get_usage_data()
         reloaded = module.cache.load()
         assert reloaded is not None
         assert reloaded.last_attempt_at is not None
+
+    def test_empty_parse_still_renders_the_cached_payload(self, make_render_context, minimal_input_data, tmp_path):
+        """A 200-that-parsed-nothing must not blank out Session/Weekly sourced from the cache.
+
+        Regression: `_apply_outcome`'s empty-parse branch used to drop `payload` / `payload_seen_at`
+        from the `UsageData` it handed back to `render()`, while every other branch (success, and
+        every failure) carried the cached payload across. Inside the TTL, gate 3 in
+        `_get_usage_data` already returns the cached entry with its payload untouched — so to the
+        user, Session/Weekly blinked out once every `cache_ttl` for a reason that has nothing to do
+        with where those rows come from.
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+        module.cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=datetime.now(UTC),
+            )
+        )
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            mock_token.return_value = "test-token"
+            with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
+                mock_fetch.return_value = FetchOutcome(data=UsageData(groups=[], fetched_at=datetime.now(UTC)))
+                output = module.render()
+        assert output is not None
+        assert "46%" in output
 
     def test_throttles_after_failed_fetch(self, make_render_context, minimal_input_data, tmp_path):
         ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
@@ -982,7 +1634,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = None
+                mock_fetch.return_value = FetchOutcome()
                 module._get_usage_data()
                 module._get_usage_data()
         assert mock_fetch.call_count == 1
@@ -1003,7 +1655,7 @@ class TestGetUsageDataRateLimited:
         with patch("statuskit.modules.usage_limits.get_token") as mock_token:
             mock_token.return_value = "test-token"
             with patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch:
-                mock_fetch.return_value = None
+                mock_fetch.return_value = FetchOutcome()
                 module._get_usage_data()
         reloaded = module.cache.load()
         assert reloaded is not None
@@ -1020,12 +1672,398 @@ class TestGetUsageDataRateLimited:
         assert output is not None
         assert "[usage_limits] No token" in output
 
+    def test_429_persists_the_backoff_deadline(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(status=429, retry_after=1198.0),
+            ),
+        ):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.retry_after_until is not None
+        assert 1100 < (cached.retry_after_until - datetime.now(UTC)).total_seconds() <= 1198
+
+    def test_huge_retry_after_is_capped_end_to_end(self, make_render_context, minimal_input_data, tmp_path):
+        """Regression: a finite but huge Retry-After overflowed `now + timedelta(...)`.
+
+        The OverflowError escaped `_apply_outcome` and the whole module vanished from the
+        statusline. Only `urlopen` is mocked, so the real header parsing is on the path.
+        """
+        headers = Message()
+        headers["Retry-After"] = "1000000000000"
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.urlopen") as mock_urlopen,
+        ):
+            mock_urlopen.side_effect = HTTPError(url=API_URL, code=429, msg="rate", hdrs=headers, fp=None)
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        cached = UsageCache(cache_dir=tmp_path, rate_limit=120).load()
+        assert cached is not None
+        assert cached.retry_after_until is not None
+        assert (cached.retry_after_until - datetime.now(UTC)).total_seconds() <= RETRY_AFTER_MAX
+
+    def test_backoff_blocks_the_next_request(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) + timedelta(minutes=10),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            module = UsageLimitsModule(ctx, {"cache_ttl": 0})
+            data = module._get_usage_data()
+        mock_fetch.assert_not_called()
+        assert data is not None
+        assert data.groups
+        assert any("Backing off" in m for m in module._debug_messages)
+
+    def test_expired_backoff_allows_the_request(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ) as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_backoff_beyond_the_cap_is_ignored(self, make_render_context, minimal_input_data, tmp_path):
+        """A deadline further than RETRY_AFTER_MAX away was never written by a capped 429.
+
+        It comes from a cache that predates the cap, or a corrupted one; honouring it would stall
+        refreshes indefinitely.
+        """
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime(9999, 12, 31, tzinfo=UTC),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ) as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        mock_fetch.assert_called_once()
+
+    def test_success_clears_the_backoff(self, make_render_context, minimal_input_data, tmp_path):
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=0)
+        cache.save(
+            UsageData(
+                groups=[],
+                fetched_at=datetime.now(UTC) - timedelta(minutes=40),
+                last_attempt_at=datetime.now(UTC) - timedelta(minutes=40),
+                retry_after_until=datetime.now(UTC) - timedelta(seconds=1),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch(
+                "statuskit.modules.usage_limits.fetch_usage_api",
+                return_value=FetchOutcome(
+                    data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC))
+                ),
+            ),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.retry_after_until is None
+
+    @pytest.mark.parametrize("scenario", ["backoff", "ttl", "live_payload"])
+    def test_naive_cache_timestamps_keep_the_module_rendering(
+        self, make_render_context, minimal_input_data, tmp_path, scenario
+    ):
+        """A cache with offset-less stamps must not crash the render.
+
+        Regression: naive values met aware `datetime.now(UTC)` in the backoff, TTL, payload-age
+        and model-age arithmetic and raised TypeError, so the module vanished from the statusline.
+        `live_payload` puts `rate_limits` in the statusline payload: only then does
+        `_persist_payload` reach its save-interval arithmetic on the cached `payload_seen_at`.
+        """
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(seconds=10),
+                retry_after_until=now + timedelta(minutes=10) if scenario == "backoff" else None,
+                payload=RateLimits(
+                    five_hour=RateLimitWindow(46.0, now + timedelta(hours=3)),
+                    seven_day=RateLimitWindow(15.0, None),
+                ),
+                payload_seen_at=now - timedelta(minutes=2),
+            )
+        )
+        cache_file = tmp_path / "usage_limits.json"
+        raw = json.loads(cache_file.read_text())
+        for key in ("fetched_at", "last_attempt_at", "retry_after_until", "payload_seen_at"):
+            if raw.get(key):
+                raw[key] = datetime.fromisoformat(raw[key]).replace(tzinfo=None).isoformat()
+        cache_file.write_text(json.dumps(raw))
+
+        ctx = (
+            _payload_ctx(make_render_context, tmp_path)
+            if scenario == "live_payload"
+            else make_render_context(minimal_input_data, cache_dir=tmp_path)
+        )
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            output = UsageLimitsModule(ctx, {"cache_ttl": 60}).render()
+        mock_fetch.assert_not_called()
+        assert output is not None
+
+    def test_a_sibling_backoff_written_during_the_request_survives(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """The outcome folds into the cache re-loaded after the request, not the snapshot before it.
+
+        The request can take up to API_TIMEOUT; saving the pre-request snapshot would erase a 429
+        backoff a sibling session persisted meanwhile, and the next render would refetch into it.
+        """
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+            )
+        )
+        deadline = now + timedelta(minutes=10)
+
+        def sibling_backs_off(_token):
+            sibling = UsageCache(cache_dir=tmp_path, rate_limit=0)
+            state = sibling.load()
+            assert state is not None
+            state.retry_after_until = deadline
+            sibling.save(state)
+            return FetchOutcome(status=500, error="HTTP 500")
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=sibling_backs_off),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.retry_after_until == deadline
+
+    def test_a_sibling_payload_written_during_the_request_survives_a_success(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """A successful fetch carries the payload as it is after the request, not an older copy."""
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=30),
+            )
+        )
+
+        def sibling_stores_payload(_token):
+            sibling = UsageCache(cache_dir=tmp_path, rate_limit=0)
+            state = sibling.load()
+            assert state is not None
+            state.payload = RateLimits(five_hour=RateLimitWindow(80.0, None), seven_day=None)
+            state.payload_seen_at = now
+            sibling.save(state)
+            return FetchOutcome(data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC)))
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=sibling_stores_payload),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        assert reloaded.payload is not None
+        assert reloaded.payload.five_hour is not None
+        assert reloaded.payload.five_hour.used_percentage == 80.0
+        assert reloaded.payload_seen_at == now
+
+    def test_an_unreadable_cache_after_the_request_falls_back_to_our_snapshot(
+        self, make_render_context, minimal_input_data, tmp_path
+    ):
+        """When the re-load yields nothing, the outcome still lands, folded into our own snapshot."""
+        now = datetime.now(UTC)
+        UsageCache(cache_dir=tmp_path, rate_limit=0).save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=now - timedelta(minutes=40),
+                last_attempt_at=now - timedelta(minutes=40),
+                payload=RateLimits(five_hour=RateLimitWindow(46.0, None), seven_day=None),
+                payload_seen_at=now - timedelta(minutes=30),
+            )
+        )
+
+        def cache_vanishes(_token):
+            (tmp_path / "usage_limits.json").unlink()
+            return FetchOutcome(data=UsageData(groups=[_weekly_group(3.0, None)], fetched_at=datetime.now(UTC)))
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=cache_vanishes),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 60})._get_usage_data()
+        reloaded = UsageCache(cache_dir=tmp_path, rate_limit=0).load()
+        assert reloaded is not None
+        weekly = _group(reloaded, "weekly")
+        assert weekly is not None
+        assert weekly.overall is not None
+        assert weekly.overall.utilization == 3.0
+        assert reloaded.payload is not None
+        assert reloaded.payload.five_hour is not None
+        assert reloaded.payload.five_hour.used_percentage == 46.0
+
+    def test_attempt_is_claimed_before_the_request(self, make_render_context, minimal_input_data, tmp_path):
+        seen: dict = {}
+
+        def fake_fetch(_token):
+            seen["stamp"] = json.loads((tmp_path / "usage_limits.json").read_text()).get("last_attempt_at")
+            return FetchOutcome(error="timeout")
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api", side_effect=fake_fetch),
+        ):
+            UsageLimitsModule(ctx, {"cache_ttl": 0})._get_usage_data()
+        assert seen["stamp"] is not None
+
+    def test_ttl_blocked_render_skips_the_token_lookup(self, make_render_context, minimal_input_data, tmp_path):
+        """The lookup is a Keychain subprocess on macOS; a render the TTL blocks must not pay for it."""
+        cache = UsageCache(cache_dir=tmp_path, rate_limit=120)
+        cache.save(
+            UsageData(
+                groups=[_weekly_group(2.0, None)],
+                fetched_at=datetime.now(UTC),
+                last_attempt_at=datetime.now(UTC),
+            )
+        )
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token") as mock_token:
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_token.assert_not_called()
+
+    def test_token_is_looked_up_after_the_claim(self, make_render_context, minimal_input_data, tmp_path):
+        """Keeps the load-to-claim window down to a file read and write.
+
+        Sibling sessions that load the same stale stamp inside that window all pass the TTL; with the
+        Keychain subprocess inside it, the window was ~17 ms instead of ~0.2 ms.
+        """
+        seen: dict = {}
+
+        def fake_token():
+            path = tmp_path / "usage_limits.json"
+            seen["stamp"] = json.loads(path.read_text()).get("last_attempt_at") if path.exists() else None
+
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", side_effect=fake_token):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        assert seen["stamp"] is not None
+
+    def test_missing_token_counts_as_a_failed_attempt(self, make_render_context, minimal_input_data, tmp_path):
+        """A missing token claims the attempt like any failed fetch; a sibling stands down for the TTL."""
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        with patch("statuskit.modules.usage_limits.get_token", return_value=None):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        with (
+            patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+        ):
+            UsageLimitsModule(ctx, {})._get_usage_data()
+        mock_fetch.assert_not_called()
+
+    def test_debug_message_when_claim_write_fails(self, make_render_context, minimal_input_data, tmp_path):
+        """A claim write that never reaches disk must be visible in debug output.
+
+        `UsageCache.save()` swallows `OSError`; without this, a non-writable cache directory
+        silently disables the attempt-claim coordination and the thundering herd it exists to
+        prevent comes back with no diagnostic.
+        """
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path, debug=True)
+        module = UsageLimitsModule(ctx, {})
+        assert module.cache is not None
+        with (
+            patch("statuskit.modules.usage_limits.get_token") as mock_token,
+            patch("statuskit.modules.usage_limits.fetch_usage_api") as mock_fetch,
+            patch.object(Path, "replace", side_effect=OSError("disk full")),
+        ):
+            mock_token.return_value = "test-token"
+            mock_fetch.return_value = FetchOutcome()
+            output = module.render()
+        assert output is not None
+        assert "Could not write the attempt claim" in output
+
+    def test_debug_message_names_the_failure(self, make_render_context, minimal_input_data, tmp_path):
+        cases = [
+            (FetchOutcome(status=401), "HTTP 401"),
+            (FetchOutcome(status=503), "HTTP 503"),
+            (FetchOutcome(error="timeout"), "timeout"),
+            (FetchOutcome(error="network error"), "network error"),
+            (FetchOutcome(status=429, retry_after=60.0), "HTTP 429"),
+        ]
+        # Each case gets its own cache dir: the 429 case persists a backoff deadline, which
+        # would gate every case that ran after it and make the test pass only in this order.
+        for i, (outcome, expected) in enumerate(cases):
+            ctx = make_render_context(minimal_input_data, cache_dir=tmp_path / str(i), debug=True)
+            with (
+                patch("statuskit.modules.usage_limits.get_token", return_value="t"),
+                patch("statuskit.modules.usage_limits.fetch_usage_api", return_value=outcome),
+            ):
+                module = UsageLimitsModule(ctx, {"cache_ttl": 0})
+                module._get_usage_data()
+            assert any(expected in m for m in module._debug_messages), (outcome, module._debug_messages)
+
 
 def test_cache_ttl_default_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
     ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
     module = UsageLimitsModule(ctx, {})
     assert module.cache is not None
-    assert module.cache.rate_limit == 60
+    assert module.cache.rate_limit == 120
 
 
 def test_cache_ttl_custom_flows_to_cache(make_render_context, minimal_input_data, tmp_path):
@@ -1040,39 +2078,39 @@ class TestModelVisibilityConfig:
 
     @staticmethod
     def _data_with_fable(util: float, resets_at: datetime | None):
+        # No group overall here — an overall row now comes from the payload (see `_payload_ctx`
+        # in each test), not from the API cache these tests mock.
         return UsageData(
-            groups=[
-                _weekly_group(2.0, datetime.now(UTC) + timedelta(days=3), models=[UsageLimit("Fable", util, resets_at)])
-            ],
+            groups=[_weekly_group(None, None, models=[UsageLimit("Fable", util, resets_at)])],
             fetched_at=datetime.now(UTC),
         )
 
-    def test_always_show_forces_zero_percent_model(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_always_show_forces_zero_percent_model(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(0.0, None)
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" in output
 
-    def test_never_show_hides_used_model(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_never_show_hides_used_model(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_never_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_never_beats_always(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_never_beats_always(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"], "models_never_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_matching_is_case_insensitive(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_matching_is_case_insensitive(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_fable(34.0, datetime.now(UTC) + timedelta(days=4))
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
@@ -1081,13 +2119,13 @@ class TestModelVisibilityConfig:
 
     @staticmethod
     def _data_with_scoped_fable():
-        """Weekly with both the model-wide Fable row and a narrower Fable·cli one."""
+        """Weekly models: the model-wide Fable row and a narrower Fable·cli one (no overall)."""
         resets = datetime.now(UTC) + timedelta(days=4)
         return UsageData(
             groups=[
                 _weekly_group(
-                    2.0,
-                    resets,
+                    None,
+                    None,
                     models=[
                         UsageLimit("Fable", 34.0, resets, model="Fable"),
                         UsageLimit("Fable·cli", 12.0, resets, model="Fable", surface="cli"),
@@ -1097,30 +2135,27 @@ class TestModelVisibilityConfig:
             fetched_at=datetime.now(UTC),
         )
 
-    def test_bare_model_name_covers_its_scoped_rows(self, make_render_context, minimal_input_data, tmp_path):
+    def test_bare_model_name_covers_its_scoped_rows(self, make_render_context, tmp_path):
         """An existing `fable` config entry keeps covering the narrower Fable·cli row."""
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_scoped_fable()
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable"]}).render()
         assert output is not None
         assert "Fable" not in output
 
-    def test_bare_model_name_in_always_show_also_forces_scoped_rows(
-        self, make_render_context, minimal_input_data, tmp_path
-    ):
+    def test_bare_model_name_in_always_show_also_forces_scoped_rows(self, make_render_context, tmp_path):
         """Documented consequence of symmetric matching: `always_show` widens the same way.
 
         A bare `Fable` entry force-shows a 0% `Fable·cli` row the user never configured. Kept
         symmetric with `never_show` on purpose — a new scoped row from the API should surface
         rather than stay invisible — so this asserts the surprising direction stays intentional.
         """
-        resets = datetime.now(UTC) + timedelta(days=4)
         data = UsageData(
             groups=[
                 _weekly_group(
-                    2.0,
-                    resets,
+                    None,
+                    None,
                     models=[
                         UsageLimit("Fable", 0.0, None, model="Fable"),
                         UsageLimit("Fable·cli", 0.0, None, model="Fable", surface="cli"),
@@ -1129,15 +2164,15 @@ class TestModelVisibilityConfig:
             ],
             fetched_at=datetime.now(UTC),
         )
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = data
             output = UsageLimitsModule(ctx, {"models_always_show": ["Fable"]}).render()
         assert output is not None
         assert "Fable·cli" in output
 
-    def test_scoped_name_targets_only_that_row(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_scoped_name_targets_only_that_row(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=None, seven_day=(2.0, 72.0))
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
             mock_get.return_value = self._data_with_scoped_fable()
             output = UsageLimitsModule(ctx, {"models_never_show": ["fable·cli"]}).render()
@@ -1149,18 +2184,22 @@ class TestModelVisibilityConfig:
 class TestConfigBackCompat:
     """Old configs with removed keys must not crash."""
 
-    def test_legacy_show_sonnet_key_does_not_crash(self, make_render_context, minimal_input_data, tmp_path):
-        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+    def test_legacy_show_sonnet_key_does_not_crash(self, make_render_context, tmp_path):
+        ctx = _payload_ctx(make_render_context, tmp_path, five_hour=(11.0, 2.0), seven_day=None)
         # show_sonnet / sonnet_time_format were removed; they are now unknown keys.
         config = {"show_sonnet": True, "sonnet_time_format": "reset_at"}
         with patch.object(UsageLimitsModule, "_get_usage_data") as mock_get:
-            mock_get.return_value = UsageData(
-                groups=[_session_group(11.0, datetime.now(UTC) + timedelta(hours=2))],
-                fetched_at=datetime.now(UTC),
-            )
+            mock_get.return_value = UsageData(groups=[], fetched_at=datetime.now(UTC))
             module = UsageLimitsModule(ctx, config)
             output = module.render()
         assert output is not None
         assert "Session:" in output
         # Removed keys fall back to defaults, not applied.
         assert not hasattr(module.params, "show_sonnet")
+
+    def test_cache_ttl_defaults_to_120(self, make_render_context, minimal_input_data, tmp_path):
+        ctx = make_render_context(minimal_input_data, cache_dir=tmp_path)
+        module = UsageLimitsModule(ctx, {})
+        assert module.params.cache_ttl == 120
+        assert module.cache is not None
+        assert module.cache.rate_limit == 120

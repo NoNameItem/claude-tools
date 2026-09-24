@@ -4,6 +4,7 @@ Fixtures use factories from tests.factories package.
 Keep this file lean - only pytest-specific code.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -108,4 +109,26 @@ def force_color(monkeypatch):
     monkeypatch.setenv("FORCE_COLOR", "1")
     can_colorize.cache_clear()
     yield
+    can_colorize.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_color_env():
+    """Undo any FORCE_COLOR / NO_COLOR change and reset termcolor's colorize cache.
+
+    Some code under test sets `os.environ["FORCE_COLOR"]` directly (`_render_statusline`, when
+    `config.colors` is true) rather than through `monkeypatch`, so `monkeypatch`'s own teardown
+    has no record of the mutation and cannot undo it. `can_colorize` is also `@cache`d, so a value
+    computed under one test's env would otherwise survive into every later test in the session —
+    silently recoloring plain-text assertions that never opted into `force_color`. Snapshot and
+    restore both env vars, and clear the cache, after every test regardless of which path set them.
+    """
+    can_colorize = colored.__globals__["can_colorize"]
+    saved = {key: os.environ.get(key) for key in ("FORCE_COLOR", "NO_COLOR")}
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
     can_colorize.cache_clear()

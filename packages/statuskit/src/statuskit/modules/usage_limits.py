@@ -6,15 +6,16 @@ import json
 import math
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from termcolor import colored
 
+from statuskit.core.models import RateLimits, RateLimitWindow, finite_float
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
 
@@ -26,7 +27,12 @@ CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 API_URL = "https://api.anthropic.com/api/oauth/usage"
 API_TIMEOUT = 3.0
+HTTP_TOO_MANY_REQUESTS = 429
+RETRY_AFTER_FALLBACK = 300.0  # seconds to back off when a 429 carries no usable Retry-After
+RETRY_AFTER_MAX = 3600.0  # cap on any 429 backoff: a huge Retry-After must not stall refreshes for years
 CACHE_FILENAME = "usage_limits.json"
+PAYLOAD_SAVE_INTERVAL = 60.0  # min seconds between cache writes of the statusline payload block
+STALE_SUFFIX_FLOOR_SECONDS = 60.0  # never mark below this: format_remaining_time floors to "0m"
 
 FIVE_HOUR_WINDOW = 5.0
 SEVEN_DAY_WINDOW = 7 * HOURS_PER_DAY  # 168.0
@@ -47,6 +53,10 @@ class UsageLimit:
     A scoped limit is keyed by the PAIR, not by the model alone: the API can narrow a limit by
     model, by surface, or by both, and two rows differing only in `surface` are different
     quotas that must not collapse into one another. Both are None for a group's `overall`.
+
+    `stale_seconds` is a render-time field set by the renderer when its source failed to refresh
+    and the value is late for that source's refresh cycle.
+    It is never parsed from the cache and never serialized.
     """
 
     label: str  # "Session" / "Weekly" / "Fable" / "Fable·cli"
@@ -54,6 +64,7 @@ class UsageLimit:
     resets_at: datetime | None  # None when not yet used or API issue
     model: str | None = None
     surface: str | None = None
+    stale_seconds: float | None = None  # age of a cached value late for its source's refresh cycle
 
 
 @dataclass
@@ -67,16 +78,37 @@ class UsageGroup:
 
 
 @dataclass
+class FetchOutcome:
+    """One usage-API call: the parsed data, or why it produced none.
+
+    The caller needs more than "it failed": a 429 must start a backoff for exactly as long as the
+    server asked, and the debug line must name the HTTP status so a 401 (token) is not mistaken
+    for a 429 (rate limit) or a timeout (network).
+    """
+
+    data: UsageData | None = None
+    status: int | None = None  # HTTP status when the server answered at all
+    retry_after: float | None = None  # seconds, set only for a 429
+    error: str | None = None  # short error class for the debug line
+
+
+@dataclass
 class UsageData:
-    """All usage groups plus fetch/attempt timestamps."""
+    """All usage groups plus fetch/attempt timestamps.
+
+    `last_attempt_at` has NO default derived from `fetched_at`: it means "an endpoint fetch was
+    attempted at this instant", set only by `UsageCache.claim_attempt` and `_apply_outcome`. A
+    `UsageData` built for another reason (e.g. `_persist_payload`'s cold-cache stand-in) must be
+    able to say "no attempt has happened" — defaulting it to `fetched_at` would make that
+    fabricated entry look like a completed attempt and wrongly throttle the next real one.
+    """
 
     groups: list[UsageGroup]
     fetched_at: datetime
     last_attempt_at: datetime | None = None
-
-    def __post_init__(self) -> None:
-        if self.last_attempt_at is None:
-            self.last_attempt_at = self.fetched_at
+    retry_after_until: datetime | None = None  # no request before this instant (from a 429)
+    payload: RateLimits | None = None  # last `rate_limits` block seen in a statusline payload
+    payload_seen_at: datetime | None = None  # when that block was seen
 
 
 def _as_dict(value: object) -> dict:
@@ -90,13 +122,19 @@ def _as_dict(value: object) -> dict:
 
 
 def _parse_cache_datetime(value: object) -> datetime | None:
-    """Parse an ISO timestamp from a cache payload, or None when missing/malformed."""
+    """Parse an ISO timestamp from a cache payload, or None when missing/malformed.
+
+    An offset-less value (hand-edited or migrated cache) is read as UTC, the same as a naive
+    `resets_at` at render time: every stamp parsed here is later compared with aware
+    `datetime.now(UTC)`, and a naive one would raise TypeError there and take the module down.
+    """
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _coerce_utilization(value: object) -> float | None:
@@ -109,11 +147,54 @@ def _coerce_utilization(value: object) -> float | None:
       * non-numerics (str/list/dict) — a numeric-looking string is still a shape change, and the
         renderer's `> 0` comparison and `:.0f` format assume a real number;
       * NaN / Infinity — json.loads() accepts those bare tokens, and they survive float() only
-        to raise ValueError/OverflowError inside format_progress_bar's int().
+        to raise ValueError/OverflowError inside format_progress_bar's int();
+      * ints too large for a float — json.loads() builds one from a long integer literal, and
+        math.isfinite() raises OverflowError on it instead of returning False.
     """
-    if isinstance(value, bool) or not isinstance(value, int | float):
+    return finite_float(value)
+
+
+def _deserialize_payload(value: object) -> RateLimits | None:
+    """Rebuild the cached statusline payload block, or None when it is absent or unreadable."""
+    if not isinstance(value, dict):
         return None
-    return float(value) if math.isfinite(value) else None
+
+    def window(raw: object) -> RateLimitWindow | None:
+        if not isinstance(raw, dict):
+            return None
+        used = _coerce_utilization(raw.get("used_percentage"))
+        if used is None:
+            return None
+        resets_at = _parse_cache_datetime(raw.get("resets_at"))
+        return RateLimitWindow(used_percentage=used, resets_at=resets_at)
+
+    five_hour = window(value.get("five_hour"))
+    seven_day = window(value.get("seven_day"))
+    if five_hour is None and seven_day is None:
+        return None
+    return RateLimits(five_hour=five_hour, seven_day=seven_day)
+
+
+def _serialize_payload(payload: RateLimits | None) -> dict | None:
+    """Cache form of the payload block: percentages plus ISO reset times."""
+    if payload is None:
+        return None
+    out: dict = {}
+    for key, window in (("five_hour", payload.five_hour), ("seven_day", payload.seven_day)):
+        if window is None:
+            continue
+        out[key] = {
+            "used_percentage": window.used_percentage,
+            "resets_at": window.resets_at.isoformat() if window.resets_at else None,
+        }
+    return out or None
+
+
+def _payload_window(payload: RateLimits | None, group_key: str) -> RateLimitWindow | None:
+    """The payload window backing a group's overall row."""
+    if payload is None:
+        return None
+    return payload.five_hour if group_key == "session" else payload.seven_day
 
 
 def _scope_label(model: str | None, surface: str | None) -> str | None:
@@ -226,6 +307,55 @@ def _parse_legacy(response: dict) -> list[UsageGroup]:
     return groups
 
 
+def _parse_retry_after(value: str | None) -> float:
+    """Seconds to wait, from a 429's Retry-After header.
+
+    Only the delta-seconds form is honoured; the HTTP-date form and anything unparseable or
+    negative fall back to RETRY_AFTER_FALLBACK, which is never worse than hammering. The delay is
+    capped at RETRY_AFTER_MAX: past a certain size `now + timedelta(...)` overflows and takes the
+    whole module down, and well before that a finite but absurd value would stall refreshes for
+    years. A server that really wants a longer pause answers the one capped retry with another 429.
+    """
+    if value:
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return RETRY_AFTER_FALLBACK
+        if math.isfinite(seconds) and seconds >= 0:
+            return min(seconds, RETRY_AFTER_MAX)
+    return RETRY_AFTER_FALLBACK
+
+
+def _backoff_left(cached: UsageData | None, now: datetime) -> int | None:
+    """Whole seconds left in an active 429 backoff, or None when none holds.
+
+    Every deadline this module writes lies at most RETRY_AFTER_MAX past the moment it was written,
+    so one further than that from `now` comes from a cache written before the cap existed, or from
+    a corrupted file. Ignoring it costs one request; honouring it could stall refreshes for good.
+    """
+    until = cached.retry_after_until if cached else None
+    if until is None or now >= until:
+        return None
+    left = (until - now).total_seconds()
+    if left > RETRY_AFTER_MAX:
+        return None
+    return math.ceil(left)
+
+
+def _late_age(age: float | None, refresh_interval: float) -> float | None:
+    """`age` when a cached value is late for its source's refresh cycle, else None.
+
+    The "(<age> ago)" suffix means "older than it should be", so it starts one refresh cycle out:
+    inside the cycle the data is simply not due yet. Each source has its own cycle — `cache_ttl`
+    for the endpoint, `PAYLOAD_SAVE_INTERVAL` for the payload block — and `cache_ttl` must not
+    leak into payload rows, whose freshness it does not govern. The floor keeps the suffix clear
+    of the range where format_remaining_time renders "0m", which reads as broken, not young.
+    """
+    if age is None or age < max(refresh_interval, STALE_SUFFIX_FLOOR_SECONDS):
+        return None
+    return age
+
+
 def parse_api_response(response: object) -> UsageData:
     """Parse an API response into UsageData, preferring the `limits` array over legacy keys."""
     # Typed `object`, not `dict`: the payload comes straight from json.loads(), so a top-level
@@ -291,7 +421,11 @@ def format_reset_at(reset_time: datetime) -> str:
     Returns:
         Formatted string: "Thu 17:00"
     """
-    local_time = reset_time.astimezone()  # Convert to local timezone
+    try:
+        local_time = reset_time.astimezone()  # Convert to local timezone
+    except (OverflowError, OSError, ValueError):
+        # East of UTC a reset near datetime.max has no local time; show it in UTC instead.
+        local_time = reset_time
     return local_time.strftime("%a %H:%M")
 
 
@@ -305,7 +439,8 @@ def format_progress_bar(utilization: float, width: int = 10) -> str:
     Returns:
         Formatted bar: "[████░░░░░░]"
     """
-    filled = int(utilization / 100 * width)
+    # Clamp: the percent is untrusted, and an out-of-range value overflows or explodes the repeat count.
+    filled = max(0, min(width, int(utilization / 100 * width)))
     empty = width - filled
     return f"[{'█' * filled}{'░' * empty}]"
 
@@ -317,7 +452,7 @@ def _get_keychain_token() -> str | None:
         Token string or None if not found
     """
     try:
-        result = subprocess.run(  # noqa: S603
+        result = subprocess.run(  # noqa: S603 - fixed argv of the absolute /usr/bin/security path and constant args with no shell
             ["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
             capture_output=True,
             text=True,
@@ -357,29 +492,39 @@ def get_token() -> str | None:
     return _get_keychain_token() or _get_file_token()
 
 
-def fetch_usage_api(token: str) -> UsageData | None:
-    """Fetch usage data from Anthropic API.
+def fetch_usage_api(token: str) -> FetchOutcome:
+    """Fetch usage data from the Anthropic OAuth usage endpoint.
 
     Args:
         token: OAuth access token
 
     Returns:
-        UsageData or None on error
+        FetchOutcome: parsed data on success, otherwise the status / retry hint / error class.
     """
+    request = Request(  # noqa: S310 - URL is the constant https API_URL and never user-supplied
+        API_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "anthropic-beta": "oauth-2025-04-20",
+        },
+    )
     try:
-        request = Request(  # noqa: S310
-            API_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-        )
-        with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310
-            data = json.loads(response.read())
-            return parse_api_response(data)
-    except (TimeoutError, URLError, json.JSONDecodeError):
-        pass
-    return None
+        with urlopen(request, timeout=API_TIMEOUT) as response:  # noqa: S310 - opens the Request built above from API_URL
+            payload = json.loads(response.read())
+    except HTTPError as exc:
+        # MUST precede URLError: HTTPError is a subclass, and only it carries the status and the
+        # Retry-After header the backoff is built on.
+        if exc.code == HTTP_TOO_MANY_REQUESTS:
+            header = exc.headers.get("Retry-After") if exc.headers else None
+            return FetchOutcome(status=exc.code, retry_after=_parse_retry_after(header))
+        return FetchOutcome(status=exc.code)
+    except TimeoutError:
+        return FetchOutcome(error="timeout")
+    except URLError:
+        return FetchOutcome(error="network error")
+    except json.JSONDecodeError:
+        return FetchOutcome(error="bad JSON")
+    return FetchOutcome(data=parse_api_response(payload))
 
 
 class UsageCache:
@@ -399,6 +544,9 @@ class UsageCache:
         self.cache_dir = cache_dir
         self.rate_limit = rate_limit
         self.cache_file = cache_dir / CACHE_FILENAME
+        # Set by `save()` on every call; `claim_attempt()`'s caller reads it to know whether the
+        # attempt claim it just made actually reached disk.
+        self.last_save_ok: bool = True
 
     def load(self) -> UsageData | None:
         """Load cached data, or None when the file is missing or carries no usable timestamp.
@@ -421,8 +569,21 @@ class UsageCache:
             if stamp is None:
                 return None  # no usable timestamp at all — nothing worth keeping
 
+            retry_after_until = _parse_cache_datetime(data.get("retry_after_until"))
+            payload_seen_at = _parse_cache_datetime(data.get("payload_seen_at"))
+            payload = _deserialize_payload(data.get("payload"))
+            if payload is None:
+                payload_seen_at = None
+
             def stamps_only() -> UsageData:
-                return UsageData(groups=[], fetched_at=stamp, last_attempt_at=last_attempt_at)
+                return UsageData(
+                    groups=[],
+                    fetched_at=stamp,
+                    last_attempt_at=last_attempt_at,
+                    retry_after_until=retry_after_until,
+                    payload=payload,
+                    payload_seen_at=payload_seen_at,
+                )
 
             def deserialize_limit(d: dict | None) -> UsageLimit | None:
                 if not isinstance(d, dict):
@@ -486,12 +647,26 @@ class UsageCache:
             except (ValueError, TypeError, AttributeError):
                 return stamps_only()  # malformed group payload — keep the throttle timestamps
 
-            return UsageData(groups=groups, fetched_at=stamp, last_attempt_at=last_attempt_at)
+            return UsageData(
+                groups=groups,
+                fetched_at=stamp,
+                last_attempt_at=last_attempt_at,
+                retry_after_until=retry_after_until,
+                payload=payload,
+                payload_seen_at=payload_seen_at,
+            )
         except (json.JSONDecodeError, KeyError, OSError, ValueError, TypeError, AttributeError):
             return None
 
     def save(self, data: UsageData) -> None:
-        """Save data to cache atomically (temp file + rename)."""
+        """Save data to cache atomically (temp file + rename).
+
+        Sets `last_save_ok` so a caller that cares (`claim_attempt`'s caller, via the attribute)
+        can tell a silently swallowed write failure from a normal save — a failed write here means
+        the attempt claim never reached disk, and the thundering-herd protection it exists for
+        comes back unnoticed.
+        """
+        self.last_save_ok = True
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -506,7 +681,6 @@ class UsageCache:
                     "resets_at": limit.resets_at.isoformat() if limit.resets_at else None,
                 }
 
-            last_attempt_at = data.last_attempt_at or data.fetched_at
             cache_data = {
                 "data": {
                     "groups": [
@@ -519,8 +693,21 @@ class UsageCache:
                     ],
                 },
                 "fetched_at": data.fetched_at.isoformat(),
-                "last_attempt_at": last_attempt_at.isoformat(),
             }
+
+            # No fallback to `fetched_at`: an unset `last_attempt_at` means no attempt was ever
+            # made, and writing the key anyway would make a fabricated entry (a payload-only
+            # write on a cold cache) look like a completed attempt on the next load.
+            if data.last_attempt_at is not None:
+                cache_data["last_attempt_at"] = data.last_attempt_at.isoformat()
+
+            if data.retry_after_until is not None:
+                cache_data["retry_after_until"] = data.retry_after_until.isoformat()
+            serialized_payload = _serialize_payload(data.payload)
+            if serialized_payload is not None:
+                cache_data["payload"] = serialized_payload
+                seen = data.payload_seen_at or data.fetched_at
+                cache_data["payload_seen_at"] = seen.isoformat()
 
             with tempfile.NamedTemporaryFile(mode="w", dir=self.cache_dir, suffix=".tmp", delete=False) as f:
                 f.write(json.dumps(cache_data))
@@ -530,8 +717,24 @@ class UsageCache:
                 temp_path.replace(self.cache_file)
             except OSError:
                 temp_path.unlink(missing_ok=True)
+                self.last_save_ok = False
         except OSError:
-            pass
+            self.last_save_ok = False
+
+    def claim_attempt(self, cached: UsageData | None) -> UsageData:
+        """Stamp an attempt as starting now and persist it, before the request goes out.
+
+        Several Claude Code sessions render the same statusline against the same cache file. With
+        the stamp written only after the response, every session whose render lands in the gap
+        fires its own request — a burst per TTL instead of one call. Claiming first costs one
+        atomic write and makes the other sessions fall into the TTL branch. A process that dies
+        mid-request costs at most one TTL of staleness.
+        """
+        now = datetime.now(UTC)
+        claimed = cached if cached is not None else UsageData(groups=[], fetched_at=now)
+        claimed.last_attempt_at = now
+        self.save(claimed)
+        return claimed
 
 
 # Shared by the three *_time_format fields below (same choices, same examples).
@@ -565,7 +768,7 @@ class UsageLimitsParams:
     session_time_format: str = param("remaining", "Session time display", choices=_TIME_FORMAT_CHOICES)
     weekly_time_format: str = param("reset_at", "Weekly time display", choices=_TIME_FORMAT_CHOICES)
     model_time_format: str = param("reset_at", "Per-model time display", choices=_TIME_FORMAT_CHOICES)
-    cache_ttl: int = param(60, "Minimum seconds between usage-API refetches")
+    cache_ttl: int = param(120, "Minimum seconds between usage-API refetches")
 
 
 class UsageLimitsModule(BaseModule[UsageLimitsParams]):
@@ -581,90 +784,199 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
 
     def render(self) -> str | None:
         """Render usage limits display."""
-        data = self._get_usage_data()
+        display = self._display_data(self._get_usage_data())
 
         parts: list[str] = []
 
-        # Main output (only when there is something visible to show)
-        if data and self._visible_groups(data):
+        if display and self._visible_groups(display):
             if self.params.multiline:
-                parts.append(self._render_multiline(data))
+                parts.append(self._render_multiline(display))
             else:
-                parts.append(self._render_single_line(data))
+                parts.append(self._render_single_line(display))
 
-        # Debug output (appended to statusline)
         if self.debug and hasattr(self, "_debug_messages"):
             parts.extend(colored(f"[{self.name}] {msg}", "yellow") for msg in self._debug_messages)
 
         return "\n".join(parts) if parts else None
 
     def _get_usage_data(self) -> UsageData | None:
-        """Get usage data using refresh-first pattern.
+        """Load cached usage data, refreshing it from the API when policy allows.
 
-        Logic:
-        1. Load existing cache (for fallback)
-        2. If can fetch: try API, save result, return data
-        3. Otherwise: return cached data
+        Gates run cheapest first: an active 429 backoff, then the TTL. Past both, the attempt is
+        claimed in the cache so sibling sessions stand down, and only then is the token looked up.
+        On macOS that lookup is a ~16 ms Keychain subprocess: ahead of the claim it would widen the
+        window in which sibling sessions all pass the TTL on the same stale stamp, and every render
+        the TTL blocks would pay for it. A missing token therefore counts as a failed attempt, the
+        same as a network error.
         """
         self._debug_messages: list[str] = []
 
-        # Load cache for potential fallback
         cached = self.cache.load() if self.cache else None
+        cached = self._persist_payload(cached)
 
-        # Check if we can fetch
+        now = datetime.now(UTC)
+        backoff_left = _backoff_left(cached, now)
+        if backoff_left is not None:
+            self._debug_messages.append(f"Backing off after HTTP 429, {backoff_left}s left")
+            return cached
+
+        # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but must
+        # still throttle, otherwise every render re-hits the API and sustains a 429.
+        if cached and cached.last_attempt_at and self.cache:
+            age = (now - cached.last_attempt_at).total_seconds()
+            if age < self.cache.rate_limit:
+                self._debug_messages.append("Rate limited, using cache")
+                return cached
+
+        if self.cache:
+            cached = self.cache.claim_attempt(cached)
+            if not self.cache.last_save_ok:
+                self._debug_messages.append("Could not write the attempt claim; sibling sessions may all refetch")
+
         token = get_token()
         if not token:
             self._debug_messages.append("No token, using cache")
             return cached
 
-        # Check rate limit using cached data (avoids second file read).
-        # Key off last_attempt_at, not fetched_at: a failed fetch leaves fetched_at stale but
-        # must still throttle, otherwise every render re-hits the API and sustains a 429.
-        if cached and cached.last_attempt_at and self.cache:
-            age = (datetime.now(UTC) - cached.last_attempt_at).total_seconds()
-            if age < self.cache.rate_limit:
-                self._debug_messages.append("Rate limited, using cache")
-                return cached
+        outcome = fetch_usage_api(token)
+        # Fold the outcome into the cache as it is now, not into the snapshot loaded before the
+        # request: the request can take up to API_TIMEOUT, and saving that snapshot would roll back
+        # whatever sibling sessions persisted meanwhile (a fresher payload, a 429 backoff). Our own
+        # snapshot is the fallback only when the re-load yields nothing at all.
+        fresh = self.cache.load() if self.cache else None
+        data, to_save = self._apply_outcome(outcome, fresh if fresh is not None else cached)
 
-        # Try to fetch fresh data
-        new_data = fetch_usage_api(token)
-
-        # Determine what to return, and (separately) what to persist.
-        to_save: UsageData | None
-        if new_data and new_data.groups:
-            data = new_data
-            to_save = new_data
-        elif new_data:
-            # The request succeeded but nothing parsed — most likely the API changed shape.
-            # RETURN the empty result rather than silently falling back to the cache: a stale but
-            # plausible-looking statusline would hide the breakage and the user would never learn
-            # statuskit needs updating. But do NOT persist it — writing an empty payload over the
-            # last known-good cache would poison every LATER render that legitimately falls back
-            # (no token / rate limited / API down), long after this hiccup passed.
-            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
-            data = new_data
-            # With no cache to protect there is nothing to poison, and persisting the empty
-            # payload is what keeps last_attempt_at advancing — otherwise the failing API would
-            # be re-hit on every single render.
-            to_save = cached if cached is not None else new_data
-        else:
-            self._debug_messages.append("API failed, using cache")
-            data = cached
-            to_save = cached
-
-        # Advance the attempt clock on whatever we persist so the next render throttles instead of
-        # hammering, while keeping fetched_at (true data age) untouched.
-        if to_save is not None and to_save is not new_data:
-            to_save.last_attempt_at = datetime.now(UTC)
-
-        # Save so the advanced attempt clock (and any fresh data) persists across renders.
-        if self.cache and to_save:
+        if self.cache and to_save is not None:
             self.cache.save(to_save)
-
         if not data:
             self._debug_messages.append("No data available")
-
         return data
+
+    def _apply_outcome(
+        self, outcome: FetchOutcome, cached: UsageData | None
+    ) -> tuple[UsageData | None, UsageData | None]:
+        """Fold one fetch outcome into (what to render, what to persist)."""
+        now = datetime.now(UTC)
+        new_data = outcome.data
+
+        if new_data and new_data.groups:
+            # Both stamps describe THIS attempt: `model_age` (in `_display_data`) measures staleness
+            # as `fetched_at < last_attempt_at`, and a successful fetch must make that false, not
+            # merely close to false — else the age keeps growing from a `fetched_at` set moments
+            # earlier inside `parse_api_response`, and every per-model row carries a permanent
+            # "(0m ago)" that only grows.
+            new_data.fetched_at = now
+            new_data.last_attempt_at = now
+            # Carry the payload block across a successful endpoint fetch — it belongs to the other
+            # source and a refresh here must not wipe it. retry_after_until stays at its default
+            # None, which is exactly how a success clears an earlier backoff.
+            if cached is not None:
+                new_data.payload = cached.payload
+                new_data.payload_seen_at = cached.payload_seen_at
+            return new_data, new_data
+
+        if new_data is not None:
+            # The request succeeded but nothing parsed — most likely the API changed shape. RETURN
+            # the empty result rather than silently falling back to the cache: a stale but
+            # plausible-looking statusline would hide the breakage. But do NOT persist it over the
+            # last known-good cache, which every later fallback render depends on.
+            self._debug_messages.append("Fetched OK but parsed no limits — API format may have changed")
+            # Carry the payload block too — it belongs to the other source, and dropping it here
+            # would make the whole Usage block vanish (Session/Weekly included) for as long as the
+            # endpoint keeps answering 200 with an unparseable body, even though the payload itself
+            # never stopped arriving.
+            if cached is not None:
+                new_data.payload = cached.payload
+                new_data.payload_seen_at = cached.payload_seen_at
+            # `cached`, not `cached if cached is not None else new_data`: by this point `_get_usage_data`
+            # has always claimed the attempt first, so `cached` is non-None whenever `self.cache`
+            # exists; when it doesn't, the caller discards `to_save` anyway.
+            return new_data, cached
+
+        if outcome.retry_after is not None:
+            self._debug_messages.append(f"HTTP {outcome.status}, backing off for {int(outcome.retry_after)}s")
+            if cached is not None:
+                cached.retry_after_until = now + timedelta(seconds=outcome.retry_after)
+        elif outcome.status is not None:
+            self._debug_messages.append(f"HTTP {outcome.status}, using cache")
+        else:
+            self._debug_messages.append(f"{outcome.error or 'API failed'}, using cache")
+        return cached, cached
+
+    def _live_payload(self) -> RateLimits | None:
+        """The `rate_limits` block of THIS render's statusline payload, when Claude Code sent one."""
+        return self.data.rate_limits
+
+    def _persist_payload(self, cached: UsageData | None) -> UsageData | None:
+        """Store this render's payload limits in the cache, at most once per PAYLOAD_SAVE_INTERVAL.
+
+        The limits are account-wide, not session-wide, so the last block seen by any session is
+        correct for a session that has not made its first API call yet. Writing on every render
+        would mean a file write per statusline repaint, hence the interval.
+        """
+        live = self._live_payload()
+        if live is None or self.cache is None:
+            return cached
+        now = datetime.now(UTC)
+        entry = cached if cached is not None else UsageData(groups=[], fetched_at=now)
+        seen = entry.payload_seen_at
+        if seen is not None and (now - seen).total_seconds() < PAYLOAD_SAVE_INTERVAL:
+            return entry
+        entry.payload = live
+        entry.payload_seen_at = now
+        self.cache.save(entry)
+        return entry
+
+    def _resolve_payload(self, data: UsageData | None, now: datetime) -> tuple[RateLimits | None, float | None]:
+        """The payload to render from, plus its age in seconds when it comes from the cache."""
+        live = self._live_payload()
+        if live is not None:
+            return live, None
+        if data and data.payload is not None and data.payload_seen_at is not None:
+            return data.payload, (now - data.payload_seen_at).total_seconds()
+        return None, None
+
+    def _display_data(self, data: UsageData | None) -> UsageData | None:
+        """Merge the two sources into the groups to render.
+
+        Overall rows come from the statusline payload (live, or the cached block). Per-model rows
+        come from the API cache, which is the only source that has them.
+        """
+        now = datetime.now(UTC)
+        payload, payload_age = self._resolve_payload(data, now)
+        if payload is None and hasattr(self, "_debug_messages"):
+            self._debug_messages.append(
+                "No rate_limits in the statusline payload — Session/Weekly need a recent Claude Code"
+            )
+
+        # A per-model row is stale when the last refresh attempt did not produce data: the claim
+        # advanced last_attempt_at while fetched_at stayed where the last success left it. An
+        # active 429 backoff is covered by the same comparison.
+        model_age: float | None = None
+        if data and data.last_attempt_at and data.fetched_at < data.last_attempt_at:
+            model_age = _late_age((now - data.fetched_at).total_seconds(), self.params.cache_ttl)
+
+        payload_stale = _late_age(payload_age, PAYLOAD_SAVE_INTERVAL)
+        groups: list[UsageGroup] = []
+        for key in _GROUP_ORDER:
+            window = _payload_window(payload, key)
+            overall = (
+                UsageLimit(
+                    label=_GROUP_LABELS[key],
+                    utilization=window.used_percentage,
+                    resets_at=window.resets_at,
+                    stale_seconds=payload_stale,
+                )
+                if window is not None
+                else None
+            )
+            group_models = [m for g in (data.groups if data else []) if g.key == key for m in g.models]
+            # Only copy when there is an age to stamp: the common path is fresh data, and a
+            # per-row `replace` on every render allocates for nothing.
+            models = group_models if model_age is None else [replace(m, stale_seconds=model_age) for m in group_models]
+            if overall is not None or models:
+                groups.append(UsageGroup(key=key, window_hours=_GROUP_WINDOWS[key], overall=overall, models=models))
+        return UsageData(groups=groups, fetched_at=now) if groups else None
 
     def _visible_groups(self, data: UsageData) -> list[tuple[UsageGroup, UsageLimit | None, list[UsageLimit]]]:
         """For each group, return (group, overall-or-None-if-hidden, visible models)."""
@@ -776,27 +1088,7 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
             time_fmt: Time format ("remaining" or "reset_at")
             bar_width: Width for progress bar
         """
-        # Calculate color and time based on resets_at availability
-        if limit.resets_at is None:
-            # No reset time: dim color, placeholder for time
-            color = None  # Will use attrs=["dark"]
-            time_str = colored(" (—)", attrs=["dark"]) if self.params.show_reset_time else ""
-        else:
-            # Normalize naive datetime to UTC to avoid TypeError on subtraction
-            resets_at = limit.resets_at
-            if resets_at.tzinfo is None:
-                resets_at = resets_at.replace(tzinfo=UTC)
-
-            # Normal case: color based on utilization vs time
-            now = datetime.now(UTC)
-            remaining = max(0, (resets_at - now).total_seconds() / 3600)
-            color = calculate_color(limit.utilization, remaining, window)
-            time_str = ""
-            if self.params.show_reset_time:
-                if time_fmt == "remaining":
-                    time_str = colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
-                else:
-                    time_str = colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
+        color, time_str = self._color_and_reset_time(limit, window, time_fmt)
 
         # Format utilization with appropriate color
         if color is None:
@@ -808,7 +1100,39 @@ class UsageLimitsModule(BaseModule[UsageLimitsParams]):
         if self.params.show_progress_bar:
             bar = f" {format_progress_bar(limit.utilization, bar_width)}"
 
-        return f"{label_str}{bar} {util_str}{time_str}"
+        return f"{label_str}{bar} {util_str}{time_str}{self._stale_suffix(limit)}"
+
+    def _color_and_reset_time(self, limit: UsageLimit, window: float, time_fmt: str) -> tuple[str | None, str]:
+        """Pick the utilization color and the reset-time suffix for a single limit item.
+
+        Returns:
+            (color, time_str). color is None when the limit has no reset time: the
+            utilization is then rendered dim instead of colored against the window.
+        """
+        if limit.resets_at is None:
+            # No reset time: dim color, placeholder for time
+            return None, colored(" (—)", attrs=["dark"]) if self.params.show_reset_time else ""
+
+        # Normalize naive datetime to UTC to avoid TypeError on subtraction
+        resets_at = limit.resets_at
+        if resets_at.tzinfo is None:
+            resets_at = resets_at.replace(tzinfo=UTC)
+
+        # Normal case: color based on utilization vs time
+        now = datetime.now(UTC)
+        remaining = max(0, (resets_at - now).total_seconds() / 3600)
+        color = calculate_color(limit.utilization, remaining, window)
+        if not self.params.show_reset_time:
+            return color, ""
+        if time_fmt == "remaining":
+            return color, colored(f" ({format_remaining_time(remaining)})", attrs=["dark"])
+        return color, colored(f" ({format_reset_at(resets_at)})", attrs=["dark"])
+
+    def _stale_suffix(self, limit: UsageLimit) -> str:
+        """Format the "(<age> ago)" suffix of a cached value that is late for its source (see _late_age)."""
+        if limit.stale_seconds is None:
+            return ""
+        return colored(f" ({format_remaining_time(limit.stale_seconds / 3600)} ago)", attrs=["dark"])
 
     def _format_short(self, label: str, limit: UsageLimit, window: float, time_fmt: str) -> str:
         """Format a single item for single-line output."""
