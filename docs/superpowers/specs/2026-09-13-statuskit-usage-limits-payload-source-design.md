@@ -81,6 +81,14 @@ class RateLimits:
 Parsing is tolerant: missing block → `None`; a window whose `used_percentage` is not a finite
 number is dropped; a missing/non-numeric `resets_at` becomes `None`; unknown keys are ignored.
 
+A block that is present but carries neither `five_hour` nor `seven_day` — e.g. a spend-limited
+gateway that sends only `spend_limit` — also parses to `None`, the same as an absent block. The
+module then falls back to the cached windows, which may come from a subscription session on the
+same machine and carry no age suffix while that session keeps the cache fresh. This is accepted
+as a known limitation: a gateway session next to subscription sessions is a niche setup, and
+telling "present but empty" from "absent" would change the `RateLimits` contract across the
+parser, the payload cache and the renderer.
+
 The values are account-level, not session-level, so the last value seen by any session is
 correct for a new one. On every render where the payload carries the block, the module stores
 it in the cache as `payload` with `payload_seen_at = now`. On a render without the block
@@ -114,6 +122,17 @@ all pass branch 2 (~17 ms instead of ~0.2 ms), and every TTL-blocked render pays
 read-check-claim sequence is still not atomic across processes. An interprocess lock was
 considered and rejected: with the narrow window a collision is rare, and it costs one duplicate
 request in that TTL cycle, not a burst.
+
+Every writer — the payload store, the claim and the fetch result — saves the whole cache
+document, and sessions share one file with no lock, so the last writer wins for the entire
+document, not per field. A writer that loaded its snapshot moments earlier can roll back a
+sibling's write: a payload store can erase freshly fetched groups or a just-written
+`retry_after_until`, and a claim can erase a sibling's backoff. The window is the time between a
+writer's load and its save, and it is kept to milliseconds: the fetch result is folded into the
+cache re-loaded after the request, not into the snapshot taken before it, since the request
+itself can take up to `API_TIMEOUT` (3 s). A collision costs at most one TTL of older per-model
+numbers, one save interval of an older payload, or one extra request, and is accepted for the
+same reason as the claim race. Changes to this module must not assume field-level merging.
 
 Fetch outcomes (`fetch_usage_api` returns a small result type instead of `UsageData | None`):
 
@@ -154,6 +173,11 @@ Usage: 5h 46% (3h 39m) | 7d 15% (Wed 08:00) | Fable 25% (Wed 08:00) (40m ago)
 
 Rows from the live payload never carry the suffix. Cache-backed rows inside a successful TTL
 window are not stale and carry no suffix either. There is no config switch for the suffix.
+
+The suffix starts one refresh cycle out, since inside it the data is not due yet: `cache_ttl`
+for per-model rows, the payload save interval (`PAYLOAD_SAVE_INTERVAL`, 60 s) for payload rows.
+`cache_ttl` governs only the endpoint and never delays the suffix on a payload row. Neither
+threshold goes below one minute, where `format_remaining_time` would render `0m`.
 
 Colour of a stale row is computed as today from its utilization and reset time; the suffix is
 the only marker.
