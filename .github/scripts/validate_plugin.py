@@ -29,34 +29,6 @@ KEBAB_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$")
 PATH_FIELDS = ["commands", "agents", "skills", "hooks", "mcpServers", "outputStyles", "lspServers"]
 
-# Codex manifest field schema (openai/codex, codex-rs/core-plugins/src/manifest.rs).
-# Codex ignores unknown keys, so fields absent here (agents, outputStyles, lspServers)
-# are deliberately not validated.
-CODEX_PATHS = "PATHS"  # path string or list of path strings
-CODEX_PATH_SINGLE = "PATH_SINGLE"  # single path string only
-CODEX_HOOKS = "HOOKS"  # path, list of paths, inline object, or list of inline objects
-CODEX_MCP = "MCP"  # path or inline object
-
-CODEX_FIELD_KINDS = {
-    "skills": CODEX_PATHS,
-    "commands": CODEX_PATHS,
-    "apps": CODEX_PATH_SINGLE,
-    "hooks": CODEX_HOOKS,
-    "mcpServers": CODEX_MCP,
-}
-
-CODEX_KIND_EXPECTATION = {
-    CODEX_PATHS: "a path or list of paths",
-    CODEX_PATH_SINGLE: "a single path string",
-    CODEX_HOOKS: "a path, a list of paths, an inline object, or a list of inline objects",
-    CODEX_MCP: "a path or an inline object",
-}
-
-# Marketplace files: Claude's, and Codex's native path (codex-rs/core-plugins/src/marketplace.rs).
-CLAUDE_MARKETPLACE = Path(".claude-plugin/marketplace.json")
-CODEX_MARKETPLACE = Path(".agents/plugins/marketplace.json")
-CODEX_MANIFEST_REL = Path(".codex-plugin/plugin.json")
-
 
 @dataclass
 class PluginValidationResult:
@@ -127,120 +99,12 @@ def validate_plugin_json(plugin_path: Path) -> tuple[PluginValidationResult, dic
     return result, data if result.success else None
 
 
-def _codex_manifest_path_error(plugin_path: Path, value: object) -> str | None:
-    """Return an error when a declared Codex path is invalid."""
-    if not isinstance(value, str) or not value.startswith("./"):
-        return f"Codex manifest path must start with './': {value!r}"
-
-    try:
-        resolved_path = (plugin_path / value[2:]).resolve(strict=False)
-    except (OSError, RuntimeError):
-        return f"Codex manifest path cannot be resolved: {value}"
-
-    if not resolved_path.is_relative_to(plugin_path):
-        return f"Codex manifest path escapes plugin directory: {value}"
-    if not resolved_path.exists():
-        return f"Codex manifest path does not exist: {value}"
-    return None
-
-
-def _codex_single_path_field_errors(plugin_path: Path, field_name: str, value: object) -> list[str]:
-    """Validate a Codex field that must be a single path string (e.g. `apps`)."""
-    if not isinstance(value, str):
-        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[CODEX_PATH_SINGLE]}"]
-    return [error] if (error := _codex_manifest_path_error(plugin_path, value)) else []
-
-
-def _codex_mcp_field_errors(plugin_path: Path, field_name: str, value: object) -> list[str]:
-    """Validate the Codex `mcpServers` field: a path or an inline object."""
-    if isinstance(value, dict):
-        return []  # inline server definition
-    if not isinstance(value, str):
-        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[CODEX_MCP]}"]
-    return [error] if (error := _codex_manifest_path_error(plugin_path, value)) else []
-
-
-def _codex_paths_field_errors(plugin_path: Path, field_name: str, kind: str, value: object) -> list[str]:
-    """Validate a Codex field that accepts a path, a list of paths, or (for hooks only) inline objects.
-
-    Inline shapes (dict / list of dicts) are accepted structurally; their contents
-    are not inspected.
-    """
-    if kind == CODEX_HOOKS:
-        if isinstance(value, dict):
-            return []  # inline hook object
-        if isinstance(value, list) and value and all(isinstance(item, dict) for item in value):
-            return []  # list of inline hook objects
-        # Anything else falls through to the path / list-of-paths handling below.
-
-    values = [value] if isinstance(value, str) else value
-    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
-        return [f"Codex manifest field '{field_name}' must be {CODEX_KIND_EXPECTATION[kind]}"]
-    return [error for item in values if (error := _codex_manifest_path_error(plugin_path, item))]
-
-
-def _codex_field_errors(plugin_path: Path, field_name: str, kind: str, value: object) -> list[str]:
-    """Validate one Codex manifest field against its kind."""
-    if kind == CODEX_PATH_SINGLE:
-        return _codex_single_path_field_errors(plugin_path, field_name, value)
-    if kind == CODEX_MCP:
-        return _codex_mcp_field_errors(plugin_path, field_name, value)
-    return _codex_paths_field_errors(plugin_path, field_name, kind, value)
-
-
-def validate_codex_manifest(
-    plugin_path: Path,
-    claude_manifest: dict,
-    *,
-    required: bool,
-) -> PluginValidationResult:
-    """Validate an optional Codex manifest and its parity with Claude metadata."""
-    result = PluginValidationResult()
-    path = plugin_path / CODEX_MANIFEST_REL
-    if not path.exists():
-        if required:
-            result.add_error("Codex plugin.json not found at .codex-plugin/plugin.json")
-        return result
-
-    try:
-        manifest = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        result.add_error(f"Invalid Codex plugin.json: {exc}")
-        return result
-
-    if not isinstance(manifest, dict):
-        result.add_error("Codex plugin.json must contain a JSON object")
-        return result
-
-    resolved_plugin_path = plugin_path.resolve()
-
-    for metadata_key in ("name", "version"):
-        if manifest.get(metadata_key) != claude_manifest.get(metadata_key):
-            result.add_error(
-                f"Codex manifest {metadata_key} {manifest.get(metadata_key)!r} does not match "
-                f"Claude manifest {metadata_key} {claude_manifest.get(metadata_key)!r}"
-            )
-
-    for field_name, kind in CODEX_FIELD_KINDS.items():
-        if field_name not in manifest:
-            continue
-        for error in _codex_field_errors(resolved_plugin_path, field_name, kind, manifest[field_name]):
-            result.add_error(error)
-    return result
-
-
-def validate_plugin(
-    plugin_path: Path,
-    repo_root: Path,
-    *,
-    require_codex_manifest: bool = False,
-) -> PluginValidationResult:
+def validate_plugin(plugin_path: Path, repo_root: Path) -> PluginValidationResult:
     """Validate complete plugin structure.
 
     Args:
         plugin_path: Path to plugin directory.
         repo_root: Path to repository root.
-        require_codex_manifest: Whether the plugin must provide a Codex manifest.
 
     Returns:
         PluginValidationResult with all validation results.
@@ -253,9 +117,6 @@ def validate_plugin(
     result = PluginValidationResult()
     result.merge(json_result)
 
-    codex_result = validate_codex_manifest(plugin_path, plugin_data, required=require_codex_manifest)
-    result.merge(codex_result)
-
     # Validate components (Task 4)
     components_result = validate_components(plugin_path, plugin_data)
     result.merge(components_result)
@@ -264,11 +125,9 @@ def validate_plugin(
     uniqueness_result = validate_name_uniqueness(plugin_path, plugin_data)
     result.merge(uniqueness_result)
 
-    # Validate marketplace registration, symmetrically per harness:
-    # Claude manifest -> Claude marketplace; Codex manifest (if any) -> Codex marketplace.
-    result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root))
-    if (plugin_path / CODEX_MANIFEST_REL).exists():
-        result.merge(validate_marketplace_registration(plugin_path, plugin_data, repo_root, CODEX_MARKETPLACE))
+    # Validate marketplace registration (Task 6)
+    marketplace_result = validate_marketplace_registration(plugin_path, plugin_data, repo_root)
+    result.merge(marketplace_result)
 
     return result
 
@@ -420,33 +279,27 @@ def _source_matches(mp_source: object, expected_relative: str) -> tuple[bool, st
     return err is None, err
 
 
-def validate_marketplace_registration(
-    plugin_path: Path,
-    plugin_json: dict,
-    repo_root: Path,
-    marketplace_rel: Path = CLAUDE_MARKETPLACE,
-) -> PluginValidationResult:
-    """Validate the plugin is registered in the given marketplace file.
+def validate_marketplace_registration(plugin_path: Path, plugin_json: dict, repo_root: Path) -> PluginValidationResult:
+    """Validate plugin is registered in marketplace.
 
     Checks:
-    - Plugin is listed in <marketplace_rel>
-    - Name matches between plugin.json and the marketplace entry
-    - Source path matches the plugin location
+    - Plugin is listed in .claude-plugin/marketplace.json
+    - Name matches between plugin.json and marketplace
+    - Source path matches plugin location
     """
     result = PluginValidationResult()
-    marketplace_path = repo_root / marketplace_rel
-    rel = marketplace_rel.as_posix()
+    marketplace_path = repo_root / ".claude-plugin" / "marketplace.json"
 
     # Check marketplace exists
     if not marketplace_path.exists():
-        result.add_error(f"marketplace.json not found at {rel}")
+        result.add_error("marketplace.json not found at .claude-plugin/marketplace.json")
         return result
 
     # Parse marketplace
     try:
         marketplace_data = json.loads(marketplace_path.read_text())
     except json.JSONDecodeError as e:
-        result.add_error(f"Invalid marketplace.json ({rel}): {e}")
+        result.add_error(f"Invalid marketplace.json: {e}")
         return result
 
     plugins = marketplace_data.get("plugins", [])
@@ -468,21 +321,19 @@ def validate_marketplace_registration(
         if mp_name == plugin_name:
             found = True
             if source_err is not None:
-                result.add_error(f"Marketplace source invalid for '{plugin_name}' in {rel}: {source_err}")
+                result.add_error(f"Marketplace source invalid for '{plugin_name}': {source_err}")
             elif not source_ok:
-                result.add_error(
-                    f"Marketplace source mismatch in {rel}: '{mp_name}' does not point at '{expected_relative}'"
-                )
+                result.add_error(f"Marketplace source mismatch: '{mp_name}' does not point at '{expected_relative}'")
             break
 
         # Entry not matched by name, but its source points at this plugin's location.
         if source_ok:
             found = True
-            result.add_error(f"Name mismatch in {rel}: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
+            result.add_error(f"Name mismatch: plugin.json has '{plugin_name}', marketplace has '{mp_name}'")
             break
 
     if not found:
-        result.add_error(f"Plugin '{plugin_name}' not registered in marketplace {rel}")
+        result.add_error(f"Plugin '{plugin_name}' not registered in marketplace")
 
     return result
 
@@ -497,14 +348,20 @@ def _find_repo_root(plugin_path: Path) -> Path:
     return Path.cwd()
 
 
-def main() -> int:  # noqa: PLR0911
+def _exit_code(first_error: str) -> int:
+    """Map the first validation error to the script's exit code."""
+    if "not found" in first_error or "Invalid JSON" in first_error:
+        return 1
+    if "Missing required" in first_error:
+        return 2
+    if "Invalid" in first_error:
+        return 3
+    return 1
+
+
+def main() -> int:
     """Main entry point."""
     parser = argparse.ArgumentParser(description="Validate Claude Code plugin structure")
-    parser.add_argument(
-        "--require-codex-manifest",
-        action="store_true",
-        help="Require a matching .codex-plugin/plugin.json",
-    )
     parser.add_argument("plugin_path", type=Path, nargs="?")
     args = parser.parse_args()
 
@@ -518,34 +375,19 @@ def main() -> int:  # noqa: PLR0911
         print(f"Error: Plugin path does not exist: {plugin_path}", file=sys.stderr)
         return 10
 
-    repo_root = _find_repo_root(plugin_path)
-
     try:
-        result = validate_plugin(
-            plugin_path,
-            repo_root,
-            require_codex_manifest=args.require_codex_manifest,
-        )
+        result = validate_plugin(plugin_path, _find_repo_root(plugin_path))
     except Exception as e:
         print(f"Script error: {e}", file=sys.stderr)
         return 10
 
-    if result.warnings:
-        for warning in result.warnings:
-            print(f"Warning: {warning}")
+    for warning in result.warnings:
+        print(f"Warning: {warning}")
 
     if not result.success:
         for error in result.errors:
             print(f"Error: {error}")
-        # Determine exit code based on first error type
-        first_error = result.errors[0] if result.errors else ""
-        if "not found" in first_error or "Invalid JSON" in first_error:
-            return 1
-        if "Missing required" in first_error:
-            return 2
-        if "Invalid" in first_error:
-            return 3
-        return 1
+        return _exit_code(result.errors[0] if result.errors else "")
 
     print(f"Plugin '{plugin_path.name}' is valid")
     return 0
