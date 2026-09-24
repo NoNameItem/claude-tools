@@ -568,6 +568,7 @@ class TestMain:
         [
             ({"name": "test-plugin", "version": "1.0.0"}, 0),
             (None, 1),  # plugin.json not found
+            ("{not json", 1),  # plugin.json is not valid JSON
             ({"version": "1.0.0"}, 2),  # Missing required field: name
             ({"name": "Test_Plugin", "version": "1.0.0"}, 3),  # Invalid name format
             ({"name": "other-plugin", "version": "1.0.0"}, 1),  # name mismatch with the marketplace entry
@@ -578,7 +579,7 @@ class TestMain:
         temp_plugin: Path,
         temp_marketplace: Path,
         monkeypatch: pytest.MonkeyPatch,
-        manifest: dict | None,
+        manifest: dict | None | str,
         expected: int,
     ) -> None:
         """Should map the first validation error to the documented exit code."""
@@ -588,6 +589,8 @@ class TestMain:
         manifest_path = temp_plugin / ".claude-plugin" / "plugin.json"
         if manifest is None:
             manifest_path.unlink()
+        elif isinstance(manifest, str):
+            manifest_path.write_text(manifest)
         else:
             manifest_path.write_text(json.dumps(manifest))
         monkeypatch.setattr("sys.argv", ["validate_plugin.py", str(temp_plugin)])
