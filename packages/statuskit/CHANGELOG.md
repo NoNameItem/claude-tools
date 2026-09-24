@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.5.1...statuskit-0.5.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **statuskit:** keep nested usage rows indented in the Claude Code statusline ([#146](https://github.com/NoNameItem/claude-tools/issues/146)) ([e1d21be](https://github.com/NoNameItem/claude-tools/commit/e1d21bee0667172d262e1c5f7320120878a0aeea))
+* **statuskit:** source usage limits from the statusline payload and honour 429 backoff ([#143](https://github.com/NoNameItem/claude-tools/issues/143)) ([4bd7f3d](https://github.com/NoNameItem/claude-tools/commit/4bd7f3d659d5976928ad36d91621a186e2c733b0))
+
 ## [0.5.1](https://github.com/NoNameItem/claude-tools/compare/statuskit-0.5.0...statuskit-0.5.1) (2026-07-31)
 
 
