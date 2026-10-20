@@ -131,18 +131,25 @@ def _config_sync(path, *, dry_run: bool) -> None:
     if sync.status == SyncStatus.ERROR:
         print(sync.error)
         sys.exit(1)
+    print(_sync_headline(path, sync, dry_run=dry_run))
+    # Only an update can carry removals: a created file has nothing to drop.
+    if sync.removals:
+        print("Would remove:" if dry_run else "Removed:")
+        for removal in sync.removals:
+            print(f"  {removal.location} \u2014 {removal.reason}")
+        if dry_run:
+            sys.exit(1)
+
+
+def _sync_headline(path, sync, *, dry_run: bool) -> str:
+    """Return the first line of the config sync report."""
+    from .setup.config import SyncStatus
+
     if sync.status == SyncStatus.UNCHANGED:
-        print(f"{path} is up to date.")
-    elif sync.status == SyncStatus.CREATED:
-        print(f"{path} does not exist; sync would create it." if dry_run else f"\u2713 Created {path}")
-    else:
-        print(f"Would update {path}" if dry_run else f"\u2713 Updated {path} (backup: {sync.backup})")
-        if sync.removals:
-            print("Would remove:" if dry_run else "Removed:")
-            for removal in sync.removals:
-                print(f"  {removal.location} \u2014 {removal.reason}")
-            if dry_run:
-                sys.exit(1)
+        return f"{path} is up to date."
+    if sync.status == SyncStatus.CREATED:
+        return f"{path} does not exist; sync would create it." if dry_run else f"\u2713 Created {path}"
+    return f"Would update {path}" if dry_run else f"\u2713 Updated {path} (backup: {sync.backup})"
 
 
 def _render_statusline() -> None:

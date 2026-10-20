@@ -52,8 +52,9 @@ def test_config_sync_flags():
 
 
 def test_bare_config_is_usage_error(capsys):
+    parser = create_parser()
     with pytest.raises(SystemExit) as exc:
-        create_parser().parse_args(["config"])
+        parser.parse_args(["config"])
     assert exc.value.code == 2
     err = capsys.readouterr().err
     assert "init" in err
