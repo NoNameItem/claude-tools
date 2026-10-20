@@ -1,79 +1,70 @@
-"""Config file creation for setup command."""
+"""Config file creation, reset and sync for setup command."""
 
+import tomllib
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-DEFAULT_CONFIG = """\
-# Statuskit configuration
-# See: https://pypi.org/project/claude-statuskit/
-#
-# All options shown with default values (commented out).
-# Uncomment and modify as needed.
+from statuskit.setup.config_gen import Removal, build_config
+from statuskit.setup.hooks import create_backup
 
-# ─────────────────────────────────────────────────────────────
-# Global settings
-# ─────────────────────────────────────────────────────────────
 
-# Modules to display (in order)
-# modules = ["model", "git", "usage_limits"]
+class InitStatus(Enum):
+    """Outcome of init_config."""
 
-# Enable debug output
-# debug = false
+    CREATED = "created"
+    EXISTS = "exists"
+    RESET = "reset"
+    ERROR = "error"
 
-# Cache directory
-# cache_dir = "~/.cache/statuskit"
 
-# ─────────────────────────────────────────────────────────────
-# Model module: model name, session duration, context usage
-# ─────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class InitResult:
+    """Result of init_config (data only, nothing is printed)."""
 
-# [model]
-# show_duration = true
-# show_context = true
-# context_format = "free"  # "free", "used", "ratio", "bar"
-# context_compact = false
-# context_threshold_green = 50
-# context_threshold_yellow = 25
+    status: InitStatus
+    backup: Path | None = None
+    error: str = ""
 
-# ─────────────────────────────────────────────────────────────
-# Git module: branch, status, location
-# ─────────────────────────────────────────────────────────────
 
-# [git]
-# show_project = true
-# show_worktree = true
-# show_folder = true
-# show_branch = true
-# show_remote_status = true
-# show_changes = true
-# show_commit = true
-# commit_age_format = "relative"  # "relative", "compact"
-# show_pr = true                  # show branch PR (gh) / MR (glab); needs gh/glab installed
-# pr_provider = "auto"            # "auto", "github", "gitlab"
-# pr_link = true                  # wrap PR/MR token in an OSC 8 hyperlink
-# pr_cache_ttl = 300              # min seconds between PR/MR network lookups
+class SyncStatus(Enum):
+    """Outcome of sync_config."""
 
-# ─────────────────────────────────────────────────────────────
-# Usage limits module: API quota tracking (5h session, 7d weekly)
-# ─────────────────────────────────────────────────────────────
+    CREATED = "created"
+    UNCHANGED = "unchanged"
+    UPDATED = "updated"
+    ERROR = "error"
 
-# [usage_limits]
-# show_session = true
-# show_weekly = true
-# models_always_show = ["Fable"]     # always show these models, even at 0%
-# models_never_show = []             # never show these models
-# show_reset_time = true
-# multiline = true
-# show_progress_bar = false
-# bar_width = 10
-# session_time_format = "remaining"  # "remaining", "reset_at"
-# weekly_time_format = "reset_at"    # "remaining", "reset_at"
-# model_time_format = "reset_at"     # "remaining", "reset_at"
-# cache_ttl = 120
-"""
+
+@dataclass(frozen=True)
+class SyncResult:
+    """Result of sync_config (data only, nothing is printed)."""
+
+    status: SyncStatus
+    removals: tuple[Removal, ...] = ()
+    backup: Path | None = None
+    error: str = ""
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write text to path atomically, following symlinks.
+
+    A dotfiles-managed config is often a symlink; replacing the link itself would
+    silently detach it, so the resolved target is written instead.
+    """
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8", newline="\n")
+        tmp.replace(target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def create_config(path: Path) -> bool:
-    """Create statuskit.toml with default content.
+    """Create statuskit.toml with the generated template.
 
     Does not overwrite existing file.
     Returns True if file was created, False if it already existed.
@@ -81,6 +72,47 @@ def create_config(path: Path) -> bool:
     if path.exists():
         return False
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_CONFIG)
+    _write_atomic(path, build_config()[0])
     return True
+
+
+def init_config(path: Path, *, force: bool) -> InitResult:
+    """Write the default template; with force, reset an existing file (backed up)."""
+    exists = path.exists()
+    if exists and not force:
+        return InitResult(InitStatus.EXISTS)
+    try:
+        backup = create_backup(path) if exists else None
+        _write_atomic(path, build_config()[0])
+    except OSError as exc:
+        return InitResult(InitStatus.ERROR, error=f"Cannot write {path}: {exc}. Nothing was changed.")
+    return InitResult(InitStatus.RESET if exists else InitStatus.CREATED, backup=backup)
+
+
+def sync_config(path: Path, *, dry_run: bool) -> SyncResult:
+    """Rebuild the config from the current schema, keeping the user's values."""
+    if not path.exists():
+        text, _ = build_config()
+        status = SyncStatus.CREATED
+        removals: tuple[Removal, ...] = ()
+        old_text = None
+    else:
+        try:
+            old_text = path.read_bytes().decode("utf-8-sig")
+            data = tomllib.loads(old_text)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            return SyncResult(SyncStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
+        text, found = build_config(data)
+        removals = tuple(found)
+        if text == old_text:
+            return SyncResult(SyncStatus.UNCHANGED)
+        status = SyncStatus.UPDATED
+
+    if dry_run:
+        return SyncResult(status, removals)
+    try:
+        backup = create_backup(path) if old_text is not None else None
+        _write_atomic(path, text)
+    except OSError as exc:
+        return SyncResult(SyncStatus.ERROR, error=f"Cannot write {path}: {exc}. Nothing was changed.")
+    return SyncResult(status, removals, backup)
