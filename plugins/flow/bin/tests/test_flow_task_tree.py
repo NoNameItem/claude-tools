@@ -606,3 +606,96 @@ class TestRenderedRoots:
         )
         lines = build_tree(tasks, search="alpha")
         assert rows(lines) == [("", "1", "p-alpha")]
+
+
+class TestRenderedChildren:
+    """Children are numbered, connected and counted over the children that are printed."""
+
+    def _parse(self, issues, deps=None):
+        """Parse a graph and return tasks dict."""
+        return parse_graphs(make_graph(issues, deps))
+
+    def _blocked_middle_child(self):
+        return self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("gc"), issue("c3"), issue("x", priority=3)],
+            [dep("c1", "p"), dep("c2", "p"), dep("gc", "c2"), dep("c3", "p"), blocks("c2", "x")],
+        )
+
+    def test_hidden_root_target_prints_nothing(self):
+        tasks = self._parse([issue("a"), issue("x")], [blocks("a", "x")])
+        assert build_tree(tasks, root_id="a") == []
+
+    def test_blocked_child_leaves_no_gap(self):
+        lines = build_tree(self._blocked_middle_child())
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c3"), ("", "2", "x")]
+
+    def test_closed_child_gets_no_connector_or_count(self):
+        tasks = self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("cz", status="closed"), issue("czc")],
+            [dep("c1", "p"), dep("c2", "p"), dep("cz", "p"), dep("czc", "cz")],
+        )
+        assert rows(build_tree(tasks)) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c2")]
+        collapsed = build_tree(tasks, collapse=True)
+        assert len(collapsed) == 1
+        assert collapsed[0].endswith(" [+2]")
+
+    def test_hidden_last_child_moves_last_connector(self):
+        tasks = self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("c3"), issue("gc"), issue("x", priority=3)],
+            [dep("c1", "p"), dep("c2", "p"), dep("c3", "p"), dep("gc", "c3"), blocks("c3", "x")],
+        )
+        lines = build_tree(tasks, root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c2")]
+
+    def test_collapse_counts_printed_children(self):
+        lines = build_tree(self._blocked_middle_child(), collapse=True)
+        assert lines[0].endswith(" [+2]")
+
+    def test_collapse_count_matches_search(self):
+        tasks = self._parse(
+            [issue("p"), issue("p-alpha"), issue("p-beta")],
+            [dep("p-alpha", "p"), dep("p-beta", "p")],
+        )
+        collapsed = build_tree(tasks, search="alpha", collapse=True)
+        assert len(collapsed) == 1
+        assert collapsed[0].endswith(" [+1]")
+        assert rows(build_tree(tasks, search="alpha")) == [("", "1", "p"), ("└─", "1.1", "p-alpha")]
+
+    def test_root_subtree_children_have_no_gap(self):
+        lines = build_tree(self._blocked_middle_child(), root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c3")]
+
+    def test_hidden_grandchild_leaves_no_gap(self):
+        tasks = self._parse(
+            [issue("p"), issue("q"), issue("q1"), issue("q2"), issue("q2a"), issue("q3"), issue("x", priority=3)],
+            [dep("q", "p"), dep("q1", "q"), dep("q2", "q"), dep("q2a", "q2"), dep("q3", "q"), blocks("q2", "x")],
+        )
+        lines = build_tree(tasks, root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("└─", "1.1", "q"), ("├─", "1.1.1", "q1"), ("└─", "1.1.2", "q3")]
+
+    def test_repro_graph_matches_spec(self):
+        tasks = self._parse(REPRO_ISSUES, REPRO_DEPS)
+
+        lines = build_tree(tasks)
+        assert rows(lines) == [
+            ("", "1", "r1"),
+            ("", "2", "r3"),
+            ("", "3", "p"),
+            ("├─", "3.1", "p-c1"),
+            ("└─", "3.2", "p-c3"),
+            ("", "4", "blocker"),
+        ]
+        assert lines[-1] != ""
+
+        lines = build_tree(tasks, limit=2)
+        assert rows(lines) == [("", "1", "r1"), ("", "2", "r3")]
+        assert lines[-1] != ""
+
+        assert rows(build_tree(tasks, search="r3")) == [("", "1", "r3")]
+
+        assert rows(build_tree(tasks, root_id="p")) == [("", "1", "p"), ("├─", "1.1", "p-c1"), ("└─", "1.2", "p-c3")]
+
+        lines = build_tree(tasks, search="p-c1", collapse=True)
+        assert len(lines) == 1
+        assert rows(lines) == [("", "1", "p")]
+        assert lines[0].endswith(" [+1]")

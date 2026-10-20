@@ -257,16 +257,13 @@ def print_tree(
     display_prefix = prefix + connector
     lines.append(format_task_line(task, display_prefix, number, is_root=is_root, min_priority=min_priority))
 
+    # Printed children only: the collapse count, numbers and connectors all run over this list
+    visible_children = [c for c in sort_tasks(task.children) if renders(c, search_ids)]
+
     # Handle collapse mode
-    visible_children = [c for c in task.children if should_show(c) or has_visible_descendants(c)]
     if collapse and visible_children:
         lines[-1] += f" [+{len(visible_children)}]"
         return lines
-
-    # Sort and filter children
-    visible_children = sort_tasks(visible_children)
-    if search_ids:
-        visible_children = [c for c in visible_children if c.id in search_ids]
 
     # Continuation prefix for children: add vertical bar or spaces based on is_last
     child_base_prefix = prefix + ("   " if is_last else "│  ") if not is_root else ""
