@@ -612,6 +612,16 @@ def test_review_comments_decision_prompt_follows_the_conversation_language() -> 
     assert re.search(r"decision\s+words.{0,120}untranslated", phase_4_2, re.DOTALL)
 
 
+def test_review_comments_examples_use_the_numbered_decision() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    examples = section(text, "## Examples", "## Edge Cases")
+    assert "won't-fix / follow-up?" not in text
+    assert "(default:" not in text
+    assert re.search(r"^\s*1\. won't-fix \(recommended\)$", examples, re.MULTILINE)
+    assert re.search(r"^User: 1 A$", examples, re.MULTILINE)
+    assert not re.search(r"^User: (fix|won't-fix|follow-up)$", examples, re.MULTILINE)
+
+
 def test_review_comments_requires_a_reason_only_where_it_can_be_published() -> None:
     """A reason exists in order to be posted. Requiring one for a GitHub review-body summary
     charges the user for prose nobody will ever read."""

@@ -1398,15 +1398,26 @@ Agent: [Detects PR #42, syncs branch]
          **Thought:** Real crash on a detached HEAD; the guard is one frame too low.
          **Suggested:** fix
 
-       C1 → fix / won't-fix / follow-up?  (default: fix)
+       C1 → what to do?
+       1. fix (recommended)
+       2. won't-fix
+       3. follow-up
 
-User: fix
+User: 1
 
-Agent: [Emits U1's card unwrapped … ] U1 → fix / won't-fix / follow-up? (default: fix)
-User: won't-fix
-Agent: [Emits C2's card unwrapped, header "### 🔵 C2 · doc · (summary)", no code block]
-       C2 → fix / won't-fix / follow-up? (default: won't-fix)
-User: follow-up
+Agent: [Emits U1's card unwrapped … ]
+       U1 → what to do?
+       1. fix (recommended)
+       2. won't-fix
+       3. follow-up
+User: 2
+Agent: [Emits C2's card unwrapped, header "### 🔵 C2 · doc · (summary)", no code block;
+        a GitHub review-body summary, so won't-fix is item 1]
+       C2 → what to do?
+       1. won't-fix (recommended)
+       2. fix
+       3. follow-up
+User: 3
 
 Agent: [Phase 5 — acts once, grouped by outcome]
        [fix: generalizes C1 → guard also in resolve_branch:66; applies; code round →
@@ -1444,10 +1455,44 @@ Agent: [Pushes]
 - Collected the code (`diff_hunk`) and full body, so each card is self-contained
 - Analyzed the ENTIRE working set up front → code-backed takes
 - Showed a TOC, then one card at a time, each emitted UNWRAPPED so it renders
-- Collected a per-comment fix / won't-fix / **follow-up** decision; executed once in Phase 5
+- Collected a per-comment fix / won't-fix / **follow-up** decision as a numbered list with the
+  card's default first, answered with a digit; executed once in Phase 5
 - Generalized the accepted fix and ran the pre-push self-review on the code round
 - Filed the deferred item as a beads task under the path-inferred epic, then `flow-sync push`
 - Replied to every comment except the GitHub `kind == "summary"` item; asked before push
+
+### GOOD: agree_unclear — one answer picks the decision and the fix
+
+```
+Agent: [Emits C3's card unwrapped:]
+
+         ### 🔴 C3 · correctness · .../statuskit/modules/git.py:42
+         > **@coderabbitai:** Detached HEAD crashes here. Either move the guard up into
+         > resolve_branch() or make branch_name() total.
+         (then a ```diff fenced block with the reviewer's hunk)
+         **Thought:** Real crash; two fixes work, and which one depends on whether other
+         callers want "(detached)".
+         **Suggested:** fix
+
+       C3 → what to do?
+       Fix options:
+       A. move the detached-HEAD guard up into resolve_branch
+       B. make branch_name total (return "(detached)" on a detached HEAD)
+       1. fix (recommended)
+       2. won't-fix
+       3. follow-up
+       For fix, add the option letter: 1 A
+
+User: 1 A
+
+Agent: [Records C3 → fix, action "move the detached-HEAD guard up into resolve_branch";
+        shows the next card]
+```
+
+**Correct because:**
+- The options are lettered, so they never collide with the decision digits
+- One answer carries the decision and the option; a bare `1` would have re-asked only the letter
+- The recorded fix action is the option's text, not the letter
 
 ### BAD: Blindly accept nitpick
 
