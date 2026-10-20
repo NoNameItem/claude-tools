@@ -55,7 +55,7 @@ def test_claude_manifest_declared_paths_exist() -> None:
     assert not [path for path in declared if not (FLOW_ROOT / path).exists()]
 
 
-FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+FENCE = re.compile(r"^[ \t]*```[^\n]*\n(.*?)^[ \t]*```", re.DOTALL | re.MULTILINE)
 INLINE = re.compile(r"`([^`\n]+)`")
 HELPER = re.compile(r"(?<![A-Za-z0-9_-])(flow-[a-z0-9][a-z0-9-]*)")
 SHELL_END = "|;&)"
@@ -97,6 +97,20 @@ def test_helper_parsing_is_not_vacuous() -> None:
     forms = helper_forms(sample)
     assert ("flow-sync", "args") in forms
     assert ("flow-actor", "bare") in forms
+
+
+def test_fence_parsing_ignores_inline_triple_backticks() -> None:
+    # A ``` inside prose (a code span that shows a fence) opens nothing. Treating it as a fence
+    # shifted every later fence pair, so flow:start Step 7 prose was read as a command.
+    sample = (
+        "Code blocks (`` ```text ... ``` ``) don't render.\n\n"
+        "**a. `flow-actor` prints nothing**\n\n"
+        "```bash\nflow-sync push\n```\n"
+    )
+    forms = helper_forms(sample)
+    assert ("flow-actor", "bare") in forms
+    assert ("flow-actor", "args") not in forms
+    assert ("flow-sync", "args") in forms
 
 
 @pytest.mark.parametrize("skill", sorted(GRANT_AUDITED))
@@ -710,3 +724,79 @@ def test_review_loop_never_claims_it_resolves_nothing() -> None:
     # The merge ban must survive the rewrite — assert the replacement's own words, not the bare
     # substring "merge", which any of the file's dozens of unrelated mentions would satisfy.
     assert "merging is always the human's job" in text
+
+
+# The task card closes flow:start and flow:continue: rendered once, in the last workflow step, as the
+# final output (claude-tools-elf.49). flow:start reuses flow:continue's closing text verbatim.
+CARD_STEP_SKILLS = ["start", "continue"]
+
+
+def skill_text(name: str) -> str:
+    return (FLOW_ROOT / "skills" / name / "SKILL.md").read_text()
+
+
+def workflow(text: str) -> str:
+    return section(text, "## Workflow", "## Red Flags")
+
+
+def last_step(text: str) -> str:
+    """The final `### N.` step of the workflow, its `#### …` subsections included."""
+    return re.split(r"^### \d", workflow(text), flags=re.MULTILINE)[-1]
+
+
+def card_closing(text: str) -> str:
+    return last_step(text).split("After running the script", 1)[1].strip()
+
+
+@pytest.mark.parametrize("name", CARD_STEP_SKILLS)
+def test_last_step_renders_the_card_as_the_final_output(name: str) -> None:
+    step = last_step(skill_text(name))
+    assert "bd show <task-id> --json | flow-task-card" in step
+    assert "This is the final output" in step
+
+
+@pytest.mark.parametrize("name", CARD_STEP_SKILLS)
+def test_card_is_rendered_only_in_the_last_step(name: str) -> None:
+    text = skill_text(name)
+    assert "flow-task-card" not in workflow(text).removesuffix(last_step(text))
+
+
+def test_start_and_continue_close_on_the_same_card_text() -> None:
+    assert card_closing(skill_text("start")) == card_closing(skill_text("continue"))
+
+
+def test_start_step_3_reads_the_task_without_rendering_it() -> None:
+    step_3 = section(skill_text("start"), "### 3.", "### 4.")
+    assert "bd show <task-id> --json" in step_3
+    assert "flow-task-card" not in step_3
+
+
+def test_start_final_card_covers_every_path_and_waits_for_the_last_reply() -> None:
+    step = last_step(skill_text("start"))
+    assert "Step 5.5" in step
+    assert "reply that finishes the skill" in step
+
+
+def test_start_branch_question_names_the_task() -> None:
+    templates = section(skill_text("start"), "#### Templates", "### 7.")
+    first_lines = [block.splitlines()[0] for block in FENCE.findall(templates)]
+    assert len(first_lines) == 3
+    assert all("{task-id}" in line and "{title}" in line for line in first_lines)
+
+
+def test_start_no_longer_shows_the_card_before_acting() -> None:
+    text = skill_text("start")
+    stale = (
+        "Show Task Description FIRST",
+        "User needs context BEFORE committing",
+        "Description can go in summary at the end",
+        "see context first",
+        "Show context first",
+    )
+    assert not [phrase for phrase in stale if phrase in text]
+
+
+def test_docs_say_the_card_comes_last() -> None:
+    readme = (FLOW_ROOT / "README.md").read_text()
+    assert "ends with the full task card" in section(readme, "#### `/flow:start`", "When to use")
+    assert "last block of the skill's final reply" in (FLOW_ROOT / "AGENTS.md").read_text()

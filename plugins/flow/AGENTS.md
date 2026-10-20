@@ -38,7 +38,8 @@ repo-wide agent and review guidance.
   card, branches, PR state) first, and gate destructive actions (closing tasks, taking
   someone else's task, deleting local plan files, pushing) behind explicit confirmation.
 - **Reproduce the card inline** — a skill showing a task card must paste the `flow-task-card`
-  output verbatim in a fenced code block; tool output alone isn't shown to the user.
+  output verbatim in a fenced code block; tool output alone isn't shown to the user. In
+  `flow:start` and `flow:continue` the card is the last block of the skill's final reply.
 
 ## Review guidelines
 
