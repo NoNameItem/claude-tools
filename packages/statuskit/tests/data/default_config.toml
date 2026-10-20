@@ -1,0 +1,139 @@
+# Statuskit configuration — https://pypi.org/project/claude-statuskit/
+#
+# Every option is listed with its default value, commented out.
+# Uncomment a line and change the value to override it.
+# `statuskit config sync` rebuilds this file: your values are kept,
+# unknown keys are removed, your own comments are not preserved.
+
+# Modules to display (in order)
+# modules = ["model", "git", "usage_limits"]
+
+# Enable debug output
+# debug = false
+
+# Colored output
+# colors = true
+
+# Cache directory
+# cache_dir = "~/.cache/statuskit"
+
+# ─────────────────────────────────────────────────────────────
+# model: Model name, session duration, context window usage
+# ─────────────────────────────────────────────────────────────
+[model]
+
+# Show session duration
+# show_duration = true
+
+# Show context window usage
+# show_context = true
+
+# Context display format:
+#   "free"  — free tokens remaining — e.g. `150,000 free (75.0%)`
+#   "used"  — tokens consumed — e.g. `50,000 used (25.0%)`
+#   "ratio" — used / total — e.g. `50,000/200,000 (25.0%)`
+#   "bar"   — progress bar — e.g. `[███████░░░] 75%`
+# context_format = "free"
+
+# Compact number format (150k instead of 150,000)
+# context_compact = false
+
+# Percentage free above which colour is green
+# context_threshold_green = 50
+
+# Percentage free above which colour is yellow
+# context_threshold_yellow = 25
+
+# ─────────────────────────────────────────────────────────────
+# git: Git branch, status, and location
+# ─────────────────────────────────────────────────────────────
+[git]
+
+# Commit age display format:
+#   "relative" — full words — e.g. `1 day 2 hours 30 minutes ago`
+#   "compact"  — abbreviated — e.g. `1d 2h 30m`
+#   "raw"      — git's own string, unmodified — e.g. `2 hours ago`
+# commit_age_format = "relative"
+
+# Show project name
+# show_project = true
+
+# Show worktree name
+# show_worktree = true
+
+# Show current subfolder
+# show_folder = true
+
+# Show branch name
+# show_branch = true
+
+# Show remote tracking status
+# show_remote_status = true
+
+# Show working tree change counts
+# show_changes = true
+
+# Show last commit hash and age
+# show_commit = true
+
+# Show the current branch's PR (GitHub) / MR (GitLab)
+# show_pr = true
+
+# PR provider detection:
+#   "auto"   — detect from the remote host and CLI auth
+#   "github" — force GitHub (`gh`)
+#   "gitlab" — force GitLab (`glab`)
+# pr_provider = "auto"
+
+# Wrap the PR/MR token in an OSC 8 terminal hyperlink
+# pr_link = true
+
+# Minimum seconds between PR/MR network lookups
+# pr_cache_ttl = 300
+
+# ─────────────────────────────────────────────────────────────
+# usage_limits: API usage limits (5h session, 7d weekly, per-model)
+# ─────────────────────────────────────────────────────────────
+[usage_limits]
+
+# Show 5-hour session limit
+# show_session = true
+
+# Show 7-day weekly limit
+# show_weekly = true
+
+# Model (or model·surface) names to always show, even at 0%; a bare name covers its scoped rows
+# models_always_show = []
+
+# Model (or model·surface) names to never show; a bare name covers its scoped rows
+# models_never_show = []
+
+# Show time until / when reset occurs
+# show_reset_time = true
+
+# Multi-line output (one limit per line)
+# multiline = true
+
+# Show ASCII progress bar
+# show_progress_bar = false
+
+# Progress bar character width
+# bar_width = 10
+
+# Session time display:
+#   "remaining" — time left until reset — e.g. `2h 30m`
+#   "reset_at"  — wall-clock reset time — e.g. `Thu 17:00`
+# session_time_format = "remaining"
+
+# Weekly time display:
+#   "remaining" — time left until reset — e.g. `2h 30m`
+#   "reset_at"  — wall-clock reset time — e.g. `Thu 17:00`
+# weekly_time_format = "reset_at"
+
+# Per-model time display:
+#   "remaining" — time left until reset — e.g. `2h 30m`
+#   "reset_at"  — wall-clock reset time — e.g. `Thu 17:00`
+# model_time_format = "reset_at"
+
+# Minimum seconds between usage-API refetches
+# cache_ttl = 120
