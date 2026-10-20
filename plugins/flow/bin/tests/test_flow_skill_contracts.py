@@ -582,6 +582,8 @@ def test_review_comments_decision_prompt_is_a_numbered_list() -> None:
     assert re.search(r"no\s+separate\s+skip\s+path", phase_4_2)
     assert re.search(r"canonical\s+order\s+fix\s+→\s+won't-fix\s+→\s+follow-up", phase_4_2)
     assert re.search(r"won't-fix\s+is\s+item\s+`1`", phase_4_2)
+    # The summary row's won't-fix is a default, not the analysis's recommendation: its card may say fix.
+    assert re.search(r"won't-fix\s+is\s+item\s+`1`.{0,160}`\(default\)`", phase_4_2, re.DOTALL)
 
 
 def test_review_comments_decision_reads_a_digit_a_word_or_an_empty_answer() -> None:
@@ -604,6 +606,7 @@ def test_review_comments_agree_unclear_takes_decision_and_option_in_one_answer()
     assert re.search(r"ask\s+for\s+the\s+letter\s+only", phase_4_2)
     assert re.search(r"repeat\s+the\s+decision\s+prompt", phase_4_2)
     assert re.search(r"option's\s+text,\s+not\s+its\s+letter", phase_4_2)
+    assert re.search(r"plus\s+what\s+the\s+prose\s+adds", phase_4_2)
 
 
 def test_review_comments_decision_prompt_follows_the_conversation_language() -> None:
@@ -619,7 +622,7 @@ def test_review_comments_examples_use_the_numbered_decision() -> None:
     examples = section(text, "## Examples", "## Edge Cases")
     assert "won't-fix / follow-up?" not in text
     assert "(default:" not in text
-    assert re.search(r"^\s*1\. won't-fix \(recommended\)$", examples, re.MULTILINE)
+    assert re.search(r"^\s*1\. won't-fix \(default\)$", examples, re.MULTILINE)
     assert re.search(r"^User: 1 A$", examples, re.MULTILINE)
     assert not re.search(r"^User: (fix|won't-fix|follow-up)$", examples, re.MULTILINE)
 

@@ -498,7 +498,8 @@ for the answer (plain text by design — a structured dialog auto-submits on the
 claude-tools-6q4). The prompt is a numbered list of the three decisions. Item `1` is the card's
 **default**, marked `(recommended)`; the other two follow in the canonical order fix → won't-fix →
 follow-up. The default is the verdict's `suggested`, except on a GitHub review-body summary row
-(invariant 2 below): there won't-fix is item `1` whatever `suggested` says. An ordinary card:
+(invariant 2 below): there won't-fix is item `1` whatever `suggested` says, marked `(default)`
+instead of `(recommended)` — the card's own take may recommend something else. An ordinary card:
 
 ```
 C1 → what to do?
@@ -511,7 +512,8 @@ A `disagree` card reads `1. won't-fix (recommended)` / `2. fix` / `3. follow-up`
 decision changes from card to card, and the user reads it off the list in front of them.
 
 The prompt is written here in English; ask it in the language of the conversation. In that
-language go the question line, the `(recommended)` marker, the options header and the hint line;
+language go the question line, the `(recommended)` marker (or `(default)`), the options header and
+the hint line;
 the decision words `fix` / `won't-fix` / `follow-up` stay untranslated in any language — they are
 also accepted answers.
 
@@ -563,8 +565,9 @@ for the concrete change. If none of the offered options is right, the user answe
   into apply without a patch plan.
 
 Record `{ref → decision}` (for `agree_unclear`, the chosen option's text, not its letter — the
-letter means nothing outside this card; for an overridden `disagree`, the accept-anyway action),
-then show the next card.
+letter means nothing outside this card — plus what the prose adds when a prose answer extends the
+option, e.g. "fix A, and rename the helper too"; for an overridden `disagree`, the accept-anyway
+action), then show the next card.
 
 **Decision invariants (verdict ≠ decision ≠ reply source).** The verdict is the analysis; the
 decision is the user's choice (`fix` / `won't-fix` / `follow-up`); the reply text has its
@@ -1413,9 +1416,9 @@ Agent: [Emits U1's card unwrapped … ]
        3. follow-up
 User: 2
 Agent: [Emits C2's card unwrapped, header "### 🔵 C2 · doc · (summary)", no code block;
-        a GitHub review-body summary, so won't-fix is item 1]
+        a GitHub review-body summary, so won't-fix is item 1, marked (default)]
        C2 → what to do?
-       1. won't-fix (recommended)
+       1. won't-fix (default)
        2. fix
        3. follow-up
 User: 3
