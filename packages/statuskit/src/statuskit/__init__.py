@@ -126,6 +126,7 @@ def _config_init(path, *, force: bool) -> None:
 def _config_sync(path, *, dry_run: bool) -> None:
     """Run config sync and print the outcome."""
     from .setup.config import SyncStatus, sync_config
+    from .setup.ui import printable
 
     sync = sync_config(path, dry_run=dry_run)
     if sync.status == SyncStatus.ERROR:
@@ -136,7 +137,7 @@ def _config_sync(path, *, dry_run: bool) -> None:
     if sync.removals:
         print("Would remove:" if dry_run else "Removed:")
         for removal in sync.removals:
-            print(f"  {removal.location} \u2014 {removal.reason}")
+            print(f"  {printable(removal.location)} \u2014 {printable(removal.reason)}")
         if dry_run:
             sys.exit(1)
 

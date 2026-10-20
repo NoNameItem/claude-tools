@@ -10,6 +10,7 @@ no_permission_bits = pytest.mark.skipif(
     sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
     reason="permission bits are not enforced (Windows or root)",
 )
+symlinks = pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
 
 
 def _deny(self, *args, **kwargs):
@@ -116,15 +117,9 @@ class TestInitConfig:
         assert path.read_text(encoding="utf-8") == build_config()[0]
 
     def test_write_failure_is_an_error(self, tmp_path, monkeypatch):
-        from pathlib import Path
-
         from statuskit.setup.config import InitStatus, init_config
 
-        def boom(self, *args, **kwargs):
-            msg = "denied"
-            raise PermissionError(msg)
-
-        monkeypatch.setattr(Path, "write_text", boom)
+        monkeypatch.setattr(os, "fdopen", _deny)
         path = tmp_path / "statuskit.toml"
 
         result = init_config(path, force=False)
@@ -251,8 +246,6 @@ class TestSyncConfig:
         assert path.read_text(encoding="utf-8") == build_config()[0]
 
     def test_write_failure_leaves_original_intact(self, tmp_path, monkeypatch):
-        from pathlib import Path
-
         from statuskit.setup.config import SyncStatus, sync_config
 
         def boom(self, *args, **kwargs):
@@ -261,7 +254,7 @@ class TestSyncConfig:
 
         path = tmp_path / "statuskit.toml"
         path.write_bytes(b"bogus = 1\n")
-        monkeypatch.setattr(Path, "write_text", boom)
+        monkeypatch.setattr(os, "fdopen", boom)
 
         result = sync_config(path, dry_run=False)
 
@@ -393,13 +386,13 @@ class TestWriteOrderAndModes:
         path.write_text("[git]\nshow_prr = true\n")
         bak = tmp_path / "statuskit.toml.bak"
         bak.write_bytes(b"older backup\n")
-        monkeypatch.setattr(Path, "write_text", _deny)
+        monkeypatch.setattr(os, "fdopen", _deny)
 
         result = sync_config(path, dry_run=False)
 
         assert result.status == SyncStatus.ERROR
         assert bak.read_bytes() == b"older backup\n"
-        assert not (tmp_path / "statuskit.toml.tmp").exists()
+        assert list(tmp_path.glob("*.tmp")) == []
 
     @no_permission_bits
     def test_read_only_config_is_not_overwritten(self, tmp_path):
@@ -427,3 +420,122 @@ class TestWriteOrderAndModes:
 
         assert sync_config(path, dry_run=False).status == SyncStatus.UPDATED
         assert path.stat().st_mode & 0o777 == 0o600
+
+
+class TestPlantedPaths:
+    """The tmp and backup paths are never written through pre-existing symlinks."""
+
+    @symlinks
+    def test_tmp_symlink_is_not_written_through(self, tmp_path, monkeypatch):
+        import secrets
+
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        monkeypatch.setattr(secrets, "token_hex", lambda n: "deadbeef")
+        decoy = tmp_path / "decoy"
+        decoy.write_bytes(b"decoy\n")
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(b"bogus = 1\n")
+        planted = tmp_path / "statuskit.toml.deadbeef.tmp"
+        planted.symlink_to(decoy)
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot write")
+        assert decoy.read_bytes() == b"decoy\n"
+        assert path.read_bytes() == b"bogus = 1\n"
+        assert planted.is_symlink()
+
+    @symlinks
+    def test_backup_tmp_symlink_is_not_written_through(self, tmp_path, monkeypatch):
+        import secrets
+
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        monkeypatch.setattr(secrets, "token_hex", lambda n: "deadbeef")
+        decoy = tmp_path / "decoy"
+        decoy.write_bytes(b"decoy\n")
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(b"bogus = 1\n")
+        bak = tmp_path / "statuskit.toml.bak"
+        bak.write_bytes(b"older backup")
+        planted = tmp_path / "statuskit.toml.bak.deadbeef.tmp"
+        planted.symlink_to(decoy)
+        # the config's own tmp must not collide with the planted backup tmp
+        real = secrets.token_hex
+        names = iter(["cafef00d", "deadbeef"])
+        monkeypatch.setattr(secrets, "token_hex", lambda n: next(names, real(n)))
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot write")
+        assert decoy.read_bytes() == b"decoy\n"
+        assert bak.read_bytes() == b"older backup"
+        assert path.read_bytes() == b"bogus = 1\n"
+        assert planted.is_symlink()
+        assert list(tmp_path.glob("*.tmp")) == [planted]
+
+    def test_failed_backup_copy_keeps_previous_backup(self, tmp_path, monkeypatch):
+        import shutil
+
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(b"bogus = 1\n")
+        bak = tmp_path / "statuskit.toml.bak"
+        bak.write_bytes(b"older backup")
+
+        def boom(*args, **kwargs):
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(shutil, "copyfileobj", boom)
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot write")
+        assert bak.read_bytes() == b"older backup"
+        assert path.read_bytes() == b"bogus = 1\n"
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    @symlinks
+    def test_bak_symlink_is_not_written_through(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        decoy = tmp_path / "decoy"
+        decoy.write_bytes(b"decoy\n")
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(b"bogus = 1\n")
+        bak = tmp_path / "statuskit.toml.bak"
+        bak.symlink_to(decoy)
+
+        assert sync_config(path, dry_run=False).status == SyncStatus.UPDATED
+
+        assert decoy.read_bytes() == b"decoy\n"
+        assert not bak.is_symlink()
+        assert bak.read_bytes() == b"bogus = 1\n"
+
+    @no_permission_bits
+    def test_new_config_gets_umask_permissions(self, tmp_path):
+        import stat
+
+        from statuskit.setup.config import init_config
+
+        path = tmp_path / "statuskit.toml"
+        old = os.umask(0o022)
+        try:
+            init_config(path, force=False)
+        finally:
+            os.umask(old)
+
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+    def test_no_tmp_left_after_success(self, tmp_path):
+        from statuskit.setup.config import init_config
+
+        init_config(tmp_path / "statuskit.toml", force=False)
+
+        assert list(tmp_path.glob("*.tmp")) == []

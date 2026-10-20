@@ -41,3 +41,10 @@ class TestConsoleUI:
         result = ui.choose("Select:", ["Option A", "Option B", "Cancel"])
 
         assert result == 1  # 0-based index for "2"
+
+
+def test_printable_escapes_only_non_printable():
+    from statuskit.setup.ui import printable
+
+    assert printable("a\x1b\x07\t\u202eb") == "a\\x1b\\x07\\t\\u202eb"
+    assert printable("ünï \u2014 ok") == "ünï \u2014 ok"

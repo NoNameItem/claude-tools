@@ -242,11 +242,9 @@ def test_all_unknown_modules_leave_an_active_empty_list():
     assert "\nmodules = []\n" in build_config({"modules": ["quota"]})[0]
 
 
-def test_not_enabled_note_follows_cleaned_modules():
-    text, _ = build_config({"modules": ["model", "git", "nope"]})
-    assert text.count("# Not enabled") == 1
-    assert '# Not enabled — add "usage_limits" to `modules` to show it.\n' in text
-    assert "# Not enabled" not in build_config()[0]
+def test_no_not_enabled_note_for_disabled_modules():
+    text, _ = build_config({"modules": ["model"]})
+    assert "Not enabled" not in text
 
 
 def test_removals_follow_file_order():

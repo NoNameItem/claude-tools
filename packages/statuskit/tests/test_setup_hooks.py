@@ -1,6 +1,7 @@
 """Tests for hook detection."""
 
 import json
+import sys
 
 import pytest
 from statuskit.setup.hooks import is_our_hook
@@ -138,6 +139,47 @@ class TestCreateBackup:
         create_backup(original)
 
         assert backup.read_text() == '{"new": true}'
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_symlink_at_backup_path_is_replaced_not_followed(self, tmp_path):
+        """A symlink planted at .bak is not written through."""
+        from statuskit.setup.hooks import create_backup
+
+        decoy = tmp_path / "decoy"
+        decoy.write_text("decoy")
+        original = tmp_path / "settings.json"
+        original.write_text('{"new": true}')
+        backup = tmp_path / "settings.json.bak"
+        backup.symlink_to(decoy)
+
+        create_backup(original)
+
+        assert decoy.read_text() == "decoy"
+        assert not backup.is_symlink()
+        assert backup.read_text() == '{"new": true}'
+
+    def test_failed_copy_keeps_previous_backup(self, tmp_path, monkeypatch):
+        """A failing copy raises, keeps the old .bak and leaves no temp file."""
+        import shutil
+
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text('{"new": true}')
+        backup = tmp_path / "settings.json.bak"
+        backup.write_text("older backup")
+
+        def boom(*args, **kwargs):
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(shutil, "copyfileobj", boom)
+
+        with pytest.raises(OSError, match="disk full"):
+            create_backup(original)
+
+        assert backup.read_text() == "older backup"
+        assert list(tmp_path.glob("*.tmp")) == []
 
     def test_returns_backup_path(self, tmp_path):
         """Returns path to backup file."""

@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 
 from statuskit.setup.config_gen import Removal, build_config
-from statuskit.setup.hooks import create_backup
+from statuskit.setup.hooks import create_backup, open_temp_sibling
 
 
 class InitStatus(Enum):
@@ -50,29 +50,37 @@ class SyncResult:
 
 
 def _write_atomic(path: Path, text: str, *, backup: bool = False) -> Path | None:
-    """Write text to path atomically, following symlinks.
+    """Write text to path atomically.
 
-    A dotfiles-managed config is often a symlink; replacing the link itself would
-    silently detach it, so the resolved target is written instead.
+    Follows symlinks: if path is a symlink, the resolved target is written and the
+    link is left intact.
 
-    The temp file is written first, then (with backup=True) the previous content is
-    backed up, and only then is the target replaced, so a failed write never costs
-    the previous backup. The original permission bits are carried over.
+    The temp file is created exclusively under a random name, so a file or symlink
+    already sitting next to the config is never written through. It is written first,
+    then (with backup=True) the previous content is backed up, and only then is the
+    target replaced, so a failed write never costs the previous backup. The original
+    permission bits are carried over; a new file gets the umask-derived default.
     Returns the backup path, if one was made.
     """
     target = path.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
     existed = target.exists()
+    if existed and not os.access(target, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
+    tmp, fd = open_temp_sibling(target)
     try:
-        if existed and not os.access(target, os.W_OK):
-            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
-        tmp.write_text(text, encoding="utf-8", newline="\n")
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        except BaseException:
+            os.close(fd)
+            raise
+        with f:
+            f.write(text)
         made = create_backup(path) if backup and existed else None
         if existed:
             shutil.copymode(target, tmp)
         tmp.replace(target)
-    except OSError:
+    except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     return made

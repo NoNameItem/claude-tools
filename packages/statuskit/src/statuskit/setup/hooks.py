@@ -1,6 +1,8 @@
 """Hook detection for setup command."""
 
 import json
+import os
+import secrets
 import shlex
 import shutil
 from pathlib import Path
@@ -49,12 +51,36 @@ def write_settings(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def open_temp_sibling(path: Path) -> tuple[Path, int]:
+    """Create a new, randomly named temp file next to path and return it with an open fd.
+
+    O_EXCL never follows a symlink and fails if anything already exists at the name.
+    """
+    tmp = path.with_name(f"{path.name}.{secrets.token_hex(4)}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    return tmp, os.open(tmp, flags, 0o666)
+
+
 def create_backup(path: Path) -> Path:
     """Create backup of file as .bak.
 
-    Overwrites existing .bak file.
+    Overwrites existing .bak file: a symlink there is replaced, not followed, and a
+    failed copy leaves the previous backup intact.
     Returns path to backup file.
     """
     backup_path = path.with_suffix(path.suffix + ".bak")
-    shutil.copy2(path, backup_path)
+    tmp, fd = open_temp_sibling(backup_path)
+    try:
+        try:
+            dst = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with dst, path.open("rb") as src:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(path, tmp)
+        tmp.replace(backup_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return backup_path

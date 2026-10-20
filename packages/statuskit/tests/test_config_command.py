@@ -1,5 +1,6 @@
 """Tests for the `statuskit config` subcommand."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -105,6 +106,26 @@ def test_sync_dry_run_with_removals_exits_1(env, user_cfg, monkeypatch, capsys):
     assert user_cfg.read_bytes() == content
 
 
+def test_sync_dry_run_escapes_control_characters(env, user_cfg, monkeypatch, capsys):
+    user_cfg.parent.mkdir(parents=True)
+    user_cfg.write_text(
+        'modules = ["model", "\\u001b]52;c;aGk=\\u0007"]\n'
+        '"\\u001b[31mRED" = 1\n'
+        '["\\u001b[33mSEC"]\n'
+        "k = 1\n"
+        "[git]\n"
+        '"\\u001b[32mKEY" = 1\n'
+    )
+    run_exit1(monkeypatch, "sync", "--dry-run")
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "\x07" not in out
+    assert "\\x1b]52;c;aGk=\\x07" in out
+    assert "\\x1b[31mRED" in out
+    assert "\\x1b[33mSEC" in out
+    assert "\\x1b[32mKEY" in out
+
+
 def test_sync_dry_run_empty_file_exits_0(env, user_cfg, monkeypatch, capsys):
     user_cfg.parent.mkdir(parents=True)
     user_cfg.write_text("")
@@ -133,7 +154,7 @@ def test_sync_write_failure_is_error(env, user_cfg, monkeypatch, capsys):
         msg = "denied"
         raise PermissionError(msg)
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(os, "fdopen", boom)
     run_exit1(monkeypatch, "sync")
     (line,) = lines(capsys)
     assert line.startswith("Cannot write")

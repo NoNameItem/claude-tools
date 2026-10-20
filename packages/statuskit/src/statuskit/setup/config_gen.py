@@ -106,12 +106,8 @@ def _option_block(f: Field, active: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _banner_block(module: type[BaseModule], *, enabled: bool) -> str:
-    lines = [RULE, f"# {module.name}: {module.description}"]
-    if not enabled:
-        lines.append(f'# Not enabled — add "{module.name}" to `modules` to show it.')
-    lines.extend([RULE, f"[{module.name}]"])
-    return "\n".join(lines)
+def _banner_block(module: type[BaseModule]) -> str:
+    return "\n".join([RULE, f"# {module.name}: {module.description}", RULE, f"[{module.name}]"])
 
 
 def _clean_modules(value: list[str], registry: Mapping[str, type[BaseModule]]) -> tuple[list[str], list[Removal]]:
@@ -170,11 +166,9 @@ def build_config(
     top_raw, tables = split_sections(data or {})
     global_values, global_removals = _merge_globals(top_raw, registry)
     table_values, table_removals = _merge_tables(tables, registry)
-    default_modules = _default_of(next(f for f in _schema_fields(Config) if f.name == "modules"))
-    enabled = global_values.get("modules", default_modules)
     blocks = [HEADER.rstrip("\n")]
     blocks.extend(_option_block(f, global_values) for f in _schema_fields(Config))
     for name, module in registry.items():
-        blocks.append(_banner_block(module, enabled=name in enabled))
+        blocks.append(_banner_block(module))
         blocks.extend(_option_block(f, table_values.get(name, {})) for f in _schema_fields(module.params_class()))
     return "\n\n".join(blocks) + "\n", [*global_removals, *table_removals]
