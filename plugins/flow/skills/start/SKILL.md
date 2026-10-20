@@ -32,7 +32,7 @@ allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) B
 
 **Core principle:** Consultation over assumption.
 
-This skill guides starting work on beads tasks through explicit consultation steps. Users choose tasks, see context first, and decide on branch strategy - even when choices seem "obvious."
+This skill guides starting work on beads tasks through explicit consultation steps. Users choose tasks and decide on branch strategy - even when choices seem "obvious" - and the run ends on the full task card.
 
 ## 🚨 CRITICAL: Follow This Exact Process
 
@@ -74,7 +74,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 0. Sync | `flow-sync pull` + check worktree | Get latest tasks (other machines) |
 | 1. Tree | `bd graph --all --json \| flow-task-tree [--root <id>]` | Script builds tree (subtree if --root) |
 | 2. Select | Let user choose by number/ID | User agency |
-| 3. Show | `bd show <id> --json \| flow-task-card` | Context BEFORE commitment, reproduce in reply |
+| 3. Read | `bd show <id> --json` | Keep the JSON; no card yet |
 | 4. Branch | Check branch type | Generic vs Feature |
 | 5. Search | Find existing branches | Reuse before create |
 | 5.5. Auto | Check auto-resolve cases | Skip question if obvious |
@@ -84,6 +84,7 @@ The script outputs a properly formatted hierarchical tree with emoji type indica
 | 7.2. Init | Detect project, confirm, run | Only after worktree creation |
 | 8. Create | `git checkout -b` or `git worktree add` | Based on user's choice |
 | 8.1. Git Info | `flow-link-doc … Git … --append` + `flow-sync push` | Append branch (append-if-new) for flow:continue |
+| 9. Card | `bd show <id> --json \| flow-task-card` | Final output — reproduce in reply |
 
 **Branch Tone Guide:**
 - Generic (main/master/develop) → **RECOMMEND** creating feature branch
@@ -174,19 +175,17 @@ Map selection to task ID and proceed.
 
 **After selection, check for open children:**
 - If selected task **has open children** → re-run script with `--root <selected-task-id>` to show subtree, let user pick again
-- If selected task **has no open children** → proceed to Step 3 (Show Task Description)
+- If selected task **has no open children** → proceed to Step 3 (Read the Task)
 
-### 3. Show Task Description FIRST
+### 3. Read the Task
 
-**Before any actions**, display task details using the card script:
+Fetch the task once and keep the JSON — **do not render the card here**; it closes the run in Step 9:
 
 ```bash
-bd show <task-id> --json | flow-task-card
+bd show <task-id> --json
 ```
 
-After running the script, reproduce its **full output verbatim** inside a fenced ``` code block in your reply — **every line** from the top border `┌─` to the bottom border `└─`, none dropped. The card must appear in your message text — that is the only place the user reliably sees it. Do not summarize, truncate, or reformat it.
-
-**User needs context BEFORE committing to task.**
+The JSON feeds three later steps: the `title` for the Step 6 question, the `assignee` for Step 7, and the existing `Git:` lines of the `description` for Step 8.1.
 
 ### 4. Check Git Branch
 
@@ -268,7 +267,7 @@ Which options to show depends on context (`IN_WORKTREE`, existing branches, bran
 **`IN_WORKTREE=false`, no existing branch, generic branch:**
 
 ```
-Как продолжить работу с веткой для задачи {task-id}?
+Как продолжить работу с веткой для задачи {task-id} «{title}»?
 
 1. Создать `{branch-name}` здесь (checkout) — рекомендую
 2. Создать `{branch-name}` в отдельном worktree (параллельная работа)
@@ -280,7 +279,7 @@ Which options to show depends on context (`IN_WORKTREE`, existing branches, bran
 **`IN_WORKTREE=false`, existing branch(es) found, generic branch:**
 
 ```
-Для задачи {task-id} уже есть ветка.
+Для задачи {task-id} «{title}» уже есть ветка.
 
 1. Checkout `{existing-branch}` здесь — рекомендую
 2. Checkout `{existing-branch}` в отдельном worktree (параллельная работа)
@@ -293,7 +292,7 @@ Which options to show depends on context (`IN_WORKTREE`, existing branches, bran
 **`IN_WORKTREE=true` (no worktree option):**
 
 ```
-Как продолжить работу с веткой для задачи {task-id}?
+Как продолжить работу с веткой для задачи {task-id} «{title}»?
 
 1. Создать/checkout `{branch-name}` здесь — рекомендую
 2. Остаться на `{branch}` — не рекомендую, {branch} держим чистым
@@ -309,10 +308,9 @@ Free-form answers are supported natively (prose). Interpret the user's intent �
 
 Run the update only after the user confirmed the branch choice in Step 6 (or after the Step 5.5 auto-resolve report).
 
-Fetch the task JSON and read its `assignee` field (Step 3 piped the JSON into `flow-task-card`, which does not show assignee — fetch it here), then resolve your actor name:
+Read the `assignee` field from the Step 3 JSON, then resolve your actor name:
 
 ```bash
-bd show <task-id> --json
 flow-actor
 ```
 
@@ -416,7 +414,7 @@ flow-link-doc <task-id> Git "$(git branch --show-current)" --append
 
 `--append` adds the branch as a new `Git:` line and is a **no-op if that branch is already recorded** — so re-running `/flow:start` on an existing branch changes nothing (this replaces the old "skip if unchanged" check). Use the actual checked-out branch (`git branch --show-current`) rather than `$BRANCH` — on the checkout-existing and existing-worktree paths the user may have selected a branch different from the computed candidate. All other link lines (Design/Plan and any other `Git:` branches) are preserved.
 
-**Adding a second branch to a task?** The task description (from Step 3 / the task card) already lists any existing `Git:` lines. If one is a *different* branch (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
+**Adding a second branch to a task?** The task description (in the Step 3 JSON) already lists any existing `Git:` lines. If one is a *different* branch (a parallel workstream in another project/PR), ask the user in **plain text** for an optional label (the project name, e.g. `statuskit`, `flow`) so `flow:continue` can tell the branches apart, then:
 
 ```bash
 flow-link-doc <task-id> Git "$(git branch --show-current)" --append --label "<project>"
@@ -430,6 +428,18 @@ flow-sync push
 ```
 
 Always run it — `--append` self-deduplicates by branch name, so there is no "skip if unchanged" case.
+
+### 9. Show Task Card
+
+Runs on every path that got through Step 7 — create or checkout, here or in a worktree, staying on the current branch, and both Step 5.5 auto-resolve cases — in the reply that finishes the skill, after any question Step 7.2 or 8.1 still had to ask. Fetch the task fresh: its status and `Git:` lines changed after Step 3.
+
+```bash
+bd show <task-id> --json | flow-task-card
+```
+
+After running the script, reproduce its **full output verbatim** inside a fenced ``` code block in your reply — **every line** from the top border `┌─` to the bottom border `└─`, none dropped. The card must appear in your message text — that is the only place the user reliably sees it. Do not summarize, truncate, or reformat it.
+
+This is the final output. The user sees it and starts working.
 
 ## Red Flags - STOP
 
@@ -453,7 +463,6 @@ If you're thinking any of these, STOP and follow the workflow:
 - "Creating a feature branch is obviously right"
 - "User said they're in a hurry"
 - "I'll choose a good task for them"
-- "Description can go in summary at the end"
 - "The card is already displayed" → It is not. The card is visible only if YOU reproduced it verbatim in a code block in your reply.
 
 **Branch naming violations:**
@@ -511,7 +520,6 @@ Agent: I've created branch claude-tools-c7b and marked the task in_progress.
 **Problems:**
 - Created branch without asking
 - No recommendation (generic branch)
-- Description shown after actions
 - No user choice
 
 ### ✅ GOOD: Consults before acting
@@ -531,16 +539,7 @@ Agent: Доступные задачи:
 
 User: 1.2
 
-Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
-
-       ```
-       ┌─ Feature ──────────────────────────────────────────────────────────────────┐
-       │ Git module                                                                 │
-       ...
-       └────────────────────────────────────────────────────────────────────────────┘
-       ```
-
-       Как продолжить работу с веткой для задачи claude-tools-c7b?
+Agent: Как продолжить работу с веткой для задачи claude-tools-c7b «Git module»?
 
        1. Создать `feature/claude-tools-c7b-git-module` здесь (checkout) — рекомендую
        2. Создать `feature/claude-tools-c7b-git-module` в отдельном worktree (параллельная работа)
@@ -548,13 +547,27 @@ Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
 
        Выберите вариант (номер) или опишите своими словами.
        [ends turn, waits for the answer]
+
+User: 1
+
+Agent: [updates the status, creates the branch, records Git:]
+       Назначил задачу на вас. Создал ветку `feature/claude-tools-c7b-git-module`.
+
+       [runs bd show claude-tools-c7b --json | flow-task-card]
+
+       ```
+       ┌─ Feature ──────────────────────────────────────────────────────────────────┐
+       │ Git module                                                                 │
+       ...
+       └────────────────────────────────────────────────────────────────────────────┘
+       ```
 ```
 
 **Correct because:**
 - Shows hierarchical tree first (plain text)
 - Lets user select task by number
-- Shows full context in box format
 - Asks the branch question in plain text, then waits (immune to the AFK timeout)
+- Ends the run on the full task card
 - Recommended option is first, marked `— рекомендую` on generic branch
 - "Остаться" is last with warning tone
 - Worktree option included (not in worktree)
@@ -564,9 +577,7 @@ Agent: [runs bd show claude-tools-c7b --json | flow-task-card]
 
 ```
 User: "start bug task claude-tools-abc"
-Agent: [shows task description box for bug task]
-
-       Для задачи claude-tools-abc уже есть ветка.
+Agent: Для задачи claude-tools-abc «Fix login error» уже есть ветка.
 
        1. Checkout `fix/claude-tools-abc-login-error` здесь — рекомендую
        2. Checkout `fix/claude-tools-abc-login-error` в отдельном worktree (параллельная работа)
@@ -597,9 +608,7 @@ Agent: [creates branch immediately without asking]
 
 ```
 User: "start git module, I'm in a hurry"
-Agent: [shows task description]
-
-       [asks the same plain-text branch question as normal, then waits for the answer]
+Agent: [asks the same plain-text branch question as normal, then waits for the answer]
 ```
 
 **Correct because:**
@@ -612,7 +621,7 @@ Agent: [shows task description]
 ### When Task Already in_progress
 
 If task status is already `in_progress`:
-1. Still show full description via script (user might not remember)
+1. Still end the run on the full card (Step 9) — the user might not remember the task
 2. Still check branch and ask
 3. If `assignee` is empty, still run the Step 7 update (backfills assignee on legacy tasks); skip the update only when status is `in_progress` AND `assignee` is already you (or when no identity is available — nothing to backfill then)
 
@@ -665,4 +674,4 @@ If `IN_WORKTREE=true` (detected in Step 0):
 
 Always follow the workflow. Consultation is not overhead - it's the service.
 
-Show context first, let users choose, recommend appropriately, then act.
+Let users choose, recommend appropriately, act — then end on the task card.

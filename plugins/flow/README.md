@@ -175,7 +175,7 @@ Not every task needs all phases. A small bug fix might go straight from `/flow:s
 
 #### `/flow:start`
 
-Begins a work session. Shows a hierarchical task tree, lets you pick a task by number or ID, displays full task details, then handles branch creation or checkout. Offers worktree as an option for parallel work.
+Begins a work session. Shows a hierarchical task tree, lets you pick a task by number or ID, handles branch creation or checkout (offering a worktree for parallel work), and ends with the full task card.
 
 When to use: at the start of a new work session, or when switching to a different task.
 
