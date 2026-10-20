@@ -2,7 +2,7 @@
 
 **Task:** claude-tools-elf.49
 **Date:** 2026-10-20
-**Status:** approved, pending implementation plan
+**Status:** implemented (flow:start Step 9; flow:continue unchanged — see §4)
 
 Mockups: none — the output is terminal text, and the card itself is the existing `flow-task-card`
 rendering, unchanged.
