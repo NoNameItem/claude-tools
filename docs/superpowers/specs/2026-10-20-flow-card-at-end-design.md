@@ -93,37 +93,32 @@ Every Step 6 template's first line carries the task title next to the ID (e.g.
 After Step 8.1, on every path that reaches it: create here, create in worktree, checkout existing
 (here / worktree), stay on the current branch, and both Step 5.5 auto-resolve cases. It fetches
 fresh — `bd show <task-id> --json | flow-task-card` — because the status (`in_progress`) and the
-`Git:` line changed after Step 3. It carries the PR #74 verbatim-reproduction text unchanged plus
-the final-reply recipe below. The Quick Reference table gets a matching row; row 3 becomes the read.
+`Git:` line changed after Step 3. It closes with `flow:continue` Step 9's text verbatim (§4): the PR #74 paragraph and
+"This is the final output…". The Quick Reference table gets a matching row; row 3 becomes the read.
 
-### 4. The final-reply recipe (identical text in both skills)
+### 4. Final-step wording — no new rule
 
-In `flow:start` Step 9 and `flow:continue` Step 9 (next to "This is the final output. The user
-sees it and starts working."), the skills state what the final reply **is**, part by part:
+**RED baseline, 2026-10-20** (`superpowers:writing-skills`; sonnet, one fresh subagent per reply,
+the `flow:continue` text at `53d6b5b` as the no-guidance control): 10 replies, **0 recaps after the
+card**. Scenario 2 (heavy service output, "the user stepped away"): 5/5 one-line result → card,
+reply ends on the card. Scenario 3 ("continue elf.49 and draft a three-step plan"): 5/5 put the
+requested outline **above** the card and end on the card. One run had read the plan through the
+card's `Design:`/`Plan:` lines; the fixtures were stripped and that run repeated, same result.
 
-1. one-line results of this run (assignment, branch switch, worktree path);
-2. the card, verbatim, in a fenced block;
-3. only **if the user's request asked for work beyond this skill** — that work.
+The control does not exhibit the failure, so per `writing-skills` there is nothing to fix and no
+wording is authored. `flow:continue` Step 9 — the PR #74 verbatim paragraph followed by "This is the
+final output. The user sees it and starts working." — already produces Decision 1, and the user
+approved proceeding without a rule (2026-10-20). With a broader request the requested work lands
+above the card rather than after it; that meets the Acceptance (card last, no recap).
 
-A recap of what the skill did is not one of the parts. With no further request, the reply ends on
-the card's closing fence. If the session keeps the step checklist (STOP-AND-READ), its last item is
-marked complete before the reply is written, so no tool call lands below the card. *(Builder's
-call, from the design review.)*
+`flow:start`'s new Step 9 closes with that same text, verbatim. Its scenario 1 GREEN run doubles as
+the control for a rule: if replies there append a recap after the card (`flow:start` prints more
+service output than `flow:continue`), that is a real baseline, and a final-reply recipe (the parts
+in order, not a prohibition list — writing-skills "Match the Form to the Failure") is authored in
+both skills with scenarios 2–3 re-run.
 
-**Form, per `superpowers:writing-skills` "Match the Form to the Failure".** The failure this guards
-against — a recap appended after the card — is wrong-shaped output from an agent that otherwise
-complies, not a rule it knows and breaks. For that class the skill prescribes a positive recipe
-(the parts, in order) and warns that prohibition lists ("no summary, no recap…"), nuance clauses
-and exemption clauses measurably backfire. Hence the recipe above, and the broader-request case as
-its own conditional on an observable predicate (the user's request) rather than an "except…"
-clause. Final wording is micro-tested against a no-guidance control (the current text) before the
-full pressure runs.
-
-A Red Flag and a Rationalization row ("I'll add a short summary after the card") are added **only
-if** the RED baseline shows a discipline failure — an agent that states the card should be last and
-appends a recap anyway, with a rationalization to quote. For a pure shape failure they are left
-out. *(Changed after approval, 2026-10-20: the first version of this section prescribed the
-prohibition wording and both rows unconditionally, before `writing-skills` was applied to it.)*
+*(Changed after approval, twice on 2026-10-20: first from a prohibition rule to a recipe when
+`writing-skills` was applied, then to no rule after the RED baseline.)*
 
 ### 5. `flow:start` — text that now says the opposite
 
@@ -132,7 +127,7 @@ prohibition wording and both rows unconditionally, before `writing-skills` was a
 | 35 | Overview: "Users choose tasks, see context first, and decide on branch strategy" | Drop "see context first"; say the run ends on the card |
 | 77 | Quick Reference row 3: "Context BEFORE commitment, reproduce in reply" | Row 3 = read JSON, no card; new row 9 = card, final output, last block |
 | 179–189 | Step 3 body, "**User needs context BEFORE committing to task.**" | Replaced by §1 |
-| 456 | Red Flag "Description can go in summary at the end" | Remove — it now contradicts the design; §4's recipe covers the final reply |
+| 456 | Red Flag "Description can go in summary at the end" | Remove — it now contradicts the design |
 | 514 | BAD example problem "Description shown after actions" | Remove that bullet |
 | 534, 567, 600 | GOOD examples render the card before the branch question | Branch question first; the card closes the example |
 | 615 | Edge case "Still show full description via script" | The final card (Step 9) is shown as on any other path |
@@ -140,9 +135,7 @@ prohibition wording and both rows unconditionally, before `writing-skills` was a
 
 ### 6. `flow:continue`
 
-Step 9 gains the §4 recipe; Quick Reference row 9 "Final output — reproduce in reply" says "last
-block" too; the §4 Red Flag and Rationalization row only on a discipline-failure baseline.
-Nothing else changes.
+No change (§4: the RED baseline shows it already ends on the card). The §8 contracts guard it.
 
 ### 7. Docs
 
@@ -156,9 +149,12 @@ Nothing else changes.
 
 - `start`: the Step 3 section does not invoke `flow-task-card`; every `flow-task-card` invocation
   in the workflow lies in the last workflow step (`### 9.`).
-- `start` and `continue`: the final step contains the §4 recipe, introduced by one stable marker
-  phrase, and the recipe block is byte-identical in both skills.
-- `start` and `continue`: Red Flags contain the summary-after-card flag — only if §4 added it.
+- `start` and `continue`: the last step renders the card and says "This is the final output"; no
+  `flow-task-card` anywhere earlier in the workflow; the text from "After running the script" to
+  the end of the step is identical in both skills.
+- `start`: the last step names Step 5.5 and "the reply that finishes the skill"; every Step 6
+  template's first line carries `{title}`; the stale "context first" phrases are gone.
+- README `/flow:start` blurb and the `AGENTS.md` principle say the card comes last.
 
 ## Constraints on implementation
 
@@ -166,7 +162,8 @@ Nothing else changes.
   current text → GREEN → REFACTOR, wording micro-tests with 5+ reps per variant against a
   no-guidance control, every reply read by hand, then the full pressure scenarios. If the control
   does not show the failure, there is nothing to fix: no wording is authored for that skill, and
-  the deviation from this spec goes back to the user before the task continues. Baseline for `flow:start`: this session's run, which ended on a recap.
+  the deviation from this spec goes back to the user before the task continues (it did — §4).
+  Baseline for `flow:start`: this session's run, which ended on a recap.
   For `flow:continue`: a run with a lot of service output (worktree creation + init) before Step 9
   and an invitation to "summarise what happened". A third scenario covers the scope exception: the
   skill invoked inside a broader request ("continue elf.49 and write the plan") — the requested
@@ -183,15 +180,14 @@ Nothing else changes.
 - The `flow:start` branch question names the task by ID and title.
 - On every successful `flow:start` path listed in §3, the final reply ends with the full card in a
   fenced block and nothing after it.
-- `flow:continue`'s final reply ends with the full card and nothing after it.
-- When either skill runs inside a broader request, the requested work may follow the card; a recap
-  of the skill's actions never does.
+- `flow:continue`'s final reply ends with the full card and nothing after it — already true (§4).
+- When either skill runs inside a broader request, no recap of the skill's actions follows the card.
 - Early exits (Decision 4) show no card.
 - README and `AGENTS.md` updated as in §7.
-- The §8 contracts exist and `uv run pytest` is green; the GREEN pressure runs end on the card with
-  no recap (scenarios 1–2) and on the requested work with no recap (scenario 3).
+- The §8 contracts exist and `uv run pytest` is green; scenario 1 GREEN: 5/5 replies end on the
+  full card.
 
 ## Left to the builder
 
-Exact wording of the final-reply recipe (within §4's form), the Step 6 templates and the reworded overview/Bottom Line;
+Exact wording of the Step 6 templates and the reworded overview/Bottom Line;
 the shape of the contract helpers; the commit type for the PR.
