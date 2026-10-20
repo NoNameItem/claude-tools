@@ -1,8 +1,9 @@
 """Tests for flow-task-tree."""
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
+import re
 import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -68,9 +69,54 @@ def dep(child_id: str, parent_id: str) -> dict:
     return {"type": "parent-child", "issue_id": child_id, "depends_on_id": parent_id}
 
 
+def blocks(blocked_id: str, blocker_id: str) -> dict:
+    """Create a blocks dependency dict (blocked_id is blocked by blocker_id)."""
+    return {"type": "blocks", "issue_id": blocked_id, "depends_on_id": blocker_id}
+
+
+_TASK_LINE = re.compile(r"^(?P<lead>[│├└─ ]*)(?:\*\*)?(?P<num>\d+(?:\.\d+)*)(?:\\\.)? .*\((?P<id>[^()]+)\) \| P\d")
+
+
+def rows(lines: list[str]) -> list[tuple[str, str, str]]:
+    """Return (connector, number, task_id) for every task line; blank and header lines are skipped."""
+    result = []
+    for line in lines:
+        match = _TASK_LINE.match(line)
+        if match is None:
+            continue
+        lead = match["lead"]
+        connector = "└─" if "└─" in lead else "├─" if "├─" in lead else ""
+        result.append((connector, match["num"], match["id"]))
+    return result
+
+
 def make_graph(issues: list[dict], deps: list[dict] | None = None) -> list[dict]:
     """Create a graph JSON structure (list with one graph entry)."""
     return [{"Issues": issues, "Dependencies": deps or []}]
+
+
+# Reproduction graph from the rendered-numbering design (claude-tools-elf.65)
+REPRO_ISSUES = [
+    issue("r1"),
+    issue("r2-blocked"),
+    issue("r3"),
+    issue("blocker", priority=3),
+    issue("r5-last-blocked", priority=3),
+    issue("p", issue_type="epic"),
+    issue("p-c1"),
+    issue("p-c2-blocked"),
+    issue("p-c2-gc"),
+    issue("p-c3"),
+]
+REPRO_DEPS = [
+    blocks("r2-blocked", "blocker"),
+    blocks("r5-last-blocked", "blocker"),
+    blocks("p-c2-blocked", "blocker"),
+    dep("p-c1", "p"),
+    dep("p-c2-blocked", "p"),
+    dep("p-c2-gc", "p-c2-blocked"),
+    dep("p-c3", "p"),
+]
 
 
 # ===========================================================================
@@ -459,3 +505,197 @@ class TestDecisionType:
 
     def test_decision_emoji(self):
         assert get_type_emoji("decision") == "⚖️"
+
+
+# ===========================================================================
+# Numbering over the printed set (claude-tools-elf.65)
+# ===========================================================================
+
+
+class TestRenderedRoots:
+    """Roots are numbered, limited and separated over the roots that are printed."""
+
+    def _parse(self, issues, deps=None):
+        """Parse a graph and return tasks dict."""
+        return parse_graphs(make_graph(issues, deps))
+
+    def test_printed_set_unchanged_on_repro_graph(self):
+        ids = {r[2] for r in rows(build_tree(self._parse(REPRO_ISSUES, REPRO_DEPS)))}
+        assert ids == {"r1", "r3", "p", "p-c1", "p-c3", "blocker"}
+
+    def test_printed_set_unchanged_on_visibility_graph(self):
+        tasks = self._parse(
+            [
+                issue("blocker"),
+                issue("d-leaf", status="deferred"),
+                issue("bd-top", status="deferred"),
+                issue("bd-child"),
+                issue("bdc-top", status="deferred"),
+                issue("bdc-mid"),
+                issue("bdc-leaf"),
+                issue("bo-top"),
+                issue("bo-child"),
+                issue("cl-top", status="closed"),
+                issue("cl-child"),
+            ],
+            [
+                blocks("bd-top", "blocker"),
+                dep("bd-child", "bd-top"),
+                blocks("bdc-top", "blocker"),
+                dep("bdc-mid", "bdc-top"),
+                blocks("bdc-mid", "blocker"),
+                dep("bdc-leaf", "bdc-mid"),
+                blocks("bo-top", "blocker"),
+                dep("bo-child", "bo-top"),
+                dep("cl-child", "cl-top"),
+            ],
+        )
+        ids = {r[2] for r in rows(build_tree(tasks))}
+        assert ids == {"blocker", "d-leaf", "bd-top", "bd-child", "bdc-top"}
+
+    def _blocked_middle_root(self):
+        return self._parse(
+            [issue("a"), issue("b"), issue("c"), issue("x", priority=3)],
+            [blocks("b", "x")],
+        )
+
+    def test_blocked_root_leaves_no_gap(self):
+        lines = build_tree(self._blocked_middle_root())
+        assert rows(lines) == [("", "1", "a"), ("", "2", "c"), ("", "3", "x")]
+
+    def test_closed_root_leaves_no_trailing_blank(self):
+        lines = build_tree(self._parse([issue("a"), issue("z", status="closed")]))
+        assert len(lines) == 1
+        assert rows(lines) == [("", "1", "a")]
+
+    def test_search_numbers_first_match_1(self):
+        tasks = self._parse([issue("p-alpha"), issue("p-beta"), issue("p-gamma")])
+        lines = build_tree(tasks, search="gamma")
+        assert rows(lines) == [("", "1", "p-gamma")]
+
+    def test_limit_counts_printed_roots(self):
+        tasks = self._parse(
+            [issue("a"), issue("b"), issue("c"), issue("d"), issue("x", priority=3)],
+            [blocks("b", "x")],
+        )
+        lines = build_tree(tasks, limit=2)
+        assert rows(lines) == [("", "1", "a"), ("", "2", "c")]
+
+    def test_blocked_last_root_single_separators(self):
+        tasks = self._parse(
+            [issue("a"), issue("x"), issue("z", priority=3)],
+            [blocks("z", "x")],
+        )
+        lines = build_tree(tasks)
+        assert [line == "" for line in lines] == [False, True, False]
+
+    def test_limit_applies_after_search(self):
+        tasks = self._parse([issue("p-alpha1"), issue("p-beta"), issue("p-alpha2")])
+        lines = build_tree(tasks, search="alpha", limit=2)
+        assert rows(lines) == [("", "1", "p-alpha1"), ("", "2", "p-alpha2")]
+
+    def test_failed_search_fallback_numbers_without_gap(self):
+        lines = build_tree(self._blocked_middle_root(), search="zzz")
+        assert lines[:4] == ['Search "zzz" found no tasks.', "", "All available tasks:", ""]
+        assert rows(lines) == [("", "1", "a"), ("", "2", "c"), ("", "3", "x")]
+
+    def test_blocked_root_matching_search_takes_no_number(self):
+        tasks = self._parse(
+            [issue("p-alpha-blocked"), issue("p-alpha"), issue("x", priority=3)],
+            [blocks("p-alpha-blocked", "x")],
+        )
+        lines = build_tree(tasks, search="alpha")
+        assert rows(lines) == [("", "1", "p-alpha")]
+
+
+class TestRenderedChildren:
+    """Children are numbered, connected and counted over the children that are printed."""
+
+    def _parse(self, issues, deps=None):
+        """Parse a graph and return tasks dict."""
+        return parse_graphs(make_graph(issues, deps))
+
+    def _blocked_middle_child(self):
+        return self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("gc"), issue("c3"), issue("x", priority=3)],
+            [dep("c1", "p"), dep("c2", "p"), dep("gc", "c2"), dep("c3", "p"), blocks("c2", "x")],
+        )
+
+    def test_hidden_root_target_prints_nothing(self):
+        tasks = self._parse([issue("a"), issue("x")], [blocks("a", "x")])
+        assert build_tree(tasks, root_id="a") == []
+
+    def test_blocked_child_leaves_no_gap(self):
+        lines = build_tree(self._blocked_middle_child())
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c3"), ("", "2", "x")]
+
+    def test_closed_child_gets_no_connector_or_count(self):
+        tasks = self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("cz", status="closed"), issue("czc")],
+            [dep("c1", "p"), dep("c2", "p"), dep("cz", "p"), dep("czc", "cz")],
+        )
+        assert rows(build_tree(tasks)) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c2")]
+        collapsed = build_tree(tasks, collapse=True)
+        assert len(collapsed) == 1
+        assert collapsed[0].endswith(" [+2]")
+
+    def test_hidden_last_child_moves_last_connector(self):
+        tasks = self._parse(
+            [issue("p"), issue("c1"), issue("c2"), issue("c3"), issue("gc"), issue("x", priority=3)],
+            [dep("c1", "p"), dep("c2", "p"), dep("c3", "p"), dep("gc", "c3"), blocks("c3", "x")],
+        )
+        lines = build_tree(tasks, root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c2")]
+
+    def test_collapse_counts_printed_children(self):
+        lines = build_tree(self._blocked_middle_child(), collapse=True)
+        assert lines[0].endswith(" [+2]")
+
+    def test_collapse_count_matches_search(self):
+        tasks = self._parse(
+            [issue("p"), issue("p-alpha"), issue("p-beta")],
+            [dep("p-alpha", "p"), dep("p-beta", "p")],
+        )
+        collapsed = build_tree(tasks, search="alpha", collapse=True)
+        assert len(collapsed) == 1
+        assert collapsed[0].endswith(" [+1]")
+        assert rows(build_tree(tasks, search="alpha")) == [("", "1", "p"), ("└─", "1.1", "p-alpha")]
+
+    def test_root_subtree_children_have_no_gap(self):
+        lines = build_tree(self._blocked_middle_child(), root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("├─", "1.1", "c1"), ("└─", "1.2", "c3")]
+
+    def test_hidden_grandchild_leaves_no_gap(self):
+        tasks = self._parse(
+            [issue("p"), issue("q"), issue("q1"), issue("q2"), issue("q2a"), issue("q3"), issue("x", priority=3)],
+            [dep("q", "p"), dep("q1", "q"), dep("q2", "q"), dep("q2a", "q2"), dep("q3", "q"), blocks("q2", "x")],
+        )
+        lines = build_tree(tasks, root_id="p")
+        assert rows(lines) == [("", "1", "p"), ("└─", "1.1", "q"), ("├─", "1.1.1", "q1"), ("└─", "1.1.2", "q3")]
+
+    def test_repro_graph_matches_spec(self):
+        tasks = self._parse(REPRO_ISSUES, REPRO_DEPS)
+
+        lines = build_tree(tasks)
+        assert rows(lines) == [
+            ("", "1", "r1"),
+            ("", "2", "r3"),
+            ("", "3", "p"),
+            ("├─", "3.1", "p-c1"),
+            ("└─", "3.2", "p-c3"),
+            ("", "4", "blocker"),
+        ]
+        assert lines[-1] != ""
+
+        lines = build_tree(tasks, limit=2)
+        assert rows(lines) == [("", "1", "r1"), ("", "2", "r3")]
+        assert lines[-1] != ""
+
+        assert rows(build_tree(tasks, search="r3")) == [("", "1", "r3")]
+
+        assert rows(build_tree(tasks, root_id="p")) == [("", "1", "p"), ("├─", "1.1", "p-c1"), ("└─", "1.2", "p-c3")]
+
+        lines = build_tree(tasks, search="p-c1", collapse=True)
+        assert len(lines) == 1
+        assert rows(lines) == [("", "1", "p")]
+        assert lines[0].endswith(" [+1]")
