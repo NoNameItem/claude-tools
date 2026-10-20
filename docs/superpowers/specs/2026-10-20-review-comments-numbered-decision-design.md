@@ -2,7 +2,10 @@
 
 **Task:** claude-tools-elf.42
 **Date:** 2026-10-20
-**Status:** design
+**Status:** implemented (Phase 4.2 + Examples of `review-comments/SKILL.md`; deviations found by
+scenario runs and the whole-branch review: the summary row marks item `1` `(default)`, a prose
+addition is recorded with the option, the language rule names the frame parts, the table's digit
+cell reads `` `1` / `2` / `3` `` — each marked below)
 
 Mockups: none — the output is terminal text.
 
@@ -32,7 +35,10 @@ one takes either a prose answer or a second exchange.
    "First" means the card's **default**, which today is `suggested` except for one row: a GitHub
    review-body summary (`kind == "summary"` on `platform == "github"`) defaults to won't-fix
    whatever its verdict says (decision invariant 2). That rule stays, so for that row won't-fix is
-   item `1` even when the card's `Suggested:` line says fix.
+   item `1` even when the card's `Suggested:` line says fix — and it is marked `(default)`, not
+   `(recommended)`, because the card's own take may recommend something else (implementation
+   deviation: the whole-branch review found the prompt calling won't-fix "recommended" right under
+   `Suggested: fix`, before an Enter that settles the row for good).
 2. **`agree_unclear`: lettered options and a single answer.** The fix options are listed as A, B, C
    above the numbered list, and the user answers once with the digit Fix holds on this card plus a
    letter — `1 A`. The user's words (2026-10-20): "я отвечаю 1 A"; when Fix is not first, "я
@@ -84,9 +90,11 @@ the option letter: 2 A`, and the user answers `2 B` to fix with option B. The hi
 holds on that card.
 
 The skill text writes the prompt in English, like the rest of the skill; the agent asks in the
-language it is already using with the user — the skill does not fix the language. The decision
-words (`fix`, `won't-fix`, `follow-up`) stay as written in any language: they are also accepted
-answers.
+language it is already using with the user — the skill does not fix the language. In that language
+go the question line, the `(recommended)` / `(default)` marker, the options header and the hint
+(implementation deviation: left unnamed, the marker stayed English in 5 of 6 Russian scenario runs).
+The decision words (`fix`, `won't-fix`, `follow-up`) stay as written in any language: they are also
+accepted answers.
 
 **Where the options come from:** the verdict's `options` array when present, otherwise the options
 the `thought` describes, in their order. One array element is one option; an element that itself
@@ -102,7 +110,7 @@ The agent interprets the answer (no helper parses it):
 
 | Answer | Meaning |
 |---|---|
-| `1`–`3` | the decision at that position on this card |
+| `1` / `2` / `3` | the decision at that position on this card |
 | `fix` / `won't-fix` / `follow-up` | that decision; case and obvious spellings (`wontfix`, `won't fix`, `follow up`) ignored |
 | empty | `suggested` |
 | `<digit or word> <letter>` | on an `agree_unclear` card: fix with that option; case and the space are ignored (`1A`, `1 a`, `fix B`) |
@@ -126,7 +134,9 @@ Re-ask cases:
   `1` and Enter or `1` still settles it "in one keystroke".
 - What is recorded: the decision is still `fix` / `won't-fix` / `follow-up`. For `agree_unclear`
   the chosen option's **text** is recorded as the fix action (decision invariant 1), not its letter —
-  letters only mean something on the card they were shown on.
+  letters only mean something on the card they were shown on — plus what a prose answer adds to it
+  (implementation deviation: one scenario run in three dropped the "and rename the helper too" part
+  from the recorded action).
 - Phase 5, the ledger, replies.
 
 ## Changes
@@ -186,3 +196,12 @@ contract tests.
 - The GitHub summary row keeps its won't-fix default over the verdict's `suggested` (the existing
   invariant 2, carried over rather than re-decided).
 - Prose answers interpreted for intent, otherwise re-asked.
+
+Added during implementation (also not discussed with the user):
+
+- The GitHub summary row marks its won't-fix item `(default)` instead of `(recommended)`; reverting
+  is one word in Phase 4.2 and in the C2 example.
+- A prose addition to a picked option is recorded with the option's text.
+- The language rule lists the translated frame parts: question line, marker, options header, hint.
+- The digit cell of the answer table reads `` `1` / `2` / `3` `` (ruff RUF001 rejects the en dash
+  in the contract test that pins the row).
