@@ -1,5 +1,21 @@
 """Tests for config file creation."""
 
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+no_permission_bits = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="permission bits are not enforced (Windows or root)",
+)
+
+
+def _deny(self, *args, **kwargs):
+    msg = "denied"
+    raise PermissionError(msg)
+
 
 class TestCreateConfig:
     """Tests for create_config function."""
@@ -307,3 +323,107 @@ class TestSyncConfig:
         assert result.status == SyncStatus.UPDATED
         assert result.removals == ()
         assert not path.read_bytes().startswith(bom)
+
+
+class TestUnreadableConfig:
+    """F1: an unreadable config is reported as 'Cannot read', never a traceback."""
+
+    def test_sync_permission_error_is_cannot_read(self, tmp_path, monkeypatch):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_text("debug = true\n")
+        monkeypatch.setattr(Path, "read_bytes", _deny)
+
+        for dry_run in (False, True):
+            result = sync_config(path, dry_run=dry_run)
+            assert result.status == SyncStatus.ERROR
+            assert result.error.startswith("Cannot read")
+        assert path.read_text() == "debug = true\n"
+        assert not (tmp_path / "statuskit.toml.bak").exists()
+
+    def test_init_permission_error_is_cannot_read(self, tmp_path, monkeypatch):
+        from statuskit.setup.config import InitStatus, init_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_text("debug = true\n")
+        monkeypatch.setattr(Path, "stat", _deny)
+
+        for force in (False, True):
+            result = init_config(path, force=force)
+            assert result.status == InitStatus.ERROR
+            assert result.error.startswith("Cannot read")
+        monkeypatch.undo()
+        assert path.read_text() == "debug = true\n"
+
+    @no_permission_bits
+    def test_sync_unsearchable_parent_dir(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        parent = tmp_path / "locked"
+        parent.mkdir()
+        path = parent / "statuskit.toml"
+        path.write_text("debug = true\n")
+        parent.chmod(0o000)
+        try:
+            result = sync_config(path, dry_run=False)
+        finally:
+            parent.chmod(0o700)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot read")
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_sync_symlink_loop_is_an_error(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        link = tmp_path / "statuskit.toml"
+        link.symlink_to(link)
+
+        assert sync_config(link, dry_run=False).status == SyncStatus.ERROR
+
+
+class TestWriteOrderAndModes:
+    """F2/F3: backup is taken only once the new content is staged; modes are respected."""
+
+    def test_failed_write_keeps_previous_backup(self, tmp_path, monkeypatch):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_text("[git]\nshow_prr = true\n")
+        bak = tmp_path / "statuskit.toml.bak"
+        bak.write_bytes(b"older backup\n")
+        monkeypatch.setattr(Path, "write_text", _deny)
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert bak.read_bytes() == b"older backup\n"
+        assert not (tmp_path / "statuskit.toml.tmp").exists()
+
+    @no_permission_bits
+    def test_read_only_config_is_not_overwritten(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_text("[git]\nshow_prr = true\n")
+        path.chmod(0o444)
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot write")
+        assert path.read_text() == "[git]\nshow_prr = true\n"
+        assert path.stat().st_mode & 0o777 == 0o444
+        assert not (tmp_path / "statuskit.toml.bak").exists()
+
+    @no_permission_bits
+    def test_private_mode_is_preserved(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_text("[git]\nshow_prr = true\n")
+        path.chmod(0o600)
+
+        assert sync_config(path, dry_run=False).status == SyncStatus.UPDATED
+        assert path.stat().st_mode & 0o777 == 0o600

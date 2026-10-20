@@ -74,7 +74,7 @@ def create_parser() -> argparse.ArgumentParser:
         "config",
         help="Create or update statuskit.toml",
     )
-    config_sub = config_parser.add_subparsers(dest="config_command", required=True)
+    config_sub = config_parser.add_subparsers(dest="config_command", required=True, metavar="{init,sync}")
 
     init_parser = config_sub.add_parser("init", help="Write the default config template")
     init_parser.add_argument(

@@ -51,7 +51,11 @@ def test_config_sync_flags():
     assert (args.config_command, args.scope, args.dry_run) == ("sync", "local", True)
 
 
-def test_bare_config_is_usage_error():
+def test_bare_config_is_usage_error(capsys):
     with pytest.raises(SystemExit) as exc:
         create_parser().parse_args(["config"])
     assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "init" in err
+    assert "sync" in err
+    assert "config_command" not in err

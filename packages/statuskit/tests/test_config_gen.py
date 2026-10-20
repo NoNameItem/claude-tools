@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from statuskit.core.config import Config, split_sections
 from statuskit.core.loader import BUILTIN_MODULES
-from statuskit.core.schema import param, schema
+from statuskit.core.schema import param, parse_params, schema
 from statuskit.modules.base import BaseModule
 from statuskit.setup.config_gen import Removal, build_config, toml_value
 
@@ -148,6 +148,11 @@ def test_uncommenting_any_single_option_line_sets_exactly_that_option():
                 section = m.group(1)
         edited = [*lines[:i], lines[i][2:], *lines[i + 1 :]]
         top, sections = split_sections(tomllib.loads("\n".join(edited)))
+        params_cls = Config if section is None else BUILTIN_MODULES[section].params_class()
+        parsed, warnings = parse_params(params_cls, top if section is None else sections[section])
+        assert warnings == []
+        field = next(f for f in _schema_fields(params_cls) if f.name == key)
+        assert parsed == {key: _field_default(field)}
         if section is None:
             assert list(top) == [key]
             assert all(not body for body in sections.values())

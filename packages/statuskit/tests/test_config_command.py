@@ -137,3 +137,23 @@ def test_sync_write_failure_is_error(env, user_cfg, monkeypatch, capsys):
     run_exit1(monkeypatch, "sync")
     (line,) = lines(capsys)
     assert line.startswith("Cannot write")
+
+
+@pytest.mark.parametrize(
+    ("argv", "attr"),
+    [(("sync",), "read_bytes"), (("sync", "--dry-run"), "read_bytes"), (("init",), "stat")],
+)
+def test_unreadable_config_prints_cannot_read(env, user_cfg, monkeypatch, capsys, argv, attr):
+    user_cfg.parent.mkdir(parents=True)
+    user_cfg.write_text("debug = true\n")
+
+    def deny(self, *args, **kwargs):
+        msg = "denied"
+        raise PermissionError(msg)
+
+    monkeypatch.setattr(Path, attr, deny)
+    run_exit1(monkeypatch, *argv)
+    captured = capsys.readouterr()
+    assert f"Cannot read {user_cfg}" in captured.out + captured.err
+    monkeypatch.undo()
+    assert user_cfg.read_text() == "debug = true\n"
