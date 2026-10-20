@@ -510,9 +510,10 @@ C1 → what to do?
 A `disagree` card reads `1. won't-fix (recommended)` / `2. fix` / `3. follow-up`: the digit of a
 decision changes from card to card, and the user reads it off the list in front of them.
 
-The prompt is written here in English; ask it in the language of the conversation. The decision
-words `fix` / `won't-fix` / `follow-up` stay untranslated in any language — they are also accepted
-answers.
+The prompt is written here in English; ask it in the language of the conversation. In that
+language go the question line, the `(recommended)` marker, the options header and the hint line;
+the decision words `fix` / `won't-fix` / `follow-up` stay untranslated in any language — they are
+also accepted answers.
 
 **`agree_unclear` card:** the take is genuinely ambiguous, so the prompt carries the fix options,
 lettered, above the same list, and ends with a hint line naming the digit fix holds on this card.

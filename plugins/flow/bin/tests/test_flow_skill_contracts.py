@@ -610,6 +610,8 @@ def test_review_comments_decision_prompt_follows_the_conversation_language() -> 
     phase_4_2 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 4.2. One card at a time", "### Phase 5")
     assert re.search(r"language\s+of\s+the\s+conversation", phase_4_2)
     assert re.search(r"decision\s+words.{0,120}untranslated", phase_4_2, re.DOTALL)
+    # The marker is frame, not a decision word: left unnamed, it stayed English in 5 of 6 Russian runs.
+    assert re.search(r"the\s+`\(recommended\)`\s+marker", phase_4_2)
 
 
 def test_review_comments_examples_use_the_numbered_decision() -> None:
