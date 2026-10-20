@@ -272,7 +272,9 @@ create `target.parent` as `create_config` does today, write a sibling `<name>.tm
 comparison holds on every platform — then `tmp.replace(target)`, removing a leftover tmp on
 failure. A statusline render running concurrently never sees a half-written file. Read the
 current bytes once, decode them strictly as UTF-8 with a leading BOM stripped (`utf-8-sig`), and
-parse them with `tomllib.loads`; compare the rebuilt text against the same decoded content.
+parse them with `tomllib.loads`; decide "unchanged" by comparing the rebuilt text's UTF-8 bytes
+with the raw file bytes (D9), so a file that differs only by a BOM — which the runtime loader
+rejects — is rebuilt.
 (Amended 2026-10-20 during planning: the first draft wrote with plain `path.write_text`.)
 
 The `config` commands touch only the config file. `--scope local` does **not** update
