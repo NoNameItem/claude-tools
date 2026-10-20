@@ -136,6 +136,15 @@ def has_visible_descendants(task: Task) -> bool:
     return any(should_show(child) or has_visible_descendants(child) for child in task.children)
 
 
+def renders(task: Task, search_ids: set[str] | None) -> bool:
+    """Check if task is printed: numbers, limits and separators are computed over printed tasks only."""
+    # Skip if search filter active and task not in matching set
+    if search_ids and task.id not in search_ids:
+        return False
+    # Skip if not visible (unless has visible descendants for deferred)
+    return should_show(task) or (task.status == "deferred" and has_visible_descendants(task))
+
+
 def sort_tasks(tasks: list[Task]) -> list[Task]:
     """Sort tasks by status (in_progress first), then priority."""
     return sorted(
@@ -241,12 +250,7 @@ def print_tree(
     """Recursively build tree lines."""
     lines: list[str] = []
 
-    # Skip if search filter active and task not in matching set
-    if search_ids and task.id not in search_ids:
-        return lines
-
-    # Skip if not visible (unless has visible descendants for deferred)
-    if not should_show(task) and (task.status != "deferred" or not has_visible_descendants(task)):
+    if not renders(task, search_ids):
         return lines
 
     # Format current task - display prefix includes connector for this line only
@@ -317,10 +321,6 @@ def build_tree(
             "",
         ]
 
-    # Find root tasks (no parent)
-    roots = [t for t in tasks.values() if t.parent_id is None]
-    roots = sort_tasks(roots)
-
     # Apply search filter
     search_ids = None
     search_failed = False
@@ -329,6 +329,9 @@ def build_tree(
         if not search_ids:
             search_failed = True
             search_ids = None  # Show all tasks instead
+
+    # Find printed root tasks (no parent) before numbering and limiting them
+    roots = [t for t in sort_tasks([t for t in tasks.values() if t.parent_id is None]) if renders(t, search_ids)]
 
     # Apply limit to roots
     if limit:
