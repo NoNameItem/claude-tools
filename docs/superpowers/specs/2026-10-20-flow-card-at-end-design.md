@@ -2,7 +2,7 @@
 
 **Task:** claude-tools-elf.49
 **Date:** 2026-10-20
-**Status:** implemented (flow:start Step 9; flow:continue unchanged — see §4)
+**Status:** implemented (flow:start Step 9; flow:continue behaviour unchanged — §4 — one allowed-tools grant added for the contract parser)
 
 Mockups: none — the output is terminal text, and the card itself is the existing `flow-task-card`
 rendering, unchanged.
