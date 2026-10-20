@@ -277,6 +277,20 @@ with the raw file bytes (D9), so a file that differs only by a BOM — which the
 rejects — is rebuilt.
 (Amended 2026-10-20 during planning: the first draft wrote with plain `path.write_text`.)
 
+Amended 2026-10-20 after the whole-branch review:
+- **Read first, never pre-check with `exists()`.** `sync` reads the bytes (`init` stats the path)
+  inside the `try`: `FileNotFoundError` → the create branch (a dangling symlink still creates its
+  target through the link); any other `OSError` (no search permission on the directory, a symlink
+  loop, a directory in place of the file) → `Cannot read … Nothing was changed.`, exit 1, on every
+  supported Python. `Path.exists()` raises on 3.11–3.13 and swallows the error on 3.14, so a
+  pre-check either crashed or reported an unreadable file as missing.
+- **A read-only config is refused, not overwritten.** If the target exists and is not writable,
+  the write fails with `Cannot write … Permission denied. Nothing was changed.` before any backup
+  is taken — the same outcome the original `path.write_text` had.
+- **Write order: tmp → backup → replace.** The tmp file is written first, so a failed tmp write
+  leaves the previous `.bak` intact; the original file's permission bits are copied onto the tmp
+  file (`shutil.copymode`) before the final `replace`, so a `0o600` config stays `0o600`.
+
 The `config` commands touch only the config file. `--scope local` does **not** update
 `.gitignore` — that stays `setup`'s job.
 
