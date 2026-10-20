@@ -106,8 +106,10 @@ otherwise, but must not revisit user decisions.
     `tomllib.TOMLDecodeError`) is never touched; the command prints the error and exits 1.
 12. **(builder call)** Values are written in canonical form (`modules = [ 'git' ]` →
     `modules = ["git"]`).
-13. **(builder call)** A module that is not in the effective `modules` list (the user's valid value,
-    else the default) gets a one-line note in its section banner telling how to enable it.
+13. **(builder call, dropped 2026-10-21 in PR review)** ~~A module that is not in the effective
+    `modules` list gets a one-line note in its section banner telling how to enable it.~~ The note
+    lives in the file, and once the user enables the module by hand it is stale; `sync` is not
+    needed for the config to work, so nothing would ever remove it. Banners carry no note.
 14. **(builder call)** `BUILTIN_MODULES` in `core/loader.py` is reordered to model, git,
     usage_limits so the generator can iterate it directly. Render order is unaffected (it follows
     `config.modules`).
@@ -169,15 +171,11 @@ context_format = "bar"
 
 # ─────────────────────────────────────────────────────────────
 # usage_limits: API usage limits (5h session, 7d weekly, per-model)
-# Not enabled — add "usage_limits" to `modules` to show it.
 # ─────────────────────────────────────────────────────────────
 [usage_limits]
 
 # ...
 ```
-
-(The `Not enabled` line appears only when that module is missing from the effective `modules`;
-with the default `modules` no module carries the note.)
 
 Rules:
 
@@ -187,8 +185,7 @@ Rules:
   never emitted. Global options come before the first table, so uncommenting one keeps it
   top-level.
 - **Module sections**: one per `BUILTIN_MODULES` entry, in registry order. A banner (rule line,
-  `# {name}: {description}` using the module class's `name` / `description`, optional
-  `Not enabled` line, rule line), then an **always active** `[name]` header — an empty TOML table
+  `# {name}: {description}` using the module class's `name` / `description`, rule line), then an **always active** `[name]` header — an empty TOML table
   is valid, so uncommenting one option line inside it is enough. Fields come from the module
   class's `_params_class` (resolved by `BaseModule.__init_subclass__`), in declaration order.
 - **Per option**: blank line, `# {description}` line, choices (if any), then the option line:
@@ -231,7 +228,7 @@ A `toml_value(v)` helper renders a Python value as a TOML literal. Allowed input
    `Removal(location='modules: "<name>"', reason="unknown module" | "duplicate")` for every
    other element. The cleaned list stays active even if it ends up empty or equal to the default
    (decision 7); an empty list renders nothing, exactly as the uncleaned list did, since the
-   loader skips unknown names. The `Not enabled` notes are computed from the cleaned list.
+   loader skips unknown names.
 4. For each table: if its name is a `BUILTIN_MODULES` key, `parse_params(module._params_class,
    table)`; each warning becomes a `Removal` with `location` `"{section}.{key}"`. A nested table
    inside a module section (`[git.extra]`) arrives as an unknown key and is removed the same way.
@@ -265,9 +262,10 @@ pattern of `setup/commands.py` (a result dataclass, no printing):
   back up and write. The result carries the outcome (created / unchanged / updated / error), the
   backup path if any, and the removals.
 
-Write atomically and through symlinks: resolve the path (`target = path.resolve()` — a config
-kept in a dotfiles repo is often a symlink, and replacing the link would silently detach it),
-create `target.parent` as `create_config` does today, write a sibling `<name>.tmp` with
+Write atomically and through symlinks: resolve the path (`target = path.resolve()` — if the path
+is a symlink, the resolved target is written and the link is left intact),
+create `target.parent` as `create_config` does today, write a sibling tmp file (see the
+2026-10-21 amendment for how it is created) with
 `write_text(text, encoding="utf-8", newline="\n")` — always LF, so the byte-for-byte "unchanged"
 comparison holds on every platform — then `tmp.replace(target)`, removing a leftover tmp on
 failure. A statusline render running concurrently never sees a half-written file. Read the
@@ -290,6 +288,19 @@ Amended 2026-10-20 after the whole-branch review:
 - **Write order: tmp → backup → replace.** The tmp file is written first, so a failed tmp write
   leaves the previous `.bak` intact; the original file's permission bits are copied onto the tmp
   file (`shutil.copymode`) before the final `replace`, so a `0o600` config stays `0o600`.
+
+Amended 2026-10-21 after PR review:
+- **Never write through a pre-existing tmp or backup path.** For project/local scope the config
+  lives in a repository's `.claude/`, and git stores symlinks, so a cloned repository can carry
+  `statuskit.toml.tmp` or `statuskit.toml.bak` as a link to any user-writable file. The tmp file is
+  created exclusively under a random name, `<name>.<random hex>.tmp`, with
+  `os.open(..., O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0o666)` (`O_BINARY` where it exists, so
+  Windows does not turn `\n` into `\r\n`): `O_EXCL` never follows a link and fails if anything is
+  already there, and `0o666` lets the umask set a new file's permissions (an existing file still
+  gets its own bits via `copymode`). `setup.hooks.create_backup` copies into such a temp file next
+  to `<file>.bak` and renames it over the backup: the rename replaces a link instead of following
+  it, and a failed copy leaves the previous backup intact. This also covers `setup`'s
+  `settings.json.bak`. A temp file is removed on any failure after it was created.
 
 The `config` commands touch only the config file. `--scope local` does **not** update
 `.gitignore` — that stays `setup`'s job.
@@ -336,6 +347,12 @@ Removed:
 
 (`Would remove:` in dry-run.) The exit code of `--dry-run` makes it usable as the validator the
 9.1 spec wanted: non-zero means the file contains something statuskit ignores.
+
+Locations come straight from the file — keys, section names, `modules` entries — and TOML lets
+them hold any character through `\uXXXX` escapes. Each removal line is printed with its
+non-printable characters escaped (`\x1b`, `‮`), so a config from a cloned repository cannot
+send terminal control sequences. `setup` treats the `statusLine.command` it echoes from
+`settings.json` the same way. (Amended 2026-10-21 after PR review.)
 
 ## Files
 
@@ -391,7 +408,7 @@ still render tuple defaults (see *Value serialization*).
 | `toml_value` | round-trip contract over bool, int (incl. negative), float (incl. `inf`/`nan` via `math.isnan`), str with `"`, `\`, tab, newline, other control chars, DEL, non-ASCII, empty; list/tuple of each, empty list |
 | template structure | golden file of `build_config(None)` text (intentional changes update it); every schema field of `Config` and every built-in module appears exactly once as `# key = <default>`; the default text parses to `{"model": {}, "git": {}, "usage_limits": {}}`; **for every option line, uncommenting just that line yields a file that `load_config`-style parsing turns into exactly that option at its default, in the right section** |
 | choices | dict form renders the padded block with TOML-quoted values; tuple form renders the `Choices:` line (use a test-only params class) |
-| merge | valid value kept active; value equal to default kept active; unknown global key, unknown module key, invalid type, value outside choices, nested table, unknown section — each removed and reported with the right location/reason; `modules` cleaning: unknown name struck + reported, duplicate struck + reported, order of the rest kept, all-unknown list becomes an active `modules = []`; `Not enabled` note follows the cleaned `modules`; idempotence (second build: same text, no removals) |
+| merge | valid value kept active; value equal to default kept active; unknown global key, unknown module key, invalid type, value outside choices, nested table, unknown section — each removed and reported with the right location/reason; `modules` cleaning: unknown name struck + reported, duplicate struck + reported, order of the rest kept, all-unknown list becomes an active `modules = []`; idempotence (second build: same text, no removals) |
 | file ops | `init`: create / refuse existing / `--force` resets + backup; `sync`: missing → created; unchanged → no write, no `.bak`; rebuilt → `.bak` holds the old bytes; unparsable and non-UTF-8 → untouched + error; dry-run never writes; dry-run result reports would-create / unchanged / removals |
 | CLI | parser: `config init`/`config sync` flags, `--scope` default `user`, bare `config` is a usage error; `main()` dispatch and exit codes per the table (patch `get_config_path` or `HOME` + `chdir(tmp_path)`) |
 | setup | existing `test_setup_config.py` keeps passing (`'# modules = ["model", "git", "usage_limits"]'` is still in the output) |
@@ -399,7 +416,7 @@ still render tuple defaults (see *Value serialization*).
 
 ## Left to the builder
 
-- Exact wording of messages and of the `Not enabled` note; exact blank-line layout beyond the
+- Exact wording of messages; exact blank-line layout beyond the
   excerpt (the golden file then pins it).
 - Whether template rendering and `build_config` share one function or two.
 - Whether to read `_params_class` directly or add a small public accessor on `BaseModule`.
