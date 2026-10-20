@@ -69,4 +69,39 @@ def create_parser() -> argparse.ArgumentParser:
         help="Skip confirmations, backup and overwrite",
     )
 
+    # config subcommand
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Create or update statuskit.toml",
+    )
+    config_sub = config_parser.add_subparsers(dest="config_command", required=True)
+
+    init_parser = config_sub.add_parser("init", help="Write the default config template")
+    init_parser.add_argument(
+        "-s",
+        "--scope",
+        choices=["user", "project", "local"],
+        default="user",
+        help="Config scope (default: user)",
+    )
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset an existing config to defaults (a backup is kept)",
+    )
+
+    sync_parser = config_sub.add_parser("sync", help="Rebuild the config from the current schema, keeping values")
+    sync_parser.add_argument(
+        "-s",
+        "--scope",
+        choices=["user", "project", "local"],
+        default="user",
+        help="Config scope (default: user)",
+    )
+    sync_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would change without writing (exit 1 if keys would be removed)",
+    )
+
     return parser

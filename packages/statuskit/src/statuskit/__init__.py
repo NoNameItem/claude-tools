@@ -92,6 +92,59 @@ def _handle_install(scope, force: bool, ui) -> None:
         sys.exit(1)
 
 
+def _handle_config(args: Namespace) -> None:
+    """Handle config init / config sync commands."""
+    from .setup.paths import Scope, get_config_path
+
+    path = get_config_path(Scope(args.scope))
+    if args.config_command == "init":
+        _config_init(path, force=args.force)
+    else:
+        _config_sync(path, dry_run=args.dry_run)
+
+
+def _config_init(path, *, force: bool) -> None:
+    """Run config init and print the outcome."""
+    from .setup.config import InitStatus, init_config
+
+    init = init_config(path, force=force)
+    if init.status == InitStatus.CREATED:
+        print(f"\u2713 Created {path}")
+    elif init.status == InitStatus.RESET:
+        print(f"\u2713 Reset {path} to defaults (backup: {init.backup})")
+    elif init.status == InitStatus.EXISTS:
+        print(
+            f"{path} already exists. Run 'statuskit config sync' to update it, "
+            "or 'statuskit config init --force' to reset it to defaults."
+        )
+        sys.exit(1)
+    else:
+        print(init.error)
+        sys.exit(1)
+
+
+def _config_sync(path, *, dry_run: bool) -> None:
+    """Run config sync and print the outcome."""
+    from .setup.config import SyncStatus, sync_config
+
+    sync = sync_config(path, dry_run=dry_run)
+    if sync.status == SyncStatus.ERROR:
+        print(sync.error)
+        sys.exit(1)
+    if sync.status == SyncStatus.UNCHANGED:
+        print(f"{path} is up to date.")
+    elif sync.status == SyncStatus.CREATED:
+        print(f"{path} does not exist; sync would create it." if dry_run else f"\u2713 Created {path}")
+    else:
+        print(f"Would update {path}" if dry_run else f"\u2713 Updated {path} (backup: {sync.backup})")
+        if sync.removals:
+            print("Would remove:" if dry_run else "Removed:")
+            for removal in sync.removals:
+                print(f"  {removal.location} \u2014 {removal.reason}")
+            if dry_run:
+                sys.exit(1)
+
+
 def _render_statusline() -> None:
     """Read from stdin and render statusline."""
     config = load_config()
@@ -128,6 +181,10 @@ def main() -> None:
 
     if args.command == "setup":
         _handle_setup(args)
+        return
+
+    if args.command == "config":
+        _handle_config(args)
         return
 
     if sys.stdin.isatty():
