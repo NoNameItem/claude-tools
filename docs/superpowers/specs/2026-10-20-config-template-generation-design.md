@@ -265,10 +265,15 @@ pattern of `setup/commands.py` (a result dataclass, no printing):
   back up and write. The result carries the outcome (created / unchanged / updated / error), the
   backup path if any, and the removals.
 
-Write with `path.write_text(text, encoding="utf-8", newline="\n")` — always LF, so the
-byte-for-byte "unchanged" comparison holds on every platform — creating parent directories as
-`create_config` does today. Read the current bytes once, and parse them with `tomllib.loads` after
-a strict UTF-8 decode; compare the rebuilt text against the same decoded content.
+Write atomically and through symlinks: resolve the path (`target = path.resolve()` — a config
+kept in a dotfiles repo is often a symlink, and replacing the link would silently detach it),
+create `target.parent` as `create_config` does today, write a sibling `<name>.tmp` with
+`write_text(text, encoding="utf-8", newline="\n")` — always LF, so the byte-for-byte "unchanged"
+comparison holds on every platform — then `tmp.replace(target)`, removing a leftover tmp on
+failure. A statusline render running concurrently never sees a half-written file. Read the
+current bytes once, decode them strictly as UTF-8 with a leading BOM stripped (`utf-8-sig`), and
+parse them with `tomllib.loads`; compare the rebuilt text against the same decoded content.
+(Amended 2026-10-20 during planning: the first draft wrote with plain `path.write_text`.)
 
 The `config` commands touch only the config file. `--scope local` does **not** update
 `.gitignore` — that stays `setup`'s job.
