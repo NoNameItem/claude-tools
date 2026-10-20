@@ -566,8 +566,50 @@ def test_review_comments_phase_3_separates_undelivered_from_resurfaced() -> None
 
 def test_review_comments_triage_has_no_skip_outcome() -> None:
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert "fix / won't-fix / follow-up?" in text
+    assert "1. fix (recommended)" in text
     assert "invariant 3" not in text.lower()
+
+
+def test_review_comments_decision_prompt_is_a_numbered_list() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    phase_4_2 = section(text, "#### 4.2. One card at a time", "### Phase 5")
+    assert "fix / won't-fix / follow-up?" not in phase_4_2
+    assert "(default:" not in phase_4_2
+    # Ends on the closing fence: exactly three outcomes, no fourth (skip) item can creep in.
+    assert re.search(
+        r"^C1 → what to do\?\n1\. fix \(recommended\)\n2\. won't-fix\n3\. follow-up\n```", phase_4_2, re.MULTILINE
+    )
+    assert re.search(r"no\s+separate\s+skip\s+path", phase_4_2)
+    assert re.search(r"canonical\s+order\s+fix\s+→\s+won't-fix\s+→\s+follow-up", phase_4_2)
+    assert re.search(r"won't-fix\s+is\s+item\s+`1`", phase_4_2)
+
+
+def test_review_comments_decision_reads_a_digit_a_word_or_an_empty_answer() -> None:
+    phase_4_2 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 4.2. One card at a time", "### Phase 5")
+    assert "| `1` / `2` / `3` | the decision at that position on this card |" in phase_4_2
+    assert "| `fix` / `won't-fix` / `follow-up` |" in phase_4_2
+    assert "| empty | the default — item `1` |" in phase_4_2
+
+
+def test_review_comments_agree_unclear_takes_decision_and_option_in_one_answer() -> None:
+    phase_4_2 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 4.2. One card at a time", "### Phase 5")
+    assert re.search(
+        r"^Fix options:\nA\. .+\nB\. .+\n1\. fix \(recommended\)\n2\. won't-fix\n3\. follow-up\n"
+        r"For fix, add the option letter: 1 A\n```",
+        phase_4_2,
+        re.MULTILINE,
+    )
+    assert "| `<digit or word> <letter>` |" in phase_4_2
+    assert re.search(r"joins\s+alternatives\s+with\s+`OR`\s+is\s+split", phase_4_2)
+    assert re.search(r"ask\s+for\s+the\s+letter\s+only", phase_4_2)
+    assert re.search(r"repeat\s+the\s+decision\s+prompt", phase_4_2)
+    assert re.search(r"option's\s+text,\s+not\s+its\s+letter", phase_4_2)
+
+
+def test_review_comments_decision_prompt_follows_the_conversation_language() -> None:
+    phase_4_2 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 4.2. One card at a time", "### Phase 5")
+    assert re.search(r"language\s+of\s+the\s+conversation", phase_4_2)
+    assert re.search(r"decision\s+words.{0,120}untranslated", phase_4_2, re.DOTALL)
 
 
 def test_review_comments_requires_a_reason_only_where_it_can_be_published() -> None:

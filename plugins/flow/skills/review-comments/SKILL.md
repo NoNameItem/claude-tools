@@ -31,7 +31,7 @@ Throughout this skill, **"PR/MR"** means "Pull Request on GitHub, Merge Request 
 | 1. PR/MR Detection | Detect unit, sync branch | Argument or autodetect; branch by platform |
 | 2. Collect → Reconcile | `flow-review-collect` → `metadata.json` → `flow-review-ledger reconcile` → the working set | The ledger excludes already-handled findings, so the whole working set is analyzed — no subset gate; refs are stable across rounds (and therefore gappy) |
 | 3. Analyze the **working set** | Parallel sonnet reviewers, one per `flow-review-ledger get` row extract | The row carries the prior decision + full thread for a re-opened finding |
-| 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text fix/won't-fix/follow-up | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
+| 4. Card-by-card triage | TOC agenda, then one `flow-comment-card` at a time → plain-text numbered decision (recommended first) | Emit each card **UNWRAPPED**; humans first, bots second; collect decisions |
 | 5. Batch act | fix (generalize → apply → self-review) / won't-fix / follow-up → commit → push → reply → record | Fix the class; skeptic pass before push; a `Fixed:` reply only after the push; follow-up = a beads task; **checkpoint each filed task / posted reply into the ledger as it lands** |
 
 ## Platform Support
@@ -463,8 +463,7 @@ the `diff_hunk` shows). Both arguments are **file paths**, so no reviewer `body`
 
 1. the helper's stdout, copied **verbatim** — every line it printed, from the `### ` header to
    the last line of the take;
-2. the decision prompt below — including the `agree_unclear` fix options inline, when the
-   verdict is ambiguous.
+2. the decision prompt below — with the lettered fix options when the verdict is `agree_unclear`.
 
 **Verbatim means the helper's own characters, in the helper's own language:** no translation, no
 re-wording, no re-ordering, no re-formatting — including when the surrounding conversation is in
@@ -494,20 +493,67 @@ the blockquotes all stop rendering, which defeats the entire feature. This is th
 `flow-task-card`, whose ASCII-box output you *do* reproduce inside a fence. Same helper family,
 opposite wrapping rule — do not wrap this one out of habit.
 
-After emitting the card, ask — in **plain text** — for the decision on **this** comment,
-defaulting to the card's `suggested`, and wait for the answer (plain text by design — a
-structured dialog auto-submits on the AFK timeout; claude-tools-6q4):
+After emitting the card, ask — in **plain text** — for the decision on **this** comment and wait
+for the answer (plain text by design — a structured dialog auto-submits on the AFK timeout;
+claude-tools-6q4). The prompt is a numbered list of the three decisions. Item `1` is the card's
+**default**, marked `(recommended)`; the other two follow in the canonical order fix → won't-fix →
+follow-up. The default is the verdict's `suggested`, except on a GitHub review-body summary row
+(invariant 2 below): there won't-fix is item `1` whatever `suggested` says. An ordinary card:
 
 ```
-C1 → fix / won't-fix / follow-up?  (default: fix)
+C1 → what to do?
+1. fix (recommended)
+2. won't-fix
+3. follow-up
 ```
 
-- Empty / Enter → take the default (`suggested`).
-- **agree_unclear:** the take is genuinely ambiguous — present the 2-3 fix options inline here
-  (read them from the verdict JSON's `thought`, or its `options` array when present) and let the
-  user pick which fix **before** moving to the next card, then record it with the `fix` decision.
-  If none of the offered options is right, the user answers `won't-fix` or `follow-up` instead —
-  the three-way triage has no separate skip path.
+A `disagree` card reads `1. won't-fix (recommended)` / `2. fix` / `3. follow-up`: the digit of a
+decision changes from card to card, and the user reads it off the list in front of them.
+
+The prompt is written here in English; ask it in the language of the conversation. The decision
+words `fix` / `won't-fix` / `follow-up` stay untranslated in any language — they are also accepted
+answers.
+
+**`agree_unclear` card:** the take is genuinely ambiguous, so the prompt carries the fix options,
+lettered, above the same list, and ends with a hint line naming the digit fix holds on this card.
+The user answers once, with the decision and the option together:
+
+```
+C3 → what to do?
+Fix options:
+A. move the detached-HEAD guard up into resolve_branch
+B. make branch_name total (return "(detached)" on a detached HEAD)
+1. fix (recommended)
+2. won't-fix
+3. follow-up
+For fix, add the option letter: 1 A
+```
+
+When such a card recommends follow-up (a large or risky change), fix is item `2`: the hint reads
+`For fix, add the option letter: 2 A`, and `2 B` means fix with option B. Read the options from the
+verdict JSON's `options` array, else from its `thought`, in their order: one array element is one
+option, and an element that joins alternatives with `OR` is split into separate options. Letter
+them A, B, C; never invent, merge or drop one. With only one readable option, show an ordinary card
+and use that option as the fix action; with none, follow a fix answer with a plain-text question
+for the concrete change. If none of the offered options is right, the user answers `won't-fix` or
+`follow-up` instead — the three-way triage has no separate skip path.
+
+**Reading the answer:**
+
+| Answer | Meaning |
+|---|---|
+| `1` / `2` / `3` | the decision at that position on this card |
+| `fix` / `won't-fix` / `follow-up` | that decision; case and obvious spellings (`wontfix`, `won't fix`, `follow up`) ignored |
+| empty | the default — item `1` |
+| `<digit or word> <letter>` | on an `agree_unclear` card: fix with that option; case and the space are ignored (`1A`, `1 a`, `fix B`) |
+
+- **Fix on an `agree_unclear` card without a letter** (an empty answer included, when the default
+  is fix) → ask for the letter only, not the whole decision again. The verdict says the agent
+  itself could not pick; taking A silently would turn that ambiguity into a decision nobody made.
+- **A letter with won't-fix or follow-up, a letter that is not listed, a digit outside the list** →
+  repeat the decision prompt (not the card).
+- **Prose** ("fix A, and rename the helper too") → take the intent when the decision, and on an
+  `agree_unclear` card the option, are unambiguous; otherwise repeat the decision prompt.
 - **disagree → fix (accept-anyway):** a `disagree` verdict carries only CLAIM / EVIDENCE / THOUGHT —
   it explains why NOT to apply, so it has **no fix action**. If the user overrides it to `fix`, Phase
   5.1 would otherwise call the apply flow with an empty patch plan. Before recording the `fix`
@@ -515,8 +561,9 @@ C1 → fix / won't-fix / follow-up?  (default: fix)
   action alongside the decision (Phase 5.1 uses it as the fix description). Never carry a `disagree`
   into apply without a patch plan.
 
-Record `{ref → decision}` (and the chosen option for `agree_unclear`, or the accept-anyway action
-for an overridden `disagree`), then show the next card.
+Record `{ref → decision}` (for `agree_unclear`, the chosen option's text, not its letter — the
+letter means nothing outside this card; for an overridden `disagree`, the accept-anyway action),
+then show the next card.
 
 **Decision invariants (verdict ≠ decision ≠ reply source).** The verdict is the analysis; the
 decision is the user's choice (`fix` / `won't-fix` / `follow-up`); the reply text has its
