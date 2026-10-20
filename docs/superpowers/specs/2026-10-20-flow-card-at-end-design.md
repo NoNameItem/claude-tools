@@ -94,31 +94,36 @@ After Step 8.1, on every path that reaches it: create here, create in worktree, 
 (here / worktree), stay on the current branch, and both Step 5.5 auto-resolve cases. It fetches
 fresh — `bd show <task-id> --json | flow-task-card` — because the status (`in_progress`) and the
 `Git:` line changed after Step 3. It carries the PR #74 verbatim-reproduction text unchanged plus
-the last-block rule below. The Quick Reference table gets a matching row; row 3 becomes the read.
+the final-reply recipe below. The Quick Reference table gets a matching row; row 3 becomes the read.
 
-### 4. The last-block rule (identical text in both skills)
+### 4. The final-reply recipe (identical text in both skills)
 
-In `flow:start` Step 9 and `flow:continue` Step 9 (extending "This is the final output. The user
-sees it and starts working."), wording along the lines of:
+In `flow:start` Step 9 and `flow:continue` Step 9 (next to "This is the final output. The user
+sees it and starts working."), the skills state what the final reply **is**, part by part:
 
-> The card is the **last thing in your reply**: nothing follows the closing fence — no summary,
-> no recap, no next-step hint. One-line results of this run (assignment, branch switch, worktree
-> path) go **above** the card. Exception: if the user's request asked for more work beyond this
-> skill, that work may follow the card — but never a recap of what this skill did.
+1. one-line results of this run (assignment, branch switch, worktree path);
+2. the card, verbatim, in a fenced block;
+3. only **if the user's request asked for work beyond this skill** — that work.
 
-The exception has to be worded so it cannot be used as a loophole for the very summary the rule
-forbids: only work the user explicitly asked for counts, and "next steps" suggestions are not work.
-
-Tool calls count as "after" too: if the session keeps the step checklist (STOP-AND-READ), the
-last item is marked complete **before** the card is printed, not after it — otherwise the
-`TaskUpdate` call and the closing line that usually comes with it land below the card. *(Builder's
+A recap of what the skill did is not one of the parts. With no further request, the reply ends on
+the card's closing fence. If the session keeps the step checklist (STOP-AND-READ), its last item is
+marked complete before the reply is written, so no tool call lands below the card. *(Builder's
 call, from the design review.)*
 
-Plus, in both skills:
+**Form, per `superpowers:writing-skills` "Match the Form to the Failure".** The failure this guards
+against — a recap appended after the card — is wrong-shaped output from an agent that otherwise
+complies, not a rule it knows and breaks. For that class the skill prescribes a positive recipe
+(the parts, in order) and warns that prohibition lists ("no summary, no recap…"), nuance clauses
+and exemption clauses measurably backfire. Hence the recipe above, and the broader-request case as
+its own conditional on an observable predicate (the user's request) rather than an "except…"
+clause. Final wording is micro-tested against a no-guidance control (the current text) before the
+full pressure runs.
 
-- Red Flag: "I'll add a short summary after the card" → No. The card ends the reply.
-- Rationalization row: "A recap after the card helps" | "The card is the recap. Anything after it
-  pushes it out of view."
+A Red Flag and a Rationalization row ("I'll add a short summary after the card") are added **only
+if** the RED baseline shows a discipline failure — an agent that states the card should be last and
+appends a recap anyway, with a rationalization to quote. For a pure shape failure they are left
+out. *(Changed after approval, 2026-10-20: the first version of this section prescribed the
+prohibition wording and both rows unconditionally, before `writing-skills` was applied to it.)*
 
 ### 5. `flow:start` — text that now says the opposite
 
@@ -127,7 +132,7 @@ Plus, in both skills:
 | 35 | Overview: "Users choose tasks, see context first, and decide on branch strategy" | Drop "see context first"; say the run ends on the card |
 | 77 | Quick Reference row 3: "Context BEFORE commitment, reproduce in reply" | Row 3 = read JSON, no card; new row 9 = card, final output, last block |
 | 179–189 | Step 3 body, "**User needs context BEFORE committing to task.**" | Replaced by §1 |
-| 456 | Red Flag "Description can go in summary at the end" | Remove — it now contradicts the design; §4's flag covers summaries |
+| 456 | Red Flag "Description can go in summary at the end" | Remove — it now contradicts the design; §4's recipe covers the final reply |
 | 514 | BAD example problem "Description shown after actions" | Remove that bullet |
 | 534, 567, 600 | GOOD examples render the card before the branch question | Branch question first; the card closes the example |
 | 615 | Edge case "Still show full description via script" | The final card (Step 9) is shown as on any other path |
@@ -135,8 +140,9 @@ Plus, in both skills:
 
 ### 6. `flow:continue`
 
-Step 9 gains the §4 rule; Quick Reference row 9 "Final output — reproduce in reply" says "last
-block" too; the §4 Red Flag and Rationalization row are added. Nothing else changes.
+Step 9 gains the §4 recipe; Quick Reference row 9 "Final output — reproduce in reply" says "last
+block" too; the §4 Red Flag and Rationalization row only on a discipline-failure baseline.
+Nothing else changes.
 
 ### 7. Docs
 
@@ -150,14 +156,17 @@ block" too; the §4 Red Flag and Rationalization row are added. Nothing else cha
 
 - `start`: the Step 3 section does not invoke `flow-task-card`; every `flow-task-card` invocation
   in the workflow lies in the last workflow step (`### 9.`).
-- `start` and `continue`: the final step contains the last-block invariant phrase (one stable
-  phrase, e.g. "nothing follows the closing fence").
-- `start` and `continue`: Red Flags contain the summary-after-card flag.
+- `start` and `continue`: the final step contains the §4 recipe, introduced by one stable marker
+  phrase, and the recipe block is byte-identical in both skills.
+- `start` and `continue`: Red Flags contain the summary-after-card flag — only if §4 added it.
 
 ## Constraints on implementation
 
-- Skill edits go through `superpowers:writing-skills` (repo CLAUDE.md), with subagent pressure
-  scenarios as in PR #74. Baseline for `flow:start`: this session's run, which ended on a recap.
+- Skill edits go through `superpowers:writing-skills` (repo CLAUDE.md): RED baseline on the
+  current text → GREEN → REFACTOR, wording micro-tests with 5+ reps per variant against a
+  no-guidance control, every reply read by hand, then the full pressure scenarios. If the control
+  does not show the failure, there is nothing to fix: no wording is authored for that skill, and
+  the deviation from this spec goes back to the user before the task continues. Baseline for `flow:start`: this session's run, which ended on a recap.
   For `flow:continue`: a run with a lot of service output (worktree creation + init) before Step 9
   and an invitation to "summarise what happened". A third scenario covers the scope exception: the
   skill invoked inside a broader request ("continue elf.49 and write the plan") — the requested
@@ -179,9 +188,10 @@ block" too; the §4 Red Flag and Rationalization row are added. Nothing else cha
   of the skill's actions never does.
 - Early exits (Decision 4) show no card.
 - README and `AGENTS.md` updated as in §7.
-- The §8 contracts exist and `uv run pytest` is green; pressure runs end on the card with no recap.
+- The §8 contracts exist and `uv run pytest` is green; the GREEN pressure runs end on the card with
+  no recap (scenarios 1–2) and on the requested work with no recap (scenario 3).
 
 ## Left to the builder
 
-Exact wording of the last-block rule, the Step 6 templates and the reworded overview/Bottom Line;
+Exact wording of the final-reply recipe (within §4's form), the Step 6 templates and the reworded overview/Bottom Line;
 the shape of the contract helpers; the commit type for the PR.
