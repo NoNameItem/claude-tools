@@ -11,7 +11,7 @@ from statuskit.core.config import Config, split_sections
 from statuskit.core.loader import BUILTIN_MODULES
 from statuskit.core.schema import param, schema
 from statuskit.modules.base import BaseModule
-from statuskit.setup.config_gen import build_config, toml_value
+from statuskit.setup.config_gen import Removal, build_config, toml_value
 
 ROUND_TRIP = [
     True,
@@ -186,3 +186,91 @@ def test_tuple_choices_render_as_choices_line():
 def test_default_template_matches_golden_file():
     golden = (Path(__file__).parent / "data" / "default_config.toml").read_text(encoding="utf-8")
     assert build_config()[0] == golden
+
+
+def test_valid_value_renders_active():
+    text, removals = build_config({"model": {"context_format": "bar"}})
+    assert '\ncontext_format = "bar"\n' in text
+    assert '# context_format = "free"' not in text
+    assert removals == []
+
+
+def test_value_equal_to_default_stays_active():
+    assert "\ndebug = false\n" in build_config({"debug": False})[0]
+
+
+@pytest.mark.parametrize(
+    ("data", "removal"),
+    [
+        ({"colours": True}, Removal("colours", "unknown key")),
+        ({"git": {"show_prr": True}}, Removal("git.show_prr", "unknown key")),
+        ({"git": {"extra": {"a": 1}}}, Removal("git.extra", "unknown key")),
+        ({"usage_limits": {"bar_width": "huge"}}, Removal("usage_limits.bar_width", "expected int, got str")),
+        (
+            {"model": {"context_format": "freee"}},
+            Removal("model.context_format", "not in choices: free, used, ratio, bar"),
+        ),
+        ({"typo": {"a": 1}}, Removal("[typo]", "unknown section")),
+        ({"git": True}, Removal("git", "unknown key")),
+    ],
+)
+def test_unknown_or_invalid_entries_are_removed_and_reported(data, removal):
+    text, removals = build_config(data)
+    assert removals == [removal]
+    assert text == build_config()[0]  # nothing of it survives
+
+
+def test_invalid_value_falls_back_to_commented_default():
+    assert "\n# bar_width = 10\n" in build_config({"usage_limits": {"bar_width": "huge"}})[0]
+
+
+def test_modules_list_is_cleaned():
+    text, removals = build_config({"modules": ["git", "beads", "model", "git"]})
+    assert '\nmodules = ["git", "model"]\n' in text
+    assert removals == [
+        Removal('modules: "beads"', "unknown module"),
+        Removal('modules: "git"', "duplicate"),
+    ]
+
+
+def test_all_unknown_modules_leave_an_active_empty_list():
+    assert "\nmodules = []\n" in build_config({"modules": ["quota"]})[0]
+
+
+def test_not_enabled_note_follows_cleaned_modules():
+    text, _ = build_config({"modules": ["model", "git", "nope"]})
+    assert text.count("# Not enabled") == 1
+    assert '# Not enabled — add "usage_limits" to `modules` to show it.\n' in text
+    assert "# Not enabled" not in build_config()[0]
+
+
+def test_removals_follow_file_order():
+    data = {"zeta": 1, "debug": "yes", "alpha": 2, "git": {"z_key": 1, "a_key": 2}, "model": {"bogus": 1}}
+    assert [r.location for r in build_config(data)[1]] == [
+        "zeta",
+        "debug",
+        "alpha",
+        "git.z_key",
+        "git.a_key",
+        "model.bogus",
+    ]
+
+
+def test_special_strings_survive():
+    value = 'C:\\Users\\me\\cache "q" ü'
+    assert tomllib.loads(build_config({"cache_dir": value})[0])["cache_dir"] == value
+
+
+def test_rebuild_is_idempotent():
+    messy = {
+        "modules": ["git", "beads"],
+        "debug": True,
+        "bogus": 1,
+        "git": {"show_pr": False, "x": 1},
+        "typo": {},
+        "usage_limits": {"models_always_show": ["Fable"]},
+    }
+    first, _ = build_config(messy)
+    second, removals = build_config(tomllib.loads(first))
+    assert second == first
+    assert removals == []
