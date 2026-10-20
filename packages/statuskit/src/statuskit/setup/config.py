@@ -95,23 +95,23 @@ def sync_config(path: Path, *, dry_run: bool) -> SyncResult:
         text, _ = build_config()
         status = SyncStatus.CREATED
         removals: tuple[Removal, ...] = ()
-        old_text = None
+        raw = None
     else:
         try:
-            old_text = path.read_bytes().decode("utf-8-sig")
-            data = tomllib.loads(old_text)
+            raw = path.read_bytes()
+            data = tomllib.loads(raw.decode("utf-8-sig"))
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             return SyncResult(SyncStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
         text, found = build_config(data)
         removals = tuple(found)
-        if text == old_text:
+        if text.encode("utf-8") == raw:
             return SyncResult(SyncStatus.UNCHANGED)
         status = SyncStatus.UPDATED
 
     if dry_run:
         return SyncResult(status, removals)
     try:
-        backup = create_backup(path) if old_text is not None else None
+        backup = create_backup(path) if raw is not None else None
         _write_atomic(path, text)
     except OSError as exc:
         return SyncResult(SyncStatus.ERROR, error=f"Cannot write {path}: {exc}. Nothing was changed.")

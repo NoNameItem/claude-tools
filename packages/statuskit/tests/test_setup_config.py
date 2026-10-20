@@ -289,3 +289,21 @@ class TestSyncConfig:
 
         assert link.is_symlink()
         assert real.read_text(encoding="utf-8") == build_config()[0]
+
+    def test_bom_only_difference_is_rebuilt(self, tmp_path):
+        from statuskit.setup.config import SyncStatus, sync_config
+        from statuskit.setup.config_gen import build_config
+
+        bom = b"\xef\xbb\xbf"
+        content = bom + build_config()[0].encode("utf-8")
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(content)
+
+        dry = sync_config(path, dry_run=True)
+        assert dry.status == SyncStatus.UPDATED
+        assert path.read_bytes() == content
+
+        result = sync_config(path, dry_run=False)
+        assert result.status == SyncStatus.UPDATED
+        assert result.removals == ()
+        assert not path.read_bytes().startswith(bom)
