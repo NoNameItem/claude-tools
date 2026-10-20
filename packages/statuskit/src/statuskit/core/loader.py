@@ -7,8 +7,8 @@ from statuskit.modules.base import BaseModule
 
 BUILTIN_MODULES: dict[str, type[BaseModule]] = {
     "model": model.ModelModule,
-    "usage_limits": usage_limits.UsageLimitsModule,
     "git": git.GitModule,
+    "usage_limits": usage_limits.UsageLimitsModule,
     # "beads": ...,  # v0.3
 }
 

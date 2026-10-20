@@ -45,6 +45,16 @@ class Config:
         return Path(self.cache_dir).expanduser()
 
 
+def split_sections(data: dict) -> tuple[dict, dict[str, dict]]:
+    """Split parsed TOML into top-level non-table keys and tables by name.
+
+    Both parts preserve the input's key order.
+    """
+    non_section = {k: v for k, v in data.items() if not isinstance(v, dict)}
+    sections = {k: v for k, v in data.items() if isinstance(v, dict)}
+    return non_section, sections
+
+
 def load_config() -> Config:
     """Load configuration from TOML files.
 
@@ -67,8 +77,7 @@ def load_config() -> Config:
                 print(colored(f"[!] Config error in {config_path}: {e}", "red"))
                 return Config()
 
-            sections = {k: v for k, v in data.items() if isinstance(v, dict)}
-            non_section = {k: v for k, v in data.items() if not isinstance(v, dict)}
+            non_section, sections = split_sections(data)
 
             globals_, warnings = parse_params(Config, non_section)
             # Gate on the RAW debug flag (chicken-and-egg: debug must be known before it is

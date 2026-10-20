@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from statuskit.core.config import Config, load_config
+from statuskit.core.config import Config, load_config, split_sections
 
 
 def test_config_colors_default_true():
@@ -254,3 +254,12 @@ def test_load_config_custom_cache_dir_round_trip(tmp_path, monkeypatch):
 
     assert cfg.cache_dir == "~/custom/cache"
     assert cfg.cache_path == home / "custom" / "cache"
+
+
+def test_split_sections_separates_tables_from_scalars():
+    """split_sections returns (scalars, tables), both in input order."""
+    data = {"debug": True, "git": {"show_pr": False}, "modules": ["git"]}
+    non_section, sections = split_sections(data)
+    assert non_section == {"debug": True, "modules": ["git"]}
+    assert sections == {"git": {"show_pr": False}}
+    assert list(non_section) == ["debug", "modules"]
