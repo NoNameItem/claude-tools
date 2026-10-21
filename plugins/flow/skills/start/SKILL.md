@@ -375,18 +375,18 @@ See `flow:init-worktree` skill for full algorithm.
 
 **Worktree directory** (every worktree snippet below):
 
-1. **Name.** `WORKTREE_DIR=$(flow-worktree-dir <task-id>)` names the directory from the task. If the branch being opened differs from the name Step 5 computed (`flow-branch-for <task-id>`), it was named by hand. Before asking, run `flow-worktree-dir <task-id>` to fill `<task-based name>` (the helper-failure rule below applies to this run too). Ask in plain text and wait:
+1. **Name.** `WORKTREE_DIR=$(flow-worktree-dir <task-id>)` names the directory from the task. If the branch being opened differs from the name Step 5 computed (`flow-branch-for <task-id>`), it was named by hand. Before asking, run `flow-worktree-dir <task-id>` and put its output, exactly as printed, in place of `<task-based dir>` — it already starts with `.worktrees/`, so add no prefix (the helper-failure rule below applies to this run too). Ask in plain text and wait:
 
    ```
    Ветка `<branch>` названа не по задаче. Как назвать папку worktree?
 
-   1. `.worktrees/<task-based name>` — по задаче
+   1. `<task-based dir>` — по задаче
    2. Своё имя — напишите его
 
    Выберите вариант (номер) или напишите имя.
    ```
 
-   If the Step 6 free-form answer already named the directory, use it without asking. A typed name goes under `.worktrees/`: drop a leading `.worktrees/` from the answer, then replace every run of characters outside `[A-Za-z0-9._-]` (spaces, `/`, shell metacharacters) with `-`; the first snippet line is then `WORKTREE_DIR=".worktrees/<name>" &&`.
+   If the Step 6 free-form answer already named the directory, use it without asking. A typed name — from that answer or from this question — goes under `.worktrees/`: drop a leading `.worktrees/` from the answer, then replace every run of characters outside `[A-Za-z0-9._-]` (spaces, `/`, shell metacharacters) with `-`; the first snippet line is then `WORKTREE_DIR=".worktrees/<name>" &&`. A name left with no letter or digit (empty, `.`, `..`, only `-` and `.`) would put the worktree at `.worktrees` itself or above it: refuse it, say why, and ask the question above — also when the name came from an earlier answer. Never run git with such a name.
 2. **Retry.** If `git worktree add` fails with `fatal: '<path>' already exists` or `... is a missing but already registered worktree ...`, the path is taken: re-run only `git worktree add ... && cd ...` with `<dir>-2`, then `-3`, and so on until it succeeds, and report the directory used. The branch already exists by then — never recreate it. Any other failure (e.g. `'<branch>' is already used by worktree at '...'`) means show git's error and stop. A failing `git branch` is not a path refusal either: show git's error and stop. If the skill stops after `git branch` succeeded, tell the user the branch now exists and the next `/flow:start` will offer it.
 3. **Helper failure.** If the name helper fails, show its stderr and stop; the `&&` chain creates nothing.
 

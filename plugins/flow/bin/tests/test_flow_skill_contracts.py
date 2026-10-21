@@ -915,6 +915,21 @@ def test_hand_named_branch_asks_for_the_worktree_name(name: str) -> None:
     assert "flow-branch-for <task-id>" in body
 
 
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_task_based_option_is_the_helper_output_as_printed(name: str) -> None:
+    body = _body(name)
+    assert "1. `<task-based dir>` — по задаче" in body
+    assert "<task-based name>" not in body  # the helper already prints .worktrees/<id>-<slug>
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_typed_worktree_name_without_letter_or_digit_is_refused(name: str) -> None:
+    body = _body(name)
+    assert "A typed name — from that answer or from this question — goes under" in body
+    assert "A name left with no letter or digit" in body
+    assert "Never run git with such a name." in body
+
+
 def test_continue_grants_flow_branch_for() -> None:
     assert "Bash(flow-branch-for:*)" in allowed_tools((FLOW_ROOT / "skills" / "continue" / "SKILL.md").read_text())
 

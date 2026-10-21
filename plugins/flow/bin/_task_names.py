@@ -23,9 +23,24 @@ def slugify(title: str) -> str:
     return "-".join(words[:MAX_WORDS])
 
 
+def _is_not_found(result: subprocess.CompletedProcess[str]) -> bool:
+    """bd >= 1.0 fails a missing id: `{"error": "no issues found matching ..."}` on stdout, the id on stderr."""
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        data = None
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, str) and "no issues found matching" in error:
+        return True
+    return "no issue found matching" in result.stderr
+
+
 def read_issue(bd: str, task_id: str) -> dict:
     result = subprocess.run([bd, "show", task_id, "--json"], capture_output=True, text=True, check=False)
+    not_found = f"task not found: {task_id}"
     if result.returncode != 0:
+        if _is_not_found(result):
+            raise TaskLookupError(not_found, 1)
         raise TaskLookupError(result.stderr.strip(), 2)
     try:
         data = json.loads(result.stdout)
@@ -34,6 +49,5 @@ def read_issue(bd: str, task_id: str) -> dict:
         raise TaskLookupError(msg, 2) from None
     issue = (data[0] if data else None) if isinstance(data, list) else data
     if not issue:
-        msg = f"task not found: {task_id}"
-        raise TaskLookupError(msg, 1)
+        raise TaskLookupError(not_found, 1)
     return issue

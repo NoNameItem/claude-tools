@@ -11,6 +11,7 @@ from typing import ClassVar
 import pytest
 
 BIN = Path(__file__).parent.parent
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def run_helper(name, *args, cwd=None, env=None, stdin=None):
@@ -32,12 +33,15 @@ def fake_bd(tmp_path):
 
     Returns a controller with:
       - env: dict to pass as the helper's environment (BD_BIN set)
-      - set_show(json_str): canned stdout for `bd show ... --json` and `bd list --json`
+      - set_show(json_str, *, exit_code=0, stderr=""): canned stdout for `bd show ... --json` and
+        `bd list --json`; a nonzero exit_code makes `bd show` exit with it after writing stderr
+      - set_show_not_found(task_id): fail `bd show` the way real bd 1.0.5 does for a missing id
       - captured_description(): the --description value from the last `bd update`
       - set_issue_prefix(value): answer `bd config get issue_prefix --json`; None makes it exit 1
     """
     bd_path = tmp_path / "fake-bd"
     show_file = tmp_path / "show.json"
+    show_fail_file = tmp_path / "show-fail.json"
     capture_file = tmp_path / "update-description.txt"
     config_file = tmp_path / "config.json"
     show_file.write_text("[]")
@@ -45,8 +49,11 @@ def fake_bd(tmp_path):
 
     bd_path.write_text(
         "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import os\n"
         "import sys\n"
         f"SHOW = {str(show_file)!r}\n"
+        f"SHOW_FAIL = {str(show_fail_file)!r}\n"
         f"CAPTURE = {str(capture_file)!r}\n"
         f"CONFIG = {str(config_file)!r}\n"
         "args = sys.argv[1:]\n"
@@ -59,6 +66,10 @@ def fake_bd(tmp_path):
         "    sys.exit(0)\n"
         "if args and args[0] in ('show', 'list'):\n"
         "    sys.stdout.write(open(SHOW).read())\n"
+        "    if args[0] == 'show' and os.path.exists(SHOW_FAIL):\n"
+        "        code, err = json.load(open(SHOW_FAIL))\n"
+        "        sys.stderr.write(err)\n"
+        "        sys.exit(code)\n"
         "elif args and args[0] == 'update':\n"
         "    if '--description' in args:\n"
         "        val = args[args.index('--description') + 1]\n"
@@ -72,8 +83,20 @@ def fake_bd(tmp_path):
     class Ctl:
         env: ClassVar[dict[str, str]] = {"BD_BIN": str(bd_path), "PATH": "/usr/bin:/bin"}
 
-        def set_show(self, json_str):
+        def set_show(self, json_str, *, exit_code=0, stderr=""):
             show_file.write_text(json_str)
+            if exit_code:
+                show_fail_file.write_text(json.dumps([exit_code, stderr]))
+            else:
+                show_fail_file.unlink(missing_ok=True)
+
+        def set_show_not_found(self, task_id):
+            """Real bd 1.0.5 for a missing id: exit 1, the JSON error on stdout, the id on stderr."""
+            self.set_show(
+                (FIXTURES / "show-not-found-1.0.5.json").read_text(),
+                exit_code=1,
+                stderr=f'Error fetching {task_id}: no issue found matching "{task_id}"\n',
+            )
 
         def captured_description(self):
             return capture_file.read_text() if capture_file.exists() else None

@@ -98,6 +98,27 @@ def test_task_not_found_exits_1(fake_bd):
     assert r.stdout == ""
 
 
+def test_bd_not_found_failure_exits_1(fake_bd):
+    fake_bd.set_show_not_found("claude-tools-uaj")
+    fake_bd.set_issue_prefix("claude-tools")
+    r = run_helper("flow-worktree-dir", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 1
+    assert "task not found: claude-tools-uaj" in r.stderr
+    assert r.stdout == ""
+
+
+def test_other_bd_json_error_exits_2(fake_bd):
+    fake_bd.set_show(
+        json.dumps({"error": "database is locked", "schema_version": 1}),
+        exit_code=1,
+        stderr="Error: database is locked\n",
+    )
+    fake_bd.set_issue_prefix("claude-tools")
+    r = run_helper("flow-worktree-dir", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 2
+    assert r.stdout == ""
+
+
 def test_bd_error_exits_2_with_empty_stdout():
     r = run_helper("flow-worktree-dir", "claude-tools-uaj", env={"BD_BIN": "/usr/bin/false", "PATH": "/usr/bin:/bin"})
     assert r.returncode == 2
