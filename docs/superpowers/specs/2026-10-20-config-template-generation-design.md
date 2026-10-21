@@ -104,6 +104,8 @@ otherwise, but must not revisit user decisions.
 10. **(builder call)** `sync` on a missing file creates it (same result as `init`).
 11. **(builder call)** A file that cannot be read or parsed (`OSError`, `UnicodeDecodeError`,
     `tomllib.TOMLDecodeError`) is never touched; the command prints the error and exits 1.
+    (Amended 2026-10-21 after PR review: parse failures are caught as `ValueError` and
+    `RecursionError` — see the error-handling amendments below.)
 12. **(builder call)** Values are written in canonical form (`modules = [ 'git' ]` →
     `modules = ["git"]`).
 13. **(builder call, dropped 2026-10-21 in PR review)** ~~A module that is not in the effective
@@ -301,6 +303,13 @@ Amended 2026-10-21 after PR review:
   to `<file>.bak` and renames it over the backup: the rename replaces a link instead of following
   it, and a failed copy leaves the previous backup intact. This also covers `setup`'s
   `settings.json.bak`. A temp file is removed on any failure after it was created.
+- **Every parse failure is `Cannot read`, not a traceback.** `tomllib` raises a plain
+  `ValueError` for an integer longer than Python's int-to-str digit limit (4300 digits) and a
+  `RecursionError` for deeply nested arrays or inline tables; neither is a `TOMLDecodeError`.
+  `sync` catches `(ValueError, RecursionError)` around the decode and parse only —
+  `TOMLDecodeError` and `UnicodeDecodeError` are `ValueError`s too — so the handler cannot mask
+  an error in the generator. The runtime loader (`core.config.load_config`) catches the same pair
+  and falls back to defaults, so a hostile project config cannot crash the statusline either.
 
 The `config` commands touch only the config file. `--scope local` does **not** update
 `.gitignore` — that stays `setup`'s job.
