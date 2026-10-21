@@ -373,6 +373,23 @@ See `flow:init-worktree` skill for full algorithm.
 
 ### 8. Create or Checkout Branch (based on Step 6 choice)
 
+**Worktree directory** (every worktree snippet below):
+
+1. **Name.** `WORKTREE_DIR=$(flow-worktree-dir <task-id>)` names the directory from the task. If the branch being opened differs from the name Step 5 computed (`flow-branch-for <task-id>`), it was named by hand — ask in plain text and wait:
+
+   ```
+   Ветка `<branch>` названа не по задаче. Как назвать папку worktree?
+
+   1. `.worktrees/<task-based name>` — по задаче
+   2. Своё имя — напишите его
+
+   Выберите вариант (номер) или напишите имя.
+   ```
+
+   If the Step 6 free-form answer already named the directory, use it without asking. A typed name goes under `.worktrees/`, with `/` replaced by `-`; the first snippet line is then `WORKTREE_DIR=.worktrees/<name> &&`.
+2. **Retry.** If `git worktree add` fails with `fatal: '<path>' already exists` or `... is a missing but already registered worktree ...`, the path is taken: re-run only `git worktree add ... && cd ...` with `<dir>-2`, then `-3`, and so on until it succeeds, and report the directory used. The branch already exists by then — never recreate it. Any other failure (e.g. `'<branch>' is already used by worktree at '...'`) means show git's error and stop.
+3. **Helper failure.** If the name helper fails, show its stderr and stop; the `&&` chain creates nothing.
+
 **Create branch (checkout here):**
 ```bash
 git checkout -b "$BRANCH"
@@ -380,9 +397,10 @@ git checkout -b "$BRANCH"
 
 **Create branch (worktree):**
 ```bash
-WORKTREE_DIR=$(flow-worktree-dir "$BRANCH")
-git worktree add "$WORKTREE_DIR" -b "$BRANCH"
-cd "$WORKTREE_DIR"
+WORKTREE_DIR=$(flow-worktree-dir <task-id>) &&
+  git branch "$BRANCH" &&
+  git worktree add "$WORKTREE_DIR" "$BRANCH" &&
+  cd "$WORKTREE_DIR"
 ```
 
 **Checkout existing (here):**
@@ -396,9 +414,9 @@ git checkout -b <local-branch-name> origin/<remote-branch-name>
 
 **Checkout existing (worktree):**
 ```bash
-WORKTREE_DIR=$(flow-worktree-dir "<existing-branch>")
-git worktree add "$WORKTREE_DIR" <existing-branch>
-cd "$WORKTREE_DIR"
+WORKTREE_DIR=$(flow-worktree-dir <task-id>) &&
+  git worktree add "$WORKTREE_DIR" <existing-branch> &&
+  cd "$WORKTREE_DIR"
 ```
 
 **Stay on current branch:**

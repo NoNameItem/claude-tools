@@ -857,3 +857,62 @@ def test_docs_say_the_card_comes_last() -> None:
     readme = (FLOW_ROOT / "README.md").read_text()
     assert "ends with the full task card" in section(readme, "#### `/flow:start`", "When to use")
     assert "last block of the skill's final reply" in (FLOW_ROOT / "AGENTS.md").read_text()
+
+
+WT_SKILLS = ["start", "continue"]
+
+
+def _body(name: str) -> str:
+    return (FLOW_ROOT / "skills" / name / "SKILL.md").read_text().split("---", 2)[-1]
+
+
+def _fenced_lines(name: str) -> list[str]:
+    return [line for block in FENCE.findall(_body(name)) for line in block.splitlines()]
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_worktree_dir_is_named_from_the_task(name: str) -> None:
+    body = _body(name)
+    assert "flow-worktree-dir <task-id>" in body
+    assert not re.search(r'flow-worktree-dir "(\$BRANCH|<)', body)
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_worktree_add_never_creates_the_branch(name: str) -> None:
+    adds = [line for line in _fenced_lines(name) if "git worktree add" in line]
+    assert adds
+    assert not [line for line in adds if " -b " in line]
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_worktree_snippets_chain_from_the_assignment(name: str) -> None:
+    lines = _fenced_lines(name)
+    assert all(line.rstrip().endswith("&&") for line in lines if "WORKTREE_DIR=$(flow-worktree-dir" in line)
+    assert all(line.rstrip().endswith("&&") for line in lines if "git worktree add" in line)
+    assert 'cd "$WORKTREE_DIR"' not in lines  # no standalone column-0 cd; the chained '  cd ...' is fine
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_worktree_retry_rule_names_both_path_refusals_and_stops_otherwise(name: str) -> None:
+    body = _body(name)
+    assert "already exists" in body
+    assert "missing but already registered worktree" in body
+    assert "-2" in body
+    assert "-3" in body
+    assert "is already used by worktree" in body  # the named non-path refusal -> stop
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_hand_named_branch_asks_for_the_worktree_name(name: str) -> None:
+    body = _body(name)
+    assert "названа не по задаче. Как назвать папку worktree?" in body
+    assert "flow-branch-for <task-id>" in body
+
+
+def test_continue_grants_flow_branch_for() -> None:
+    assert "Bash(flow-branch-for:*)" in allowed_tools((FLOW_ROOT / "skills" / "continue" / "SKILL.md").read_text())
+
+
+@pytest.mark.parametrize("doc", [*ALL_SKILLS, FLOW_ROOT / "README.md"], ids=lambda p: p.parent.name)
+def test_examples_use_short_worktree_names(doc: Path) -> None:
+    assert not re.search(r"\.worktrees/(feature|fix|chore|docs)-", doc.read_text())
