@@ -74,14 +74,19 @@ claude-tools-6q4), asked right before the worktree is created, then the skill wa
 ```
 Ветка `<branch>` названа не по задаче. Как назвать папку worktree?
 
-1. `.worktrees/<task-based name>` — по задаче
+1. `<task-based dir>` — по задаче
 2. Своё имя — напишите его
 
 Выберите вариант (номер) или напишите имя.
 ```
 
+`<task-based dir>` is the `flow-worktree-dir <task-id>` output as printed — it already starts with
+`.worktrees/`, so the prompt adds no prefix of its own.
+
 *My calls:* if the user already named the directory in their Step 6 free-form answer, that name is
-used and the question is skipped; a typed name goes under `.worktrees/` with `/` → `-`.
+used and the question is skipped; a typed name goes under `.worktrees/` with `/` → `-`. A name left
+with no letter or digit (empty, `.`, `..`) is refused and the question asked, from either source:
+it would put the worktree at `.worktrees` itself or above it.
 
 This is also what handles a task with **several branches** (parallel per-project workstreams, one PR
 each — spec `2026-07-07-flow-multi-design-and-branch-links-design.md`; the user expects each in its
