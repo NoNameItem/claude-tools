@@ -90,6 +90,10 @@ def is_our_hook(hook: dict) -> bool:
 - Предыдущий `.bak` перезаписывается
 - Бэкап создаётся только при перезаписи чужого хука или с `--force`
 
+(Изменено 2026-10-22 после ревью PR #151: бэкап получает имя с меткой времени —
+`settings.json.<YYYYMMDD-HHMMSS>.bak`, — прежние бэкапы не перезаписываются, `setup` печатает путь.
+Подробности — в `2026-10-20-config-template-generation-design.md`, раздел *File operations*.)
+
 **Gitignore для local scope:**
 
 При установке в local scope (`--scope local`) statuskit проверяет, что local файлы игнорируются git'ом.

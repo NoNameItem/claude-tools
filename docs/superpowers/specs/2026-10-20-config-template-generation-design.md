@@ -99,8 +99,10 @@ otherwise, but must not revisit user decisions.
    commented default) and reported with the validation message. This matches how `load_config`
    already ignores such values at render time.
 9. **(builder call)** Before overwriting an existing file, back it up with the existing
-   `setup.hooks.create_backup` (single `<file>.bak`, overwritten each time). No backup and no write
-   when the rebuilt text is byte-identical to the current file.
+   `setup.hooks.create_backup` ~~(single `<file>.bak`, overwritten each time)~~. No backup and no
+   write when the rebuilt text is byte-identical to the current file.
+   (Amended 2026-10-22 after PR review: every backup is a new `<file>.<YYYYMMDD-HHMMSS>.bak` and
+   none is ever overwritten — see the 2026-10-22 amendment in *File operations*.)
 10. **(builder call)** `sync` on a missing file creates it (same result as `init`).
 11. **(builder call)** A file that cannot be read or parsed (`OSError`, `UnicodeDecodeError`,
     `tomllib.TOMLDecodeError`) is never touched; the command prints the error and exits 1.
@@ -192,6 +194,13 @@ Rules:
   class's `_params_class` (resolved by `BaseModule.__init_subclass__`), in declaration order.
 - **Per option**: blank line, `# {description}` line, choices (if any), then the option line:
   - not set by the user → `# key = <default>`;
+  - not set by the user and the default is `None` (`param(None, ..., type_=T)`) → TOML has no
+    null, so there is no default to show: a note line
+    `# Not set by default. If you uncomment this line, you must give it a value (<type>).`, then
+    an empty `# key =`, where `<type>` is the TOML name of the declared type (`string`,
+    `integer`, `float`, `boolean`, `array of strings`, ...). Uncommenting that line as is makes the
+    file unparsable — hence the note. No current field has a `None` default. (Amended 2026-10-22
+    after PR review: the generator used to crash with `TypeError` on such a field.)
   - set by the user with a valid value → `key = <value>`.
 - **Choices, dict form** (`{value: help}`): the description line gets a trailing `:`; then one line
   per value, `#   <value> — <help>`, values rendered as TOML, left-aligned and padded with spaces
@@ -299,10 +308,11 @@ Amended 2026-10-21 after PR review:
   `os.open(..., O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0o666)` (`O_BINARY` where it exists, so
   Windows does not turn `\n` into `\r\n`): `O_EXCL` never follows a link and fails if anything is
   already there, and `0o666` lets the umask set a new file's permissions (an existing file still
-  gets its own bits via `copymode`). `setup.hooks.create_backup` copies into such a temp file next
-  to `<file>.bak` and renames it over the backup: the rename replaces a link instead of following
-  it, and a failed copy leaves the previous backup intact. This also covers `setup`'s
-  `settings.json.bak`. A temp file is removed on any failure after it was created.
+  gets its own bits via `copymode`). ~~`setup.hooks.create_backup` copies into such a temp file
+  next to `<file>.bak` and renames it over the backup: the rename replaces a link instead of
+  following it, and a failed copy leaves the previous backup intact. This also covers `setup`'s
+  `settings.json.bak`.~~ (Superseded 2026-10-22, see below.) A temp file is removed on any failure
+  after it was created.
 - **Every parse failure is `Cannot read`, not a traceback.** `tomllib` raises a plain
   `ValueError` for an integer longer than Python's int-to-str digit limit (4300 digits) and a
   `RecursionError` for deeply nested arrays or inline tables; neither is a `TOMLDecodeError`.
@@ -310,6 +320,21 @@ Amended 2026-10-21 after PR review:
   `TOMLDecodeError` and `UnicodeDecodeError` are `ValueError`s too — so the handler cannot mask
   an error in the generator. The runtime loader (`core.config.load_config`) catches the same pair
   and falls back to defaults, so a hostile project config cannot crash the statusline either.
+
+Amended 2026-10-22 after PR review:
+- **Timestamped backups, never overwritten.** The 2026-10-20 write order only protected the
+  previous backup against a failed tmp write: when `copymode` or the final `replace` failed, the
+  single `<file>.bak` had already been overwritten while the command reported `Nothing was
+  changed.` Now `create_backup` writes a new `<name>.<YYYYMMDD-HHMMSS>.bak` (local time) next to
+  the file, created exclusively with the same `O_EXCL` flags as the tmp file — so a planted link
+  is never followed — and a name that is already taken (a backup from the same second, or a
+  planted file or link) moves on to `-1`, `-2`, ... Existing backups, including a legacy
+  `<name>.bak`, are never touched. A failed copy removes the partial backup; if the write fails
+  after the backup was made, `_write_atomic` removes that new backup too, so `Nothing was changed.`
+  stays true. Write order: tmp → `copymode` → backup → `replace`. There is no rotation: backups
+  accumulate, which is acceptable for manually run commands. The same applies to `setup`'s
+  `settings.json` backup; `InstallResult.backup_created` became `InstallResult.backup` (the path),
+  and `setup` prints it.
 
 The `config` commands touch only the config file. `--scope local` does **not** update
 `.gitignore` — that stays `setup`'s job.
@@ -334,10 +359,10 @@ Messages (wording may be polished; the content and exit codes are the contract):
 |---|---|---|
 | `init`, file missing | `✓ Created <path>` | 0 |
 | `init`, file exists | `<path> already exists. Run 'statuskit config sync' to update it, or 'config init --force' to reset it to defaults.` | 1 |
-| `init --force`, file exists | `✓ Reset <path> to defaults (backup: <path>.bak)` | 0 |
+| `init --force`, file exists | `✓ Reset <path> to defaults (backup: <path>.<YYYYMMDD-HHMMSS>.bak)` | 0 |
 | `sync`, file missing | `✓ Created <path>` | 0 |
 | `sync`, nothing to change | `<path> is up to date.` | 0 |
-| `sync`, rebuilt | `✓ Updated <path> (backup: <path>.bak)` + removal list | 0 |
+| `sync`, rebuilt | `✓ Updated <path> (backup: <path>.<YYYYMMDD-HHMMSS>.bak)` + removal list | 0 |
 | `sync`, unreadable/unparsable | `Cannot read <path>: <error>. Nothing was changed.` | 1 |
 | `sync --dry-run`, file missing | `<path> does not exist; sync would create it.` | 0 |
 | `sync --dry-run`, nothing to change | `<path> is up to date.` | 0 |
@@ -376,6 +401,10 @@ README.md            [edit]  option tables removed; `config init` / `config sync
 ```
 
 `setup/commands.py` needs no change (it already calls `create_config`).
+(Amended 2026-10-22 after PR review: `setup/hooks.py` — timestamped `create_backup`;
+`setup/commands.py` — `InstallResult.backup` path instead of `backup_created`; `core/schema.py` —
+the `param(None, ..., type_=T)` overload returns `T | None` instead of `Field[T]`, so a field with a
+`None` default can be declared on a typed params class at all.)
 
 ## README
 
@@ -394,8 +423,8 @@ drifted from the code (`commit_age_format` lacks `raw`, the `bar` example says 7
 - **Add** to *Configuration*: `statuskit config init [--scope …]` writes a config listing every
   option with its default and description (this is now the option reference); after upgrading,
   `statuskit config sync` adds new options and removes unknown ones while keeping the user's
-  values, with a `.bak` backup and `--dry-run` to check a file without changing it. The short
-  *Basic* / *Module Configuration* examples stay.
+  values, with a timestamped `.bak` backup and `--dry-run` to check a file without changing it.
+  The short *Basic* / *Module Configuration* examples stay.
 - **Add** one sentence next to the priority table (builder call): a project or local file
   replaces the user file entirely — files are not merged — so `config init --scope local` in a
   project shadows every user-level setting there. This only documents current behaviour
@@ -410,6 +439,12 @@ is tuple-typed today, so this spec does not fix it; the fix belongs in `core/sch
 `list` for a `tuple` field and convert), tracked separately if wanted. The generator itself must
 still render tuple defaults (see *Value serialization*).
 
+A config that another process creates between `init`'s or `sync`'s existence check and the final
+`replace` is overwritten without a backup and without the refusal non-force `init` promises
+(`create_config` has the same check-then-write shape). The window is negligible for a single-user
+CLI, and closing it needs a no-clobber publish (`os.link` plus a fallback for filesystems without
+hard links), which is disproportionate; left as is (PR review, 2026-10-22).
+
 ## Testing
 
 | Area | Cases |
@@ -418,7 +453,9 @@ still render tuple defaults (see *Value serialization*).
 | template structure | golden file of `build_config(None)` text (intentional changes update it); every schema field of `Config` and every built-in module appears exactly once as `# key = <default>`; the default text parses to `{"model": {}, "git": {}, "usage_limits": {}}`; **for every option line, uncommenting just that line yields a file that `load_config`-style parsing turns into exactly that option at its default, in the right section** |
 | choices | dict form renders the padded block with TOML-quoted values; tuple form renders the `Choices:` line (use a test-only params class) |
 | merge | valid value kept active; value equal to default kept active; unknown global key, unknown module key, invalid type, value outside choices, nested table, unknown section — each removed and reported with the right location/reason; `modules` cleaning: unknown name struck + reported, duplicate struck + reported, order of the rest kept, all-unknown list becomes an active `modules = []`; idempotence (second build: same text, no removals) |
-| file ops | `init`: create / refuse existing / `--force` resets + backup; `sync`: missing → created; unchanged → no write, no `.bak`; rebuilt → `.bak` holds the old bytes; unparsable and non-UTF-8 → untouched + error; dry-run never writes; dry-run result reports would-create / unchanged / removals |
+| file ops | `init`: create / refuse existing / `--force` resets + backup; `sync`: missing → created; unchanged → no write, no backup; rebuilt → a new timestamped backup holds the old bytes; a failed `replace` keeps older backups and leaves no new one; unparsable and non-UTF-8 → untouched + error; dry-run never writes; dry-run result reports would-create / unchanged / removals |
+| backups | `create_backup` with a fixed clock: `<name>.<stamp>.bak`; same second → `-1`, `-2`; a legacy `.bak` and older timestamped backups untouched; a link planted at the name is skipped, not followed; a failed copy leaves no backup |
+| unset defaults | a test-only params class with `param(None, ...)` fields renders the note + empty `# key =` (string and array types), still parses; a user value renders active |
 | CLI | parser: `config init`/`config sync` flags, `--scope` default `user`, bare `config` is a usage error; `main()` dispatch and exit codes per the table (patch `get_config_path` or `HOME` + `chdir(tmp_path)`) |
 | setup | existing `test_setup_config.py` keeps passing (`'# modules = ["model", "git", "usage_limits"]'` is still in the output) |
 | quality | `uv run ty check` (pathless) green; `ruff format` + `ruff check` clean, no suppressions |
