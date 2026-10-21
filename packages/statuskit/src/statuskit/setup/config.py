@@ -134,7 +134,9 @@ def sync_config(path: Path, *, dry_run: bool) -> SyncResult:
     else:
         try:
             data = tomllib.loads(raw.decode("utf-8-sig"))
-        except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        # Every parse failure: TOMLDecodeError, UnicodeDecodeError and the int digit limit
+        # (a >4300-digit integer) are ValueErrors; deep nesting overflows the recursive parser.
+        except (ValueError, RecursionError) as exc:
             return SyncResult(SyncStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
         text, found = build_config(data)
         removals = tuple(found)

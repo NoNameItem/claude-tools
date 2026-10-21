@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from statuskit.core.config import Config, load_config, split_sections
 
 
@@ -102,6 +103,30 @@ def test_load_config_invalid_toml(tmp_path: Path, capsys, monkeypatch):
     # Should print error
     captured = capsys.readouterr()
     assert "[!] Config error" in captured.out
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"a = " + b"1" * 4301 + b"\n",
+        b"a = " + b"[" * 5000 + b"]" * 5000 + b"\n",
+        b'a = "\xff"\n',
+    ],
+    ids=["int-over-digit-limit", "deep-nesting", "not-utf8"],
+)
+def test_load_config_unparsable_falls_back(tmp_path: Path, capsys, monkeypatch, content: bytes):
+    """Parse failures outside TOMLDecodeError still fall back to defaults instead of crashing."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_bytes(content)
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.debug is False
+    assert "[!] Config error" in capsys.readouterr().out
 
 
 class TestLoadConfigHierarchy:

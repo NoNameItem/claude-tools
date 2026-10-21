@@ -73,7 +73,9 @@ def load_config() -> Config:
             try:
                 with config_path.open("rb") as f:
                     data = tomllib.load(f)
-            except (tomllib.TOMLDecodeError, OSError) as e:
+            # Every parse failure: TOMLDecodeError, UnicodeDecodeError and the int digit limit
+            # (a >4300-digit integer) are ValueErrors; deep nesting overflows the recursive parser.
+            except (ValueError, RecursionError, OSError) as e:
                 print(colored(f"[!] Config error in {config_path}: {e}", "red"))
                 return Config()
 

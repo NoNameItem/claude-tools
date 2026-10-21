@@ -199,7 +199,9 @@ class TestSyncConfig:
     def test_unparsable_file_is_untouched(self, tmp_path):
         from statuskit.setup.config import SyncStatus, sync_config
 
-        for content in (b"[model\n", b"\xff\xfe"):
+        long_int = b"a = " + b"1" * 4301 + b"\n"
+        deep_nesting = b"a = " + b"[" * 5000 + b"]" * 5000 + b"\n"
+        for content in (b"[model\n", b"\xff\xfe", long_int, deep_nesting):
             path = tmp_path / "statuskit.toml"
             path.write_bytes(content)
 
