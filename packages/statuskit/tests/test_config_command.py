@@ -1,6 +1,7 @@
 """Tests for the `statuskit config` subcommand."""
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -62,7 +63,7 @@ def test_init_force_resets_with_backup(env, user_cfg, monkeypatch, capsys):
     run(monkeypatch, "init", "--force")
     (line,) = lines(capsys)
     assert line.startswith(f"✓ Reset {user_cfg} to defaults (backup: ")
-    assert "statuskit.toml.bak" in line
+    assert re.search(r"[\\/]statuskit\.toml\.\d{8}-\d{6}\.bak\)$", line)
 
 
 def test_init_project_scope_creates_claude_dir(env, monkeypatch, capsys):

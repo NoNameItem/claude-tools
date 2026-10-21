@@ -3,6 +3,7 @@
 import math
 from collections.abc import Mapping
 from dataclasses import MISSING, Field, dataclass, fields
+from typing import Any, get_args
 
 from statuskit.core.config import Config, split_sections
 from statuskit.core.loader import BUILTIN_MODULES
@@ -21,6 +22,8 @@ _SIMPLE_ESCAPES = {
     "\f": "\\f",
     "\r": "\\r",
 }
+
+_TOML_TYPES: dict[type, str] = {bool: "boolean", int: "integer", float: "float", str: "string"}
 
 
 def _toml_string(value: str) -> str:
@@ -95,14 +98,27 @@ def _choices_lines(choices: tuple | dict | None) -> list[str]:
     return []
 
 
+def _toml_type(declared: Any) -> str:
+    """TOML name of a declared param type: a primitive, or list/tuple over one."""
+    args = get_args(declared)
+    if args:
+        return f"array of {_TOML_TYPES[args[0]]}s"
+    return _TOML_TYPES[declared]
+
+
 def _option_block(f: Field, active: Mapping[str, object]) -> str:
     choices = f.metadata.get("choices")
     colon = ":" if isinstance(choices, dict) else ""
     lines = [f"# {f.metadata['description']}{colon}", *_choices_lines(choices)]
     if f.name in active:
         lines.append(f"{f.name} = {toml_value(active[f.name])}")
+    elif (default := _default_of(f)) is None:
+        # TOML has no null, so an unset default has no value to show: the line is left
+        # empty, and uncommenting it as is would make the file unparsable.
+        note = f"you must give it a value ({_toml_type(f.metadata['type'])})."
+        lines += [f"# Not set by default. If you uncomment this line, {note}", f"# {f.name} ="]
     else:
-        lines.append(f"# {f.name} = {toml_value(_default_of(f))}")
+        lines.append(f"# {f.name} = {toml_value(default)}")
     return "\n".join(lines)
 
 

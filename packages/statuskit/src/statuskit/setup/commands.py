@@ -1,6 +1,7 @@
 """Setup command implementations."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .config import create_config
@@ -28,7 +29,7 @@ class InstallResult:
 
     success: bool = False
     already_installed: bool = False
-    backup_created: bool = False
+    backup: Path | None = None
     config_created: bool = False
     gitignore_updated: bool = False
     higher_scope_installed: bool = False
@@ -106,17 +107,15 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
         )
 
     # Handle foreign hook
-    backup_created = False
+    backup = None
     if current_hook.get("command"):
         foreign_cmd = printable(str(current_hook["command"]))
         if force:
-            create_backup(settings_path)
-            backup_created = True
+            backup = create_backup(settings_path)
         elif ui:
             if not ui.confirm(f"statusLine points to: {foreign_cmd}\nOverwrite? (backup will be created)"):
                 return InstallResult(success=False, message="Cancelled by user")
-            create_backup(settings_path)
-            backup_created = True
+            backup = create_backup(settings_path)
         else:
             return InstallResult(
                 success=False,
@@ -137,7 +136,7 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
 
     return InstallResult(
         success=True,
-        backup_created=backup_created,
+        backup=backup,
         config_created=config_created,
         gitignore_updated=gitignore_updated,
         message="Installed successfully",

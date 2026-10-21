@@ -1,7 +1,9 @@
 """Tests for hook detection."""
 
 import json
+import re
 import sys
+from datetime import datetime
 
 import pytest
 from statuskit.setup.hooks import is_our_hook
@@ -113,61 +115,94 @@ class TestWriteSettings:
 class TestCreateBackup:
     """Tests for create_backup function."""
 
-    def test_creates_bak_file(self, tmp_path):
-        """Creates .bak file next to original."""
+    NOW = datetime(2026, 10, 22, 14, 30, 12)
+
+    def test_copies_file_to_timestamped_backup(self, tmp_path):
+        """The backup is named after the local time and holds the original bytes."""
         from statuskit.setup.hooks import create_backup
 
         original = tmp_path / "settings.json"
         original.write_text('{"original": true}')
 
-        create_backup(original)
+        result = create_backup(original, now=self.NOW)
 
-        backup = tmp_path / "settings.json.bak"
-        assert backup.exists()
-        assert backup.read_text() == '{"original": true}'
+        assert result == tmp_path / "settings.json.20261022-143012.bak"
+        assert result.read_text() == '{"original": true}'
 
-    def test_overwrites_existing_backup(self, tmp_path):
-        """Overwrites existing .bak file."""
+    def test_default_clock_names_backup_by_current_time(self, tmp_path):
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text("{}")
+
+        result = create_backup(original)
+
+        assert re.fullmatch(r"settings\.json\.\d{8}-\d{6}\.bak", result.name)
+
+    def test_existing_backups_are_never_touched(self, tmp_path):
+        """Neither a legacy .bak nor an earlier timestamped backup is overwritten."""
         from statuskit.setup.hooks import create_backup
 
         original = tmp_path / "settings.json"
         original.write_text('{"new": true}')
+        legacy = tmp_path / "settings.json.bak"
+        legacy.write_text("legacy")
+        earlier = tmp_path / "settings.json.20260101-000000.bak"
+        earlier.write_text("earlier")
 
-        backup = tmp_path / "settings.json.bak"
-        backup.write_text('{"old": true}')
+        result = create_backup(original, now=self.NOW)
 
-        create_backup(original)
+        assert legacy.read_text() == "legacy"
+        assert earlier.read_text() == "earlier"
+        assert result.read_text() == '{"new": true}'
 
-        assert backup.read_text() == '{"new": true}'
+    def test_same_second_gets_counter_suffix(self, tmp_path):
+        from statuskit.setup.hooks import create_backup
+
+        original = tmp_path / "settings.json"
+        original.write_text("first")
+        first = create_backup(original, now=self.NOW)
+        original.write_text("second")
+        second = create_backup(original, now=self.NOW)
+        original.write_text("third")
+        third = create_backup(original, now=self.NOW)
+
+        assert [first.name, second.name, third.name] == [
+            "settings.json.20261022-143012.bak",
+            "settings.json.20261022-143012-1.bak",
+            "settings.json.20261022-143012-2.bak",
+        ]
+        assert [first.read_text(), second.read_text(), third.read_text()] == ["first", "second", "third"]
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-    def test_symlink_at_backup_path_is_replaced_not_followed(self, tmp_path):
-        """A symlink planted at .bak is not written through."""
+    def test_symlink_at_backup_name_is_skipped_not_followed(self, tmp_path):
+        """A symlink planted at the backup name is neither written through nor replaced."""
         from statuskit.setup.hooks import create_backup
 
         decoy = tmp_path / "decoy"
         decoy.write_text("decoy")
         original = tmp_path / "settings.json"
         original.write_text('{"new": true}')
-        backup = tmp_path / "settings.json.bak"
-        backup.symlink_to(decoy)
+        planted = tmp_path / "settings.json.20261022-143012.bak"
+        planted.symlink_to(decoy)
 
-        create_backup(original)
+        result = create_backup(original, now=self.NOW)
 
         assert decoy.read_text() == "decoy"
-        assert not backup.is_symlink()
-        assert backup.read_text() == '{"new": true}'
+        assert planted.is_symlink()
+        assert result == tmp_path / "settings.json.20261022-143012-1.bak"
+        assert result.read_text() == '{"new": true}'
 
-    def test_failed_copy_keeps_previous_backup(self, tmp_path, monkeypatch):
-        """A failing copy raises, keeps the old .bak and leaves no temp file."""
+    def test_failed_copy_leaves_no_backup(self, tmp_path, monkeypatch):
+        """A failing copy raises and removes the partial backup; older backups stay."""
         import shutil
 
         from statuskit.setup.hooks import create_backup
 
         original = tmp_path / "settings.json"
         original.write_text('{"new": true}')
-        backup = tmp_path / "settings.json.bak"
-        backup.write_text("older backup")
+        earlier = tmp_path / "settings.json.20260101-000000.bak"
+        earlier.write_text("earlier")
 
         def boom(*args, **kwargs):
             msg = "disk full"
@@ -176,18 +211,7 @@ class TestCreateBackup:
         monkeypatch.setattr(shutil, "copyfileobj", boom)
 
         with pytest.raises(OSError, match="disk full"):
-            create_backup(original)
+            create_backup(original, now=self.NOW)
 
-        assert backup.read_text() == "older backup"
-        assert list(tmp_path.glob("*.tmp")) == []
-
-    def test_returns_backup_path(self, tmp_path):
-        """Returns path to backup file."""
-        from statuskit.setup.hooks import create_backup
-
-        original = tmp_path / "settings.json"
-        original.write_text('{"data": true}')
-
-        result = create_backup(original)
-
-        assert result == tmp_path / "settings.json.bak"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["settings.json", earlier.name]
+        assert earlier.read_text() == "earlier"

@@ -95,11 +95,12 @@ statuskit config init --scope local
 ```
 
 It refuses to overwrite an existing file; `--force` resets the file to defaults and keeps the
-previous one as `<file>.bak`.
+previous one as `<file>.<YYYYMMDD-HHMMSS>.bak`. Every backup gets its own timestamped name, so
+older backups are never overwritten (and are never cleaned up either).
 
 After upgrading statuskit, run `statuskit config sync` to bring an existing file up to date: it
 keeps your values, adds new options as commented defaults, removes unknown or invalid keys and
-sections, and leaves a `.bak` copy. Your own comments are not preserved. Use
+sections, and leaves a timestamped `.bak` copy. Your own comments are not preserved. Use
 `statuskit config sync --dry-run` to check without writing; it exits with code 1 if something
 would be removed.
 

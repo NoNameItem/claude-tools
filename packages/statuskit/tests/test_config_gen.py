@@ -188,6 +188,39 @@ def test_tuple_choices_render_as_choices_line():
     assert '\n# Mode\n# Choices: "a", "b"\n# mode = "a"\n' in text
 
 
+@schema
+class _UnsetParams:
+    token: str | None = param(None, "API token", type_=str)
+    tags: list[str] | None = param(None, "Tags", type_=list[str])
+
+
+class _UnsetModule(BaseModule[_UnsetParams]):
+    name = "unset"
+    description = "Module with unset defaults"
+
+
+def test_unset_default_renders_empty_line_with_required_value_note():
+    text, removals = build_config(modules={"unset": _UnsetModule})
+    assert (
+        "\n# API token\n"
+        "# Not set by default. If you uncomment this line, you must give it a value (string).\n"
+        "# token =\n"
+    ) in text
+    assert (
+        "\n# Tags\n"
+        "# Not set by default. If you uncomment this line, you must give it a value (array of strings).\n"
+        "# tags =\n"
+    ) in text
+    assert removals == []
+    assert tomllib.loads(text) == {"unset": {}}
+
+
+def test_unset_default_with_user_value_renders_active():
+    text, removals = build_config({"unset": {"token": "abc"}}, modules={"unset": _UnsetModule})
+    assert '\n# API token\ntoken = "abc"\n' in text
+    assert removals == []
+
+
 def test_default_template_matches_golden_file():
     golden = (Path(__file__).parent / "data" / "default_config.toml").read_text(encoding="utf-8")
     assert build_config()[0] == golden

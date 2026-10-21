@@ -18,6 +18,11 @@ def _deny(self, *args, **kwargs):
     raise PermissionError(msg)
 
 
+def _backups(directory: Path) -> list[Path]:
+    """Timestamped config backups (`statuskit.toml.<stamp>.bak`) in directory."""
+    return sorted(directory.glob("statuskit.toml.*.bak"))
+
+
 class TestCreateConfig:
     """Tests for create_config function."""
 
@@ -110,9 +115,11 @@ class TestInitConfig:
 
         path = tmp_path / "statuskit.toml"
         path.write_text("debug = true\n")
-        backup = tmp_path / "statuskit.toml.bak"
 
-        assert init_config(path, force=True) == InitResult(InitStatus.RESET, backup=backup)
+        result = init_config(path, force=True)
+
+        (backup,) = _backups(tmp_path)
+        assert result == InitResult(InitStatus.RESET, backup=backup)
         assert backup.read_text() == "debug = true\n"
         assert path.read_text(encoding="utf-8") == build_config()[0]
 
@@ -161,7 +168,7 @@ class TestSyncConfig:
         result = sync_config(path, dry_run=False)
 
         assert result.status == SyncStatus.UNCHANGED
-        assert not (tmp_path / "statuskit.toml.bak").exists()
+        assert _backups(tmp_path) == []
 
     def test_rebuild_keeps_values_reports_removals_and_backs_up(self, tmp_path):
         import tomllib
@@ -177,7 +184,9 @@ class TestSyncConfig:
 
         assert result.status == SyncStatus.UPDATED
         assert result.removals == (Removal("model.bogus", "unknown key"),)
-        assert (tmp_path / "statuskit.toml.bak").read_bytes() == old.encode()
+        (backup,) = _backups(tmp_path)
+        assert result.backup == backup
+        assert backup.read_bytes() == old.encode()
         assert path.read_text(encoding="utf-8") == build_config(tomllib.loads(old))[0]
 
     def test_dry_run_reports_but_writes_nothing(self, tmp_path):
@@ -194,7 +203,7 @@ class TestSyncConfig:
         assert result.removals == (Removal("model.bogus", "unknown key"),)
         assert result.backup is None
         assert path.read_bytes() == old
-        assert not (tmp_path / "statuskit.toml.bak").exists()
+        assert _backups(tmp_path) == []
 
     def test_unparsable_file_is_untouched(self, tmp_path):
         from statuskit.setup.config import SyncStatus, sync_config
@@ -211,7 +220,7 @@ class TestSyncConfig:
             assert result.error.startswith("Cannot read")
             assert result.error.endswith("Nothing was changed.")
             assert path.read_bytes() == content
-            assert not (tmp_path / "statuskit.toml.bak").exists()
+            assert _backups(tmp_path) == []
 
     def test_crlf_file_is_rebuilt_to_lf(self, tmp_path):
         from statuskit.setup.config import SyncStatus, sync_config
@@ -335,7 +344,7 @@ class TestUnreadableConfig:
             assert result.status == SyncStatus.ERROR
             assert result.error.startswith("Cannot read")
         assert path.read_text() == "debug = true\n"
-        assert not (tmp_path / "statuskit.toml.bak").exists()
+        assert _backups(tmp_path) == []
 
     def test_init_permission_error_is_cannot_read(self, tmp_path, monkeypatch):
         from statuskit.setup.config import InitStatus, init_config
@@ -394,6 +403,34 @@ class TestWriteOrderAndModes:
 
         assert result.status == SyncStatus.ERROR
         assert bak.read_bytes() == b"older backup\n"
+        assert _backups(tmp_path) == []
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_failed_replace_keeps_older_backup_and_leaves_no_new_one(self, tmp_path, monkeypatch):
+        """A failed replace of the config itself costs no backup and leaves none behind."""
+        from statuskit.setup.config import SyncStatus, sync_config
+
+        path = tmp_path / "statuskit.toml"
+        path.write_bytes(b"bogus = 1\n")
+        older = tmp_path / "statuskit.toml.bak"
+        older.write_bytes(b"older backup")
+        real_replace = Path.replace
+
+        def fail_on_config(self, target):
+            if Path(target).name == "statuskit.toml":
+                msg = "replace failed"
+                raise OSError(msg)
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", fail_on_config)
+
+        result = sync_config(path, dry_run=False)
+
+        assert result.status == SyncStatus.ERROR
+        assert result.error.startswith("Cannot write")
+        assert older.read_bytes() == b"older backup"
+        assert _backups(tmp_path) == []
+        assert path.read_bytes() == b"bogus = 1\n"
         assert list(tmp_path.glob("*.tmp")) == []
 
     @no_permission_bits
@@ -410,7 +447,7 @@ class TestWriteOrderAndModes:
         assert result.error.startswith("Cannot write")
         assert path.read_text() == "[git]\nshow_prr = true\n"
         assert path.stat().st_mode & 0o777 == 0o444
-        assert not (tmp_path / "statuskit.toml.bak").exists()
+        assert _backups(tmp_path) == []
 
     @no_permission_bits
     def test_private_mode_is_preserved(self, tmp_path):
@@ -449,36 +486,6 @@ class TestPlantedPaths:
         assert path.read_bytes() == b"bogus = 1\n"
         assert planted.is_symlink()
 
-    @symlinks
-    def test_backup_tmp_symlink_is_not_written_through(self, tmp_path, monkeypatch):
-        import secrets
-
-        from statuskit.setup.config import SyncStatus, sync_config
-
-        monkeypatch.setattr(secrets, "token_hex", lambda n: "deadbeef")
-        decoy = tmp_path / "decoy"
-        decoy.write_bytes(b"decoy\n")
-        path = tmp_path / "statuskit.toml"
-        path.write_bytes(b"bogus = 1\n")
-        bak = tmp_path / "statuskit.toml.bak"
-        bak.write_bytes(b"older backup")
-        planted = tmp_path / "statuskit.toml.bak.deadbeef.tmp"
-        planted.symlink_to(decoy)
-        # the config's own tmp must not collide with the planted backup tmp
-        real = secrets.token_hex
-        names = iter(["cafef00d", "deadbeef"])
-        monkeypatch.setattr(secrets, "token_hex", lambda n: next(names, real(n)))
-
-        result = sync_config(path, dry_run=False)
-
-        assert result.status == SyncStatus.ERROR
-        assert result.error.startswith("Cannot write")
-        assert decoy.read_bytes() == b"decoy\n"
-        assert bak.read_bytes() == b"older backup"
-        assert path.read_bytes() == b"bogus = 1\n"
-        assert planted.is_symlink()
-        assert list(tmp_path.glob("*.tmp")) == [planted]
-
     def test_failed_backup_copy_keeps_previous_backup(self, tmp_path, monkeypatch):
         import shutil
 
@@ -500,11 +507,12 @@ class TestPlantedPaths:
         assert result.status == SyncStatus.ERROR
         assert result.error.startswith("Cannot write")
         assert bak.read_bytes() == b"older backup"
+        assert _backups(tmp_path) == []
         assert path.read_bytes() == b"bogus = 1\n"
         assert list(tmp_path.glob("*.tmp")) == []
 
     @symlinks
-    def test_bak_symlink_is_not_written_through(self, tmp_path):
+    def test_legacy_bak_symlink_is_left_alone(self, tmp_path):
         from statuskit.setup.config import SyncStatus, sync_config
 
         decoy = tmp_path / "decoy"
@@ -517,8 +525,9 @@ class TestPlantedPaths:
         assert sync_config(path, dry_run=False).status == SyncStatus.UPDATED
 
         assert decoy.read_bytes() == b"decoy\n"
-        assert not bak.is_symlink()
-        assert bak.read_bytes() == b"bogus = 1\n"
+        assert bak.is_symlink()
+        (backup,) = _backups(tmp_path)
+        assert backup.read_bytes() == b"bogus = 1\n"
 
     @no_permission_bits
     def test_new_config_gets_umask_permissions(self, tmp_path):

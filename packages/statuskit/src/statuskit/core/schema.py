@@ -5,7 +5,7 @@ data; callers (BaseModule, load_config, the future `config validate`) decide how
 to surface warnings.
 """
 
-from dataclasses import Field, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from typing import Any, TypeVar, dataclass_transform, get_args, get_origin, overload
 
 T = TypeVar("T")
@@ -51,7 +51,7 @@ def param(
     *,
     choices: tuple | dict | None = ...,
     type_: type[T],
-) -> Field[T]: ...
+) -> T | None: ...
 
 
 @overload

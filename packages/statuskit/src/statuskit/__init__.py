@@ -80,8 +80,8 @@ def _handle_install(scope, force: bool, ui) -> None:
             print("\u2713 Created config file.")
     elif result.success:
         print(f"\u2713 Added statusline hook to {scope.value} scope.")
-        if result.backup_created:
-            print("\u2713 Created backup of previous settings.")
+        if result.backup:
+            print(f"\u2713 Created backup of previous settings: {result.backup}")
         if result.config_created:
             print("\u2713 Created config file.")
         if result.gitignore_updated:

@@ -125,8 +125,9 @@ class TestInstallHook:
         result = install_hook(Scope.USER, force=True, ui=None)
 
         assert result.success is True
-        assert result.backup_created is True
-        assert (home / ".claude" / "settings.json.bak").exists()
+        assert result.backup is not None
+        assert list((home / ".claude").glob("settings.json.*.bak")) == [result.backup]
+        assert json.loads(result.backup.read_text()) == {"statusLine": {"command": "other-script"}}
 
 
 class TestInstallHookGitignore:
