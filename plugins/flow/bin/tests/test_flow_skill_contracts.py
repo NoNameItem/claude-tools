@@ -897,9 +897,15 @@ def test_worktree_retry_rule_names_both_path_refusals_and_stops_otherwise(name: 
     body = _body(name)
     assert "already exists" in body
     assert "missing but already registered worktree" in body
-    assert "-2" in body
-    assert "-3" in body
+    assert "with `<dir>-2`, then `-3`" in body
     assert "is already used by worktree" in body  # the named non-path refusal -> stop
+
+
+@pytest.mark.parametrize("name", WT_SKILLS)
+def test_typed_worktree_name_is_quoted_and_sanitized(name: str) -> None:
+    body = _body(name)
+    assert 'WORKTREE_DIR=".worktrees/<name>" &&' in body
+    assert "[A-Za-z0-9._-]" in body
 
 
 @pytest.mark.parametrize("name", WT_SKILLS)

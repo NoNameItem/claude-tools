@@ -19,6 +19,15 @@ def test_strips_issue_prefix(fake_bd):
     assert r.stdout == ".worktrees/elf.28-flow-worktree-dir-shorten-generated\n"
 
 
+def test_short_id_argument_is_named_from_the_id_bd_returns(fake_bd):
+    fake_bd.set_show(_issue("claude-tools-elf.28", "flow-worktree-dir: shorten generated worktree directory names"))
+    fake_bd.set_issue_prefix("claude-tools")
+    r = run_helper("flow-worktree-dir", "elf.28", env=fake_bd.env)
+    assert r.returncode == 0
+    assert r.stdout == ".worktrees/elf.28-flow-worktree-dir-shorten-generated\n"
+    assert r.stderr == ""
+
+
 def test_subtask_id_keeps_dots(fake_bd):
     fake_bd.set_show(_issue("claude-tools-5dl.9.2", "Config template generation and CLI"))
     fake_bd.set_issue_prefix("claude-tools")

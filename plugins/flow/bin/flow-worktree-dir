@@ -2,7 +2,7 @@
 """Print the worktree directory for a task: .worktrees/<short-id>-<title-slug>.
 
 Usage: flow-worktree-dir <task-id>
-Prints: .worktrees/<id without the bd issue prefix>-<slug>   e.g. .worktrees/elf.28-flow-worktree-dir-shorten
+Prints: .worktrees/<id without the bd issue prefix>-<slug>   e.g. .worktrees/elf.28-flow-worktree-dir-shorten-generated
 Exit:   0 ok | 1 task not found | 2 bd error
 """
 
@@ -43,6 +43,7 @@ def main():
         sys.stderr.write(e.message + "\n")
         return e.code
 
+    task_id = issue.get("id") or task_id  # bd resolves short ids; name from the full id it returns
     prefix = read_issue_prefix(BD)
     if prefix and task_id.startswith(prefix + "-"):
         short_id = task_id[len(prefix) + 1 :]
