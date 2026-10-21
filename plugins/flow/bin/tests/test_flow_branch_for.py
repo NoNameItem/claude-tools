@@ -1,6 +1,6 @@
 """Tests for flow-branch-for."""
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import json
 
@@ -45,3 +45,16 @@ def test_empty_title_falls_back_to_task_id(fake_bd):
     r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
     assert r.returncode == 0
     assert r.stdout.strip() == "feature/claude-tools-uaj"
+
+
+def test_task_not_found_exits_1(fake_bd):
+    fake_bd.set_show("[]")
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 1
+    assert "task not found: claude-tools-uaj" in r.stderr
+
+
+def test_bd_error_exits_2():
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env={"BD_BIN": "/usr/bin/false", "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 2
+    assert r.stdout == ""

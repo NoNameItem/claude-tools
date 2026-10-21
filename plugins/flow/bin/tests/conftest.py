@@ -2,6 +2,7 @@
 
 # ruff: noqa: PLW1510  # PLW1510: check IS passed via **common (false positive)
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -33,18 +34,29 @@ def fake_bd(tmp_path):
       - env: dict to pass as the helper's environment (BD_BIN set)
       - set_show(json_str): canned stdout for `bd show ... --json` and `bd list --json`
       - captured_description(): the --description value from the last `bd update`
+      - set_issue_prefix(value): answer `bd config get issue_prefix --json`; None makes it exit 1
     """
     bd_path = tmp_path / "fake-bd"
     show_file = tmp_path / "show.json"
     capture_file = tmp_path / "update-description.txt"
+    config_file = tmp_path / "config.json"
     show_file.write_text("[]")
+    config_file.write_text(json.dumps({"key": "issue_prefix", "schema_version": 1, "value": ""}))
 
     bd_path.write_text(
         "#!/usr/bin/env python3\n"
         "import sys\n"
         f"SHOW = {str(show_file)!r}\n"
         f"CAPTURE = {str(capture_file)!r}\n"
+        f"CONFIG = {str(config_file)!r}\n"
         "args = sys.argv[1:]\n"
+        "if args[:2] == ['config', 'get']:\n"
+        "    text = open(CONFIG).read()\n"
+        "    if not text:\n"
+        "        sys.stderr.write('config error\\n')\n"
+        "        sys.exit(1)\n"
+        "    sys.stdout.write(text)\n"
+        "    sys.exit(0)\n"
         "if args and args[0] in ('show', 'list'):\n"
         "    sys.stdout.write(open(SHOW).read())\n"
         "elif args and args[0] == 'update':\n"
@@ -65,6 +77,13 @@ def fake_bd(tmp_path):
 
         def captured_description(self):
             return capture_file.read_text() if capture_file.exists() else None
+
+        def set_issue_prefix(self, value):
+            """Answer `bd config get issue_prefix --json` with `value`; None makes it fail."""
+            if value is None:
+                config_file.write_text("")
+            else:
+                config_file.write_text(json.dumps({"key": "issue_prefix", "schema_version": 1, "value": value}))
 
     return Ctl()
 

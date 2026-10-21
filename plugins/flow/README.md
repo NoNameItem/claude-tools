@@ -306,7 +306,7 @@ Python file with a `#!/usr/bin/env python3` shebang and a co-located test in
 | `flow-find-doc <design\|plan>` | Newest doc across `docs/superpowers/{specs,plans}/` + `docs/plans/` |
 | `flow-current-task [id]` | Extract the task id from the branch, or match the branch against `id` |
 | `flow-in-worktree` | Exit 0 if CWD is inside `.worktrees/` |
-| `flow-worktree-dir <branch>` | Map a branch to its `.worktrees/` directory |
+| `flow-worktree-dir <id>` | Compute the `.worktrees/` directory name for a task (short id + slug) |
 | `flow-find-branches <id>` | Branches matching a task id (local/remote/worktree) |
 | `flow-wait-ci <n> <sha> --platform <github\|gitlab>` | Block until the PR/MR CI pipeline for an exact head SHA is terminal (exit 0/2/3/4); gate-name-agnostic |
 | `flow-review-ledger <reconcile\|get\|record\|stats\|purge>` | Persistent per-PR review ledger: durable memory of every review finding and what was decided about it |
