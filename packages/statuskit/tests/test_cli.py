@@ -39,3 +39,24 @@ def test_help_shows_modules(capsys):
     assert "git" in captured.out
     assert "beads" in captured.out
     assert "quota" in captured.out
+
+
+def test_config_init_defaults():
+    args = create_parser().parse_args(["config", "init"])
+    assert (args.command, args.config_command, args.scope, args.force) == ("config", "init", "user", False)
+
+
+def test_config_sync_flags():
+    args = create_parser().parse_args(["config", "sync", "-s", "local", "--dry-run"])
+    assert (args.config_command, args.scope, args.dry_run) == ("sync", "local", True)
+
+
+def test_bare_config_is_usage_error(capsys):
+    parser = create_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["config"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "init" in err
+    assert "sync" in err
+    assert "config_command" not in err

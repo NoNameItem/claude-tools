@@ -70,6 +70,14 @@ class BaseModule(ABC, Generic[P]):
             raise TypeError(msg)
         cls._params_class = params_cls
 
+    @classmethod
+    def params_class(cls) -> type[P]:
+        """Return the params class resolved from ``BaseModule[X]``.
+
+        Public accessor for the config template generator, which reads the schema from it.
+        """
+        return cls._params_class
+
     def __init__(self, ctx: RenderContext, raw_section: dict) -> None:
         """Initialize module: parse the raw TOML section into typed ``self.params``.
 

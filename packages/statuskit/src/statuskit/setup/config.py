@@ -1,79 +1,97 @@
-"""Config file creation for setup command."""
+"""Config file creation, reset and sync for setup command."""
 
+import errno
+import os
+import shutil
+import tomllib
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
-DEFAULT_CONFIG = """\
-# Statuskit configuration
-# See: https://pypi.org/project/claude-statuskit/
-#
-# All options shown with default values (commented out).
-# Uncomment and modify as needed.
+from statuskit.setup.config_gen import Removal, build_config
+from statuskit.setup.hooks import create_backup, open_temp_sibling
 
-# ─────────────────────────────────────────────────────────────
-# Global settings
-# ─────────────────────────────────────────────────────────────
 
-# Modules to display (in order)
-# modules = ["model", "git", "usage_limits"]
+class InitStatus(Enum):
+    """Outcome of init_config."""
 
-# Enable debug output
-# debug = false
+    CREATED = "created"
+    EXISTS = "exists"
+    RESET = "reset"
+    ERROR = "error"
 
-# Cache directory
-# cache_dir = "~/.cache/statuskit"
 
-# ─────────────────────────────────────────────────────────────
-# Model module: model name, session duration, context usage
-# ─────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class InitResult:
+    """Result of init_config (data only, nothing is printed)."""
 
-# [model]
-# show_duration = true
-# show_context = true
-# context_format = "free"  # "free", "used", "ratio", "bar"
-# context_compact = false
-# context_threshold_green = 50
-# context_threshold_yellow = 25
+    status: InitStatus
+    backup: Path | None = None
+    error: str = ""
 
-# ─────────────────────────────────────────────────────────────
-# Git module: branch, status, location
-# ─────────────────────────────────────────────────────────────
 
-# [git]
-# show_project = true
-# show_worktree = true
-# show_folder = true
-# show_branch = true
-# show_remote_status = true
-# show_changes = true
-# show_commit = true
-# commit_age_format = "relative"  # "relative", "compact"
-# show_pr = true                  # show branch PR (gh) / MR (glab); needs gh/glab installed
-# pr_provider = "auto"            # "auto", "github", "gitlab"
-# pr_link = true                  # wrap PR/MR token in an OSC 8 hyperlink
-# pr_cache_ttl = 300              # min seconds between PR/MR network lookups
+class SyncStatus(Enum):
+    """Outcome of sync_config."""
 
-# ─────────────────────────────────────────────────────────────
-# Usage limits module: API quota tracking (5h session, 7d weekly)
-# ─────────────────────────────────────────────────────────────
+    CREATED = "created"
+    UNCHANGED = "unchanged"
+    UPDATED = "updated"
+    ERROR = "error"
 
-# [usage_limits]
-# show_session = true
-# show_weekly = true
-# models_always_show = ["Fable"]     # always show these models, even at 0%
-# models_never_show = []             # never show these models
-# show_reset_time = true
-# multiline = true
-# show_progress_bar = false
-# bar_width = 10
-# session_time_format = "remaining"  # "remaining", "reset_at"
-# weekly_time_format = "reset_at"    # "remaining", "reset_at"
-# model_time_format = "reset_at"     # "remaining", "reset_at"
-# cache_ttl = 120
-"""
+
+@dataclass(frozen=True)
+class SyncResult:
+    """Result of sync_config (data only, nothing is printed)."""
+
+    status: SyncStatus
+    removals: tuple[Removal, ...] = ()
+    backup: Path | None = None
+    error: str = ""
+
+
+def _write_atomic(path: Path, text: str, *, backup: bool = False) -> Path | None:
+    """Write text to path atomically.
+
+    Follows symlinks: if path is a symlink, the resolved target is written and the
+    link is left intact.
+
+    The temp file is created exclusively under a random name, so a file or symlink
+    already sitting next to the config is never written through. It is written first,
+    then (with backup=True) the previous content is copied to a new timestamped backup,
+    and only then is the target replaced. Older backups are never touched, and if the
+    write or the replace fails, the new backup is removed again, so a failed write
+    leaves the directory as it was. The original permission bits are carried over; a
+    new file gets the umask-derived default. Returns the backup path, if one was made.
+    """
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existed = target.exists()
+    if existed and not os.access(target, os.W_OK):
+        raise PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(target))
+    tmp, fd = open_temp_sibling(target)
+    made = None
+    try:
+        try:
+            f = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        except BaseException:
+            os.close(fd)
+            raise
+        with f:
+            f.write(text)
+        if existed:
+            shutil.copymode(target, tmp)
+        made = create_backup(path) if backup and existed else None
+        tmp.replace(target)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        if made is not None:
+            made.unlink(missing_ok=True)
+        raise
+    return made
 
 
 def create_config(path: Path) -> bool:
-    """Create statuskit.toml with default content.
+    """Create statuskit.toml with the generated template.
 
     Does not overwrite existing file.
     Returns True if file was created, False if it already existed.
@@ -81,6 +99,59 @@ def create_config(path: Path) -> bool:
     if path.exists():
         return False
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(DEFAULT_CONFIG)
+    _write_atomic(path, build_config()[0])
     return True
+
+
+def init_config(path: Path, *, force: bool) -> InitResult:
+    """Write the default template; with force, reset an existing file (backed up)."""
+    try:
+        path.stat()
+        exists = True
+    except FileNotFoundError:
+        exists = False
+    except OSError as exc:
+        return InitResult(InitStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
+    if exists and not force:
+        return InitResult(InitStatus.EXISTS)
+    try:
+        backup = _write_atomic(path, build_config()[0], backup=exists)
+    except OSError as exc:
+        return InitResult(InitStatus.ERROR, error=f"Cannot write {path}: {exc}. Nothing was changed.")
+    return InitResult(InitStatus.RESET if exists else InitStatus.CREATED, backup=backup)
+
+
+def sync_config(path: Path, *, dry_run: bool) -> SyncResult:
+    """Rebuild the config from the current schema, keeping the user's values."""
+    raw: bytes | None
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        raw = None
+    except OSError as exc:
+        return SyncResult(SyncStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
+
+    if raw is None:
+        text, _ = build_config()
+        status = SyncStatus.CREATED
+        removals: tuple[Removal, ...] = ()
+    else:
+        try:
+            data = tomllib.loads(raw.decode("utf-8-sig"))
+        # Every parse failure: TOMLDecodeError, UnicodeDecodeError and the int digit limit
+        # (a >4300-digit integer) are ValueErrors; deep nesting overflows the recursive parser.
+        except (ValueError, RecursionError) as exc:
+            return SyncResult(SyncStatus.ERROR, error=f"Cannot read {path}: {exc}. Nothing was changed.")
+        text, found = build_config(data)
+        removals = tuple(found)
+        if text.encode("utf-8") == raw:
+            return SyncResult(SyncStatus.UNCHANGED)
+        status = SyncStatus.UPDATED
+
+    if dry_run:
+        return SyncResult(status, removals)
+    try:
+        backup = _write_atomic(path, text, backup=raw is not None)
+    except OSError as exc:
+        return SyncResult(SyncStatus.ERROR, error=f"Cannot write {path}: {exc}. Nothing was changed.")
+    return SyncResult(status, removals, backup)

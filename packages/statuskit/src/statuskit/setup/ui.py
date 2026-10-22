@@ -1,6 +1,11 @@
 """Console UI for setup command."""
 
 
+def printable(text: str) -> str:
+    """Escape non-printable characters so file-derived text cannot drive the terminal."""
+    return "".join(ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii") for ch in text)
+
+
 class ConsoleUI:
     """Interactive console UI for setup command."""
 

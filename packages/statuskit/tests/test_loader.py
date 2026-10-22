@@ -70,3 +70,9 @@ def test_loads_usage_limits_module(make_render_context, minimal_input_data):
 
     assert len(modules) == 1
     assert isinstance(modules[0], UsageLimitsModule)
+
+
+def test_builtin_modules_order_matches_default_modules():
+    """BUILTIN_MODULES iterates in the same order as the default Config.modules."""
+    assert list(BUILTIN_MODULES) == ["model", "git", "usage_limits"]
+    assert list(BUILTIN_MODULES) == Config().modules

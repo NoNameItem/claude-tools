@@ -125,8 +125,9 @@ class TestInstallHook:
         result = install_hook(Scope.USER, force=True, ui=None)
 
         assert result.success is True
-        assert result.backup_created is True
-        assert (home / ".claude" / "settings.json.bak").exists()
+        assert result.backup is not None
+        assert list((home / ".claude").glob("settings.json.*.bak")) == [result.backup]
+        assert json.loads(result.backup.read_text()) == {"statusLine": {"command": "other-script"}}
 
 
 class TestInstallHookGitignore:
@@ -317,3 +318,66 @@ class TestInstallHookHigherScope:
         assert result.higher_scope_installed is True
         assert result.config_created is True
         assert (project / ".claude" / "statuskit.toml").exists()
+
+
+class TestForeignCommandIsEscaped:
+    """A statusLine.command from settings.json must not reach the terminal raw."""
+
+    RAW = "evil\x1b]52;c;aGk=\x07"
+    ESCAPED = "evil\\x1b]52;c;aGk=\\x07"
+
+    class RecordingUI:
+        def __init__(self):
+            self.messages = []
+
+        def confirm(self, message):
+            self.messages.append(message)
+            return False
+
+        def choose(self, message, options):
+            return 0
+
+    def _home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".claude").mkdir(parents=True)
+        (home / ".claude" / "settings.json").write_text(json.dumps({"statusLine": {"command": self.RAW}}))
+        monkeypatch.setattr(Path, "home", lambda: home)
+
+    def _check(self, text):
+        assert "\x1b" not in text
+        assert "\x07" not in text
+        assert self.ESCAPED in text
+
+    def test_install_message(self, tmp_path, monkeypatch):
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        self._home(tmp_path, monkeypatch)
+        self._check(install_hook(Scope.USER, force=False, ui=None).message)
+
+    def test_install_confirm_prompt(self, tmp_path, monkeypatch):
+        from statuskit.setup.commands import install_hook
+        from statuskit.setup.paths import Scope
+
+        self._home(tmp_path, monkeypatch)
+        ui = self.RecordingUI()
+        install_hook(Scope.USER, force=False, ui=ui)
+        (message,) = ui.messages
+        self._check(message)
+
+    def test_remove_message(self, tmp_path, monkeypatch):
+        from statuskit.setup.commands import remove_hook
+        from statuskit.setup.paths import Scope
+
+        self._home(tmp_path, monkeypatch)
+        self._check(remove_hook(Scope.USER, force=False, ui=None).message)
+
+    def test_remove_confirm_prompt(self, tmp_path, monkeypatch):
+        from statuskit.setup.commands import remove_hook
+        from statuskit.setup.paths import Scope
+
+        self._home(tmp_path, monkeypatch)
+        ui = self.RecordingUI()
+        remove_hook(Scope.USER, force=False, ui=ui)
+        (message,) = ui.messages
+        self._check(message)

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from statuskit.core.config import Config, load_config
+import pytest
+from statuskit.core.config import Config, load_config, split_sections
 
 
 def test_config_colors_default_true():
@@ -102,6 +103,30 @@ def test_load_config_invalid_toml(tmp_path: Path, capsys, monkeypatch):
     # Should print error
     captured = capsys.readouterr()
     assert "[!] Config error" in captured.out
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"a = " + b"1" * 4301 + b"\n",
+        b"a = " + b"[" * 5000 + b"]" * 5000 + b"\n",
+        b'a = "\xff"\n',
+    ],
+    ids=["int-over-digit-limit", "deep-nesting", "not-utf8"],
+)
+def test_load_config_unparsable_falls_back(tmp_path: Path, capsys, monkeypatch, content: bytes):
+    """Parse failures outside TOMLDecodeError still fall back to defaults instead of crashing."""
+    home = tmp_path / "home"
+    (home / ".claude").mkdir(parents=True)
+    (home / ".claude" / "statuskit.toml").write_bytes(content)
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_config()
+
+    assert cfg.debug is False
+    assert "[!] Config error" in capsys.readouterr().out
 
 
 class TestLoadConfigHierarchy:
@@ -254,3 +279,12 @@ def test_load_config_custom_cache_dir_round_trip(tmp_path, monkeypatch):
 
     assert cfg.cache_dir == "~/custom/cache"
     assert cfg.cache_path == home / "custom" / "cache"
+
+
+def test_split_sections_separates_tables_from_scalars():
+    """split_sections returns (scalars, tables), both in input order."""
+    data = {"debug": True, "git": {"show_pr": False}, "modules": ["git"]}
+    non_section, sections = split_sections(data)
+    assert non_section == {"debug": True, "modules": ["git"]}
+    assert sections == {"git": {"show_pr": False}}
+    assert list(non_section) == ["debug", "modules"]

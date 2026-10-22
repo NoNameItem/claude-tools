@@ -7,6 +7,9 @@ from typing import Any, Generic, TypeVar
 import pytest
 from statuskit.core.schema import NoParams, param, schema
 from statuskit.modules.base import BaseModule
+from statuskit.modules.git import GitModule, GitParams
+from statuskit.modules.model import ModelModule, ModelParams
+from statuskit.modules.usage_limits import UsageLimitsModule, UsageLimitsParams
 
 
 @schema
@@ -196,3 +199,10 @@ def test_subclass_of_resolved_module_inherits_params(make_render_context, minima
     mod = SubStub(ctx, {"option": "v"})
     assert SubStub._params_class is StubParams  # resolution inherited from the parent
     assert mod.params.option == "v"
+
+
+def test_params_class_returns_resolved_params_class():
+    """params_class() is the public accessor for the params class resolved from BaseModule[X]."""
+    assert ModelModule.params_class() is ModelParams
+    assert GitModule.params_class() is GitParams
+    assert UsageLimitsModule.params_class() is UsageLimitsParams

@@ -1,12 +1,14 @@
 """Setup command implementations."""
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .config import create_config
 from .gitignore import ensure_local_files_ignored
 from .hooks import create_backup, is_our_hook, read_settings, write_settings
 from .paths import Scope, get_config_path, get_settings_path
+from .ui import printable
 
 
 class UI(Protocol):
@@ -27,7 +29,7 @@ class InstallResult:
 
     success: bool = False
     already_installed: bool = False
-    backup_created: bool = False
+    backup: Path | None = None
     config_created: bool = False
     gitignore_updated: bool = False
     higher_scope_installed: bool = False
@@ -105,21 +107,19 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
         )
 
     # Handle foreign hook
-    backup_created = False
+    backup = None
     if current_hook.get("command"):
+        foreign_cmd = printable(str(current_hook["command"]))
         if force:
-            create_backup(settings_path)
-            backup_created = True
+            backup = create_backup(settings_path)
         elif ui:
-            foreign_cmd = current_hook.get("command", "")
             if not ui.confirm(f"statusLine points to: {foreign_cmd}\nOverwrite? (backup will be created)"):
                 return InstallResult(success=False, message="Cancelled by user")
-            create_backup(settings_path)
-            backup_created = True
+            backup = create_backup(settings_path)
         else:
             return InstallResult(
                 success=False,
-                message=f"Foreign hook exists: {current_hook.get('command')}. Use --force to overwrite.",
+                message=f"Foreign hook exists: {foreign_cmd}. Use --force to overwrite.",
             )
 
     # Install hook
@@ -136,7 +136,7 @@ def install_hook(scope: Scope, force: bool, ui: UI | None) -> InstallResult:
 
     return InstallResult(
         success=True,
-        backup_created=backup_created,
+        backup=backup,
         config_created=config_created,
         gitignore_updated=gitignore_updated,
         message="Installed successfully",
@@ -183,7 +183,7 @@ def remove_hook(scope: Scope, force: bool, ui: UI | None) -> RemoveResult:
 
     # Check if it's our hook
     if not is_our_hook(current_hook):
-        foreign_cmd = current_hook.get("command", "")
+        foreign_cmd = printable(str(current_hook.get("command", "")))
         if force:
             pass  # proceed with removal
         elif ui:

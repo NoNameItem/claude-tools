@@ -80,8 +80,8 @@ def _handle_install(scope, force: bool, ui) -> None:
             print("\u2713 Created config file.")
     elif result.success:
         print(f"\u2713 Added statusline hook to {scope.value} scope.")
-        if result.backup_created:
-            print("\u2713 Created backup of previous settings.")
+        if result.backup:
+            print(f"\u2713 Created backup of previous settings: {result.backup}")
         if result.config_created:
             print("\u2713 Created config file.")
         if result.gitignore_updated:
@@ -90,6 +90,67 @@ def _handle_install(scope, force: bool, ui) -> None:
     else:
         print(f"Error: {result.message}")
         sys.exit(1)
+
+
+def _handle_config(args: Namespace) -> None:
+    """Handle config init / config sync commands."""
+    from .setup.paths import Scope, get_config_path
+
+    path = get_config_path(Scope(args.scope))
+    if args.config_command == "init":
+        _config_init(path, force=args.force)
+    else:
+        _config_sync(path, dry_run=args.dry_run)
+
+
+def _config_init(path, *, force: bool) -> None:
+    """Run config init and print the outcome."""
+    from .setup.config import InitStatus, init_config
+
+    init = init_config(path, force=force)
+    if init.status == InitStatus.CREATED:
+        print(f"\u2713 Created {path}")
+    elif init.status == InitStatus.RESET:
+        print(f"\u2713 Reset {path} to defaults (backup: {init.backup})")
+    elif init.status == InitStatus.EXISTS:
+        print(
+            f"{path} already exists. Run 'statuskit config sync' to update it, "
+            "or 'statuskit config init --force' to reset it to defaults."
+        )
+        sys.exit(1)
+    else:
+        print(init.error)
+        sys.exit(1)
+
+
+def _config_sync(path, *, dry_run: bool) -> None:
+    """Run config sync and print the outcome."""
+    from .setup.config import SyncStatus, sync_config
+    from .setup.ui import printable
+
+    sync = sync_config(path, dry_run=dry_run)
+    if sync.status == SyncStatus.ERROR:
+        print(sync.error)
+        sys.exit(1)
+    print(_sync_headline(path, sync, dry_run=dry_run))
+    # Only an update can carry removals: a created file has nothing to drop.
+    if sync.removals:
+        print("Would remove:" if dry_run else "Removed:")
+        for removal in sync.removals:
+            print(f"  {printable(removal.location)} \u2014 {printable(removal.reason)}")
+        if dry_run:
+            sys.exit(1)
+
+
+def _sync_headline(path, sync, *, dry_run: bool) -> str:
+    """Return the first line of the config sync report."""
+    from .setup.config import SyncStatus
+
+    if sync.status == SyncStatus.UNCHANGED:
+        return f"{path} is up to date."
+    if sync.status == SyncStatus.CREATED:
+        return f"{path} does not exist; sync would create it." if dry_run else f"\u2713 Created {path}"
+    return f"Would update {path}" if dry_run else f"\u2713 Updated {path} (backup: {sync.backup})"
 
 
 def _render_statusline() -> None:
@@ -128,6 +189,10 @@ def main() -> None:
 
     if args.command == "setup":
         _handle_setup(args)
+        return
+
+    if args.command == "config":
+        _handle_config(args)
         return
 
     if sys.stdin.isatty():

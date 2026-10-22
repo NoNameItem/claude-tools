@@ -42,8 +42,14 @@ def test_param_none_without_type_raises():
 
 
 def test_param_none_with_type_allowed():
-    fld = param(None, "ok", type_=str)
+    @schema
+    class P:
+        x: str | None = param(None, "ok", type_=str)
+
+    (fld,) = fields(P)
+    assert fld.default is None
     assert fld.metadata["type"] is str
+    assert P().x is None
 
 
 def test_param_stores_tuple_choices_verbatim():
