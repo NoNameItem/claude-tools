@@ -1,7 +1,7 @@
 ---
 name: continue
 description: Fast return to an active in_progress beads task — find it, resolve its saved branch or worktree, and show the task card. Use when resuming work after /clear or a new session. To pick a new task instead, use flow:start.
-allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TaskCreate TaskUpdate TodoWrite
+allowed-tools: Bash(bd:*) Bash(git:*) Bash(flow-actor) Bash(flow-branch-for:*) Bash(flow-find-leaf) Bash(flow-find-leaf:*) Bash(flow-in-worktree) Bash(flow-require-bd) Bash(flow-sync:*) Bash(flow-task-card) Bash(flow-task-card:*) Bash(flow-worktree-dir:*) Bash(cat:*) Bash(grep:*) Bash(head:*) Bash(tail:*) Bash(cut:*) Bash(tr:*) Bash(wc:*) Bash(echo:*) Bash(test:*) Bash(ls:*) Bash(cd:*) Bash(jq:*) Skill TaskCreate TaskUpdate TodoWrite
 ---
 
 # Flow: Continue
@@ -308,16 +308,35 @@ git checkout -b <branch-name> origin/<branch-name>
 Skip to Step 9.
 
 **Option 2 (worktree):**
-```bash
-WORKTREE_DIR=$(flow-worktree-dir "<branch-name>")
-git worktree add "$WORKTREE_DIR" <branch-name>
-cd "$WORKTREE_DIR"
-```
 
-For remote branch that doesn't exist locally:
+**Worktree directory** (every worktree snippet below):
+
+1. **Name.** `WORKTREE_DIR=$(flow-worktree-dir <task-id>)` names the directory from the task. If the branch being opened differs from the name `flow-branch-for <task-id>` computes, it was named by hand. Before asking, run `flow-worktree-dir <task-id>` and put its output, exactly as printed, in place of `<task-based dir>` — it already starts with `.worktrees/`, so add no prefix (the helper-failure rule below applies to this run too). Ask in plain text and wait:
+
+   ```
+   Ветка `<branch>` названа не по задаче. Как назвать папку worktree?
+
+   1. `<task-based dir>` — по задаче
+   2. Своё имя — напишите его
+
+   Выберите вариант (номер) или напишите имя.
+   ```
+
+   If the user already named the directory in their answer, use it without asking. A typed name — from that answer or from this question — goes under `.worktrees/`: drop a leading `.worktrees/` from the answer, then replace every run of characters outside `[A-Za-z0-9._-]` (spaces, `/`, shell metacharacters) with `-`; the first snippet line is then `WORKTREE_DIR=".worktrees/<name>" &&`. A name left with no letter or digit (empty, `.`, `..`, only `-` and `.`) would put the worktree at `.worktrees` itself or above it: refuse it, say why, and ask the question above — also when the name came from an earlier answer. Never run git with such a name.
+2. **Retry.** If `git worktree add` fails with `fatal: '<path>' already exists` or `... is a missing but already registered worktree ...`, the path is taken: re-run only `git worktree add ... && cd ...` with `<dir>-2`, then `-3`, and so on until it succeeds, and report the directory used. The branch already exists by then — never recreate it. Any other failure (e.g. `'<branch>' is already used by worktree at '...'`) means show git's error and stop. A failing `git branch` is not a path refusal either: show git's error and stop. If the skill stops after `git branch` succeeded, tell the user the branch now exists and the next `/flow:start` will offer it.
+3. **Helper failure.** If the name helper fails, show its stderr and stop; the `&&` chain creates nothing.
+
 ```bash
-git worktree add "$WORKTREE_DIR" -b <branch-name> origin/<branch-name>
-cd "$WORKTREE_DIR"
+# local branch
+WORKTREE_DIR=$(flow-worktree-dir <task-id>) &&
+  git worktree add "$WORKTREE_DIR" <branch-name> &&
+  cd "$WORKTREE_DIR"
+
+# remote branch that doesn't exist locally
+WORKTREE_DIR=$(flow-worktree-dir <task-id>) &&
+  git branch <branch-name> origin/<branch-name> &&
+  git worktree add "$WORKTREE_DIR" <branch-name> &&
+  cd "$WORKTREE_DIR"
 ```
 
 Proceed to Step 8 (init new worktree).
@@ -387,10 +406,10 @@ User: да
 
 Agent: [runs bd show → assignee == artem.vasin → no assignee action]
        [reads Git: from description → feature/claude-tools-elf.3-task-selection-optimization]
-       [finds worktree at .worktrees/feature-claude-tools-elf.3-...]
+       [finds worktree at .worktrees/elf.3-...]
        [cd to worktree]
 
-       Перешёл в worktree `.worktrees/feature-claude-tools-elf.3-task-selection-optimization`.
+       Перешёл в worktree `.worktrees/elf.3-task-selection-optimization`.
 
        [runs bd show claude-tools-elf.3 --json | flow-task-card]
 

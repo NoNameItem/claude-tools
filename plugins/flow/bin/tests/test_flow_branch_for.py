@@ -1,6 +1,6 @@
 """Tests for flow-branch-for."""
 
-# ruff: noqa: INP001  # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import json
 
@@ -45,3 +45,45 @@ def test_empty_title_falls_back_to_task_id(fake_bd):
     r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
     assert r.returncode == 0
     assert r.stdout.strip() == "feature/claude-tools-uaj"
+
+
+def test_task_not_found_exits_1(fake_bd):
+    fake_bd.set_show("[]")
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 1
+    assert "task not found: claude-tools-uaj" in r.stderr
+
+
+def test_bd_not_found_failure_exits_1(fake_bd):
+    fake_bd.set_show_not_found("claude-tools-uaj")
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 1
+    assert "task not found: claude-tools-uaj" in r.stderr
+    assert r.stdout == ""
+
+
+def test_bd_not_found_on_stderr_alone_exits_1(fake_bd):
+    fake_bd.set_show(
+        "", exit_code=1, stderr='Error fetching claude-tools-uaj: no issue found matching "claude-tools-uaj"\n'
+    )
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 1
+    assert "task not found: claude-tools-uaj" in r.stderr
+
+
+def test_other_bd_json_error_exits_2(fake_bd):
+    fake_bd.set_show(
+        json.dumps({"error": "database is locked", "schema_version": 1}),
+        exit_code=1,
+        stderr="Error: database is locked\n",
+    )
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env=fake_bd.env)
+    assert r.returncode == 2
+    assert "database is locked" in r.stderr
+    assert r.stdout == ""
+
+
+def test_bd_error_exits_2():
+    r = run_helper("flow-branch-for", "claude-tools-uaj", env={"BD_BIN": "/usr/bin/false", "PATH": "/usr/bin:/bin"})
+    assert r.returncode == 2
+    assert r.stdout == ""

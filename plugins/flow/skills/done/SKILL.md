@@ -557,7 +557,7 @@ question. Numbering is continuous across both lists so a correction can be short
 Сделаю:
   1. закрою задачу claude-tools-elf.59
   2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
-  3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
+  3. удалю worktree .worktrees/elf.59-flow-done
   4. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
   5. удалю ветку на origin
   6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
@@ -909,8 +909,8 @@ List the scenario items with their actual outcome, and name every divergence exp
   6. ✓ ledger PR #138 удалён
   7. ✓ beads синхронизированы
 
-Осталось вручную: посмотрите git status в .worktrees/feature-claude-tools-elf.59-flow-done,
-закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/feature-claude-tools-elf.59-flow-done
+Осталось вручную: посмотрите git status в .worktrees/elf.59-flow-done,
+закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/elf.59-flow-done
 ```
 
 The approval was given once and in advance — to a list, not to each action as it happened — so the
@@ -1077,7 +1077,7 @@ Agent: [Step 0: bd version guard passed]
        Сделаю:
          1. закрою задачу claude-tools-elf.59
          2. удалю план docs/superpowers/plans/2026-09-01-flow-done-consolidation.md
-         3. удалю worktree .worktrees/feature-claude-tools-elf.59-flow-done
+         3. удалю worktree .worktrees/elf.59-flow-done
          4. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
          5. удалю ветку на origin
          6. удалю review ledger PR #138 (PR смержен, ревью закрыто)
@@ -1121,7 +1121,7 @@ Agent: [collects state, safety check passes]
 
        Сделаю:
          1. закрою задачу claude-tools-elf.6
-         2. удалю worktree .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
+         2. удалю worktree .worktrees/elf.6-delete-branches-worktrees
          3. удалю локальную ветку
          4. удалю ветку на origin
          5. удалю review ledger PR #123 (PR смержен, ревью закрыто)
@@ -1138,7 +1138,7 @@ Agent: [applies the correction, reprints the whole scenario with continuous numb
 
        Сделаю:
          1. закрою задачу claude-tools-elf.6
-         2. удалю worktree .worktrees/feature-claude-tools-elf.6-delete-branches-worktrees
+         2. удалю worktree .worktrees/elf.6-delete-branches-worktrees
          3. удалю ветку на origin
          4. синхронизирую beads (flow-sync push)
 
@@ -1215,7 +1215,7 @@ Agent: [Step 1: gh pr view returns state MERGED and baseRefName feature/claude-t
 
        Сделаю:
          1. закрою задачу claude-tools-elf.59.4
-         2. удалю worktree .worktrees/feature-claude-tools-elf.59.4-base
+         2. удалю worktree .worktrees/elf.59.4-base
          3. удалю локальную ветку (через -D — форму мерджа мы не определяем, -d может отказать)
          4. удалю ветку на origin
          5. удалю review ledger PR #142 (PR смержен, ревью закрыто)
@@ -1263,8 +1263,8 @@ Agent: [Step 1: collects state; mergedness check finds the branch's tree differs
 ### Worktree Remove Fails
 
 ```
-git worktree remove .worktrees/feature-claude-tools-abc-login
-Error: '.worktrees/feature-claude-tools-abc-login' contains modified or
+git worktree remove .worktrees/abc-login
+Error: '.worktrees/abc-login' contains modified or
 untracked files, use --force to delete.
 ```
 
@@ -1278,8 +1278,8 @@ out there, the local branch delete is skipped too. Both show up as summary lines
   3. ✗ worktree не удалён: содержит незакоммиченные изменения
   4. — локальная ветка не удалена (worktree занят)
 
-Осталось вручную: посмотрите git status в .worktrees/feature-claude-tools-abc-login,
-закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/feature-claude-tools-abc-login
+Осталось вручную: посмотрите git status в .worktrees/abc-login,
+закоммитьте или застэшьте нужное; если содержимое точно не нужно — git worktree remove --force .worktrees/abc-login
 ```
 
 ### Remote Branch Already Deleted
