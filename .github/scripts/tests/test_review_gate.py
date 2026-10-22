@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import pytest
 
-from ..review_gate import CODEX_BOT, decide, format_nudge_marker, parse_nudge_marker, receipt_sha
+from ..review_gate import (
+    CODEX_BOT,
+    codex_activity,
+    decide,
+    format_breakdown,
+    format_nudge_marker,
+    parse_nudge_marker,
+    receipt_sha,
+    timeout_report,
+)
 
 HEAD = "head1234"
 CUTOFF = "2026-07-01T10:00:00Z"  # push / base-change time, or head committer date
@@ -50,6 +59,39 @@ def _comment(body, created_at, updated_at=None, login=CODEX_BOT, comment_id=6328
 
 def _receipt(sha, created_at=RECEIPT_AT, marker="codex-review-receipt:v1"):
     return _comment(f"<!-- {marker} -->\n\n**Reviewed commit:** `{sha}`\n", created_at)
+
+
+# The summary comment as #151's poll saw it: created long before the nudge, edited right after it.
+STALE_SUMMARY = _comment(SUMMARY_BODY, "2026-10-20T14:07:41Z", "2026-10-21T22:32:35Z", comment_id=6292793328)
+ACTIVITY_151 = [_comment(RECEIPT_BODY, RECEIPT_AT), STALE_SUMMARY]
+
+# (cutoff, head, reviews, reactions, comments) — the inputs of the TestDecide / TestReceipt cases, so
+# the breakdown's "accepted" can be checked against decide() over every one of them.
+DECIDE_CASES = [
+    (CUTOFF, HEAD, [], [_thumb(AFTER)], []),
+    (CUTOFF, HEAD, [_review(HEAD, AFTER)], [], []),
+    (CUTOFF, HEAD, [], [_thumb(BEFORE)], []),
+    (CUTOFF, HEAD, [_review(HEAD, BEFORE)], [], []),
+    (CUTOFF, HEAD, [], [], []),
+    (CUTOFF, HEAD, [_review("other", AFTER)], [], []),
+    (CUTOFF, HEAD, [], [_thumb(AFTER, login="nope")], []),
+    (CUTOFF, HEAD, [_review(HEAD, AFTER, login="nope")], [], []),
+    (CUTOFF, HEAD, [_review(HEAD, None)], [], []),
+    (CUTOFF, HEAD, [], [_thumb(None)], []),
+    (CUTOFF, HEAD, [_review(HEAD, AFTER)], [_thumb(BEFORE)], []),
+    (CUTOFF151, HEAD151, [], [], ACTIVITY_151),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("3975fc8c78")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", "2026-10-21T22:00:00Z")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", CUTOFF151)]),
+    (CUTOFF151, HEAD151, [], [], [_comment(RECEIPT_BODY, RECEIPT_AT, login="NoNameItem")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", marker="codex-review-receipt:v2")]),
+    (CUTOFF151, HEAD151, [], [], [STALE_SUMMARY]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", None)]),
+    (CUTOFF151, HEAD151, [], [], [_comment(None, RECEIPT_AT)]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("3975fc8c78"), _receipt("a84dae4d57")]),
+]
 
 
 class TestDecide:
@@ -180,10 +222,108 @@ class TestReceiptSha:
         assert receipt_sha(_receipt("a84dae4d57", marker="codex-review-receipt:v2")["body"]) is None
 
 
-class TestCli:
-    """main(): reads reviews/reactions JSON on stdin, prints pass/wait."""
+class TestActivity:
+    """codex_activity(): what Codex did after the cutoff, and whether each item counts."""
 
-    def _run(self, payload, *args):
+    def _activity(self, reviews=(), reactions=(), comments=()):
+        return codex_activity(CUTOFF151, HEAD151, list(reviews), list(reactions), list(comments))
+
+    def test_nothing_after_cutoff_is_empty(self):
+        summary = _comment(SUMMARY_BODY, "2026-10-20T14:07:41Z", comment_id=6292793328)
+        assert self._activity(reactions=[_thumb("2026-10-21T01:00:00Z")], comments=[summary]) == []
+
+    def test_151_lists_receipt_accepted_and_summary_seen(self):
+        receipt, summary = self._activity(comments=ACTIVITY_151)
+        assert receipt.channel == summary.channel == "comment"
+        assert receipt.accepted is True
+        for fragment in ("6328012482", "codex-review-receipt:v1", "a84dae4d57"):
+            assert fragment in receipt.detail
+        assert summary.accepted is False
+        assert summary.at == "2026-10-21T22:32:35Z"
+        for fragment in ("6292793328", "codex-review-state:v1", "a84dae4d57", "completed", "edited"):
+            assert fragment in summary.detail
+
+    def test_v2_receipt_listed_not_accepted(self):
+        (item,) = self._activity(comments=[_receipt("a84dae4d57", marker="codex-review-receipt:v2")])
+        assert item.accepted is False
+        assert "codex-review-receipt:v2" in item.detail
+
+    @pytest.mark.parametrize(
+        "body",
+        # The second one mimics the workflow's 2000-char slice cutting the JSON and the `-->`.
+        ['<!-- codex-review-state:v1 {"code_review": -->', SUMMARY_BODY[:120]],
+    )
+    def test_malformed_state_listed_by_markers(self, body):
+        (item,) = self._activity(comments=[_comment(body, RECEIPT_AT)])
+        assert "codex-review-state:v1" in item.detail
+
+    def test_null_body_comment_listed(self):
+        (item,) = self._activity(comments=[_comment(None, RECEIPT_AT)])
+        assert item.accepted is False
+
+    def test_review_and_reaction_listed(self):
+        review, reaction = self._activity(
+            reviews=[_review("3975fc8c78" + "0" * 30, RECEIPT_AT)],
+            reactions=[_thumb(RECEIPT_AT, content="eyes")],
+        )
+        assert (review.channel, review.accepted) == ("review", False)
+        assert "3975fc8c78" in review.detail
+        assert (reaction.channel, reaction.accepted) == ("reaction", False)
+        assert "eyes" in reaction.detail
+
+    def test_non_codex_items_excluded(self):
+        assert (
+            self._activity(
+                reviews=[_review("3975fc8c78" + "0" * 30, RECEIPT_AT, login="NoNameItem")],
+                reactions=[_thumb(RECEIPT_AT, content="eyes", login="NoNameItem")],
+                comments=[_comment(RECEIPT_BODY, RECEIPT_AT, login="NoNameItem")],
+            )
+            == []
+        )
+
+    @pytest.mark.parametrize("case", DECIDE_CASES)
+    def test_activity_agrees_with_decide(self, case):
+        # One rule, two readers: the breakdown must never say "accepted" while decide() waits.
+        expected = "pass" if any(a.accepted for a in codex_activity(*case)) else "wait"
+        assert decide(*case) == expected
+
+
+class TestBreakdown:
+    def test_empty_breakdown(self):
+        line = format_breakdown(CUTOFF151, [])
+        assert line.startswith(f"Codex since {CUTOFF151}:")
+        for channel in ("reviews: none", "reactions: none", "comments: none"):
+            assert channel in line
+
+    def test_breakdown_is_one_line_with_ids(self):
+        line = format_breakdown(CUTOFF151, codex_activity(CUTOFF151, HEAD151, [], [], ACTIVITY_151))
+        assert "\n" not in line
+        assert "6328012482" in line
+        assert "6292793328" in line
+        assert "reviews: none" in line
+
+
+class TestTimeoutReport:
+    def test_silent(self):
+        assert timeout_report(CUTOFF151, HEAD151, 25, []) == [
+            f"::error::Codex has not reviewed {HEAD151} within 25 min. Re-run this job once Codex finishes"
+            " — the codex-nudge marker means it will not be asked twice."
+        ]
+
+    def test_active_but_not_accepted(self):
+        lines = timeout_report(CUTOFF151, HEAD151, 25, codex_activity(CUTOFF151, HEAD151, [], [], [STALE_SUMMARY]))
+        assert lines[0].startswith("Codex was active on this PR after the nudge")
+        assert any("6292793328" in line for line in lines)
+        assert lines[-1].startswith("::error::")
+        assert HEAD151 in lines[-1]
+        assert "25 min" in lines[-1]
+        assert all("\n" not in line for line in lines)
+
+
+class TestCli:
+    """main(): reads reviews/reactions/comments JSON on stdin, prints pass/wait (breakdown on stderr)."""
+
+    def _run_full(self, payload, *args):
         import json
         import subprocess
         import sys
@@ -196,7 +336,10 @@ class TestCli:
             capture_output=True,
             text=True,
             check=True,
-        ).stdout.strip()
+        )
+
+    def _run(self, payload, *args):
+        return self._run_full(payload, *args).stdout.strip()
 
     def test_cli_pass(self):
         payload = {"reviews": [], "reactions": [_thumb(AFTER)]}
@@ -212,6 +355,20 @@ class TestCli:
         payload = {"reviews": [], "reactions": [], "comments": [_comment(RECEIPT_BODY, RECEIPT_AT)]}
         out = self._run(payload, "decide", "--cutoff", CUTOFF151, "--head-sha", HEAD151)
         assert out == "pass"
+
+    def test_cli_breakdown_on_stderr(self):
+        # The workflow compares stdout to the exact string "pass" — the breakdown must not leak in.
+        payload = {"reviews": [], "reactions": [], "comments": ACTIVITY_151}
+        result = self._run_full(payload, "decide", "--cutoff", CUTOFF151, "--head-sha", HEAD151)
+        assert result.stdout.strip() == "pass"
+        assert "6328012482" in result.stderr
+
+    def test_cli_timeout_report(self):
+        payload = {"comments": [STALE_SUMMARY]}
+        args = ("timeout-report", "--cutoff", CUTOFF151, "--head-sha", HEAD151, "--minutes", "25")
+        out = self._run(payload, *args)
+        assert out.splitlines()[-1].startswith("::error::")
+        assert "6292793328" in out
 
 
 class TestNudgeMarker:
