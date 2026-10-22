@@ -2,8 +2,10 @@
 """Decide whether Codex has freshly reviewed the current head of a PR (review-gate logic).
 
 Pure decision function extracted from the gate workflow so the freshness rule is unit-testable.
-The workflow fetches Codex's reviews and reactions via `gh api`, pipes them in as JSON on stdin,
-and passes the head SHA plus a freshness cutoff as CLI args; this script prints `pass` or `wait`.
+The workflow fetches Codex's reviews, reactions and issue comments via `gh api`, pipes them in as
+JSON on stdin, and passes the head SHA plus a freshness cutoff as CLI args; this script prints
+`pass` or `wait` (with a breakdown of Codex activity on stderr), or, at the deadline, the timeout
+report.
 
 The cutoff no longer comes from the event. `_reusable-review-gate.yml` runs on `pull_request`, so
 `edited`, `reopened` and a manual re-run all re-execute it for a head SHA that has not changed —
@@ -111,11 +113,12 @@ def decide(
     """Return "pass" if Codex reviewed head_sha with evidence newer than cutoff, else "wait".
 
     Args:
-        cutoff: ISO-8601 UTC "Z" timestamp (the head's push time); evidence must be strictly
-            newer. Timestamps are compared as strings — GitHub emits fixed-format UTC "Z"
-            timestamps that order lexicographically. A missing/`null` timestamp is coerced to
-            "" (sorts before any real timestamp) so a pending review can't raise a TypeError.
-        head_sha: The PR head commit SHA (the findings path is pinned to it).
+        cutoff: ISO-8601 UTC "Z" timestamp (when the gate asked Codex for this head — the
+            `codex-nudge` marker); evidence must be strictly newer. Timestamps are compared as
+            strings — GitHub emits fixed-format UTC "Z" timestamps that order lexicographically.
+            A missing/`null` timestamp is coerced to "" (sorts before any real timestamp) so a
+            pending review can't raise a TypeError.
+        head_sha: The PR head commit SHA (a review is pinned to it, a receipt by prefix).
         reviews: Codex PR reviews: {"user": {"login": ...}, "commit_id": ..., "submitted_at": ...}.
         reactions: PR reactions: {"user": {"login": ...}, "content": ..., "created_at": ...}.
         comments: PR issue comments: {"id": ..., "user": {"login": ...}, "created_at": ...,
@@ -137,8 +140,11 @@ class Activity:
     accepted: bool  # the item's own `_counts_*` verdict — never a second copy of the rule
 
 
-# Every `<!-- codex-… -->` marker, known or not: an unknown one is exactly what the breakdown is for.
-_ANY_MARKER = re.compile(r"<!--\s*(codex-[a-z0-9-]+(?::v\d+)?)")
+# Every `<!-- codex-… -->` marker, known or not, named in full up to the next space or `-->`: an
+# unknown one is exactly what the breakdown is for, so `…:v1-beta` must not read as `…:v1`.
+_ANY_MARKER = re.compile(r"<!--\s*(codex-[^\s>]+?)(?=\s|-->)")
+# Diagnostics only: the `Reviewed commit` value whatever its shape, to say it is unreadable.
+_ANY_REVIEWED_COMMIT = re.compile(r"\*\*Reviewed commit:\*\*\s*`(?P<value>[^`\n]*)`")
 _REVIEW_STATE = re.compile(r"<!--\s*codex-review-state:v1\s*(?P<json>\{.*?\})\s*-->", re.DOTALL)
 _SHORT_SHA = 10
 
@@ -171,14 +177,25 @@ def _receipt_note(sha: str, head_sha: str, accepted: bool) -> str:
     return "too old"
 
 
+def _unread_receipt_note(body: str, markers: list[str]) -> str | None:
+    """Why a receipt-looking comment yielded no reviewed commit, or None if it is not one."""
+    if _RECEIPT_MARKER.search(body):
+        line = _ANY_REVIEWED_COMMIT.search(body)
+        return f"unrecognised Reviewed commit `{line.group('value')}`" if line else "no Reviewed commit line"
+    if any(marker.startswith("codex-review-receipt") for marker in markers):
+        return "not a v1 receipt"
+    return None
+
+
 def _comment_detail(comment: dict, cutoff: str, head_sha: str, accepted: bool) -> str:
     body = comment.get("body") or ""
-    parts = [f"{comment.get('id')}", ", ".join(_ANY_MARKER.findall(body)) or "no codex marker"]
+    markers = _ANY_MARKER.findall(body)
+    parts = [f"{comment.get('id')}", ", ".join(markers) or "no codex marker"]
     sha = receipt_sha(body)
     if sha is not None:
         parts.append(f"reviewed {sha} ({_receipt_note(sha, head_sha, accepted)})")
-    elif _RECEIPT_MARKER.search(body):
-        parts.append("no Reviewed commit line")
+    elif (note := _unread_receipt_note(body, markers)) is not None:
+        parts.append(note)
     state = _review_state(body)
     if state is not None:
         parts.append(f"state {state}")

@@ -91,6 +91,32 @@ DECIDE_CASES = [
     (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", None)]),
     (CUTOFF151, HEAD151, [], [], [_comment(None, RECEIPT_AT)]),
     (CUTOFF151, HEAD151, [], [], [_receipt("3975fc8c78"), _receipt("a84dae4d57")]),
+    (CUTOFF151, HEAD151, [], [], [_comment("<!-- codex-review-receipt:v1 -->\n\nCodex Review: ok\n", RECEIPT_AT)]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", marker="codex-review-receipt:v10")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("a84dae4d57", marker="codex-review-receipt:v1-beta")]),
+    (CUTOFF151, HEAD151, [], [], [_receipt("A84DAE4D57")]),
+    (CUTOFF151, HEAD151, [], [], [_comment(SUMMARY_BODY, RECEIPT_AT, comment_id=6292793328)]),
+    (
+        CUTOFF151,
+        HEAD151,
+        [{"user": None, "commit_id": HEAD151, "submitted_at": RECEIPT_AT}],
+        [{"user": None, "content": "+1", "created_at": RECEIPT_AT}],
+        [{**_receipt("a84dae4d57"), "user": None}],
+    ),
+    (
+        CUTOFF151,
+        HEAD151,
+        [],
+        [],
+        [_receipt("a84dae4d57", "2026-10-21T01:00:00Z"), _receipt("3975fc8c78"), _receipt("a84dae4d57")],
+    ),
+    (
+        CUTOFF151,
+        HEAD151,
+        [],
+        [],
+        [_receipt("a84dae4d57"), _receipt("3975fc8c78"), _receipt("a84dae4d57", "2026-10-21T01:00:00Z")],
+    ),
 ]
 
 
@@ -243,10 +269,33 @@ class TestActivity:
         for fragment in ("6292793328", "codex-review-state:v1", "a84dae4d57", "completed", "edited"):
             assert fragment in summary.detail
 
-    def test_v2_receipt_listed_not_accepted(self):
-        (item,) = self._activity(comments=[_receipt("a84dae4d57", marker="codex-review-receipt:v2")])
+    @pytest.mark.parametrize("version", ["v2", "v1-beta", "v1.1"])
+    def test_other_receipt_version_named_in_full(self, version):
+        # The case the breakdown exists for: a new receipt format must read as "not v1", under its
+        # own full name — not truncated to `…:v1`, which would make the gate look broken.
+        (item,) = self._activity(comments=[_receipt("a84dae4d57", marker=f"codex-review-receipt:{version}")])
         assert item.accepted is False
-        assert "codex-review-receipt:v2" in item.detail
+        assert f"codex-review-receipt:{version} " in f"{item.detail} "
+        assert "not a v1 receipt" in item.detail
+
+    def test_unrecognised_reviewed_commit_shown(self):
+        # Spec: lowercase hex only — but the breakdown must say the line is there and unreadable,
+        # not that it is missing.
+        (item,) = self._activity(comments=[_receipt("A84DAE4D57")])
+        assert item.accepted is False
+        assert "unrecognised Reviewed commit" in item.detail
+        assert "A84DAE4D57" in item.detail
+
+    def test_null_user_items_not_listed(self):
+        # A deleted ("ghost") account: never Codex, and never a crash — the CLI runs this before decide().
+        assert (
+            self._activity(
+                reviews=[{"user": None, "commit_id": HEAD151, "submitted_at": RECEIPT_AT}],
+                reactions=[{"user": None, "content": "+1", "created_at": RECEIPT_AT}],
+                comments=[{**_receipt("a84dae4d57"), "user": None}],
+            )
+            == []
+        )
 
     @pytest.mark.parametrize(
         "body",
