@@ -383,7 +383,8 @@ jobs:
     # Must mirror _reusable-review-gate.yml's own `permissions:` block: a called workflow's
     # effective permissions are the INTERSECTION of what it declares and what the caller job
     # holds, so anything missing here is silently withheld from it — and the gate needs
-    # `statuses: write` for the codex-nudge marker and `issues: read` for reactions on the PR.
+    # `statuses: write` for the codex-nudge marker and `issues: read` for reactions and Codex's
+    # receipt comments on the PR.
     permissions:
       contents: read
       pull-requests: read
