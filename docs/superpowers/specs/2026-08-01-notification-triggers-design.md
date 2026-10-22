@@ -278,6 +278,9 @@ Order inside the gate job:
    cutoff.
 3. **Wait** — the existing loop: `review_gate.py`, the cutoff from the marker, 30 s interval, 25 min
    cap, plus the in-loop `current_head` check described in Part 1.
+   *Amended 2026-10-22:* the loop also reads Codex's `codex-review-receipt:v1` issue comments, a
+   third kind of evidence, logs a breakdown of Codex activity on every poll, and ends a timeout
+   with one of two messages — see `2026-10-22-review-gate-codex-receipt-design.md`.
 4. **Success** → delete our own nudge by `comment:<id>`, leaving the thread clean. **Timeout** →
    keep it deliberately: it distinguishes "we never asked" from "we asked and Codex did not answer".
 
@@ -538,7 +541,7 @@ jobs.
 | `.github/workflows/push.yml` | release-merge detection over `github.event.commits[].modified`; start suppressed, finish only on failure |
 | `.github/scripts/pr_start.py` | new — start-message spec: verdict line + commits block |
 | `.github/scripts/pr_summary.py` | writes `replied` into the marker after sending; crossing mode for re-notification; `stale-head` kept and its purpose documented |
-| `.github/scripts/review_gate.py` | unchanged decision logic; the cutoff it receives now comes from the marker, not from the event |
+| `.github/scripts/review_gate.py` | unchanged decision logic; the cutoff it receives now comes from the marker, not from the event (amended 2026-10-22: the receipt evidence, the breakdown and the timeout report — `2026-10-22-review-gate-codex-receipt-design.md`) |
 | `.github/scripts/tests/` | coverage for the above |
 | `AGENTS.md` | the review-gate security note is rewritten to describe the new model |
 | `docs/merge-gate-rollout.md` | Steps 2, 6 and 7 and the ruleset step updated (see below) |

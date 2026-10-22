@@ -36,7 +36,7 @@ on:
 permissions:
   contents: read
   pull-requests: read # reviews are read via the Pulls API
-  issues: read # reactions on a PR are read via the Issues API endpoint
+  issues: read # reactions and Codex's receipt comments on a PR are read via the Issues API endpoint
   statuses: write # the `codex-nudge` marker on the head SHA
 
 # No `concurrency` here. The caller's group already covers this run, and a group of our own would
@@ -120,8 +120,11 @@ jobs:
             echo "Asked Codex to review $HEAD_SHA (comment=$comment_id cutoff=$cutoff)."
           fi
 
-          # 4. Wait. Codex signals via reactions/reviews and a 👍 fires no workflow event, so the
-          #    only way to observe it is to poll.
+          # 4. Wait. Codex signals via a review (findings), a 👍, or a `codex-review-receipt:v1`
+          #    issue comment (a clean round), and none of them fires a workflow event this job
+          #    listens to, so the only way to observe it is to poll. Each poll logs what Codex did
+          #    since the cutoff (review_gate.py's stderr), so a timeout shows whether Codex was
+          #    silent or answered in a form the gate does not recognise.
           deadline=$(( $(date +%s) + TIMEOUT ))
           while :; do
             # The head check lives INSIDE the loop: two polls can be alive at once (the caller's
@@ -150,9 +153,19 @@ jobs:
               --jq '[.[] | {user: {login: .user.login}, commit_id, submitted_at}]' | jq -s 'add // []')
             reactions=$(gh api --paginate "repos/$REPO/issues/$PR/reactions" \
               --jq '[.[] | {user: {login: .user.login}, content, created_at}]' | jq -s 'add // []')
+            # Codex's per-round receipt (and, for the breakdown, any Codex comment edited since the
+            # cutoff). `since` filters on updated_at, inclusively — review_gate.py enforces the
+            # strict created_at rule. Codex-authored only, body sliced: the markers and the
+            # `Reviewed commit` line sit at the top, and whole bodies of a long PR would overflow
+            # the --argjson argument below.
+            comments=$(gh api --paginate "repos/$REPO/issues/$PR/comments?since=$cutoff" \
+              --jq '[.[] | select(.user.login == "chatgpt-codex-connector[bot]")
+                     | {id, user: {login: .user.login}, created_at, updated_at, body: ((.body // "")[:2000])}]' \
+              | jq -s 'add // []')
             payload=$(jq -n --argjson reviews "$reviews" --argjson reactions "$reactions" \
-              '{reviews: $reviews, reactions: $reactions}')
+              --argjson comments "$comments" '{reviews: $reviews, reactions: $reactions, comments: $comments}')
 
+            # stdout is the verdict alone; the breakdown on stderr goes straight to the log.
             decision=$(printf '%s' "$payload" | python3 .github/scripts/review_gate.py decide \
               --cutoff "$cutoff" --head-sha "$HEAD_SHA")
 
@@ -169,10 +182,12 @@ jobs:
 
             if [ "$(date +%s)" -ge "$deadline" ]; then
               # The nudge comment is deliberately KEPT on a timeout: it distinguishes "we never
-              # asked" from "we asked and Codex did not answer".
-              echo "::error::Codex has not reviewed $HEAD_SHA within $((TIMEOUT / 60)) min. Re-run this job once Codex finishes — the codex-nudge marker means it will not be asked twice."
+              # asked" from "we asked and Codex did not answer". The report itself tells "Codex
+              # was silent" from "Codex was active but left nothing the gate accepts".
+              printf '%s' "$payload" | python3 .github/scripts/review_gate.py timeout-report \
+                --cutoff "$cutoff" --head-sha "$HEAD_SHA" --minutes "$((TIMEOUT / 60))"
               exit 1
             fi
-            echo "Not yet (decision=$decision). Sleeping ${INTERVAL}s…"
+            echo "Not yet — sleeping ${INTERVAL}s…"
             sleep "$INTERVAL"
           done
