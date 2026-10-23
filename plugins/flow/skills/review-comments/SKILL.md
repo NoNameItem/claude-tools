@@ -1047,10 +1047,12 @@ Fixed: guard branch_name against detached HEAD
 
 **Every reply file ends with the marker.** The PR owner posts from the account the agent uses, so
 the marker is the only thing that tells our reply from theirs: `reconcile` takes a reply as ours
-only when it carries the marker **and** comes from our account. A reply posted without it comes
-back next round as the owner's, unseen, and draws a second reply into the thread. It is an HTML
-comment — the platform does not render it, and `flow-comment-card` strips it. This file is the one
-place every reply passes through, so no reply can skip it.
+only when it carries the marker **and** comes from our account. Without it our reply reads as the
+owner's wherever the ledger cannot vouch for it — a reply whose report was lost comes back next
+round unseen and draws a second reply, a lost ledger re-triages the thread, and the resolve gate
+below refuses to close the bot thread. It is an HTML comment — the platform does not render it,
+and `flow-comment-card` strips it. This file is the one place every reply passes through, so no
+reply can skip it.
 
 Then pass the file as a **quoted** command substitution `"$(cat …)"` — which captures the file's
 bytes as a single argument with no shell re-parsing, so a `Won't fix:` rationale that quotes

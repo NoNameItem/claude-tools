@@ -794,8 +794,9 @@ def test_review_comments_bot_means_account_type_not_login() -> None:
 
 def test_review_comments_reply_file_ends_with_the_agent_marker() -> None:
     """`reconcile` recognises the agent's reply by the marker together with the run account. A
-    reply posted without it comes back next round as the owner's, unseen, and draws a second
-    reply into the thread."""
+    reply posted without it reads as the owner's wherever the ledger cannot vouch for it: a lost
+    reply report brings it back unseen and draws a second reply, and the resolve gate refuses to
+    close the bot thread."""
     # Late on purpose: at module level it would follow the sys.path setup and trip E402.
     import _ledger
 
