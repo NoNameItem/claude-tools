@@ -14,7 +14,9 @@ the row's `resolve_id` (GitHub review-thread node id, GitLab discussion id). Pri
   0  resolve — the opener is a bot by ACCOUNT TYPE (never by login), every other author is a bot
      or `me`, and the thread is still open
   3  refused — the live thread forbids it: a human opener, a human other than `me` replied, a
-     deleted (null) author — counted as a human — or the thread is already resolved
+     deleted (null) author — counted as a human, the thread is already resolved, or `me` (the
+     owner) commented in it without the agent marker and the round's metadata does not hold that
+     comment — a remark the round has not seen
   4  could not verify — an API error, the thread was not found, metadata unreadable, or the
      thread holds more comments/notes than one page (a partial thread is never judged)
 
@@ -28,15 +30,17 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import _git
 import _gl_discussions
+from _ledger import AGENT_MARKER
 
 RESOLVE, REFUSED, UNVERIFIED = 0, 3, 4
 
 _GH_QUERY = (
     "query($id:ID!){node(id:$id){__typename ... on PullRequestReviewThread{"
-    "isResolved comments(first:100){pageInfo{hasNextPage} nodes{author{login __typename}}}}}}"
+    "isResolved comments(first:100){pageInfo{hasNextPage} nodes{fullDatabaseId body author{login __typename}}}}}}"
 )
 
 
@@ -52,30 +56,51 @@ def _opener_refusal(login: str | None, bot: bool) -> str | None:
     return None
 
 
-def _reply_refusal(login: str | None, bot: bool, me: str) -> str | None:
-    if login is None:
+class Speaker(NamedTuple):
+    """One message of the live thread. `login` is None for a deleted account."""
+
+    login: str | None
+    bot: bool
+    comment_id: str | None
+    body: str
+
+
+def held_ids(meta: dict, resolve_id: str) -> set[str]:
+    """Ids (as text) of the replies the round's metadata holds for the thread `resolve_id`.
+    Empty when `comments` is missing or no item matches — the gate then fails closed."""
+    out: set[str] = set()
+    for item in meta.get("comments") or []:
+        if isinstance(item, dict) and item.get("resolve_id") == resolve_id:
+            out |= {str(r["id"]) for r in item.get("thread") or [] if isinstance(r, dict) and r.get("id") is not None}
+    return out
+
+
+def _reply_refusal(speaker: Speaker, me: str, held: set[str]) -> str | None:
+    if speaker.login is None:
         return "a deleted account replied in the thread — counted as a human"
-    if not bot and login != me:
-        return f"{login}, a human, has replied in the thread"
+    if not speaker.bot and speaker.login != me:
+        return f"{speaker.login}, a human, has replied in the thread"
+    if speaker.login == me and AGENT_MARKER not in speaker.body and speaker.comment_id not in held:
+        return f"{me} commented in the thread after this round read it — a remark the round has not seen"
     return None
 
 
-def judge(authors: list[tuple[str | None, bool]], *, resolved: bool, me: str) -> tuple[int, str]:
-    """The gate itself, platform-neutral. `authors` is every speaker in thread order as
-    (login-or-None, is-a-bot-by-account-type); None is a deleted account."""
+def judge(speakers: list[Speaker], *, resolved: bool, me: str, held: set[str]) -> tuple[int, str]:
+    """The gate itself, platform-neutral. `speakers` is every message in thread order; `held` is
+    the ids of the replies the round has read."""
     if resolved:
         return REFUSED, "the thread is already resolved on the platform"
-    if not authors:
+    if not speakers:
         return UNVERIFIED, "the thread has no comments"
-    refusals = (_reply_refusal(login, bot, me) for login, bot in authors[1:])
-    reason = _opener_refusal(*authors[0]) or next((r for r in refusals if r), None)
+    refusals = (_reply_refusal(s, me, held) for s in speakers[1:])
+    reason = _opener_refusal(speakers[0].login, speakers[0].bot) or next((r for r in refusals if r), None)
     if reason is not None:
         return REFUSED, reason
     return RESOLVE, "a bot thread in which no human other than us has replied"
 
 
-def github_thread(resolve_id: str) -> tuple[list[tuple[str | None, bool]], bool]:
-    """(authors, resolved) of one review thread, read by its node id.
+def github_thread(resolve_id: str) -> tuple[list[Speaker], bool]:
+    """(speakers, resolved) of one review thread, read by its node id.
 
     Account type is GraphQL `__typename == "Bot"`. The bot's GraphQL login drops the REST
     `[bot]` suffix, so logins here are only ever compared with `me` — a person's login, which is
@@ -94,18 +119,21 @@ def github_thread(resolve_id: str) -> tuple[list[tuple[str | None, bool]], bool]
     if (comments.get("pageInfo") or {}).get("hasNextPage"):
         msg = "the thread has more comments than one page; a partial thread is never judged"
         raise ThreadUnverifiedError(msg)
-    authors: list[tuple[str | None, bool]] = []
+    speakers: list[Speaker] = []
     for c in comments.get("nodes") or []:
         author = c.get("author")
+        raw_id = c.get("fullDatabaseId")
+        comment_id = None if raw_id is None else str(raw_id)
+        body = str(c.get("body") or "")
         if not author:
-            authors.append((None, False))
+            speakers.append(Speaker(None, False, None, body))
         else:
-            authors.append((author.get("login"), author.get("__typename") == "Bot"))
-    return authors, node.get("isResolved") is True
+            speakers.append(Speaker(author.get("login"), author.get("__typename") == "Bot", comment_id, body))
+    return speakers, node.get("isResolved") is True
 
 
-def gitlab_discussion(resolve_id: str, iid: object) -> tuple[list[tuple[str | None, bool]], bool]:
-    """(authors, resolved) of one MR discussion, found by walking the MR's discussions — GitLab
+def gitlab_discussion(resolve_id: str, iid: object) -> tuple[list[Speaker], bool]:
+    """(speakers, resolved) of one MR discussion, found by walking the MR's discussions — GitLab
     GraphQL has no lookup by discussion id, and REST notes carry no account type."""
     nodes = _gl_discussions.walk(_gl_discussions.project_path(), iid)
     node = next((n for n in nodes if _gl_discussions.discussion_id(n) == resolve_id), None)
@@ -115,14 +143,17 @@ def gitlab_discussion(resolve_id: str, iid: object) -> tuple[list[tuple[str | No
     if ((node.get("notes") or {}).get("pageInfo") or {}).get("hasNextPage"):
         msg = "the discussion has more notes than one page; a partial thread is never judged"
         raise ThreadUnverifiedError(msg)
-    authors: list[tuple[str | None, bool]] = []
+    speakers: list[Speaker] = []
     for note in _gl_discussions.notes_of(node):
         author = note.get("author")
+        body = str(note.get("body") or "")
         if not author:
-            authors.append((None, False))
+            speakers.append(Speaker(None, False, None, body))
         else:
-            authors.append((author.get("username"), author.get("bot") is True))
-    return authors, node.get("resolved") is True
+            speakers.append(
+                Speaker(author.get("username"), author.get("bot") is True, _gl_discussions.note_id(note), body)
+            )
+    return speakers, node.get("resolved") is True
 
 
 def _emit(code: int, reason: str) -> int:
@@ -148,14 +179,14 @@ def main(argv: list[str]) -> int:
 
     try:
         if platform == "github":
-            authors, resolved = github_thread(args.resolve_id)
+            speakers, resolved = github_thread(args.resolve_id)
         elif platform == "gitlab":
-            authors, resolved = gitlab_discussion(args.resolve_id, number)
+            speakers, resolved = gitlab_discussion(args.resolve_id, number)
         else:
             return _emit(UNVERIFIED, f"unknown platform {platform!r} in {args.meta}")
     except (ThreadUnverifiedError, _git.ApiUnavailableError) as exc:
         return _emit(UNVERIFIED, str(exc))
-    return _emit(*judge(authors, resolved=resolved, me=str(me)))
+    return _emit(*judge(speakers, resolved=resolved, me=str(me), held=held_ids(meta, args.resolve_id)))
 
 
 if __name__ == "__main__":
