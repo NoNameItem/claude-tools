@@ -186,7 +186,8 @@ hand-off, and it colors the final report at (g).
   (`won't-fix` / `follow-up` instead of `fix`) settles that one comment and moves to the
   next — it does not exit the round. Interrupting mid-round (Esc) is the actual exit; see
   Terminators. If you skip its push (Phase 5.6), any replies are posted but its fixes stay
-  **local** — the head is unchanged; step (g)'s unpushed-commit check surfaces this.
+  **local** — the head is unchanged; step (g)'s unpushed-commit check stops the loop as an
+  **unpushed hand-off**.
 
 **f. Capture `HEAD_after`** — the platform's head-SHA command again.
 
@@ -204,10 +205,12 @@ Head advancement alone is not enough. A round can end without a push and still l
 whose action did not land — apply failed, or its follow-up batch was cancelled — stays `open`
 carrying its `decision`, and it is exactly the case a loop must not swallow. A skipped (or failed)
 push is not such a row: review-comments settles that thread with a «Fixed locally in <sha>, not
-pushed yet» reply, so the `LOCAL_HEAD != HEAD_after` check below is what stops a false convergence. If the head held still but the
-working set is not empty, report what is left (`flow-review-ledger stats`) and stop as
-**unconverged**, naming the outstanding refs — do not run another identical round that would
-fail the same way.
+pushed yet» reply and resolves it when it is a bot's, so the working set reads empty while the fix
+is not on the PR/MR. The `LOCAL_HEAD != HEAD_after` check below stops that round as an
+**unpushed hand-off** before the empty working set can call it converged. If the head held still
+but the working set is not empty, report what is left (`flow-review-ledger stats`) and stop as
+**unconverged**, naming the outstanding refs — do not run another identical round that would fail
+the same way.
 
 - `HEAD_after != HEAD_before` (review-comments pushed) → **loop** back to (a) to wait for the
   gates on the new head. A push always means another review round.
@@ -219,12 +222,21 @@ fail the same way.
   LOCAL_HEAD=$(git rev-parse HEAD)
   ```
 
-  If `LOCAL_HEAD != HEAD_after`, warn — surface it, do not silently converge:
+  If `LOCAL_HEAD != HEAD_after`, print:
 
   ```
-  ⚠️ Есть локальные коммиты, не запушенные на PR/MR (local <LOCAL_HEAD:0:7> ≠ remote <HEAD_after:0:7>).
-     review-comments ответил «Fixed locally… not pushed yet», но фиксы остались локально. Запушь их и перезапусти /flow:review-loop.
+  ⚠️ Есть локальные коммиты, не запушенные на PR/MR
+     (local <LOCAL_HEAD:0:7> ≠ remote <HEAD_after:0:7>).
+     review-comments ответил «Fixed locally… not pushed yet», но фиксы остались локально.
+     Запушь их и перезапусти /flow:review-loop.
   ```
+
+  An unpushed commit is a stop of its own — **unpushed hand-off**, never a clean finish. Still
+  run the `stats` query below: a non-zero `Open` stops as **unconverged** as usual. When `Open`
+  is zero, STOP with the message above as the report instead of any converged reason; if the
+  round is PARTIAL or `failed` is non-empty, name that in the report too. A skipped push settles
+  its threads with «Fixed locally…» replies and resolves the bot ones, so the ledger alone reads
+  clean while the fixes are not on the PR/MR.
 
   Then query the ledger's **current** state — after Phase 5's `record` calls, so it reflects
   what this round actually delivered, not what it started with:
@@ -239,7 +251,7 @@ fail the same way.
 
   - **`Open` is non-zero** → **unconverged**, regardless of `PARTIAL`/`failed`. A row's action did
     not land this round — apply failed, or its follow-up batch was cancelled (a skipped push is
-    not one of these: the unpushed-commits warning above covers it) — and it stayed `open`
+    not one of these: the unpushed hand-off above covers it) — and it stayed `open`
     carrying its `decision`. The stats output you just printed already shows the count (and, when
     non-zero, "decided, action did not land"); name the outstanding refs too — every
     ref `flow:review-comments`'s own 5.8 summary from the round you just ran reported as staying
@@ -248,7 +260,9 @@ fail the same way.
     множестве остались необработанные находки (`<ref>`, …), перезапусти `/flow:review-loop`, когда
     они будут доставлены." Do **not** run another identical round; it would hit the same
     undelivered rows again.
-  - **`Open` is zero** → this round converges. STOP with the reason that fits:
+  - **`Open` is zero and `LOCAL_HEAD == HEAD_after`** → this round converges. STOP with the
+    reason that fits (`Open` zero with `LOCAL_HEAD != HEAD_after` is the unpushed hand-off above,
+    never one of these):
     - round **PARTIAL** (step c timed out, you chose "process now") → **partial hand-off:**
       "обработал что было, но пайплайн для `<HEAD_before:0:7>` не добежал (wait timed out) —
       перезапусти `/flow:review-loop`, когда проверки завершатся." Not a clean finish.
@@ -264,7 +278,8 @@ fail the same way.
 ### Terminators
 
 No open PR/MR at resolve (0) · clean convergence (1g) · partial hand-off (1g) · red-check
-hand-off (1g) · unconverged hand-off — head held but the working set is not empty (1g) · no CI
+hand-off (1g) · unpushed hand-off — local commits not on the PR/MR (1g) · unconverged
+hand-off — head held but the working set is not empty (1g) · no CI
 (`exit 4`, 1c) · internal usage error from `flow-wait-ci` (`exit 1`, 1c) · PR/MR merged/closed
 (1b) · user "stop" at the timeout prompt (1c) · user "stop" at the red-pipeline gate (1d) ·
 user interrupts `flow:review-comments` mid-round (Esc) — there is no round-level "no" gate to
@@ -292,7 +307,7 @@ decision is better.
 | Wait | `flow-wait-ci <n> <HEAD> --platform <p>` | whole pipeline; 2=timeout(PARTIAL), 3=head moved(restart), 4=no CI(stop) |
 | Red gate | `failed` non-empty → plain-text run-anyway / stop | before review-comments (d) |
 | Process | Skill `flow:review-comments <n>` | verbatim, interactive |
-| Converge | `HEAD_after` vs `HEAD_before`, then `counts.working` | push→loop; no push + working set empty→stop; no push + working set non-empty→unconverged, name refs (g) |
+| Converge | `HEAD_after` vs `HEAD_before`, `LOCAL_HEAD`, then `counts.working` | push→loop; no push + working set non-empty→unconverged, name refs; no push + local ahead→unpushed hand-off; no push + local = remote + working set empty→stop (g) |
 
 ## Red flags — STOP
 
@@ -308,9 +323,10 @@ decision is better.
   "actionable"; the loop converges on **head advancement AND an empty working set**, never a
   thread count of its own.
 - "No push this round, so we're cleanly done — I'll just stop." → **No.** No-push is only
-  condition 1 of 2. First compare `git rev-parse HEAD` with `HEAD_after` (warn if local is
-  ahead), then check `counts.working` — a non-empty working set means a row's action didn't
-  land, and the round is **unconverged** even though nothing pushed (step 1g).
+  condition 1 of 2. First compare `git rev-parse HEAD` with `HEAD_after` — if local is ahead,
+  the round stops as an **unpushed hand-off**, never a clean finish — then check
+  `counts.working` — a non-empty working set means a row's action didn't land, and the round is
+  **unconverged** even though nothing pushed (step 1g).
 - "I'll run `flow:review-comments` before the pipeline finishes." → Wait for the whole
   pipeline first (step c), or lint inline comments land after you've processed the round.
 - "The wait returned 0, so the head I captured is still current." → Not guaranteed — the
@@ -328,8 +344,10 @@ decision is better.
 ## Common mistakes
 
 - **Converging clean over an unpushed fix.** review-comments applied a fix, committed
-  locally, but the push was skipped (the thread got a «Fixed locally» reply, no row stays open) → the remote head is unchanged so a naive check reads "no
-  push → converged". Compare `git rev-parse HEAD` with `HEAD_after` and warn (step 1g).
+  locally, but the push was skipped (the thread got a «Fixed locally» reply and, for a bot,
+  was resolved; no row stays open) → the remote head is unchanged and the working set is empty,
+  so a naive check reads "no push → converged". Compare `git rev-parse HEAD` with `HEAD_after`
+  and stop as an **unpushed hand-off** (step 1g).
 - **Converging on head advancement alone.** No push is only half the condition — a row whose
   apply failed, or whose action was decided but did not land, stays `open` in the ledger
   with an unchanged head. Check `counts.working` before calling the round converged (step 1g).

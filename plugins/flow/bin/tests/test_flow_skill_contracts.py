@@ -698,6 +698,31 @@ def test_review_loop_no_longer_says_a_skipped_push_leaves_a_row_open() -> None:
     assert "LOCAL_HEAD" in section[:1200]
 
 
+def test_review_loop_stops_an_unpushed_round_as_a_hand_off_not_a_convergence() -> None:
+    """A skipped push settles its threads with «Fixed locally…» replies and resolves the bot ones,
+    so `Open` reads zero while the fixes are not on the PR/MR. A warning followed by "clean
+    convergence" tells the user the answered bot threads are done when their fixes never reached
+    the remote. The unpushed commit is its own stop, and the converged branch requires the local
+    head to equal the remote one."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    step_g = section(text, "**g. Decide convergence", "### Terminators")
+    assert "unpushed hand-off" in step_g
+    assert "never a clean finish" in step_g
+    assert re.search(
+        r"`Open`\s+is\s+zero\s+and\s+`LOCAL_HEAD == HEAD_after`\*\*\s+→\s+this\s+round\s+converges", step_g
+    )
+    terminators = section(text, "### Terminators", "## Round indicator")
+    assert "unpushed hand-off" in terminators
+    converge_row = next(line for line in text.splitlines() if line.startswith("| Converge |"))
+    assert "unpushed hand-off" in converge_row
+    red_flags = section(text, "## Red flags", "## Common mistakes")
+    assert re.search(r"local\s+is\s+ahead.{0,80}unpushed\s+hand-off", red_flags, re.DOTALL)
+    mistakes = text.split("## Common mistakes", 1)[1]
+    assert re.search(r"Converging clean over an unpushed fix.{0,600}unpushed hand-off", mistakes, re.DOTALL)
+    # The check stops the loop; no sentence may still describe it as only warning.
+    assert not re.search(r"\bwarn\b", text[text.index("**e. Run review-comments.**") :])
+
+
 def test_review_loop_working_set_check_reads_post_round_ledger_state() -> None:
     """The `counts.working == 0` gate must read the ledger AFTER Phase 5's `record` checkpoints
     of the round just run, not the working set `reconcile` reported at the START of that round in
