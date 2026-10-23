@@ -11,11 +11,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
 FLOW_ROOT = Path(__file__).resolve().parents[2]
+# The helpers' shared modules (`_ledger`) live next to the executables; tests that pin a value the
+# skill must quote import it late, after this setup, so the skill and the helper cannot drift.
+BIN = FLOW_ROOT / "bin"
+if str(BIN) not in sys.path:
+    sys.path.insert(0, str(BIN))
 GRANT_AUDITED = {
     path
     for path in (FLOW_ROOT / "skills").glob("*/SKILL.md")
@@ -308,25 +314,32 @@ def test_review_comments_captures_the_posted_reply_object() -> None:
 
 
 def test_review_comments_decisions_example_carries_a_reply_wherever_one_was_posted() -> None:
-    # An entry that posted a reply and does not report it leaves our own reply to come back off
-    # the forge; a GitHub review-body summary has no reply target and must carry no `reply`.
+    # A posted reply is a delivered outcome: `record` accepts `reply` only beside `"settled": true`,
+    # and only `settled` paints the thread seen. An entry that posted a reply and does not report it
+    # leaves our own reply to come back off the forge; a GitHub review-body summary is settled with
+    # no reply target and carries no `reply`; an action that did not land keeps its decision and
+    # carries no `settled`. `status` is gone — `record` rejects it with exit 2.
     text = REVIEW_COMMENTS_SKILL.read_text()
     block = text.split("$FLOW_RC_DIR/decisions.json", 1)[1].split("```json", 1)[1].split("```", 1)[0]
     decisions = json.loads(block)
-    replied = {ref for ref, entry in decisions.items() if entry.get("status") == "done"}
+    assert not [ref for ref, entry in decisions.items() if "status" in entry], "`record` rejects `status`"
+    settled = {ref for ref, entry in decisions.items() if entry.get("settled") is True}
     with_reply = {ref for ref, entry in decisions.items() if "reply" in entry}
     assert with_reply, "the example must show at least one posted reply"
-    assert with_reply < replied, "the example must also show a done entry that posted nothing"
+    assert with_reply < settled, "the example must also show a settled entry that posted nothing"
+    assert set(decisions) - settled, "the example must also show an undelivered entry: its decision, no `settled`"
     for ref in with_reply:
         assert decisions[ref]["reply"].get("id") is not None, f"{ref}'s reply must carry an id"
 
 
 def test_review_comments_phase_3_qualifies_the_human_instruction_channel() -> None:
-    # A human instruction posted from OUR account no longer re-opens a settled row: reconcile
-    # stamps our own replies seen on arrival. The table must not promise what it cannot deliver.
+    # The PR owner writes from the account the agent posts from. Their comment now brings the
+    # thread back (only the agent marker makes a reply ours), and it is an opinion on the finding
+    # that the verdict answers in `thread_stances` — not an instruction that "does not re-open".
     phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
-    assert re.search(r"own account", phase_3)
-    assert re.search(r"does not re-?open", phase_3, re.IGNORECASE)
+    assert "thread_stances" in phase_3
+    assert "owner" in phase_3
+    assert not re.search(r"does not re-?open", phase_3, re.IGNORECASE)
 
 
 def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
@@ -334,16 +347,19 @@ def test_review_comments_checkpoints_each_irreversible_side_effect() -> None:
     deferring every `record` to 5.7a means a mid-batch failure loses the record of the refs that
     already succeeded — and the next round re-files the same follow-up or re-posts the same reply
     against a row that never learned what happened. Both loops must therefore record each ref as it
-    lands, and 5.4's checkpoint must stay `open` (the task exists, the reply does not yet — and
-    `open`/`done` is the whole status enum now, so there is no third "task filed" state), or a
-    `done` row would settle a finding that was never answered on the platform."""
+    lands, and 5.4's checkpoint must carry no `"settled": true` (the task exists, the reply does
+    not yet), or `record` would paint the thread seen and settle a finding that was never answered
+    on the platform."""
     text = REVIEW_COMMENTS_SKILL.read_text()
     follow_up = text.split("#### 5.4.", 1)[1].split("#### 5.5.", 1)[0]
     assert "checkpoint-" in follow_up, "5.4 must record each created task before the next `bd create`"
-    assert '"status": "open"' in follow_up, "the 5.4 checkpoint stays `open` — the reply is not posted yet"
-    assert "followup_task_id" in follow_up, "the checkpoint must carry the task id that prevents a duplicate"
+    assert '"status"' not in follow_up, "`status` is gone — `record` rejects it"
+    checkpoint = json.loads(follow_up.split("```json", 1)[1].split("```", 1)[0])
+    entry = next(iter(checkpoint.values()))
+    assert "settled" not in entry, "the 5.4 checkpoint delivers nothing — the reply is not posted yet"
+    assert "followup_task_id" in entry, "the checkpoint must carry the task id that prevents a duplicate"
     # The checkpoint only prevents a duplicate if something READS it back: `bd create` has no
-    # idempotency key, so a `pending` row re-triaged as `follow-up` files a second task unless 5.4
+    # idempotency key, so a row re-triaged as `follow-up` files a second task unless 5.4
     # looks up the stored id first. The write without the read is a no-op dressed as a fix.
     assert "flow-review-ledger get" in follow_up, "5.4 must read the row before creating a task"
     assert re.search(r"do not call `bd create`", follow_up), "5.4 must skip `bd create` when a task id already exists"
@@ -393,23 +409,20 @@ def test_review_comments_5_7a_warns_that_reply_is_never_null() -> None:
 
 
 def test_review_comments_cap_gates_on_a_count_reconcile_emits() -> None:
-    # reconcile prints counts {total, open, skipped, pending, done, working}. `counts.actionable`
-    # is the COLLECTOR's key: gating on it reads a missing key and the large-PR cap never fires.
+    # reconcile prints counts {done, open, resolved_upstream, absent_upstream, total, working}.
+    # `counts.actionable` was the COLLECTOR's key, and the collector no longer emits it either:
+    # gating on it reads a missing key.
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert not re.search(r"counts\.actionable", text)
     assert "counts.working" in text
 
 
 def test_review_comments_already_replied_does_not_mute_a_resurfaced_row() -> None:
-    # `already_replied` is a SEEDING signal `reconcile` uses on first insert — it settles a
-    # thread we had already answered before the ledger existed — not a per-round mute. A row can
-    # reach Phase 5 with it true and still hold a reviewer reply we have not acted on. A blanket
-    # do-not-reply rule triages that re-surfaced row and then silently drops its reply.
-    text = REVIEW_COMMENTS_SKILL.read_text()
-    assert not re.search(r"Do\s+NOT\s+reply\s+to\s+comments\s+where\s+`already_replied`\s+is\s+true", text)
-    phase = text.split("#### 5.7. Reply on the platform", 1)[1].split("#### 5.7a", 1)[0]
-    assert "already_replied" in phase
-    assert "re-surfaced" in phase
+    # `already_replied` is gone from the collector and the ledger. It asked "is the last replier
+    # `me`?", and the owner posts from that same account, so on PR #151 it hid the owner's answer to
+    # a fresh Codex comment. A thread is selected by its unseen messages now; a skill that still
+    # names the field teaches a signal no helper emits.
+    assert "already_replied" not in REVIEW_COMMENTS_SKILL.read_text()
 
 
 def test_review_comments_platform_table_points_at_the_reconcile_output() -> None:
@@ -481,16 +494,14 @@ def test_done_purges_the_ledger_only_once_the_pr_is_terminal() -> None:
 
 def test_review_comments_states_the_real_working_set_rule() -> None:
     """Phase 2's prose is what the agent reasons from when the tool's output surprises it, so a
-    stale rule there can reintroduce the very bug the code just closed. Membership is no longer
-    "non-terminal status" alone, and (Task 7) it is no longer the raw `resolved` boolean either —
-    `reconcile` now recomputes a `platform_state` axis (`live`/`resolved`/`absent`) every round, and
-    membership is `status == "open"` AND `platform_state == "live"`. A thread the platform reports
-    as resolved leaves the working set while its `status` may stay `open`, and the old claim that
-    resolution "moves it to `done`" is wrong in exactly the case that matters (a degraded resolution
-    side-query)."""
+    stale rule there can reintroduce the very bug the code just closed. Membership reads only the
+    `platform_state` axis (`live`/`resolved`/`absent`, recomputed by `reconcile` every round) and
+    the `seen` bits; there is no `status` any more, so a rule that still names `status == "open"`
+    sends the agent looking for a field no row carries."""
     text = (FLOW_ROOT / "skills" / "review-comments" / "SKILL.md").read_text()
     assert "every row in a non-terminal status:" not in text, "the working-set rule must also name `resolved`"
     assert '`platform_state == "live"`' in text
+    assert 'status == "open"' not in text, "`status` was removed; membership is platform state plus unseen messages"
     assert "moves it to `done` without a reply" not in text, "resolution no longer changes the status"
 
 
@@ -524,13 +535,13 @@ def test_review_comments_5_7a_reacts_to_a_failed_record() -> None:
 
 
 def test_review_comments_has_no_deleted_status_and_explains_platform_resolution() -> None:
-    # (Task 7 correction) `reconcile` does NOT emit a `deleted` status — `_ledger.STATUSES` is only
-    # `("open", "done")`. "Gone from the platform" is the `platform_state` axis (`absent`), tallied
-    # in `counts` as `absent_upstream`, never a third status. Prose that calls the working set
-    # "every non-`done` row" is still wrong (status alone no longer decides membership — see
-    # `platform_state`), and a `counts` schema missing `absent_upstream` sends the agent looking for
-    # a key that does not exist. Resolving a thread by hand also settles its row without the agent
-    # doing anything, via `platform_state == "resolved"`, not a status change.
+    # Rows carry no status at all (the unseen-signal design removed `_ledger.STATUSES`). "Gone from
+    # the platform" is the `platform_state` axis (`absent`), tallied in `counts` as
+    # `absent_upstream`. Prose that calls the working set "every non-`done` row" is wrong
+    # (membership is `platform_state == "live"` plus an unseen message), and a `counts` schema
+    # missing `absent_upstream` sends the agent looking for a key that does not exist. Resolving a
+    # thread by hand also takes its row out of the loop without the agent doing anything, via
+    # `platform_state == "resolved"`.
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert re.search(r"counts:\{[^}]*absent_upstream", text), "the reconcile counts schema must list `absent_upstream`"
     assert not re.search(r"every\s+non-`?done`?\s+row", text), "status alone does not decide membership"
@@ -552,16 +563,20 @@ def test_review_comments_has_no_large_pr_cap() -> None:
 
 
 def test_review_comments_states_the_two_axis_working_set_rule() -> None:
+    # The two axes are the platform's verdict and our own `seen` bits — the comment itself or any
+    # reply. Nothing else takes part in selection.
     text = REVIEW_COMMENTS_SKILL.read_text()
-    assert '`status == "open"` and `platform_state == "live"`' in text
+    assert '`platform_state == "live"` and holds at least one unseen message' in text
 
 
 def test_review_comments_phase_3_separates_undelivered_from_resurfaced() -> None:
-    """A non-null decision used to be declared "re-surfaced because its thread advanced", which
-    is false for a row whose action never landed — that row needs delivering, not re-litigating."""
+    """Two row shapes, not three. With no deferred state left to deliver, a decided row is always
+    decided again from its prior verdict plus whatever is unseen. A "do not re-litigate" branch
+    would deliver a stale verdict over the owner's new comment, and `get` no longer emits the
+    `resurfaced` flag that branch keyed on."""
     phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
-    assert "resurfaced" in phase_3
-    assert re.search(r"do not re-?litigate", phase_3, re.IGNORECASE)
+    assert not re.search(r"do not re-?litigate", phase_3, re.IGNORECASE)
+    assert "resurfaced" not in phase_3
 
 
 def test_review_comments_triage_has_no_skip_outcome() -> None:
@@ -635,11 +650,15 @@ def test_review_comments_requires_a_reason_only_where_it_can_be_published() -> N
 
 
 def test_review_comments_records_an_aborted_action_as_open_with_its_decision() -> None:
-    """Keeping the decision costs nothing and gives the next round context; the status stays
-    `open` because nothing was delivered."""
+    """Keeping the decision costs nothing and gives the next round context. An outcome that did
+    not land carries no `settled`, so `record` paints nothing and the thread comes back; only a
+    delivered outcome is marked `"settled": true`. `status` is gone in either spelling."""
     text = REVIEW_COMMENTS_SKILL.read_text()
     assert "pending" not in text
-    assert "`status: open`, `decision: fix`" in text
+    record_step = section(text, "#### 5.7a", "#### 5.8")
+    assert "status:" not in record_step
+    assert '"status"' not in record_step
+    assert '"settled": true' in record_step
 
 
 def test_review_comments_handles_a_collector_abort() -> None:
@@ -721,11 +740,11 @@ def test_review_comments_resolves_only_bot_threads() -> None:
 
 
 def test_review_comments_resolve_step_never_fires_for_a_withheld_reply() -> None:
-    """`withheld` alone was already in 5.7 before this feature — assert the gate's own wording,
-    or the test passes against the unchanged skill."""
+    """Resolution follows a reply that was actually posted. No reply waits for a push any more,
+    but a ref whose action did not land (a failed apply, an unfiled follow-up) still posts
+    nothing, and its thread must not be closed."""
     phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
     assert "actually posted" in phase_5_7
-    assert "never reaches this step" in phase_5_7
 
 
 def test_review_comments_boundaries_scope_reply_only_to_humans() -> None:
@@ -767,6 +786,83 @@ def test_review_comments_bot_means_account_type_not_login() -> None:
     phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
     assert "account type" in phase_5_7
     assert "never from the login" in phase_5_7
+
+
+# --- claude-tools-elf.68: one selection signal (unseen messages), the agent marker, answering the
+#     thread, and no deferred replies ----------------------------------------------------------
+
+
+def test_review_comments_reply_file_ends_with_the_agent_marker() -> None:
+    """`reconcile` recognises the agent's reply by the marker together with the run account. A
+    reply posted without it comes back next round as the owner's, unseen, and draws a second
+    reply into the thread."""
+    # Late on purpose: at module level it would follow the sys.path setup and trip E402.
+    import _ledger
+
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.7a")
+    assert _ledger.AGENT_MARKER in phase_5_7
+
+
+def test_review_comments_never_withholds_a_reply_for_a_push() -> None:
+    """No deferred state: a fix committed but not pushed is answered this round, with a reply
+    that says where the change is, instead of waiting for a later run that may never come."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "Reply deferred" not in text
+    assert "withhold" not in section(text, "#### 5.6. Push", "#### 5.7. Reply on the platform")
+    phase_5_7 = section(text, "#### 5.7. Reply on the platform", "#### 5.7a")
+    assert "Fixed locally in" in phase_5_7
+    assert "not pushed yet" in phase_5_7
+
+
+def test_review_comments_followup_reuses_a_stored_task_id() -> None:
+    """A follow-up filed whose reply never landed leaves its id on an unpainted row. The next
+    round's 5.4 reuses that id instead of filing a second task (an anti-goal), and a ref decided
+    away from follow-up clears the id so no settled row keeps pointing at it."""
+    follow_up = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.4.", "#### 5.5.")
+    assert "followup_task_id" in follow_up
+    assert "reuse" in follow_up
+    assert '"followup_task_id": null' in follow_up
+
+
+def test_review_comments_reports_a_possibly_orphaned_followup() -> None:
+    """A task id cleared in 5.4 still names a task in beads that nothing points at any more; the
+    user must see it to close it by hand."""
+    report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
+    assert "possibly orphaned" in report
+
+
+def test_review_comments_verdict_schema_carries_thread_stances() -> None:
+    """Claude answers every unseen non-agent reply — the owner's included — with a stance, and the
+    card renders it from `thread_stances`. `agree` and `disagree` already occur in the verdict enum
+    on the same block, so the stance values are checked on the `"stance"` line itself."""
+    phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
+    schema = phase_3.split("```json", 1)[1].split("```", 1)[0]
+    assert '"thread_stances"' in schema
+    stance_lines = [line for line in schema.splitlines() if '"stance"' in line]
+    assert stance_lines, "the schema must spell out the stance field"
+    for value in ("agree", "disagree", "partly"):
+        assert value in stance_lines[0], f"the stance field must offer {value!r}"
+
+
+def test_review_comments_has_no_acknowledgement_settlement() -> None:
+    """A threaded row has no no-reply settlement: a bare "Thanks!" is triaged like anything else.
+    The GitHub review-body summary, which has no reply target at all, is the only row settled
+    without a reply."""
+    assert "acknowledgement with nothing to do" not in REVIEW_COMMENTS_SKILL.read_text()
+
+
+def test_review_comments_resolve_gate_refuses_an_unread_owner_comment() -> None:
+    """The owner can comment in a bot thread after collect; resolving it then would hide that
+    comment behind the resolved prefilter for good. The step must tell the agent why the gate
+    refuses such a thread, or an exit 3 on a bot-only thread reads as a gate bug."""
+    phase_5_7 = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.7. Reply on the platform", "#### 5.8")
+    assert re.search(r"without\s+the\s+agent\s+marker", phase_5_7)
+
+
+def test_review_comments_edge_case_is_nothing_new_not_already_replied() -> None:
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "### All Comments Already Replied" not in text
+    assert "### Nothing New in Any Thread" in text
 
 
 REVIEW_LOOP_SKILL = FLOW_ROOT / "skills" / "review-loop" / "SKILL.md"
