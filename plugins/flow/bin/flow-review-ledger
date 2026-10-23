@@ -8,15 +8,22 @@
     flow-review-ledger purge     [--meta … | --url … --number …]
 
 Durable working memory keyed by thread id: what was found, what was decided about it, and
-which of its replies we have not acted on yet. Pure stdlib. Every untrusted value (bodies, thread
-replies, `reason`) arrives by FILE and leaves as JSON — nothing reviewer-controlled ever
-reaches a command line.
+which of its messages — the comment itself and every reply — we have not acted on yet. A thread
+is work iff the platform has it live and it holds such an unseen message (`_ledger.is_working`).
+Pure stdlib. Every untrusted value (bodies, thread replies, `reason`) arrives by FILE and leaves
+as JSON — nothing reviewer-controlled ever reaches a command line.
 
 `record`'s decisions file merges into a row the way JSON merge does: an ABSENT key leaves the
 stored value alone, an explicit `null` CLEARS it. Clearable fields: `decision`, `reason`,
-`followup_task_id`. `status` is not clearable — a null there is rejected. `reply` is not a
-stored field at all: it is a one-round instruction naming the reply this round posted, which
-`record` appends to the thread and marks seen.
+`followup_task_id`. Two more keys are one-round instructions, never stored on the row:
+
+- `settled: true` — the round delivered this thread's outcome. Only then does `record` paint the
+  comment and every stored reply seen. Without it the decision is stored and nothing is painted,
+  so the thread comes back next round with that decision as context.
+- `reply` — the reply this round posted, with its `id`. Allowed only with `settled: true`;
+  `record` appends it to the thread as the agent's, seen.
+
+`status` was removed with the open/done model and is rejected, with a pointer to `settled`.
 """
 
 from __future__ import annotations
@@ -60,8 +67,8 @@ def alloc_ref(doc: dict, is_bot: bool) -> str:
     """Draw the next stable ref for a NEW row: `C` for bots, `U` for humans.
 
     Allocate-once: an existing row keeps its ref forever and a number is never reused, so a
-    ref identifies the same finding across every round (the working set is therefore the
-    sparse, gappy `status != done` subset — gaps are settled findings).
+    ref identifies the same finding across every round (the working set is therefore a sparse,
+    gappy subset of refs — gaps are threads with nothing unseen, or off the platform).
     """
     prefix = "C" if is_bot else "U"
     counters = doc["next_ref"]
@@ -82,27 +89,54 @@ def refresh_snapshot(row: dict, item: dict) -> None:
         row[field] = item.get(field)
 
 
-def seed_thread(item: dict, me: object, already: bool) -> list:
-    """The thread a NEW row starts with, each reply carrying its `seen` bit.
+def seed_thread(item: dict, me: object) -> tuple[bool, list[dict]]:
+    """`(comment_seen, thread)` for a thread the ledger has never held.
 
-    A row seeded `done` — we replied into that thread before this ledger existed, or before a
-    purge — is seeded with its thread fully accounted for. Without that, the next `reconcile`
-    re-opens it immediately and the seeding is worthless: a re-run against a live PR after
-    `flow:done` purged its ledger would send every settled finding back for triage. A row seeded
-    `open` takes `false` for everyone but us.
+    Every reply carries its `author_role`, and the thread is in chronological order. When the
+    thread already holds a reply of the agent's, the comment and every reply up to and including
+    the LAST such reply arrive seen, and the replies after it arrive unseen. With no agent reply
+    everything arrives unseen.
+
+    This replaces the collector's `already_replied` seeding, which asked "is the last replier
+    `me`?". The owner posts from that same account, so on PR #151 the owner's own answer to a
+    fresh Codex comment seeded the row settled and hid it (see the 2026-10-23 unseen-signal
+    design). Only the agent marker, together with the run account, says a reply is ours.
+
+    Applies to NEW rows only. Run against a row the ledger already holds it would bring back C2:
+    a reviewer reply that landed while the round was in triage would be painted seen by our
+    later reply. An existing row takes replies one at a time through `merge_thread` instead.
+    In practice this fires on a lost ledger (cache cleared, or a corrupt file degraded to
+    empty). It is kept for that case because the failure it prevents is public: re-triaging
+    every answered thread posts a second reply into each.
     """
-    thread = [
-        {**reply, "seen": already or _ledger.is_ours(reply, me)}
-        for reply in item.get("thread") or []
-        if isinstance(reply, dict)
-    ]
-    thread.sort(key=_ledger.reply_order)
-    return thread
+    thread = sorted(
+        (
+            {**reply, "author_role": _ledger.author_role(reply, me)}
+            for reply in item.get("thread") or []
+            if isinstance(reply, dict)
+        ),
+        key=_ledger.reply_order,
+    )
+    agent_at = [index for index, reply in enumerate(thread) if reply["author_role"] == "agent"]
+    last_agent = agent_at[-1] if agent_at else -1
+    for index, reply in enumerate(thread):
+        reply["seen"] = index <= last_agent
+    return bool(agent_at), thread
+
+
+def comment_role(item: dict, me: object) -> str:
+    """'owner' or 'reviewer' for the comment that opens a thread — never 'agent'.
+
+    The agent only ever answers a thread, so a comment from the run account is the owner's, and
+    a marker in it changes nothing. Goes through `_ledger.author_role` so an unknown run account
+    still makes nobody the owner.
+    """
+    return "reviewer" if _ledger.author_role(item, me) == "reviewer" else "owner"
 
 
 def new_row(thread_id: str, item: dict, doc: dict, round_no: int, me: object) -> dict:
     kind = item.get("kind") or "inline"
-    already = bool(item.get("already_replied"))
+    comment_seen, thread = seed_thread(item, me)
     row = {
         # The BARE platform id — the reply target. The ledger's own key is namespaced
         # (`_ledger.row_key_of`); the two must not be conflated, or a prefixed value would
@@ -111,18 +145,19 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int, me: object) ->
         "platform": (doc.get("unit") or {}).get("platform"),
         "ref": alloc_ref(doc, bool(item.get("is_bot"))),
         "kind": kind,
-        # `already_replied` is a SEEDING signal only (we replied before the ledger existed, or
-        # after a purge) — never the re-surface trigger; that is the per-reply `seen` bit.
-        # Resolution does NOT seed `done`: a row first seen already-resolved gets
-        # `status: open` + `platform_state: resolved`, so if the thread is un-resolved it
-        # arrives for triage instead of staying closed by someone else's verdict forever.
-        "status": "done" if already else "open",
+        # The comment's own bit, with a reply's meaning: the workflow acted on this thread with
+        # this message in front of it. Resolution does not seed it: a row first seen resolved is
+        # stored unseen, so if the thread is un-resolved it arrives for triage instead of staying
+        # closed by someone else's verdict forever.
+        "seen": comment_seen,
+        # Set on insert, and this is its only writer.
+        "author_role": comment_role(item, me),
         "decision": None,
         "reason": None,
         "followup_task_id": None,
         # Set on insert and never refreshed — see SNAPSHOT_FIELDS.
         "body": item.get("body"),
-        "thread": seed_thread(item, me, already),
+        "thread": thread,
         "first_seen_round": round_no,
         "last_round": round_no,
         "head": None,
@@ -134,9 +169,15 @@ def new_row(thread_id: str, item: dict, doc: dict, round_no: int, me: object) ->
 def merge_thread(row: dict, item: dict, me: object) -> None:
     """Append forge replies we do not already hold, then restore chronological order.
 
+    A new reply arrives seen only when it is the agent's — marked AND from the run account — so
+    a reply we posted but failed to report (the POST succeeded, the id extraction did not) still
+    cannot come back as foreign and draw a second reply. Every other new reply arrives unseen,
+    the owner's included: an owner's comment in an answered thread is exactly what must bring it
+    back. Nothing already stored is repainted, which keeps C2 closed.
+
     Ids normalise through `str()` on both sides: GitHub returns a numeric `.id` and the agent
-    may hand the same id back as text; a naive comparison would append our own reply a second
-    time and re-surface the finding every round forever.
+    may hand the same id back as text; a naive comparison would store our own reply a second
+    time.
 
     A reply whose id we already hold is dropped rather than refreshed, so an edit made in place
     on the forge does not rewrite what we stored — the same rule the comment's own `body`
@@ -148,28 +189,9 @@ def merge_thread(row: dict, item: dict, me: object) -> None:
     known = {str(reply.get("id")) for reply in thread if isinstance(reply, dict)}
     for reply in item.get("thread") or []:
         if isinstance(reply, dict) and str(reply.get("id")) not in known:
-            thread.append({**reply, "seen": _ledger.is_ours(reply, me)})
+            role = _ledger.author_role(reply, me)
+            thread.append({**reply, "author_role": role, "seen": role == "agent"})
     thread.sort(key=_ledger.reply_order)
-
-
-def reopen_if_unseen(row: dict) -> None:
-    """A done row re-opens iff it holds a reply we have not acted on.
-
-    NOT gated on `kind`. A GitHub review-body summary is threadless, so it holds nothing that
-    can be unseen and never re-opens — that is the deterministic elf.31 guarantee, now resting
-    on the empty thread itself. A GitLab general discussion is ALSO `kind == "summary"` but
-    carries a real, appendable thread, so it re-opens like any other row. The prior
-    `decision`/`reason` are kept as history.
-
-    A reply from our own account is stamped seen on arrival, so the third continuation the old
-    id-keyed rule covered — a human posting an instruction from that same account — no longer
-    re-opens a settled row. Deliberate; see the design doc.
-
-    This is the one status write `reconcile` still performs — the platform axis (see
-    `cmd_reconcile`) never touches `status`.
-    """
-    if row.get("status") == "done" and _ledger.resurfaced(row):
-        row["status"] = "open"
 
 
 def working_entry(row: dict) -> dict:
@@ -177,7 +199,6 @@ def working_entry(row: dict) -> dict:
     brief = " ".join((row.get("body") or "").split())[: _ledger.BRIEF_CHARS]
     return {
         "ref": row.get("ref"),
-        "status": row.get("status"),
         "kind": row.get("kind"),
         "is_bot": bool(row.get("is_bot")),
         "path": row.get("path"),
@@ -190,8 +211,28 @@ def working_entry(row: dict) -> dict:
     }
 
 
+def bucket_counts(rows: list) -> dict:
+    """The four buckets that PARTITION every row, shared by `reconcile`'s counts and `stats`.
+
+    - `done`: nothing unseen, whatever the platform says;
+    - `open`: `_ledger.is_working` — live, with something unseen;
+    - `resolved_upstream` / `absent_upstream`: something unseen, in a thread the platform
+      resolved or dropped — out of the working set without the workflow having acted on it.
+
+    One home, so the payload `reconcile` prints and the report `stats` prints cannot sort the
+    same row into different buckets.
+    """
+    unseen = [row for row in rows if _ledger.has_unseen(row)]
+    return {
+        "done": sum(1 for row in rows if not _ledger.has_unseen(row)),
+        "open": sum(1 for row in unseen if _ledger.is_working(row)),
+        "resolved_upstream": sum(1 for row in unseen if row.get("platform_state") == "resolved"),
+        "absent_upstream": sum(1 for row in unseen if row.get("platform_state") == "absent"),
+    }
+
+
 def counts_of(doc: dict, working: list | None = None) -> dict:
-    """Status tallies plus `working` — the size of the CURRENT set.
+    """Bucket tallies plus `total` and `working` — the size of the CURRENT set.
 
     `working` must be the list `reconcile` actually emitted, not a tally over all rows: the
     skill's Phase-2 gate treats `counts.working` as `len(working_set)`, and the two populations
@@ -199,16 +240,7 @@ def counts_of(doc: dict, working: list | None = None) -> dict:
     fallback goes through `_ledger.is_working` so it cannot drift from the loop above.
     """
     rows = list(doc.get("rows", {}).values())
-    counts = {
-        "done": sum(1 for row in rows if row.get("status") == "done"),
-        "open": sum(1 for row in rows if _ledger.is_working(row)),
-        "resolved_upstream": sum(
-            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
-        ),
-        "absent_upstream": sum(
-            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
-        ),
-    }
+    counts = bucket_counts(rows)
     counts["total"] = len(rows)
     counts["working"] = counts["open"] if working is None else len(working)
     return counts
@@ -230,35 +262,34 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         raise ValueError(msg)
 
     working = []
-    seen: set[str] = set()
+    in_snapshot: set[str] = set()
     for item in comments or []:
         thread_id = _ledger.thread_id_of(item)
         key = _ledger.row_key_of(item)
         if thread_id is None or key is None:
             continue  # no platform id → not trackable
-        seen.add(key)
+        in_snapshot.add(key)
         row = doc["rows"].get(key)
         if row is None:
             row = new_row(thread_id, item, doc, round_no, me)
             doc["rows"][key] = row
         else:
             merge_thread(row, item, me)
-            reopen_if_unseen(row)
             refresh_snapshot(row, item)
         # The platform axis, for new and existing rows alike — one writer, one statement.
         row["platform_state"] = _ledger.platform_state_of(item)
         if _ledger.is_working(row):
             working.append(working_entry(row))
 
-    # Absence is the third platform state, not a status: a tracked row missing from this
-    # round's snapshot is gone from the platform, and `status` / `decision` / `reason` /
-    # `followup_task_id` are left exactly as they were. If the thread comes back, the loop
-    # above returns the row to `live` and it resumes with its decision intact.
+    # Absence is the third platform state: a tracked row missing from this round's snapshot is
+    # gone from the platform, and its `seen` bits / `decision` / `reason` / `followup_task_id`
+    # are left exactly as they were. If the thread comes back, the loop above returns the row
+    # to `live` and it resumes with its decision intact.
     #
     # Absence is trustworthy because the collector aborts on any API failure rather than
     # returning a short page, so "not in the snapshot" cannot mean "not fetched".
     for key, row in doc["rows"].items():
-        if key not in seen:
+        if key not in in_snapshot:
             row["platform_state"] = "absent"
 
     _ledger.save_ledger(path, doc)
@@ -274,8 +305,8 @@ def cmd_get(args: argparse.Namespace) -> int:
     """Print ONE row as JSON. The read primitive that keeps every consumer — the Phase-3
     subagent, the Phase-4 card, the Phase-5 reply target — off the whole growing document.
 
-    `resurfaced` is COMPUTED here rather than stored: a stored copy would be a second source of
-    truth to keep in sync with the thread on every round.
+    The row goes out exactly as stored, with no computed fields: every message carries its own
+    `seen` bit, so a reader learns what is new from the row itself.
     """
     url, number = resolve_unit(args)
     doc = _ledger.load_ledger(_ledger.ledger_path(url, number))
@@ -283,7 +314,7 @@ def cmd_get(args: argparse.Namespace) -> int:
     if row is None:
         print(f"flow-review-ledger: no row with ref {args.ref!r}", file=sys.stderr)
         return 1
-    print(json.dumps({**row, "resurfaced": _ledger.resurfaced(row)}, ensure_ascii=False))
+    print(json.dumps(row, ensure_ascii=False))
     return 0
 
 
@@ -293,11 +324,19 @@ def cmd_get(args: argparse.Namespace) -> int:
 def validate_decisions(decisions: object) -> None:
     """Reject a malformed decisions file BEFORE touching the ledger (all-or-nothing).
 
-    Shape only. There is no longer a semantic guard on a `done` row: `done` with no reply is
-    legal for every row shape — a threadless GitHub review-body summary, and an acknowledgement
-    with nothing left to do, both settle on `status: done` alone. The failure the old guard
-    caught (a reply posted and not reported) is handled where it belongs, in `reconcile`: our
-    own reply arrives already seen, so it re-opens nothing.
+    The one thing an entry says beyond its stored fields is whether the round DELIVERED the
+    thread's outcome — `"settled": true`. A delivered outcome paints the thread seen; anything
+    else (an apply that failed, a follow-up batch the user cancelled) stores the decision and
+    paints nothing, so the thread is back next round with that decision as context. There is no
+    third, deferred state: a decided-but-withheld row would be exactly the "pending" signal the
+    2026-10-23 unseen-signal design removed from selection. Hence:
+
+    - `settled` must be a real bool. `1`, `"yes"` or `null` cannot say unambiguously whether
+      the outcome landed, and guessing wrong either hides a thread or re-triages a delivered one.
+    - `reply` is allowed only with `settled: true`. A posted reply IS a delivered outcome; a
+      reply on an unsettled entry is a contradiction, not something to resolve by guessing.
+    - `status` was removed with the open/done model. It is rejected, not ignored, so a caller
+      still writing it learns to say `settled` instead of having its outcome silently dropped.
     """
     if not isinstance(decisions, dict):
         msg = "decisions file must be a JSON object keyed by ref"
@@ -307,15 +346,14 @@ def validate_decisions(decisions: object) -> None:
             msg = f"decision for {ref} must be an object"
             raise ValueError(msg)
         if "status" in entry:
-            status = entry["status"]
-            if status is None:
-                # Every other durable field is nullable and a null CLEARS it; `status` is an enum
-                # with no empty member, so a null there can only be a mistake.
-                msg = f"decision for {ref} has a null status — omit the key to leave it unchanged"
-                raise ValueError(msg)
-            if status not in _ledger.STATUSES:
-                msg = f"decision for {ref} has unknown status {status!r}"
-                raise ValueError(msg)
+            msg = (
+                f'decision for {ref} carries "status", which was removed — '
+                'mark a delivered outcome with "settled": true'
+            )
+            raise ValueError(msg)
+        if "settled" in entry and not isinstance(entry["settled"], bool):
+            msg = f'decision for {ref} has a "settled" that is not true or false: {entry["settled"]!r}'
+            raise ValueError(msg)
         decision = entry.get("decision")
         if decision is not None and decision not in _ledger.DECISIONS:
             msg = f"decision for {ref} has unknown decision {decision!r}"
@@ -325,32 +363,35 @@ def validate_decisions(decisions: object) -> None:
             if not isinstance(posted, dict) or posted.get("id") is None:
                 msg = f"decision for {ref} has a `reply` that is not an object with an `id`"
                 raise ValueError(msg)
+            if entry.get("settled") is not True:
+                msg = (
+                    f'decision for {ref} has a `reply` without "settled": true — a posted reply is a delivered outcome'
+                )
+                raise ValueError(msg)
 
 
 #: Every field `record` can update on a row, with ordinary JSON-merge semantics:
 #: an ABSENT key is a no-op ("this round supplied no new information"), an explicit JSON
 #: `null` CLEARS the stored value. review-comments 5.7a's canonical decisions.json relies on
 #: the clear — a ref re-decided `fix` writes `"followup_task_id": null` to drop the task id an
-#: earlier `follow_up` round filed.
-#: `status` is the one exception: it is a non-nullable enum (a row is always in exactly one of
-#: `_ledger.STATUSES`), so `validate_decisions` rejects an explicit null rather than writing a
-#: row that belongs to no status bucket.
+#: earlier `follow_up` round filed. Every stored field is nullable, so the two lists are one.
 NULLABLE_FIELDS = ("decision", "reason", "followup_task_id")
-RECORD_FIELDS = ("status", *NULLABLE_FIELDS)
+RECORD_FIELDS = NULLABLE_FIELDS
 
 
 def paint_seen(row: dict, posted: object) -> None:
-    """Mark every stored reply as acted-on, then append the reply this round posted.
+    """Mark the comment and every stored reply as acted-on, then append the reply this round
+    posted, as the agent's.
 
-    Painting is unconditional on `status`. A ref in the decisions file went through Phase 4,
-    where the card put the whole thread in front of the agent — that is what `seen` asserts,
-    and it is true whether or not the round managed to deliver the verdict. This is what stops
-    a withheld decision from being re-litigated next round.
+    Called only for an entry marked `"settled": true` — the round delivered the thread's
+    outcome, which is what `seen` asserts. It paints only what the row STORES: a reply that
+    landed after this round's collect is not stored yet, so it arrives next round unseen (C2).
 
     The append is idempotent by id, normalised through `str()` on both sides: 5.7 checkpoints a
     ref the moment its reply is accepted and 5.7a records it again, and the same id handed back
     as text must not store a second copy.
     """
+    row["seen"] = True
     if not isinstance(row.get("thread"), list):
         row["thread"] = []
     thread = row["thread"]
@@ -361,7 +402,7 @@ def paint_seen(row: dict, posted: object) -> None:
         return
     known = {str(stored.get("id")) for stored in thread if isinstance(stored, dict)}
     if str(posted.get("id")) not in known:
-        thread.append({**posted, "seen": True})
+        thread.append({**posted, "author_role": "agent", "seen": True})
         thread.sort(key=_ledger.reply_order)
 
 
@@ -387,7 +428,8 @@ def cmd_record(args: argparse.Namespace) -> int:
         for field in RECORD_FIELDS:
             if field in entry:
                 row[field] = entry[field]
-        paint_seen(row, entry.get("reply"))
+        if entry.get("settled") is True:
+            paint_seen(row, entry.get("reply"))
         row["last_round"] = doc.get("round", 0)
         row["head"] = args.head
     _ledger.save_ledger(path, doc)
@@ -395,9 +437,9 @@ def cmd_record(args: argparse.Namespace) -> int:
     print(json.dumps({"recorded": len(decisions) - len(unknown), "unknown": sorted(unknown)}))
     if unknown:
         # Non-zero per the plugin's exit-code convention (AGENTS.md: "no silent failures").
-        # The transitions that DID apply are already saved above — the caller's decisions are
+        # The entries that DID apply are already saved above — the caller's decisions are
         # never lost — but the caller must not treat the batch as durable: an unrecorded
-        # finding keeps a working status, re-surfaces next round, and gets re-triaged after a
+        # finding keeps its messages unseen, comes back next round, and gets re-triaged after a
         # reply was already posted for it. Nothing inspects the JSON, so the exit code is the
         # only signal that reaches Phase 5.7a.
         print(f"flow-review-ledger: no row for ref(s) {', '.join(sorted(unknown))}", file=sys.stderr)
@@ -419,29 +461,19 @@ def fold_stats(doc: dict, last_round_only: bool) -> dict:
     rows = list(doc.get("rows", {}).values())
     if last_round_only:
         rows = [row for row in rows if row.get("last_round") == doc.get("round")]
-    # These four buckets PARTITION every row, so the report can never contradict `reconcile`:
-    # `done` is settled by us; `open` is what `is_working` returns; the other two are rows we
-    # have not settled that the platform took off the table.
-    status_counts = {
-        "done": sum(1 for row in rows if row.get("status") == "done"),
-        "open": sum(1 for row in rows if _ledger.is_working(row)),
-    }
+    # The same four buckets `reconcile` counts (`bucket_counts`), so the report can never
+    # contradict it: nothing in the working set, yet `Open: 1`.
+    settled = [row for row in rows if not _ledger.has_unseen(row)]
     return {
         "tracked": len(rows),
-        "status": status_counts,
-        # Derived, not stored: this is what the `pending` status used to say. A working row with
-        # a decision is one whose action did not land — the next round delivers it.
-        "open_undelivered": sum(1 for row in rows if _ledger.is_working(row) and row.get("decision")),
-        "resolved_upstream": sum(
-            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "resolved"
-        ),
-        "absent_upstream": sum(
-            1 for row in rows if row.get("status") == "open" and row.get("platform_state") == "absent"
-        ),
-        "decisions": {
-            key: sum(1 for row in rows if row.get("status") == "done" and row.get("decision") == key)
-            for key, _ in DECISION_LABELS
-        },
+        **bucket_counts(rows),
+        # A working row that already carries a decision is one whose action did not land — an
+        # apply that failed, a follow-up batch that was cancelled. It is triaged again next round
+        # with that decision as context.
+        "open_decided": sum(1 for row in rows if _ledger.is_working(row) and row.get("decision")),
+        # Tallied over settled rows only: a decision on a row still holding something unseen has
+        # not been delivered, or has been answered by a message nobody has looked at yet.
+        "decisions": {key: sum(1 for row in settled if row.get("decision") == key) for key, _ in DECISION_LABELS},
         "followups": [
             row["followup_task_id"]
             for row in rows
@@ -466,20 +498,21 @@ def render_stats(doc: dict, folded: dict, last_round_only: bool) -> str:
     breakdown = " · ".join(
         f"{label} {folded['decisions'][key]}" for key, label in DECISION_LABELS if folded["decisions"][key]
     )
-    done = f"  Done: {folded['status']['done']}"
+    done = f"  Done: {folded['done']}"
     lines.append(f"{done}  ({breakdown})" if breakdown else done)
-    open_line = f"  Open: {folded['status']['open']}"
-    if folded["open_undelivered"]:
+    # `flow:review-loop` parses this line as the size of what is left: keep it `Open: N`.
+    open_line = f"  Open: {folded['open']}"
+    if folded["open_decided"]:
         # Only when non-zero: on a clean round every open row is simply untriaged, and a
-        # permanent "(decided but not delivered: 0)" would read as noise.
-        open_line += f"  (decided but not delivered: {folded['open_undelivered']})"
+        # permanent "(decided, action did not land: 0)" would read as noise.
+        open_line += f"  (decided, action did not land: {folded['open_decided']})"
     lines.append(open_line)
     if folded["absent_upstream"]:
         lines.append(f"  Deleted upstream: {folded['absent_upstream']}")
     if folded["resolved_upstream"]:
-        # Same rule, and the counterpart to the line above: these rows are settled by the
-        # platform rather than by us, so they are out of the working set but were never given a
-        # decision — reporting them under `Open` would be wrong, hiding them entirely worse.
+        # Same rule, and the counterpart to the line above: these rows still hold something the
+        # workflow never acted on, but the platform took them off the table — reporting them
+        # under `Open` would be wrong, hiding them entirely worse.
         lines.append(f"  Resolved upstream: {folded['resolved_upstream']}")
     if folded["followups"]:
         lines.append(f"  Follow-ups filed: {len(folded['followups'])} ({', '.join(folded['followups'])})")
@@ -537,8 +570,11 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Merge a decisions file into the ledger. Per entry, an ABSENT key is a no-op and an "
             "explicit null CLEARS the field. Clearable: decision, reason, followup_task_id. "
-            "status is not clearable: null is rejected. `reply` is not a stored field — it names "
-            "the reply this round posted, and record appends it to the thread marked seen."
+            '"settled": true says the round delivered the outcome; only then are the comment and '
+            "every stored reply painted seen — without it the decision is stored and the thread "
+            "comes back next round. `reply` names the reply this round posted (with its id); it is "
+            'allowed only with "settled": true and is appended to the thread as the agent\'s, seen. '
+            "Neither key is stored. status was removed and is rejected."
         ),
     )
     record.add_argument("--decisions", required=True)

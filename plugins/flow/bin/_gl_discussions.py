@@ -22,7 +22,7 @@ _QUERY = (
     "query($fullPath:ID!,$iid:String!,$cursor:String){"
     "project(fullPath:$fullPath){mergeRequest(iid:$iid){"
     "discussions(first:100,after:$cursor){"
-    "nodes{id resolved notes(first:100){pageInfo{hasNextPage} nodes{system author{username bot}}}}"
+    "nodes{id resolved notes(first:100){pageInfo{hasNextPage} nodes{id body system author{username bot}}}}"
     "pageInfo{hasNextPage endCursor}}}}}"
 )
 
@@ -86,6 +86,13 @@ def notes_of(node: dict) -> list[dict]:
     """The discussion's non-system notes, in order. System notes ("changed the description") are
     platform bookkeeping, not anyone speaking in the thread."""
     return [n for n in ((node.get("notes") or {}).get("nodes") or []) if not n.get("system")]
+
+
+def note_id(note: dict) -> str | None:
+    """The numeric tail of a note's GraphQL gid (`gid://gitlab/Note/123`, `gid://gitlab/DiffNote/123`
+    -> `"123"`) — the REST note id the collector's metadata holds. None when the note has no id."""
+    gid = str(note.get("id") or "")
+    return gid.rsplit("/", 1)[-1] or None
 
 
 def bot_by_username(nodes: list[dict]) -> dict[str, bool]:

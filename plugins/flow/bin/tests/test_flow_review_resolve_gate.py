@@ -7,16 +7,27 @@ not a positive, complete answer must refuse — the call it guards closes someon
 # bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import json
+import sys
+from pathlib import Path
 
 from conftest import run_helper
 
+BIN = Path(__file__).parent.parent
+MARK = "<!-- flow:review-comments -->"
 THREAD_ID = "PRRT_kwDOabc"
 
 
-def _meta(tmp_path, platform, *, me="me", number=7):
+def _meta(tmp_path, platform, *, me="me", number=7, comments=None):
     path = tmp_path / "metadata.json"
-    path.write_text(json.dumps({"platform": platform, "unit": {"number": number, "branch": "b", "url": "u"}, "me": me}))
+    meta = {"platform": platform, "unit": {"number": number, "branch": "b", "url": "u"}, "me": me}
+    if comments is not None:
+        meta["comments"] = comments
+    path.write_text(json.dumps(meta))
     return path
+
+
+def _held_item(*reply_ids, resolve_id=THREAD_ID):
+    return {"resolve_id": resolve_id, "thread": [{"id": i} for i in reply_ids]}
 
 
 def _verdict(r):
@@ -27,9 +38,16 @@ def _verdict(r):
 
 
 def gh_node(authors, *, resolved=False, has_next=False, typename="PullRequestReviewThread"):
-    """A `node(id:)` answer. `authors` is a list of (login, __typename) — or None for a deleted
-    account, which GitHub reports as a null author."""
-    nodes = [{"author": None if a is None else {"login": a[0], "__typename": a[1]}} for a in authors]
+    """A `node(id:)` answer. `authors` is a list of (login, __typename[, body, database_id]) — or
+    None for a deleted account, which GitHub reports as a null author."""
+    nodes = [
+        {
+            "fullDatabaseId": a[3] if a is not None and len(a) > 3 else None,
+            "body": a[2] if a is not None and len(a) > 2 else "",
+            "author": None if a is None else {"login": a[0], "__typename": a[1]},
+        }
+        for a in authors
+    ]
     return json.dumps(
         {
             "data": {
@@ -43,28 +61,56 @@ def gh_node(authors, *, resolved=False, has_next=False, typename="PullRequestRev
     )
 
 
-def _gh_gate(fake_gh_api, tmp_path, node_json, *, me="me"):
+def _gh_gate(fake_gh_api, tmp_path, node_json, *, me="me", comments=None):
     fake_gh_api.set("thread_node", node_json)
-    meta = _meta(tmp_path, "github", me=me)
+    meta = _meta(tmp_path, "github", me=me, comments=comments)
     return run_helper("flow-review-resolve-gate", "--meta", str(meta), "--resolve-id", THREAD_ID, env=fake_gh_api.env())
 
 
 def test_github_bot_thread_with_only_our_reply_resolves(fake_gh_api, tmp_path):
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("chatgpt-codex-connector", "Bot"), ("me", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("chatgpt-codex-connector", "Bot"), ("me", "User", f"ok\n\n{MARK}")]))
     assert r.returncode == 0, r.stderr
     assert _verdict(r)["resolve"] is True
 
 
 def test_github_another_bot_answering_does_not_block(fake_gh_api, tmp_path):
     """A conversational bot (CodeRabbit) answering our reply is still a bot thread."""
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("coderabbitai", "Bot"), ("me", "User"), ("coderabbitai", "Bot")]))
+    r = _gh_gate(
+        fake_gh_api,
+        tmp_path,
+        gh_node([("coderabbitai", "Bot"), ("me", "User", f"ok\n\n{MARK}"), ("coderabbitai", "Bot")]),
+    )
     assert r.returncode == 0, r.stderr
+
+
+def test_github_owner_reply_the_round_did_not_hold_blocks(fake_gh_api, tmp_path):
+    node = gh_node([("codex", "Bot"), ("me", "User", "maybe not needed", "4331923290")])
+    r = _gh_gate(fake_gh_api, tmp_path, node)
+    assert r.returncode == 3
+    assert "after this round read it" in _verdict(r)["reason"]
+
+
+def test_github_owner_reply_the_round_held_does_not_block(fake_gh_api, tmp_path):
+    node = gh_node([("codex", "Bot"), ("me", "User", "maybe not needed", "4331923290")])
+    r = _gh_gate(fake_gh_api, tmp_path, node, comments=[_held_item(4331923290)])  # int vs GraphQL string
+    assert r.returncode == 0, r.stderr
+
+
+def test_github_our_marked_reply_never_blocks(fake_gh_api, tmp_path):
+    node = gh_node([("codex", "Bot"), ("me", "User", f"Fixed\n\n{MARK}", "99")])
+    assert _gh_gate(fake_gh_api, tmp_path, node).returncode == 0
+
+
+def test_github_owner_reply_held_by_another_thread_still_blocks(fake_gh_api, tmp_path):
+    node = gh_node([("codex", "Bot"), ("me", "User", "hm", "5")])
+    r = _gh_gate(fake_gh_api, tmp_path, node, comments=[_held_item(5, resolve_id="other")])
+    assert r.returncode == 3
 
 
 def test_github_human_reply_after_the_snapshot_blocks(fake_gh_api, tmp_path):
     """The Codex finding itself: a person replied while cards were triaged. The live read sees
     it; the Phase-2 snapshot did not."""
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User"), ("alice", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User", f"ok\n\n{MARK}"), ("alice", "User")]))
     assert r.returncode == 3
     v = _verdict(r)
     assert v["resolve"] is False
@@ -77,30 +123,30 @@ def test_github_human_whose_login_looks_like_a_bot_blocks(fake_gh_api, tmp_path)
 
 
 def test_github_human_opener_blocks(fake_gh_api, tmp_path):
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("renovate-bot", "User"), ("me", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("renovate-bot", "User"), ("me", "User", f"ok\n\n{MARK}")]))
     assert r.returncode == 3
 
 
 def test_github_thread_we_opened_ourselves_is_not_a_bot_thread(fake_gh_api, tmp_path):
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("me", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("me", "User", f"ok\n\n{MARK}")]))
     assert r.returncode == 3
 
 
 def test_github_deleted_author_counts_as_a_human(fake_gh_api, tmp_path):
     r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), None]))
     assert r.returncode == 3
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([None, ("me", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([None, ("me", "User", f"ok\n\n{MARK}")]))
     assert r.returncode == 3
 
 
 def test_github_already_resolved_thread_is_left_alone(fake_gh_api, tmp_path):
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User")], resolved=True))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User", f"ok\n\n{MARK}")], resolved=True))
     assert r.returncode == 3
     assert "resolved" in _verdict(r)["reason"]
 
 
 def test_github_a_thread_longer_than_one_page_is_never_judged(fake_gh_api, tmp_path):
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User")], has_next=True))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User", f"ok\n\n{MARK}")], has_next=True))
     assert r.returncode == 4
     assert _verdict(r)["resolve"] is False
 
@@ -114,7 +160,7 @@ def test_github_missing_node_cannot_be_verified(fake_gh_api, tmp_path):
 
 def test_github_api_failure_refuses_and_says_why(fake_gh_api, tmp_path):
     fake_gh_api.set("thread_node_fail", "gh: HTTP 401: Bad credentials\n")
-    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User")]))
+    r = _gh_gate(fake_gh_api, tmp_path, gh_node([("codex", "Bot"), ("me", "User", f"ok\n\n{MARK}")]))
     assert r.returncode == 4
     assert _verdict(r)["resolve"] is False
     assert r.stderr.strip()
@@ -140,15 +186,19 @@ DISC = "6a9c1750b37d"
 
 def gl_page(discussions, *, has_next=False, cursor=None):
     """One discussions page. `discussions` is a list of (id, resolved, notes, notes_has_next),
-    each note a (username, bot, system) — or None for a deleted author."""
+    each note a (username, bot, system[, body, gid]) — or None for a deleted author."""
     nodes = []
     for did, resolved, notes, notes_has_next in discussions:
         rendered = []
         for n in notes:
+            note_id = n[4] if len(n) > 4 else None
+            body = n[3] if len(n) > 3 else ""
             if n[0] is None:
-                rendered.append({"system": n[2], "author": None})
+                rendered.append({"id": note_id, "body": body, "system": n[2], "author": None})
             else:
-                rendered.append({"system": n[2], "author": {"username": n[0], "bot": n[1]}})
+                rendered.append(
+                    {"id": note_id, "body": body, "system": n[2], "author": {"username": n[0], "bot": n[1]}}
+                )
         nodes.append(
             {
                 "id": f"gid://gitlab/Discussion/{did}",
@@ -169,19 +219,19 @@ def gl_page(discussions, *, has_next=False, cursor=None):
     )
 
 
-def _gl_gate(fake_glab_api, tmp_path, page, *, page2=None, resolve_id=DISC):
+def _gl_gate(fake_glab_api, tmp_path, page, *, page2=None, resolve_id=DISC, comments=None):
     fake_glab_api.set("project", "grp/sub/proj")
     fake_glab_api.set("graphql", page)
     if page2 is not None:
         fake_glab_api.set("graphql_page2", page2)
-    meta = _meta(tmp_path, "gitlab")
+    meta = _meta(tmp_path, "gitlab", comments=comments)
     return run_helper(
         "flow-review-resolve-gate", "--meta", str(meta), "--resolve-id", resolve_id, env=fake_glab_api.env()
     )
 
 
 BOT_ROOT = ("project_278964_bot_89f97e2c", True, False)
-OUR_REPLY = ("me", False, False)
+OUR_REPLY = ("me", False, False, f"ok\n\n{MARK}")
 
 
 def test_gitlab_bot_discussion_with_only_our_reply_resolves(fake_glab_api, tmp_path):
@@ -243,3 +293,29 @@ def test_gitlab_graphql_failure_refuses(fake_glab_api, tmp_path):
     assert r.returncode == 4
     assert _verdict(r)["resolve"] is False
     assert r.stderr.strip()
+
+
+def test_gitlab_owner_note_held_under_its_diffnote_gid_does_not_block(fake_glab_api, tmp_path):
+    owner = ("me", False, False, "maybe", "gid://gitlab/DiffNote/77")
+    page = gl_page([(DISC, False, [BOT_ROOT, owner], False)])
+    r = _gl_gate(fake_glab_api, tmp_path, page, comments=[_held_item(77, resolve_id=DISC)])
+    assert r.returncode == 0, r.stderr
+
+
+def test_gitlab_unmarked_owner_note_not_held_blocks(fake_glab_api, tmp_path):
+    owner = ("me", False, False, "maybe", "gid://gitlab/DiffNote/77")
+    page = gl_page([(DISC, False, [BOT_ROOT, owner], False)])
+    r = _gl_gate(fake_glab_api, tmp_path, page, comments=[_held_item(76, resolve_id=DISC)])
+    assert r.returncode == 3
+    assert "after this round read it" in _verdict(r)["reason"]
+
+
+def test_note_id_is_the_numeric_tail_of_the_gid():
+    sys.path.insert(0, str(BIN))
+    try:
+        import _gl_discussions
+    finally:
+        sys.path.remove(str(BIN))
+    assert _gl_discussions.note_id({"id": "gid://gitlab/Note/123"}) == "123"
+    assert _gl_discussions.note_id({"id": "gid://gitlab/DiffNote/123"}) == "123"
+    assert _gl_discussions.note_id({}) is None
