@@ -817,12 +817,49 @@ def test_review_comments_never_withholds_a_reply_for_a_push() -> None:
 
 def test_review_comments_followup_reuses_a_stored_task_id() -> None:
     """A follow-up filed whose reply never landed leaves its id on an unpainted row. The next
-    round's 5.4 reuses that id instead of filing a second task (an anti-goal), and a ref decided
-    away from follow-up clears the id so no settled row keeps pointing at it."""
+    round's 5.4 reuses that id instead of filing a second task (an anti-goal). Clearing an id is
+    not 5.4's job — see the stale-id test below."""
     follow_up = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.4.", "#### 5.5.")
     assert "followup_task_id" in follow_up
     assert "reuse" in follow_up
-    assert '"followup_task_id": null' in follow_up
+
+
+def test_review_comments_stale_followup_check_runs_on_every_round() -> None:
+    """The round that needs the clearing is the one where the owner turned a former follow-up into
+    "just fix it" — often with no follow-up decision at all, so an agent skips 5.4, and the bd
+    guard can stop 5.4 midway anyway. The check therefore lives in a step every Phase-5 run
+    executes (5.0), says so, and feeds 5.7's checkpoint, which is written before 5.7a."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert text.index("### Phase 5") < text.index("#### 5.0.") < text.index("#### 5.1.")
+    step = section(text, "#### 5.0.", "#### 5.1.")
+    assert "moved away from `follow_up`" in step
+    assert '"followup_task_id": null' in step
+    assert re.search(r"even\s+when\s+no\s+ref\s+was\s+decided\s+follow-up", step)
+    assert re.search(r"even\s+when\s+the\s+5\.4\s+bd\s+guard", step)
+    assert "possibly orphaned" in step
+    follow_up = section(text, "#### 5.4.", "#### 5.5.")
+    assert "moved away from" not in follow_up, "5.4 must not own the clearing rule"
+    assert "decided away from" not in follow_up, "5.4 must not own the clearing rule"
+    phase_5_7 = section(text, "#### 5.7. Reply on the platform", "#### 5.7a")
+    assert re.search(r'"followup_task_id": null`\s+when\s+5\.0', phase_5_7), "5.7's checkpoint must point at 5.0"
+    assert "5.4 cleared" not in text
+
+
+def test_review_comments_unfiled_followup_omits_the_task_id_key() -> None:
+    """A follow-up not filed this round (bd guard stopped the batch, batch cancelled or edited out)
+    may sit on a row that already holds a task an earlier round filed. Writing
+    `"followup_task_id": null` there erases that id, and the next round files a second task for
+    the same finding — an anti-goal. Such an entry omits the key (absent = no-op)."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "no `followup_task_id`" not in text, "say `omit the key`, not the ambiguous `no followup_task_id`"
+    assert "no task id" not in text, "say `omit the key`, not the ambiguous `no task id`"
+    follow_up = section(text, "#### 5.4.", "#### 5.5.")
+    assert re.search(r"omit\w*\s+the\s+`followup_task_id`\s+key", follow_up)
+    invariant_3 = section(text, "3. `follow-up` ⇒", "| verdict → decision (override)")
+    assert re.search(r"omit\w*\s+the\s+`followup_task_id`\s+key", invariant_3)
+    record_step = section(text, "#### 5.7a", "#### 5.8")
+    not_filed = next(line for line in record_step.splitlines() if line.startswith("| follow-up not filed"))
+    assert "omitted" in not_filed
 
 
 def test_review_comments_reports_a_possibly_orphaned_followup() -> None:

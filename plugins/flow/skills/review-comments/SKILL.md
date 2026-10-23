@@ -617,15 +617,16 @@ own source. Record per decision:
    A comment that **can** be replied to never gets a bare skip: not wanting to act on it is
    `won't-fix`, with a rationale.
 3. `follow-up` ⇒ a **task-id must exist** before 5.7 posts "Filed as follow-up: {task-id}". If 5.4
-   is answered `edit`/`no` and a ref gets no task, it is recorded with the `follow_up` decision,
-   no `followup_task_id` and no `settled` — no follow-up reply goes out for it, and its thread
-   comes back next round (5.7a's table of actions that did not land).
+   is answered `edit`/`no` and a ref gets no task, it is recorded with the `follow_up` decision
+   and no `settled`, omitting the `followup_task_id` key (never `null` — that would erase a task
+   an earlier round filed) — no follow-up reply goes out for it, and its thread comes back next
+   round (5.7a's table of actions that did not land).
 
 | verdict → decision (override) | extra data to record at triage |
 |---|---|
 | `disagree` → `fix` | accept-anyway action |
 | `agree_*` → `won't-fix` | explicit rejection reason (thought is pro-fix) |
-| any → `follow-up`, task not created | decision `follow_up`, no `followup_task_id`, no `settled`, no reply |
+| any → `follow-up`, task not created | decision `follow_up`, `followup_task_id` key omitted, no `settled`, no reply |
 
 Do **not** apply, reply, or commit during the loop.
 
@@ -637,6 +638,24 @@ to every comment, so each reply says where the change actually is: on the remote
 locally and not pushed yet (**commit/push are skipped when no files changed** — 5.5). This
 preserves fix-the-class, a single skeptic pass, and one commit/push — the reason triage and
 execution are split.
+
+#### 5.0. Stale follow-up task ids
+
+Run this first, on **every** Phase-5 run — even when no ref was decided follow-up this round, and
+even when the 5.4 bd guard later stops the follow-up batch. It is not part of 5.4 because the round
+that needs it is usually the one where a former follow-up was turned into a fix, so 5.4 may have
+nothing to do.
+
+For each ref that reached Phase 5, read `followup_task_id` from its Phase-3 extract
+`row-{ref}.json`. A ref that carries one but was decided `fix` or `won't-fix` this round has
+moved away from `follow_up`: its 5.7 checkpoint and its 5.7a entry write
+`"followup_task_id": null`, and the old id goes to 5.8's `Follow-up task possibly orphaned` line —
+the task still exists in beads, and nothing points at it any more. Settle the list now, before any
+reply: 5.7 checkpoints a replied ref before 5.7a runs, so a null decided only in 5.7a would be lost
+if the run dies in between.
+
+This is the **only** case that writes `"followup_task_id": null`. A ref decided `follow_up` again
+keeps its stored id (5.4 reuses it), and a follow-up not filed this round omits the key (5.4).
 
 #### 5.1. Fix — generalize the class (fix the class, not the instance)
 
@@ -819,11 +838,13 @@ flow-require-bd
 ```
 
 If it exits non-zero, **STOP the follow-up batch**: print its stderr message, create **no** tasks,
-and **record every `follow-up` ref with the `follow_up` decision, no task id and no `settled`**
-(5.7a's table of actions that did not land) so Phase 5.7 does not post a "Filed as follow-up" reply
-for a ref that has no `{task-id}` (flow requires `bd >= 1.0.0` — see `plugins/flow/README.md`, "bd
-requirements and migration"). Keep it in its own block so a failed guard cannot fall through to
-`bd create`.
+and **record every `follow-up` ref with the `follow_up` decision and no `settled`, omitting the
+`followup_task_id` key** (5.7a's table of actions that did not land), so Phase 5.7 posts no "Filed
+as follow-up" reply for these refs this round (flow requires `bd >= 1.0.0` — see
+`plugins/flow/README.md`, "bd requirements and migration"). **Omit the key — never write it as
+`null`:** a ref may already hold a task an earlier round filed, and a null would erase that id, so
+the next round files a second task for the same finding. Keep it in its own block so a failed
+guard cannot fall through to `bd create`.
 The fix / won't-fix paths need no bd; only the follow-up path is blocked.
 
 **Then — reuse a task an earlier round already filed.** A ref can reach this batch with a
@@ -840,13 +861,6 @@ flow-review-ledger get --meta "$FLOW_RC_DIR/metadata.json" --ref C3
 A non-empty `followup_task_id` means the task exists: **do not call `bd create` for that ref.**
 Reuse the stored id as its `{task-id}` for the 5.7 reply and the 5.8 summary, and show it in the
 confirmation prompt below as a reuse, not a creation, so the user sees no phantom second task.
-
-**A ref decided away from `follow_up` clears its old id.** Check every ref that reached Phase 5,
-not only this batch: a ref triaged `fix` or `won't-fix` this round whose row still carries a
-`followup_task_id` (its Phase-3 extract `row-{ref}.json` shows it) writes
-`"followup_task_id": null` in its 5.7 checkpoint or 5.7a entry, and its old id goes to 5.8's
-`Follow-up task possibly orphaned` line — the task exists in beads, and nothing points at it any
-more.
 
 **Parent epic — infer from the comment's path** (repo convention; the user confirms/overrides):
 
@@ -877,8 +891,9 @@ Proceed? (yes / edit / no)
 Omit the "Reusing" block when there is none.
 
 - **edit** → adjust the batch (drop/retarget refs) per the user, then re-confirm. Any ref removed
-  from the batch is recorded with the `follow_up` decision, no task id and no `settled` — it gets
-  no task and no follow-up reply, and its thread comes back next round.
+  from the batch is recorded with the `follow_up` decision and no `settled`, omitting the
+  `followup_task_id` key (a stored id survives) — it gets no task and no follow-up reply, and its
+  thread comes back next round.
 - **no** → create nothing; every ref in the batch is recorded the same way.
 
 On **yes**, create them **sequentially** (embedded Dolt is single-writer — do NOT parallelize
@@ -1110,7 +1125,7 @@ GitHub + `kind == "summary"` is the **only** combination with no reply target.
 **Checkpoint each ref into the ledger the moment its reply is accepted** — same rule, same reason as
 the `bd create` loop in 5.4: a posted reply is irreversible and this loop is sequential, so a failure
 at ref 3 of 5 must not cost the record of refs 1-2. Write that ref's final entry (`"settled": true`,
-its `decision` / `reason`, `"followup_task_id": null` when 5.4 cleared one, and under `reply` the
+its `decision` / `reason`, `"followup_task_id": null` when 5.0 listed the ref, and under `reply` the
 object the POST just returned — the table in 5.7a) to `$FLOW_RC_DIR/checkpoint-{ref}.json` and
 record it right away:
 
@@ -1215,7 +1230,7 @@ thread unseen, so it comes back next round:
 | Situation | Recorded as |
 |---|---|
 | apply failed (5.2) | `decision: fix`, `reason`: what failed |
-| follow-up not filed (bd unavailable, batch cancelled or edited out) | `decision: follow_up`, no `followup_task_id` |
+| follow-up not filed (bd unavailable, batch cancelled or edited out) | `decision: follow_up`, `followup_task_id` key omitted — never `null`, a stored id must survive |
 | task filed, reply not yet posted (5.4 checkpoint) | `decision: follow_up`, `followup_task_id` set — `settled` arrives with 5.7's reply |
 
 Write **one** decisions file with the Write tool — `reason` is
@@ -1241,7 +1256,7 @@ reviewer-derived free text, so it goes by file, never through a shell:
 `C1`/`U1`/`C3` each carry the reply just posted. `C5` is a GitHub `kind == "summary"` row: no
 reply target, so no `reply` key — `"settled": true` alone settles it. `C1`'s
 `"followup_task_id": null` drops the task id an earlier round filed when it decided `follow_up`;
-this round it is a `fix`. `C4`'s apply failed: no `settled`, so nothing is painted and its thread
+this round it is a `fix`, so 5.0 listed it. `C4`'s apply failed: no `settled`, so nothing is painted and its thread
 re-enters next round's working set on its own, with `fix` and the `reason` as context.
 
 **How an entry merges into the row** — ordinary JSON-merge semantics, per field:
@@ -1253,7 +1268,8 @@ re-enters next round's working set on its own, with `fix` and the `reason` as co
 | key with an explicit `null` | **clears** the field (`decision`, `reason`, `followup_task_id`) |
 
 Write a null only when you mean "this row no longer has one": a reversed `follow_up` clears
-`followup_task_id`. Two keys are instructions to this `record` call, never stored on the row:
+`followup_task_id` (the refs 5.0 listed, and only those). A follow-up that was not filed omits the
+key instead — a null there would erase a task an earlier round filed. Two keys are instructions to this `record` call, never stored on the row:
 `"settled": true` paints the comment and every stored reply seen, and `reply` (allowed only beside
 `"settled": true`) appends the posted reply as the agent's. A `status` key is rejected with exit 2 —
 it was removed; a delivered outcome is `"settled": true`.
@@ -1307,9 +1323,9 @@ Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 
 `Committed locally, not pushed` lists the refs answered `Fixed locally in …, not pushed yet` (5.6
 skipped or failed) and the `outdated_fixed` refs answered `Already fixed in local commits, not
-pushed yet` (branch ahead of the remote). `Follow-up task possibly orphaned` lists the task ids 5.4
-cleared because the ref was decided away from follow-up — each task still exists in beads; close it
-by hand if it is no longer wanted.
+pushed yet` (branch ahead of the remote). `Follow-up task possibly orphaned` lists the task ids 5.0
+cleared because the ref moved away from follow-up — each task still exists in beads; close it by
+hand if it is no longer wanted.
 
 Then print the cumulative ledger block:
 
