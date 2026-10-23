@@ -1296,14 +1296,20 @@ Processed: {total} comments
   Already fixed: {count} ({list of refs})
   Follow-ups created: {count} ({ref → task-id})
   Follow-up not filed: {count} ({refs whose task was never created — bd unavailable or the batch was declined; decision kept, re-triaged next round})
-  Follow-up task possibly orphaned: {task-ids} ({ids cleared in 5.4 because the ref was decided away from follow-up — the task still exists in beads; close it by hand if it is no longer wanted})
+  Follow-up task possibly orphaned: {task-ids}
   Failed: {count} ({list of refs whose apply failed — `fix` decision kept, not reported fixed, re-triaged next round})
-  Committed locally, not pushed: {count} ({refs answered `Fixed locally in …, not pushed yet` because 5.6 was skipped/failed, plus `outdated_fixed` refs answered `Already fixed in local commits, not pushed yet` because the branch is ahead of the remote})
+  Committed locally, not pushed: {count} ({refs})
   Threads resolved: {count} ({bot refs whose thread was closed after its reply landed})
   Resolve withheld: {count} ({ref → the live gate's `reason`: a human replied, already resolved, or could not verify})
   Resolve failed: {count} ({refs whose reply posted but whose resolve call failed, plus bot refs whose `resolve_id` was null — no call to make})
 Self-review: {ran / skipped (nitpick round)}; {N} extra fixes applied
 ```
+
+`Committed locally, not pushed` lists the refs answered `Fixed locally in …, not pushed yet` (5.6
+skipped or failed) and the `outdated_fixed` refs answered `Already fixed in local commits, not
+pushed yet` (branch ahead of the remote). `Follow-up task possibly orphaned` lists the task ids 5.4
+cleared because the ref was decided away from follow-up — each task still exists in beads; close it
+by hand if it is no longer wanted.
 
 Then print the cumulative ledger block:
 
