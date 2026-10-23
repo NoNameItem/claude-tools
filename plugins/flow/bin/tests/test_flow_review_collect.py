@@ -63,7 +63,7 @@ def test_github_single_inline_comment(fake_gh_api, monkeypatch):
     assert doc["platform"] == "github"
     assert doc["unit"] == {"number": 7, "branch": "feat/x", "url": "https://gh/pr/7"}
     assert doc["me"] == "me"
-    assert doc["counts"] == {"total": 1, "already_replied": 0, "resolved": 0, "actionable": 1}
+    assert doc["counts"] == {"total": 1, "resolved": 0}
     c = doc["comments"][0]
     assert c["ref"] == "U1"
     assert c["user"] == "alice"
@@ -74,7 +74,7 @@ def test_github_single_inline_comment(fake_gh_api, monkeypatch):
     assert c["discussion_id"] is None
     assert c["diff_hunk"].startswith("@@ -40,3")
     assert c["outdated"] is False
-    assert c["already_replied"] is False
+    assert all("already_replied" not in x for x in doc["comments"])
     # Resolve side-query succeeded (default fake router returns an empty-but-known set) and
     # this comment id is not in it → a real False, not the "unknown" None.
     assert c["resolved"] is False
@@ -111,7 +111,7 @@ def test_github_outdated_uses_original_line(fake_gh_api):
 
 def test_github_resolved_thread_present_with_flag(fake_gh_api):
     """A resolved GitHub thread is now REPORTED (not dropped), carrying resolved: true, and
-    excluded from `counts["actionable"]` — dropping it made "absent" ambiguous between
+    counted in `counts["resolved"]` — dropping it made "absent" ambiguous between
     "filtered" and "deleted", which prevented reconcile from telling a settled thread from a
     gone one."""
     fake_gh_api.set("repo", "o/r")
@@ -149,10 +149,9 @@ def test_github_resolved_thread_present_with_flag(fake_gh_api):
     assert c["resolved"] is True
     assert doc["counts"]["total"] == 1
     assert doc["counts"]["resolved"] == 1
-    assert doc["counts"]["actionable"] == 0
 
 
-def test_github_already_replied_and_bot_ref(fake_gh_api):
+def test_github_bot_ref_follows_humans(fake_gh_api):
     fake_gh_api.set("repo", "o/r")
     fake_gh_api.set("user", "me")
     fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
@@ -176,9 +175,6 @@ def test_github_already_replied_and_bot_ref(fake_gh_api):
     c = doc["comments"][0]
     assert c["ref"] == "C1"
     assert c["is_bot"] is True
-    assert c["already_replied"] is True
-    assert doc["counts"]["already_replied"] == 1
-    assert doc["counts"]["actionable"] == 0
 
 
 def _gh_minimal(fake_gh_api):
@@ -443,7 +439,7 @@ def test_gitlab_inline_and_general(fake_glab_api):
 
 def test_gitlab_resolved_thread_present_with_flag(fake_glab_api):
     """A resolved GitLab discussion is now REPORTED (not dropped), carrying resolved: true, and
-    excluded from `counts["actionable"]` — same rationale as the GitHub side, but GitLab ships
+    counted in `counts["resolved"]` — same rationale as the GitHub side, but GitLab ships
     resolution inline with the discussion so the flag is always a real bool, never None."""
     fake_glab_api.set("project", "g/p")
     fake_glab_api.set("user", json.dumps({"username": "me"}))
@@ -475,7 +471,7 @@ def test_gitlab_resolved_thread_present_with_flag(fake_glab_api):
     assert c["resolved"] is True
     assert doc["counts"]["total"] == 1
     assert doc["counts"]["resolved"] == 1
-    assert doc["counts"]["actionable"] == 0
+    assert all("already_replied" not in x for x in doc["comments"])
 
 
 def test_gitlab_outdated_note_anchors_to_old_line(fake_glab_api):
@@ -581,7 +577,6 @@ def test_github_unresolved_inline_comment_resolved_false(fake_gh_api):
     c = doc["comments"][0]
     assert c["resolved"] is False
     assert doc["counts"]["resolved"] == 0
-    assert doc["counts"]["actionable"] == 1
 
 
 def test_github_review_body_summary_resolved_is_none(fake_gh_api):
@@ -625,7 +620,6 @@ def test_github_review_body_summary_resolved_is_none(fake_gh_api):
     c = doc["comments"][0]
     assert c["resolved"] is None
     assert doc["counts"]["resolved"] == 0
-    assert doc["counts"]["actionable"] == 1  # unresolvable → not settled, stays actionable
 
 
 def test_github_human_changes_requested_summary_included(fake_gh_api):
@@ -1259,11 +1253,10 @@ def test_gitlab_kind_file_via_null_line_endpoints_backup(fake_glab_api):
     assert c["kind"] == "file"
 
 
-def test_counts_mix_of_resolved_already_replied_and_plain(fake_gh_api):
-    """`counts` fixture mixing a resolved item, an already-replied item, and a plain item:
-    `total` counts all three, `already_replied`/`resolved` each count exactly their own item,
-    and `actionable` is neither — i.e. only the plain one, not `total - already_replied` as it
-    used to be (that old formula would have wrongly counted the resolved item as actionable)."""
+def test_counts_mix_of_resolved_replied_and_plain(fake_gh_api):
+    """`counts` fixture mixing a resolved item, a replied-to item, and a plain item:
+    `total` counts all three and `resolved` counts exactly the resolved one. The collector no
+    longer classifies replies — the ledger decides what needs attention."""
     fake_gh_api.set("repo", "o/r")
     fake_gh_api.set("user", "me")
     fake_gh_api.set("pr_view", json.dumps({"number": 1, "headRefName": "b", "url": "u"}))
@@ -1317,12 +1310,10 @@ def test_counts_mix_of_resolved_already_replied_and_plain(fake_gh_api):
         ),
     )
     doc = _out(run_helper("flow-review-collect", "1", "--platform", "github", env=fake_gh_api.env()))
-    assert doc["counts"] == {"total": 3, "already_replied": 1, "resolved": 1, "actionable": 1}
+    assert doc["counts"] == {"total": 3, "resolved": 1}
     by_body = {c["body"]: c for c in doc["comments"]}
     assert by_body["resolved-one"]["resolved"] is True
-    assert by_body["already-replied-one"]["already_replied"] is True
     assert by_body["plain-one"]["resolved"] is False
-    assert by_body["plain-one"]["already_replied"] is False
 
 
 # --- collector aborts instead of degrading (elf.39 task 6) -----------------------------

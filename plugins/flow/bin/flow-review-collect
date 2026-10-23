@@ -3,7 +3,7 @@
 
 Absorbs the whole of the old SKILL.md Phase 2: fetch (comments + reviews / discussions, with
 pagination), thread parsing, outdated detection with original_line fallback, source
-classification, resolved-thread skipping, bot-summary extraction, already_replied, ref
+classification, resolved-thread skipping, bot-summary extraction, ref
 assignment (humans U…, bots C…), and snippet reconstruction from the CURRENT working tree.
 
     flow-review-collect [<pr_or_mr_number>]
@@ -338,7 +338,6 @@ def gh_collect(number: str | None) -> dict:
         line = c.get("original_line") if outdated else c.get("line")
         start_line = c.get("original_start_line") if outdated else c.get("start_line")
         login = (c.get("user") or {}).get("login", "?")
-        latest = thread[-1]["user"] if thread else None
         items.append(
             {
                 "user": login,
@@ -348,7 +347,6 @@ def gh_collect(number: str | None) -> dict:
                 "start_line": start_line,
                 "line": line,
                 "outdated": outdated,
-                "already_replied": latest == me,
                 "resolved": resolved,
                 "comment_id": cid,
                 "discussion_id": None,
@@ -400,7 +398,6 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
                 "start_line": None,
                 "line": None,
                 "outdated": False,
-                "already_replied": False,
                 # A GitHub review body is not a thread and never consults the resolve
                 # side-query, so it has no resolution state at all — this is the one legal
                 # use of `resolved: None` left; everywhere else it's a real bool.
@@ -530,7 +527,6 @@ def gl_collect(number: str | None) -> dict:
             thread.append(
                 thread_reply(name, n.get("body", ""), n.get("id"), n.get("created_at"), bot=bots.get(name, False))
             )
-        latest = thread[-1]["user"] if thread else None
         username = (root.get("author") or {}).get("username", "?")
         position = root.get("position")
         if position:
@@ -549,7 +545,6 @@ def gl_collect(number: str | None) -> dict:
                 "start_line": start_line,
                 "line": line,
                 "outdated": outdated,
-                "already_replied": latest == me,
                 "resolved": resolved,
                 "comment_id": None,
                 "discussion_id": disc.get("id"),
@@ -579,17 +574,14 @@ def gl_collect(number: str | None) -> dict:
 
 def _document(platform: str, unit: dict, me: str, comments: list[dict]) -> dict:
     total = len(comments)
-    already = sum(1 for c in comments if c["already_replied"])
-    # Resolved threads now travel in `comments` instead of being filtered out, so `actionable`
-    # has to exclude them explicitly — otherwise the count would silently start including
-    # settled work and stop meaning "needs a decision".
+    # Resolved threads travel in `comments` instead of being filtered out; whether a thread
+    # needs attention is the ledger's call, so the collector only reports totals.
     resolved = sum(1 for c in comments if c.get("resolved"))
-    actionable = sum(1 for c in comments if not c["already_replied"] and not c.get("resolved"))
     return {
         "platform": platform,
         "unit": unit,
         "me": me,
-        "counts": {"total": total, "already_replied": already, "resolved": resolved, "actionable": actionable},
+        "counts": {"total": total, "resolved": resolved},
         "comments": comments,
     }
 
