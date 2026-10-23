@@ -681,6 +681,23 @@ def test_review_loop_requires_an_empty_working_set_to_converge() -> None:
     assert re.search(r"head.{0,60}and.{0,60}working set", text, re.IGNORECASE | re.DOTALL)
 
 
+def test_review_loop_no_longer_says_a_skipped_push_leaves_a_row_open() -> None:
+    """review-comments never withholds a reply waiting for a push: a skipped push settles the
+    thread with a "Fixed locally in <sha>, not pushed yet" reply, so the row does NOT stay
+    `open`. The unpushed-commit check (`LOCAL_HEAD != HEAD_after`) is what stops a false
+    convergence, and the ledger suffix is `action did not land`, not `decided but not delivered`."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    assert "or the push was skipped \u2014 stays" not in text
+    assert "its push was skipped" not in text
+    assert "decided but not delivered" not in text
+    assert "action did not land" in text
+    assert "\u00abFixed\u00bb" not in text
+    assert "Fixed locally" in text
+    assert "LOCAL_HEAD != HEAD_after" in text
+    section = text[text.index("Head advancement alone is not enough") :]
+    assert "LOCAL_HEAD" in section[:1200]
+
+
 def test_review_loop_working_set_check_reads_post_round_ledger_state() -> None:
     """The `counts.working == 0` gate must read the ledger AFTER Phase 5's `record` checkpoints
     of the round just run, not the working set `reconcile` reported at the START of that round in

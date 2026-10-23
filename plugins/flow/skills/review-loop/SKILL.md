@@ -201,8 +201,10 @@ ledger's working set):
    `flow:review-comments` Phase 2, which is Phase 5's input, not its outcome.
 
 Head advancement alone is not enough. A round can end without a push and still leave work: a row
-whose action did not land — apply failed, or the push was skipped — stays `open` carrying its
-`decision`, and it is exactly the case a loop must not swallow. If the head held still but the
+whose action did not land — apply failed, or its follow-up batch was cancelled — stays `open`
+carrying its `decision`, and it is exactly the case a loop must not swallow. A skipped (or failed)
+push is not such a row: review-comments settles that thread with a «Fixed locally in <sha>, not
+pushed yet» reply, so the `LOCAL_HEAD != HEAD_after` check below is what stops a false convergence. If the head held still but the
 working set is not empty, report what is left (`flow-review-ledger stats`) and stop as
 **unconverged**, naming the outstanding refs — do not run another identical round that would
 fail the same way.
@@ -221,7 +223,7 @@ fail the same way.
 
   ```
   ⚠️ Есть локальные коммиты, не запушенные на PR/MR (local <LOCAL_HEAD:0:7> ≠ remote <HEAD_after:0:7>).
-     review-comments ответил «Fixed», но фиксы остались локально. Запушь их и перезапусти /flow:review-loop.
+     review-comments ответил «Fixed locally… not pushed yet», но фиксы остались локально. Запушь их и перезапусти /flow:review-loop.
   ```
 
   Then query the ledger's **current** state — after Phase 5's `record` calls, so it reflects
@@ -236,10 +238,10 @@ fail the same way.
   counts as an empty working set.) Read its `Open: N` line — `N` is `counts.working`.
 
   - **`Open` is non-zero** → **unconverged**, regardless of `PARTIAL`/`failed`. A row's action did
-    not land this round — apply failed, its push was skipped (the unpushed-commits warning above
-    is one instance of this, not the only one), or its follow-up task was never filed — and it
-    stayed `open` carrying its `decision`. The stats output you just printed already shows the
-    count (and, when non-zero, "decided but not delivered"); name the outstanding refs too — every
+    not land this round — apply failed, or its follow-up batch was cancelled (a skipped push is
+    not one of these: the unpushed-commits warning above covers it) — and it stayed `open`
+    carrying its `decision`. The stats output you just printed already shows the count (and, when
+    non-zero, "decided, action did not land"); name the outstanding refs too — every
     ref `flow:review-comments`'s own 5.8 summary from the round you just ran reported as staying
     `open` with a decision, across whichever of its buckets are non-empty (do not hardcode which
     ones; the round can leave rows behind for more than one reason). STOP: "не сошёлся — в рабочем
@@ -326,10 +328,10 @@ decision is better.
 ## Common mistakes
 
 - **Converging clean over an unpushed fix.** review-comments applied a fix, committed
-  locally, but its push was skipped → the remote head is unchanged so a naive check reads "no
+  locally, but the push was skipped (the thread got a «Fixed locally» reply, no row stays open) → the remote head is unchanged so a naive check reads "no
   push → converged". Compare `git rev-parse HEAD` with `HEAD_after` and warn (step 1g).
 - **Converging on head advancement alone.** No push is only half the condition — a row whose
-  apply failed, or whose action was decided but never delivered, stays `open` in the ledger
+  apply failed, or whose action was decided but did not land, stays `open` in the ledger
   with an unchanged head. Check `counts.working` before calling the round converged (step 1g).
 - **Running review-comments before CI lint posts its comments.** The step-(c) wait exists
   precisely to prevent this.
