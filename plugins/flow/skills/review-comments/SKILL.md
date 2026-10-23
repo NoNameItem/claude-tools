@@ -307,7 +307,7 @@ every listed row file.) The collector already reconstructed `snippet` wherever t
 | Row shape | What it means | What to do |
 |---|---|---|
 | `decision` is null | a new finding | analyze from scratch |
-| `decision` set | an earlier round decided it, and the thread came back: it holds messages we have not acted on (`"seen": false`), or the action did not land last round (an apply that failed — its `reason` says what — or a follow-up never filed) | take `decision` + `reason` as your own prior verdict, read the unseen messages as what changed since, and decide from BOTH. Read the seen ones too: they are the history of the argument, and `seen` is a marker, not a filter |
+| `decision` set | an earlier round decided it, and the thread came back: it holds messages we have not acted on (`"seen": false`), or the action did not land last round (an apply that failed — its `reason` says what — or a follow-up never filed) | take `decision` + `reason` as your own prior verdict, read the unseen messages as what changed since, and decide from BOTH. Read the seen ones too: they are the history of the argument, and `seen` is a marker, not a filter. An acknowledgement with nothing left to do is a legitimate `outdated_fixed` (5.7 answers it like any `outdated_fixed`: `Fixed in subsequent commits` when the branch is not ahead of the remote) |
 
 **Who wrote each message — `author_role`.** `reviewer` is anyone else, a person or a bot.
 `agent` is one of our own earlier replies (its body ends with the marker
@@ -1108,7 +1108,7 @@ under `reply`, and it is the only place that object exists.
 
 Each body is followed by the blank line and the marker, as above.
 
-**Reply to every working-set ref that reached Phase 5 with a `fix` / `won't-fix` / `follow-up` decision — including a thread that already holds an earlier reply of ours.** It is in the working set because a message after that reply is unseen (the owner's comment, a reviewer's pushback), so this round's reply is not a duplicate. The reply states the outcome for the finding; Claude's stance on the owner's own comment lives on the card (`thread_stances`), which the owner reads. When another reviewer's reply brought the thread back, the reply may address it.
+**Reply to every working-set ref that reached Phase 5 with a `fix` / `won't-fix` / `follow-up` decision — including a thread that already holds an earlier reply of ours.** It is in the working set because something in it is unseen — usually a message after that reply (the owner's comment, a reviewer's pushback), which this round's reply answers. The reply states the outcome for the finding; Claude's stance on the owner's own comment lives on the card (`thread_stances`), which the owner reads. When another reviewer's reply brought the thread back, the reply may address it.
 
 **Multi-line or special-character bodies** (a long "Won't fix: …" rationale, or text with backticks /
 `$` / quotes, including quoted reviewer text) need no special handling — the Write-tool-to-file +
@@ -1388,7 +1388,7 @@ If you're thinking any of these, STOP and follow the workflow:
 - "I'll reply on GitHub before applying fixes"
 - "Push without asking, user wants it done"
 - "Skip outdated comments entirely" → Outdated keeps its diff + ⚠️; analysis still runs (outdated ≠ fixed).
-- "Our reply is already in this thread, nothing to answer" → The thread is here because a message after that reply is unseen. Triage it; it gets this round's reply.
+- "Our reply is already in this thread, nothing to answer" → The thread is here because something in it is unseen — usually a message after that reply. Triage it; it gets this round's reply.
 - "That `(you)` message is the owner's own note, it needs no stance" → It is the owner's opinion on the finding. The verdict answers it in `thread_stances`: agree, disagree or partly, with the reasoning.
 - "The push was skipped, I'll hold the fix reply until the next run" → Nothing waits. Post `Fixed locally in {short-sha}, not pushed yet: …` this round.
 - "Apply straight from the card without collecting the decision" → Collect all decisions in Phase 4; execute once in Phase 5.
@@ -1431,7 +1431,7 @@ If you're thinking any of these, STOP and follow the workflow:
 | "Analyze only the interesting comments" | Analyze the ENTIRE working set so every take is code-backed. |
 | "One commit is cleaner" | Single-package-commit hook enforces scope. Respect it. |
 | "Push is implied" | Push requires explicit confirmation per CLAUDE.md. Always ask. |
-| "Our reply is already in the thread, skip it" | A thread is in the working set only because something after our reply is unseen. Triage it; it gets this round's reply. |
+| "Our reply is already in the thread, skip it" | A thread is in the working set only because something in it is unseen — usually a message after our reply. Triage it; it gets this round's reply. |
 | "The owner wrote that comment, so it is an instruction, not something to answer" | It is an opinion on the finding. Answer it with a stance and reasoning; if you agree with the fix they propose, the fix follows it. |
 | "Push skipped, so hold the fix reply until the push" | No reply waits for a later run. The local-commit reply says exactly where the fix is. |
 | "Outdated = irrelevant" | Outdated might not be fixed. Card keeps the diff + ⚠️; check current code before dismissing. |

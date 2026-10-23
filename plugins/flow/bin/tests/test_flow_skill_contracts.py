@@ -723,6 +723,26 @@ def test_review_loop_stops_an_unpushed_round_as_a_hand_off_not_a_convergence() -
     assert not re.search(r"\bwarn\b", text[text.index("**e. Run review-comments.**") :])
 
 
+def test_review_loop_says_a_ref_also_returns_when_its_action_did_not_land() -> None:
+    """A ref comes back for one of two reasons: its thread advanced, or last round's action did not
+    land (a failed apply, a cancelled follow-up batch) and the thread is unchanged. Saying "only
+    because its thread advanced" sends the user looking for a reply that is not there. The refs
+    1g names are the ones 5.8 prints as kept and re-triaged, in the words 5.8 actually uses."""
+    text = (FLOW_ROOT / "skills" / "review-loop" / "SKILL.md").read_text()
+    step_e = section(text, "**e. Run review-comments.**", "**f. Capture")
+    assert "only because its thread actually advanced" not in step_e
+    assert re.search(r"did\s+not\s+land", step_e)
+    indicator = section(text, "## Round indicator", "## Quick reference")
+    assert "one whose thread genuinely keeps advancing" not in indicator
+    assert re.search(r"did\s+not\s+land", indicator)
+    step_g = section(text, "**g. Decide convergence", "### Terminators")
+    assert not re.search(r"staying\s+`open`\s+with\s+a\s+decision", step_g)
+    report = section(REVIEW_COMMENTS_SKILL.read_text(), "#### 5.8. Summary Report", "## Scope Boundaries")
+    for words in ("decision kept", "re-triaged next round"):
+        assert words in step_g
+        assert words in report
+
+
 def test_review_loop_working_set_check_reads_post_round_ledger_state() -> None:
     """The `counts.working == 0` gate must read the ledger AFTER Phase 5's `record` checkpoints
     of the round just run, not the working set `reconcile` reported at the START of that round in
@@ -929,6 +949,33 @@ def test_review_comments_has_no_acknowledgement_settlement() -> None:
     The GitHub review-body summary, which has no reply target at all, is the only row settled
     without a reply."""
     assert "acknowledgement with nothing to do" not in REVIEW_COMMENTS_SKILL.read_text()
+
+
+def test_review_comments_phase_3_keeps_the_acknowledgement_hint() -> None:
+    """With no no-reply settlement, a bare "Thanks"/"LGTM" after our `Fixed:` comes back for a
+    verdict. Without the hint the analyzer can pick an agree verdict, a `fix` with nothing to
+    apply, and the same acknowledgement returns every round. `outdated_fixed` answers it once."""
+    phase_3 = section(REVIEW_COMMENTS_SKILL.read_text(), "### Phase 3", "### Phase 4")
+    row = next(line for line in phase_3.splitlines() if line.startswith("| `decision` set"))
+    assert "an acknowledgement with nothing left to do is a legitimate `outdated_fixed`" in row.lower()
+    assert "Fixed in subsequent commits" in row
+
+
+def test_review_comments_does_not_claim_a_message_after_our_reply_always_brought_it_back() -> None:
+    """A reply whose 5.7 checkpoint never landed brings its thread back with nothing after it
+    unseen: only the comment itself is still `[new]`. "A message after that reply is unseen" is
+    false there and sends the agent looking for one. The three places that explain an answered
+    thread coming back name the unseen message as the usual case, not the only one."""
+    text = REVIEW_COMMENTS_SKILL.read_text()
+    assert "because a message after that reply is unseen" not in text
+    assert "only because something after our reply is unseen" not in text
+    places = (
+        section(text, "#### 5.7. Reply on the platform", "#### 5.7a"),
+        section(text, "## Red Flags - STOP", "## Common Rationalizations"),
+        section(text, "## Common Rationalizations", "## Examples"),
+    )
+    for place in places:
+        assert re.search(r"something\s+in\s+it\s+is\s+unseen\s+—\s+usually\s+a\s+message\s+after", place)
 
 
 def test_review_comments_resolve_gate_refuses_an_unread_owner_comment() -> None:

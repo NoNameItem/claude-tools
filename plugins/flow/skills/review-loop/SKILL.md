@@ -175,10 +175,11 @@ hand-off, and it colors the final report at (g).
   ```
 
   For any `failed` check from step (c), add a `⚠️ CI: <name> — <conclusion>` line. Do **not**
-  track repeats yourself: `flow:review-comments` keeps a durable per-PR ledger, so a finding that
-  was terminally handled is **excluded** before it ever reaches this round's output, and one that
-  re-surfaces does so only because its thread actually advanced (a reviewer objected, a reviewer
-  acknowledged, or the human posted an instruction) — with its prior verdict attached.
+  track repeats yourself: `flow:review-comments` keeps a durable per-PR ledger, so a settled
+  finding is **excluded** before it ever reaches this round's output. One that comes back carries
+  its prior verdict and returns for one of two reasons: its thread advanced (a reviewer objected
+  or acknowledged, or the owner commented), or last round's action did not land (an apply
+  failed, or its follow-up batch was cancelled) and the thread is unchanged.
 
 - Invoke `flow:review-comments <number>` using the Skill tool and
   preserve all of its confirmation, push, and reply gates. It is interactive and may
@@ -253,13 +254,13 @@ the same way.
     not land this round — apply failed, or its follow-up batch was cancelled (a skipped push is
     not one of these: the unpushed hand-off above covers it) — and it stayed `open`
     carrying its `decision`. The stats output you just printed already shows the count (and, when
-    non-zero, "decided, action did not land"); name the outstanding refs too — every
-    ref `flow:review-comments`'s own 5.8 summary from the round you just ran reported as staying
-    `open` with a decision, across whichever of its buckets are non-empty (do not hardcode which
-    ones; the round can leave rows behind for more than one reason). STOP: "не сошёлся — в рабочем
-    множестве остались необработанные находки (`<ref>`, …), перезапусти `/flow:review-loop`, когда
-    они будут доставлены." Do **not** run another identical round; it would hit the same
-    undelivered rows again.
+    non-zero, "decided, action did not land"); name the outstanding refs too — every ref
+    `flow:review-comments`'s own 5.8 summary from the round you just ran marked
+    "decision kept" and "re-triaged next round", across whichever of its buckets are non-empty
+    (do not hardcode which ones; the round can leave rows behind for more than one reason).
+    STOP: "не сошёлся — в рабочем множестве остались необработанные находки (`<ref>`, …),
+    перезапусти `/flow:review-loop`, когда они будут доставлены." Do **not** run another
+    identical round; it would hit the same undelivered rows again.
   - **`Open` is zero and `LOCAL_HEAD == HEAD_after`** → this round converges. STOP with the
     reason that fits (`Open` zero with `LOCAL_HEAD != HEAD_after` is the unpushed hand-off above,
     never one of these):
@@ -290,10 +291,12 @@ exiting.
 
 There is **no** `max_rounds` auto-stop and no wall-clock cap. Safety comes from the loop
 being interactive — `flow:review-comments` confirms every round (process + push) — plus the
-visible round indicator. An unproductive bot ↔ "Won't fix" dispute shows up as the same ledger `ref` re-appearing in
-`flow:review-comments` output round after round — a settled finding is excluded, so a ref you keep
-seeing is one whose thread genuinely keeps advancing. The user presses Esc the moment that reads as
-a dispute rather than progress.
+visible round indicator. An unproductive bot ↔ "Won't fix" dispute shows up as the same ledger
+`ref` re-appearing in `flow:review-comments` output round after round. A settled finding is
+excluded, so a ref you keep seeing either has a thread that keeps advancing or an action that did
+not land again (an apply that failed again, a follow-up batch cancelled again); 5.8 lists the
+second kind as "decision kept" and "re-triaged next round". The user presses Esc the moment that
+reads as a dispute rather than progress.
 A machine round cap would just as often cut off a productive cycle mid-flight; the human
 decision is better.
 
