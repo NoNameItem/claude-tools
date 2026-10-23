@@ -715,12 +715,13 @@ def test_review_loop_stops_an_unpushed_round_as_a_hand_off_not_a_convergence() -
     assert "unpushed hand-off" in terminators
     converge_row = next(line for line in text.splitlines() if line.startswith("| Converge |"))
     assert "unpushed hand-off" in converge_row
-    red_flags = section(text, "## Red flags", "## Common mistakes")
-    assert re.search(r"local\s+is\s+ahead.{0,80}unpushed\s+hand-off", red_flags, re.DOTALL)
-    mistakes = text.split("## Common mistakes", 1)[1]
-    assert re.search(r"Converging clean over an unpushed fix.{0,600}unpushed hand-off", mistakes, re.DOTALL)
-    # The check stops the loop; no sentence may still describe it as only warning.
-    assert not re.search(r"\bwarn\b", text[text.index("**e. Run review-comments.**") :])
+    red_flag = section(text, '- "No push this round', '\n- "')
+    assert re.search(r"local\s+is\s+ahead.{0,80}unpushed\s+hand-off", red_flag, re.DOTALL)
+    mistake = section(text, "- **Converging clean over an unpushed fix.**", "\n- **")
+    assert "unpushed hand-off" in mistake
+    # The check stops the loop; none of the places that describe it may still say it only warns.
+    for place in (step_g, red_flag, mistake):
+        assert not re.search(r"\bwarn\b", place)
 
 
 def test_review_loop_says_a_ref_also_returns_when_its_action_did_not_land() -> None:
