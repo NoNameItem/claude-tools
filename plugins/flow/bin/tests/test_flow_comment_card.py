@@ -1,6 +1,6 @@
 """Tests for flow-comment-card."""
 
-# ruff: noqa: INP001  # INP001: bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
+# bin/tests/ intentionally has no __init__.py (pytest rootdir layout)
 
 import importlib.util
 import json
@@ -474,7 +474,10 @@ class TestMergeMode:
         return {"77": row}
 
     def _files(self, tmp_path, rows, verdict, ref="C1"):
-        ledger = {"schema": 1, "unit": {}, "round": 1, "next_ref": {"U": 1, "C": 2}, "rows": rows}
+        # Late on purpose: at module level it would follow the sys.path setup and trip E402.
+        import _ledger
+
+        ledger = {"schema": _ledger.SCHEMA, "unit": {}, "round": 1, "next_ref": {"U": 1, "C": 2}, "rows": rows}
         (tmp_path / "pr-96.json").write_text(json.dumps(ledger))
         (tmp_path / "verdict.json").write_text(json.dumps(verdict))
         return subprocess.run(

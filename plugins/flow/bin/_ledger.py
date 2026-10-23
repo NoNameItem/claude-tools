@@ -18,26 +18,23 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-SCHEMA = 1
+# Bumped when the row shape changes in a way an older document cannot be read under. Schema 2
+# dropped `status` and gave the comment its own `seen` bit: a schema-1 row read as-is holds no
+# comment bit, reports nothing unseen, and silently drops out of the working set.
+SCHEMA = 2
 BRIEF_CHARS = 120  # chars of `body` kept for the working-set projection
 
-# Our own verdict on a finding, and nothing else. "Still work" and "settled by us" are the only
-# two answers this axis has: what we DECIDED lives in `decision`, and what the PLATFORM thinks
-# lives in `platform_state`. Statuses that mixed those in (`pending`, `skipped`, `deleted`) are
-# gone — they were derivable, and sharing a field with the platform is what let a resolve settle
-# a decision we never delivered.
-STATUSES = ("open", "done")
 DECISIONS = ("fix", "wont_fix", "follow_up", "outdated")
 KINDS = ("inline", "file", "summary")
 
-# The platform's own verdict on a thread, recomputed from every round's snapshot — never
-# remembered as a status. `absent` means the thread is not in the snapshot at all; because the
-# collector aborts rather than returning a short page, absence is trustworthy.
+# The platform's own verdict on a thread, recomputed from every round's snapshot — a fact about
+# the platform, never a judgement of ours. `absent` means the thread is not in the snapshot at
+# all; because the collector aborts rather than returning a short page, absence is trustworthy.
 PLATFORM_STATES = ("live", "resolved", "absent")
 
 # Current-snapshot fields: refreshed from the collector every round. Durable fields
-# (status/decision/reason/followup_task_id/first_seen_round/last_round/head), the
-# set-on-insert identity fields (ref/kind/thread_id) and the two set-on-insert content fields
+# (seen/decision/reason/followup_task_id/first_seen_round/last_round/head), the set-on-insert
+# identity fields (ref/kind/thread_id/author_role) and the two set-on-insert content fields
 # (`body`, `thread`) are NEVER in this list. `body` and `thread` are the reviewer's WORDS: an
 # edit made in place gets no reaction and reaches us only as a new reply. What stays here
 # describes the CODE, which genuinely moves under a finding between rounds.
@@ -48,7 +45,6 @@ SNAPSHOT_FIELDS = (
     "start_line",
     "line",
     "outdated",
-    "already_replied",
     "diff_hunk",
     "snippet",
     "side",
@@ -203,18 +199,25 @@ def empty_ledger(unit: dict | None = None) -> dict:
 def is_working(row: dict) -> bool:
     """True when the row is still outstanding work — the ONE answer to that question.
 
-    Two independent axes, one condition each, and neither writes the other's field:
+    A thread is work iff the platform still has it live and it holds a message the workflow has
+    not acted on yet: the comment itself or any reply (see the 2026-10-23 unseen-signal design).
+    Nothing else takes part, and in particular no login comparison: the PR owner posts from the
+    same account the agent does, and on PR #151 a selection that read "posted by `me`" as "posted
+    by the agent" hid the owner's answer to a fresh Codex comment for good.
 
-    - `status`: `open` means we have not settled it, `done` means we have;
-    - `platform_state`: only a `live` thread is work. `resolved` is the platform's own verdict
-      (a reviewer wanting another look un-resolves, which returns the row by itself), and
-      `absent` means the thread is gone from the platform.
+    - `seen` bits are the workflow's memory. A thread whose outcome was not delivered (an apply
+      that failed, a cancelled follow-up batch) keeps them false, so it comes back next round
+      with its decision as context rather than waiting in a deferred state.
+    - `platform_state`: only a `live` thread is work. `resolved` is the platform's own verdict,
+      and `absent` means the thread is gone. A resolved thread's new replies are still stored
+      unseen, so un-resolving brings it back; un-resolving a fully seen thread does not, because
+      there is nothing new in it to look at.
 
     Every "is this row still work?" test goes through here, so `reconcile`, `counts_of` and
     `fold_stats` cannot drift apart — a row missing from the working set while `stats` reports
     it as `Open: 1` was exactly that drift.
     """
-    return row.get("status") == "open" and row.get("platform_state") == "live"
+    return row.get("platform_state") == "live" and has_unseen(row)
 
 
 def _is_count(value: object) -> bool:
@@ -248,19 +251,27 @@ def _structure_is_sound(doc: dict) -> bool:
 
 
 def load_ledger(path: Path) -> dict:
-    """Read the document. A missing, corrupt, or non-ledger file degrades to an empty ledger.
+    """Read the document. A missing, corrupt, non-ledger or other-schema file degrades to an
+    empty ledger.
 
     Graceful degradation is the design's contract: current working data is rebuilt from the
     platform every round, so only durable memory is lost — never a crash. "Corrupt" covers both
     unparseable bytes and a file that parses but is not shaped like a ledger (see
     `_structure_is_sound`) — the second kind is the dangerous one, because it fails far from
     here, in whichever consumer first trusts the field.
+
+    A document stamped with a different `schema` is the same danger in a quieter form: it is
+    well-formed, but its rows mean something else (see `SCHEMA`). A document with NO `schema`
+    key counts as current — `setdefault` stamps it — because every writer of an older shape
+    stamped its own number.
     """
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return empty_ledger()
     if not isinstance(doc, dict) or not _structure_is_sound(doc):
+        return empty_ledger()
+    if "schema" in doc and doc["schema"] != SCHEMA:
         return empty_ledger()
     doc.setdefault("schema", SCHEMA)
     doc.setdefault("unit", {})
@@ -338,18 +349,6 @@ def platform_state_of(item: dict) -> str:
     return "resolved" if item.get("resolved") else "live"
 
 
-def is_ours(reply: dict, me: object) -> bool:
-    """True when a thread reply comes from the account this run posts as.
-
-    Our own replies arrive already `seen`, so a reply the agent posted but failed to report
-    (the POST succeeded, the `--jq` extraction did not) cannot come back off the forge as an
-    unknown id, re-open the finding and draw a second reply into the same thread. The cost —
-    an instruction a human posts from that same account no longer re-opens a settled row — is
-    a recorded decision, not an oversight; see the design doc.
-    """
-    return bool(me) and str(reply.get("user")) == str(me)
-
-
 def reply_order(reply: dict) -> tuple[int, float]:
     """Sort key for a stored thread: chronological, with unusable timestamps in the tail.
 
@@ -376,7 +375,7 @@ def is_unseen(reply: dict) -> bool:
     through these same helpers — and treating that as new would mark every reply on a card that
     has no ledger behind it.
 
-    One home for the rule: `unseen` decides re-surfacing with it and the card decides its `[new]`
+    One home for the rule: `has_unseen` decides selection with it and the card decides its `[new]`
     markers with it, and the present-versus-false subtlety is exactly the kind that drifts when
     it is written out twice.
     """
@@ -389,16 +388,6 @@ def unseen(row: dict) -> list[dict]:
     if not isinstance(thread, list):
         return []
     return [reply for reply in thread if isinstance(reply, dict) and is_unseen(reply)]
-
-
-def resurfaced(row: dict) -> bool:
-    """True when the row holds a reply we have not acted on.
-
-    Shared by `reopen_if_unseen`, `cmd_get` and `flow-comment-card` to decide whether a row
-    should be reopened. The decision is uniform: check whether any reply in the thread is
-    marked as unseen — no special cases for row shape or kind.
-    """
-    return bool(unseen(row))
 
 
 # The agent's signature on every reply it posts. Login alone cannot say "this reply is ours":
