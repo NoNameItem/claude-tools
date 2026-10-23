@@ -599,7 +599,7 @@ class TestMergeMode:
         ]
         r = self._files(
             tmp_path,
-            self._rows(thread, decision="fix"),
+            self._rows(thread, decision="fix", seen=True),
             {"category": "doc", "thought": "t", "suggested": "fix"},
         )
         assert r.returncode == 0, r.stderr
@@ -614,7 +614,7 @@ class TestMergeMode:
         ]
         r = self._files(
             tmp_path,
-            self._rows(thread, decision="wont_fix"),
+            self._rows(thread, decision="wont_fix", seen=True),
             {"category": "doc", "thought": "t", "suggested": "fix"},
         )
         assert r.returncode == 0, r.stderr
@@ -663,3 +663,72 @@ class TestMergeMode:
         assert r.returncode == 0, r.stderr
         assert "**Resurfaced:**" not in r.stdout
         assert "[new]" not in r.stdout
+
+    def test_a_decided_but_unsettled_row_gets_markers_but_no_resurfaced_line(self, tmp_path):
+        """The action did not land, so the row was never painted: every reply is unseen, and
+        there is no last action for them to have appeared since."""
+        thread = [{"user": "bob", "body": "r1", "id": 10, "created_at": None, "seen": False}]
+        r = self._files(
+            tmp_path,
+            self._rows(thread, decision="fix", seen=False),
+            {"category": "doc", "thought": "t", "suggested": "fix"},
+        )
+        assert r.returncode == 0, r.stderr
+        assert "**Resurfaced:**" not in r.stdout
+        assert "[new]" in r.stdout
+
+    # --- owner / agent labels and thread stances -------------------------------------------
+
+    def _render(self, tmp_path, row, verdict=None):
+        r = self._files(tmp_path, {"77": {"ref": "C1", **row}}, verdict or {})
+        assert r.returncode == 0, r.stderr
+        return r.stdout
+
+    def test_an_unseen_comment_carries_new_on_its_own_line(self, tmp_path):
+        out = self._render(tmp_path, {"user": "codex", "body": "Restrict temp files", "seen": False, "thread": []})
+        assert "> [new] **@codex:** Restrict temp files" in out
+
+    def test_owner_and_agent_replies_are_labelled(self, tmp_path):
+        import _ledger
+
+        thread = [
+            {"id": 50, "user": "me", "body": "maybe not needed", "seen": False, "author_role": "owner"},
+            {"id": 60, "user": "me", "body": f"Fixed\n\n{_ledger.AGENT_MARKER}", "seen": True, "author_role": "agent"},
+        ]
+        out = self._render(tmp_path, {"user": "codex", "body": "x", "seen": True, "thread": thread})
+        assert "↳ [new] **@me (you):** maybe not needed" in out
+        assert "↳ **@me (agent):** Fixed" in out
+
+    def test_the_marker_never_reaches_the_terminal(self, tmp_path):
+        import _ledger
+
+        thread = [
+            {"id": 60, "user": "me", "body": f"Fixed\n\n{_ledger.AGENT_MARKER}", "seen": True, "author_role": "agent"}
+        ]
+        out = self._render(tmp_path, {"user": "codex", "body": "x", "seen": True, "thread": thread})
+        assert _ledger.AGENT_MARKER not in out
+
+    def test_the_stances_block_answers_each_reply_by_id(self, tmp_path):
+        thread = [{"id": 50, "user": "me", "body": "maybe not needed", "seen": False, "author_role": "owner"}]
+        verdict = {
+            "thought": "keep it",
+            "thread_stances": [{"reply_id": "50", "stance": "partly", "reasoning": "setup() also accepts --config"}],
+        }
+        out = self._render(tmp_path, {"user": "codex", "body": "x", "seen": True, "thread": thread}, verdict)
+        assert "**On the thread:**\n- @me (you) — partly: setup() also accepts --config" in out
+        assert out.index("**On the thread:**") < out.index("**Thought:**")
+
+    def test_no_stances_no_block(self, tmp_path):
+        out = self._render(tmp_path, {"user": "codex", "body": "x", "thread": []}, {"thought": "t"})
+        assert "On the thread" not in out
+
+    def test_an_owner_opened_thread_labels_its_comment_you(self, tmp_path):
+        out = self._render(
+            tmp_path, {"user": "me", "body": "note to self", "seen": False, "author_role": "owner", "thread": []}
+        )
+        assert "> [new] **@me (you):** note to self" in out
+
+    def test_a_stance_for_an_unknown_reply_falls_back_to_a_placeholder_user(self, tmp_path):
+        verdict = {"thread_stances": [{"reply_id": "999", "stance": "agree", "reasoning": "ok"}]}
+        out = self._render(tmp_path, {"user": "codex", "body": "x", "thread": []}, verdict)
+        assert "- @? — agree: ok" in out

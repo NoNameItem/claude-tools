@@ -80,17 +80,32 @@ def render_header(card: dict) -> str:
     return header
 
 
-def _blockquote(prefix: str, author: str, body: str) -> list[str]:
+ROLE_LABELS = {"owner": " (you)", "agent": " (agent)"}
+
+
+def _role_label(message: dict) -> str:
+    """' (you)' for the PR owner, ' (agent)' for our own replies, '' for anyone else.
+
+    The owner comments from the same account the agent posts from, so the login alone cannot
+    tell them apart. A message with no role (raw collector output) gets no label.
+    """
+    return ROLE_LABELS.get(message.get("author_role"), "")
+
+
+def _blockquote(prefix: str, author: str, body: str, label: str = "") -> list[str]:
     """Blockquote a body across its physical lines; first line carries the author."""
-    body_lines = (body or "").split("\n")
-    first = f"> {prefix}**@{author}:** {body_lines[0]}"
+    body_lines = _ledger.strip_marker(body or "").split("\n")
+    first = f"> {prefix}**@{author}{label}:** {body_lines[0]}"
     rest = [f"> {ln}" for ln in body_lines[1:]]
     return [first, *rest]
 
 
 def render_comment(card: dict) -> str:
     """Render the comment blockquote plus each reply in its thread."""
-    lines = _blockquote("", card.get("author", "?"), card.get("body", ""))
+    # The comment's own label is owner-only: an agent never opens a thread.
+    comment_label = ROLE_LABELS["owner"] if card.get("author_role") == "owner" else ""
+    comment_prefix = "[new] " if _ledger.is_unseen(card) else ""
+    lines = _blockquote(comment_prefix, card.get("author", "?"), card.get("body", ""), comment_label)
     # `thread` reaches us verbatim from the collector (and, on the `--ledger` path, from a
     # persisted row), and nothing type-checks it on the way — `load_ledger` validates that a row
     # IS a dict, never what its fields hold. A truthy non-list is the nasty shape: a string
@@ -106,7 +121,7 @@ def render_comment(card: dict) -> str:
         # ledger row carries the bit at all, so a card rendered straight from collector output
         # gets no markers rather than a full set of false ones — see `_ledger.is_unseen`.
         marker = "↳ [new] " if _ledger.is_unseen(reply) else "↳ "
-        lines.extend(_blockquote(marker, reply.get("user", "?"), reply.get("body", "")))
+        lines.extend(_blockquote(marker, reply.get("user", "?"), reply.get("body", ""), _role_label(reply)))
     return "\n".join(lines)
 
 
@@ -169,21 +184,45 @@ def render_code(card: dict) -> str:
     return ""
 
 
+def render_stances(card: dict) -> str:
+    """Render '**On the thread:**' with one line per stance Claude took on a new reply.
+
+    Each stance names its reply by id; the user and role label come from the stored reply.
+    Empty when the verdict carries no stances.
+    """
+    stances = card.get("thread_stances")
+    if not isinstance(stances, list) or not stances:
+        return ""
+    thread = card.get("thread")
+    replies = {str(r.get("id")): r for r in (thread if isinstance(thread, list) else []) if isinstance(r, dict)}
+    lines = ["**On the thread:**"]
+    for stance in stances:
+        if not isinstance(stance, dict):
+            continue
+        reply = replies.get(str(stance.get("reply_id")))
+        who = f"@{reply.get('user', '?')}{_role_label(reply)}" if reply else "@?"
+        lines.append(f"- {who} — {stance.get('stance')}: {stance.get('reasoning')}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def render_take(card: dict) -> str:
     """Render the '**Thought:**' and '**Suggested:**' lines (omit missing fields), plus a
     '**Resurfaced:**' line counting the replies that appeared since our last action.
 
     Suppressed while the row carries no `decision`: an untriaged row has every reply unseen and
     there was no last action for anything to have appeared since — that is Phase 3's "a new
-    finding, analyse from scratch" shape. The per-reply `[new]` markers stay, because on a first
-    read "all of this is new to us" is true.
+    finding, analyse from scratch" shape. Also suppressed until the comment's own `seen` bit is
+    painted: a row whose action did not land keeps its `decision` but stays fully unseen, so
+    replies that were already there would be misreported as new since a "last action".
+    The per-reply `[new]` markers stay, because on a first read "all of this is new to us"
+    is true.
     """
     lines = []
     if card.get("thought"):
         lines.append(f"**Thought:** {card['thought']}")
     if card.get("suggested"):
         lines.append(f"**Suggested:** {card['suggested']}")
-    fresh = _ledger.unseen(card) if card.get("decision") else []
+    fresh = _ledger.unseen(card) if card.get("decision") and card.get("seen") is True else []
     if fresh:
         noun = "reply" if len(fresh) == 1 else "replies"
         lines.append(
@@ -198,6 +237,7 @@ def render_card(card: dict) -> str:
         render_header(card),
         render_comment(card),
         render_code(card),
+        render_stances(card),
         render_take(card),
     ]
     return "\n\n".join(section for section in sections if section)
@@ -207,7 +247,7 @@ def merge_card(meta_item: dict, verdict: dict) -> dict:
     """Merge a collector comment item with an LLM verdict into a render-ready card."""
     card = dict(meta_item)
     card["author"] = meta_item.get("user")
-    for key in ("category", "thought", "suggested"):
+    for key in ("category", "thought", "suggested", "thread_stances"):
         if verdict.get(key) is not None:
             card[key] = verdict[key]
     snippet = meta_item.get("snippet")
