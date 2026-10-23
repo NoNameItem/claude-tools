@@ -399,3 +399,48 @@ def resurfaced(row: dict) -> bool:
     marked as unseen — no special cases for row shape or kind.
     """
     return bool(unseen(row))
+
+
+# The agent's signature on every reply it posts. Login alone cannot say "this reply is ours":
+# the owner runs the agent under the same account. On PR #151 the owner answered a Codex comment
+# from the web UI, and the login check took that reply for the agent's and hid the thread. The
+# marker is the one thing the agent writes that the owner does not. It is an HTML comment, so it
+# stays invisible in the rendered thread while remaining in the stored body.
+AGENT_MARKER = "<!-- flow:review-comments -->"
+
+
+def author_role(message: dict, me: object) -> str:
+    """'agent', 'owner' or 'reviewer' for one thread message, from the run account and the marker.
+
+    The account check comes first and is required for either of the first two answers: with no
+    known run account nothing can be ours, so everyone is a reviewer. Only the account's own
+    messages can be the agent's or the owner's; the marker then splits them. The marker is
+    matched as a substring of the body, not as a prefix or suffix, because a reply may carry
+    trailing text after it — but a bot that QUOTES the marker is a different account, so the
+    account check keeps it a reviewer.
+    """
+    if not me or str(message.get("user")) != str(me):
+        return "reviewer"
+    return "agent" if AGENT_MARKER in str(message.get("body") or "") else "owner"
+
+
+def strip_marker(body: str) -> str:
+    """The body without the agent marker, and without the trailing whitespace the marker leaves.
+
+    The marker is an internal signature, not the reviewer's or owner's words, so anything that
+    shows a reply to a human (the card, a quoted excerpt) strips it first. Trailing whitespace
+    goes too, because the marker is appended after a blank line and would otherwise leave a
+    dangling gap.
+    """
+    return body.replace(AGENT_MARKER, "").rstrip()
+
+
+def has_unseen(row: dict) -> bool:
+    """True when the comment itself, or any reply in its thread, is one we have not acted on.
+
+    Shares `is_unseen`'s present-and-false rule for the comment's own `seen` bit, so a row that
+    carries no bit at all is not a ledger row and reports False rather than being treated as
+    new. Lets callers ask "does this row need attention" in one place, without needing to know
+    whether the unseen signal sits on the comment or on a reply.
+    """
+    return is_unseen(row) or bool(unseen(row))

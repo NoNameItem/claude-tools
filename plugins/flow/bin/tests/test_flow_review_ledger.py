@@ -1849,3 +1849,35 @@ class TestResolveTarget:
         row = json.loads(result.stdout)
         assert row["resolve_id"] == "PRRT_kwABC"
         assert row["is_bot"] is True
+
+
+class TestMessageModel:
+    def test_marked_reply_from_the_run_account_is_the_agents(self):
+        msg = {"user": "me", "body": f"Fixed: guard added\n\n{_ledger.AGENT_MARKER}"}
+        assert _ledger.author_role(msg, "me") == "agent"
+
+    def test_unmarked_reply_from_the_run_account_is_the_owners(self):
+        assert _ledger.author_role({"user": "me", "body": "maybe this check is not needed"}, "me") == "owner"
+
+    def test_a_bot_quoting_the_marker_stays_a_reviewer(self):
+        msg = {"user": "coderabbitai", "body": f"> Fixed\n> {_ledger.AGENT_MARKER}\nThanks!"}
+        assert _ledger.author_role(msg, "me") == "reviewer"
+
+    def test_marker_after_crlf_and_trailing_whitespace_still_counts(self):
+        msg = {"user": "me", "body": f"Fixed\r\n\r\n{_ledger.AGENT_MARKER}\r\n  "}
+        assert _ledger.author_role(msg, "me") == "agent"
+
+    @pytest.mark.parametrize("me", [None, ""])
+    def test_an_unknown_run_account_makes_everyone_a_reviewer(self, me):
+        assert _ledger.author_role({"user": "me", "body": _ledger.AGENT_MARKER}, me) == "reviewer"
+        assert _ledger.author_role({"user": "", "body": "x"}, me) == "reviewer"
+
+    def test_strip_marker_removes_it_and_the_whitespace_before_it(self):
+        assert _ledger.strip_marker(f"Fixed: x\n\n{_ledger.AGENT_MARKER}\n") == "Fixed: x"
+        assert _ledger.strip_marker("plain text") == "plain text"
+
+    def test_has_unseen_counts_the_comment_itself(self):
+        assert _ledger.has_unseen({"seen": False, "thread": []}) is True
+        assert _ledger.has_unseen({"seen": True, "thread": [{"seen": False}]}) is True
+        assert _ledger.has_unseen({"seen": True, "thread": [{"seen": True}]}) is False
+        assert _ledger.has_unseen({"thread": []}) is False  # no bit at all → not a ledger row
