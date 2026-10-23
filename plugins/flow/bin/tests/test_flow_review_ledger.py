@@ -231,11 +231,13 @@ class TestDocumentIO:
     @pytest.mark.parametrize(
         "doc",
         [
-            pytest.param({"schema": 2, "rows": {}, "next_ref": None}, id="next_ref-null"),
-            pytest.param({"schema": 2, "rows": {}, "next_ref": {"U": [1], "C": 1}}, id="next_ref-value-not-a-number"),
-            pytest.param({"schema": 2, "rows": {}, "round": [1]}, id="round-not-a-number"),
-            pytest.param({"schema": 2, "rows": {}, "unit": "github"}, id="unit-not-a-mapping"),
-            pytest.param({"schema": 2, "rows": {"comment:1": "not a row"}}, id="row-not-a-mapping"),
+            pytest.param({"schema": _ledger.SCHEMA, "rows": {}, "next_ref": None}, id="next_ref-null"),
+            pytest.param(
+                {"schema": _ledger.SCHEMA, "rows": {}, "next_ref": {"U": [1], "C": 1}}, id="next_ref-value-not-a-number"
+            ),
+            pytest.param({"schema": _ledger.SCHEMA, "rows": {}, "round": [1]}, id="round-not-a-number"),
+            pytest.param({"schema": _ledger.SCHEMA, "rows": {}, "unit": "github"}, id="unit-not-a-mapping"),
+            pytest.param({"schema": _ledger.SCHEMA, "rows": {"comment:1": "not a row"}}, id="row-not-a-mapping"),
         ],
     )
     def test_structurally_corrupt_fields_load_as_empty(self, tmp_path, doc):
@@ -269,7 +271,8 @@ class TestDocumentIO:
 
     def test_a_document_stamped_with_another_schema_loads_as_empty(self, tmp_path):
         """Well-formed but meaning something else: a schema-1 row has no comment-level `seen`,
-        so read as-is it would report nothing unseen and hide every open thread."""
+        so read as-is only its replies' bits would count, and every open thread with no unseen
+        reply would be hidden."""
         path = tmp_path / "pr-1.json"
         doc = {"schema": 1, "round": 3, "rows": {"comment:1": {"ref": "C1", "status": "open"}}}
         path.write_text(json.dumps(doc), encoding="utf-8")
@@ -384,7 +387,7 @@ def meta_doc(comments, number=96, url="https://github.com/o/r/pull/96", platform
         "platform": platform,
         "unit": {"number": number, "branch": "b", "url": url},
         "me": "me",
-        "counts": {"total": len(comments), "actionable": len(comments)},
+        "counts": {"total": len(comments)},
         "comments": comments,
     }
 
@@ -718,6 +721,21 @@ class TestUnseenSelection:
         assert (row["thread"][0]["seen"], row["thread"][0]["author_role"]) == (False, "owner")
         assert "status" not in row
 
+    def test_pr151_card_renders_the_reconciled_row_with_markers_and_the_owner_label(self, harness):
+        """End to end on one ledger: `reconcile` writes the row, `flow-comment-card --ledger`
+        reads it. Each half has its own test on its own input, so a key that one side writes and
+        the other reads under another name (`seen`, `author_role`) would pass both."""
+        meta = meta_doc([inline_comment(1, is_bot=True, thread=[owner(50)])])
+        out = harness.reconcile(meta)
+        verdict = harness.tmp_path / "verdict.json"
+        verdict.write_text("{}", encoding="utf-8")
+        card = run_helper(
+            "flow-comment-card", "--ledger", out["ledger"], "--ref", "C1", "--verdict", str(verdict), env=harness.env
+        )
+        assert card.returncode == 0, card.stderr
+        assert "> [new] **@coderabbitai:** finding" in card.stdout
+        assert "> ↳ [new] **@me (you):** maybe this check is not needed" in card.stdout
+
     def test_an_owner_reply_after_our_answer_brings_the_thread_back(self, harness):
         meta = meta_doc([inline_comment(1, is_bot=True)])
         harness.reconcile(meta)
@@ -753,6 +771,32 @@ class TestUnseenSelection:
         meta = meta_doc([inline_comment(1, is_bot=True, thread=thread)])
         assert [e["ref"] for e in harness.reconcile(meta)["working_set"]] == ["C1"]
         assert [r["seen"] for r in harness.ledger(meta)["rows"]["comment:1"]["thread"]] == [True, False]
+
+    @pytest.mark.parametrize(
+        "collector_order",
+        [
+            pytest.param([60, 70, 80, 90], id="chronological"),
+            pytest.param([80, 90, 60, 70], id="later-exchange-first"),
+            pytest.param([90, 80, 70, 60], id="newest-first"),
+        ],
+    )
+    def test_a_lost_ledger_seeds_by_the_last_marked_reply_in_time_order(self, harness, collector_order):
+        """Ours, a reviewer, ours, a reviewer: everything up to our SECOND reply is seen, the
+        reviewer after it is not. `seed_thread` sorts before it looks for our last reply, so the
+        collector's order changes nothing; picking by position would paint the last reviewer
+        reply seen and hide the thread, or leave one of ours unseen."""
+        by_id = {
+            60: ours(60, created_at="2026-07-20T10:00:00Z"),
+            70: reply(70, created_at="2026-07-20T11:00:00Z"),
+            80: ours(80, created_at="2026-07-20T12:00:00Z"),
+            90: reply(90, created_at="2026-07-20T13:00:00Z"),
+        }
+        meta = meta_doc([inline_comment(1, is_bot=True, thread=[by_id[i] for i in collector_order])])
+        assert [e["ref"] for e in harness.reconcile(meta)["working_set"]] == ["C1"]
+        row = harness.ledger(meta)["rows"]["comment:1"]
+        assert row["seen"] is True
+        assert [r["id"] for r in row["thread"]] == [60, 70, 80, 90]
+        assert {r["id"]: r["seen"] for r in row["thread"]} == {60: True, 70: True, 80: True, 90: False}
 
     def test_seeding_never_paints_a_row_the_ledger_already_holds(self, harness):
         """C2: a reviewer reply that raced our answer stays unseen on an existing row."""

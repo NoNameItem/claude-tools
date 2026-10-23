@@ -401,13 +401,11 @@ def gh_summary_items(reviews: list[dict]) -> list[dict]:
                 # A GitHub review body is not a thread and never consults the resolve
                 # side-query, so it has no resolution state at all — this is the one legal
                 # use of `resolved: None` left; everywhere else it's a real bool.
-                # `platform_state_of` maps this `None` to a definite `"live"` (not an inert
-                # "leave the status alone" — there is no third `apply_resolution`-style path
-                # left, see the ledger design doc's "What is removed"). The never-re-open
-                # guarantee for this row comes from a different mechanism: it is threadless,
-                # so its stored thread stays empty, nothing in it can be unseen, and
-                # `reopen_if_unseen` never fires — our own `done` verdict is the row's only
-                # exit, exactly once.
+                # `platform_state_of` maps this `None` to a definite `"live"`, so the platform
+                # never takes this row out of the working set. The never-re-open guarantee
+                # comes from the row itself: it is threadless, so once `record` settles it
+                # (`"settled": true` paints its comment seen) nothing in it can become unseen
+                # again — that settlement is the row's only exit, exactly once.
                 "resolved": None,
                 "comment_id": None,
                 "discussion_id": None,

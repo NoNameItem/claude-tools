@@ -19,8 +19,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 # Bumped when the row shape changes in a way an older document cannot be read under. Schema 2
-# dropped `status` and gave the comment its own `seen` bit: a schema-1 row read as-is holds no
-# comment bit, reports nothing unseen, and silently drops out of the working set.
+# dropped `status` and gave the comment its own `seen` bit. A schema-1 row read as-is holds no
+# comment bit, so only its replies' bits count: a thread with no unseen reply — a finding never
+# acted on, say — silently drops out of the working set.
 SCHEMA = 2
 BRIEF_CHARS = 120  # chars of `body` kept for the working-set projection
 
